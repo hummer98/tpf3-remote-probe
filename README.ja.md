@@ -107,6 +107,9 @@ SIGKILL します (`--no-kill` で諦める。「安全上の注意」)。新し
 `--seed`、`--generator` (既定: 本体の新規ゲーム画面と同じ選び方の先頭)、`--no-towns`、`--no-industries`、MOD の指定は
 `load` と同じ。メインメニューには「今のゲーム」が無いので、MOD はこの MOD と `--add` / `--set-mods` で指定したものに
 なります。ack の plan で確かめてください。
+新しいゲームは、本体のチュートリアルをオフにして始めます (`:guideSystemConfig.tutorial=1`)。進める人がいないためです。
+`--tutorial` を付けると本体の既定 (オン) のまま、`--param :guideSystemConfig.tutorial=N` を明示すればそれが優先です。
+`newgame` コマンドも同じです。
 
 ### ゲームを見る
 

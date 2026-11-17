@@ -109,6 +109,9 @@ default, SIGKILLs the game when it does not quit (`--no-kill` gives up instead; 
 64x64, or WxH), `--year` (default 1900), `--seed`, `--generator` (default: the first one, as the base new-game page
 picks it), `--no-towns`, `--no-industries`, and the mod options as for `load`. From the main menu there is no
 current game, so the mods are this mod plus those given with `--add` / `--set-mods`; check the plan in the ack.
+New games start with the base tutorial off (`:guideSystemConfig.tutorial=1`), since nobody is there to click
+through it; `--tutorial` keeps the base default (on), and an explicit `--param :guideSystemConfig.tutorial=N` wins.
+The same holds for the `newgame` command.
 
 ### Looking at the game
 

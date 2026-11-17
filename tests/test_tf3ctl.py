@@ -810,12 +810,27 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(args, {"save": "probe", "mods": {"add": ["m"]}, "params": {"m": {"k": 2}}})
         cmd, args = tf3ctl.start_args(self._ns(new=True, year=1900, size="small", add=["a"]))
         self.assertEqual(cmd, "newgame")
-        self.assertEqual(args, {"year": 1900, "size": "small", "mods": {"add": ["a"]}})
+        self.assertEqual(args, {"year": 1900, "size": "small", "mods": {"add": ["a"]},
+                                "params": {"": {"guideSystemConfig.tutorial": 1}}}, "tutorial off by default")
         self.assertNotIn("unsafe", args, "from the main menu it needs no unsafe")
+        cmd, args = tf3ctl.start_args(self._ns(new=True, tutorial=True))
+        self.assertNotIn("params", args, "--tutorial: the base default (On) stays")
+        cmd, args = tf3ctl.start_args(self._ns(new=True, param=[":guideSystemConfig.tutorial=2", ":map.size=3"]))
+        self.assertEqual(args["params"][""], {"guideSystemConfig.tutorial": 2, "map.size": 3}, "an explicit --param wins")
+        cmd, args = tf3ctl.start_args(self._ns(new=True, param=["m:k=2"]))
+        self.assertEqual(args["params"], {"m": {"k": 2}, "": {"guideSystemConfig.tutorial": 1}}, "other params kept")
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.start_args(self._ns(load="x", new=True))
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.start_args(self._ns(load="x", remove=[tf3ctl.SELF_MOD]))
+
+    def test_newgame_command_starts_without_the_tutorial_too_but_not_its_list(self):
+        ns = tf3ctl.argparse.Namespace(climate=None, generator=None, size="tiny", year=None, seed=None,
+                                       no_towns=False, no_industries=False, list=False, unsafe=False, set_mods=None,
+                                       add=[], remove=[], param=[], dry_run=True, tutorial=False)
+        self.assertEqual(tf3ctl.newgame_args(ns)["params"], {"": {"guideSystemConfig.tutorial": 1}})
+        ns.list = True
+        self.assertNotIn("params", tf3ctl.newgame_args(ns), "--list sends no params")
 
     def test_notification_log_goes_by_its_event_not_a_tool_push(self):
         ns = tf3ctl.argparse.Namespace

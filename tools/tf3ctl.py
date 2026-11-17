@@ -698,8 +698,19 @@ def newgame_args(ns):
     base = load_args(argparse.Namespace(save=None, set_mods=ns.set_mods, add=ns.add, remove=ns.remove,
                                         param=ns.param, dry_run=ns.dry_run))
     base.pop("save", None)
+    # New games start without the base tutorial unless asked for (--tutorial): a test game has nobody to click
+    # through it. The base parameter is 1-based like --param: 1 = Off, 2 = On (base mod.json, values Off / On;
+    # the base pages test == 2 for on). The menu probe fills in the base defaults, whose tutorial is On, so
+    # leaving it out started games with the tutorial window (2026-11-17). An explicit --param wins.
+    if not getattr(ns, "tutorial", False) and not ns.list:
+        base_params = base.setdefault("params", {}).setdefault("", {})
+        base_params.setdefault(TUTORIAL_PARAM, TUTORIAL_OFF)
     args.update(base)
     return args
+
+
+TUTORIAL_PARAM = "guideSystemConfig.tutorial"
+TUTORIAL_OFF = 1
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -848,7 +859,7 @@ def start_args(ns):
         return "newgame", newgame_args(argparse.Namespace(
             climate=ns.climate, generator=ns.generator, size=ns.size, year=ns.year, seed=ns.seed,
             no_towns=ns.no_towns, no_industries=ns.no_industries, list=False, unsafe=False, set_mods=ns.set_mods,
-            add=ns.add, remove=ns.remove, param=ns.param, dry_run=False))
+            add=ns.add, remove=ns.remove, param=ns.param, dry_run=False, tutorial=getattr(ns, "tutorial", False)))
     return None
 
 
@@ -1230,6 +1241,7 @@ def main(argv=None):
     ng.add_argument("--seed")
     ng.add_argument("--no-towns", action="store_true")
     ng.add_argument("--no-industries", action="store_true")
+    ng.add_argument("--tutorial", action="store_true", help="start with the base tutorial (off by default)")
     ng.add_argument("--add", action="append", default=[])
     ng.add_argument("--remove", action="append", default=[])
     ng.add_argument("--set-mods")
@@ -1278,6 +1290,7 @@ def main(argv=None):
         st.add_argument("--seed")
         st.add_argument("--no-towns", action="store_true")
         st.add_argument("--no-industries", action="store_true")
+        st.add_argument("--tutorial", action="store_true", help="with --new: start with the base tutorial (off by default)")
         st.add_argument("--timeout", type=float, default=900, help="for the load or new game")
         st.add_argument("--launch-timeout", type=float, default=LAUNCH_TIMEOUT_SEC)
         if name == "restart":
