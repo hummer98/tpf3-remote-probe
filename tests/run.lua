@@ -819,7 +819,7 @@ local R -- the fake react's bookkeeping: timers, joins, fired events, hook state
 local function loadSpeedScript(_, _, previous)
 	local replaced = {}
 	local base = { "BASE" }
-	R = { timers = {}, joins = {}, events = {}, hooks = {}, i = 0 }
+	R = { timers = {}, steps = {}, joins = {}, events = {}, hooks = {}, i = 0 }
 	_G._react = { recipeReplace = { BASE_ID = previous } }
 	package.preload["::/gui/main/react.lua"] = function() return {
 		RegisterRecipe = function(name, fn) return fn end,
@@ -838,12 +838,14 @@ local function loadSpeedScript(_, _, previous)
 			return { get = function() return R.hooks[k].v end, set = function(_, v) R.hooks[k].v = v end }
 		end,
 		onStepTimer = function(fn) R.timers[1] = fn end,
+		onStep = function(fn) R.steps[1] = fn end,
 		enqueueJoin = function(fn) R.joins[#R.joins + 1] = fn end,
 		fireEvent = function(target, name, param) R.events[#R.events + 1] = { name = name, param = param } end,
 	} end
 	package.preload["::/gui/main/builtin.lua"] = function() return {
 		TextView = function(t) return { kind = "text", t = t } end,
 		BoxLayout = function(t) return { kind = "box", t = t } end,
+		ToggleButtonGroup = function(t) return { kind = "toggle", t = t } end,
 		type = { Orientation = { Horizontal = "h" } },
 	} end
 	package.preload["::/gui/game_bar/game_bar_widgets.tl"] = function() return { GameSpeedControl = base } end
@@ -867,6 +869,7 @@ local function frame(control, params)
 	R.i = 0
 	local node = withoutGameApi(function() return control(params or {}) end)
 	withoutGameApi(function() if R.timers[1] then R.timers[1]() end end)
+	withoutGameApi(function() if R.steps[1] then R.steps[1]() end end)
 	local joins = R.joins
 	R.joins = {}
 	-- the join runs in the recipe's react state: what loads only there (vehicle_react_util.tl) loads now
@@ -888,10 +891,11 @@ test("speed control: replaces the base recipe, draws the base buttons, the label
 	local kids = frame(exports.SpeedControl, { gameSpeedHelper = "h" }).t.children
 	eq(kids[1].original, base, "the base buttons first")
 	eq(kids[1].params.gameSpeedHelper, "h", "with the same params")
-	eq(kids[2].kind, "text")
-	eq(kids[2].t.text, "×16 実測×3.2")
-	eq(kids[2].t.meta.tooltip, "tip")
-	eq(kids[2].t.meta.mouseTransparent, false, "the label takes the mouse for its tooltip")
+	eq(kids[2].kind, "toggle", "then the ×8 / ×16 buttons")
+	eq(kids[3].kind, "text")
+	eq(kids[3].t.text, "×16 実測×3.2")
+	eq(kids[3].t.meta.tooltip, "tip")
+	eq(kids[3].t.meta.mouseTransparent, false, "the label takes the mouse for its tooltip")
 	publish(nil)
 end)
 
@@ -910,15 +914,16 @@ test("speed control: opens a requested window once, never one left in the save f
 	publish(nil)
 end)
 
-test("speed control: another mod's replacement (Time Warp) is drawn instead of the base buttons", function()
-	local timeWarp = function(p) return { timeWarp = true, params = p } end
-	local exports = loadSpeedScript(nil, false, timeWarp)
+test("speed control: another mod's replacement is drawn instead of the base buttons", function()
+	local other = function(p) return { other = true, params = p } end
+	local exports = loadSpeedScript(nil, false, other)
 	publish({ label = "×4 →2045-07-03" })
 	frame(exports.SpeedControl, { gameSpeedHelper = "h" })
 	local kids = frame(exports.SpeedControl, { gameSpeedHelper = "h" }).t.children
-	eq(kids[1].timeWarp, true, "Time Warp's buttons kept")
+	eq(kids[1].other, true, "the other mod's buttons kept")
 	eq(kids[1].params.gameSpeedHelper, "h")
-	eq(kids[2].kind, "text", "with the label beside them")
+	eq(kids[2].kind, "text", "with the label beside them, not our ×8 / ×16 (Time Warp's would show twice)")
+	eq(#kids, 2)
 	publish(nil)
 	_G._react = nil
 	exports = loadSpeedScript()
@@ -936,20 +941,120 @@ test("speed control: a second install, or a second copy, never draws itself as t
 	eq(frame(again.SpeedControl).t.children[1].original ~= nil, true, "not the old copy either")
 end)
 
-test("speed control: nothing published, junk published, or the GUI API failing: the buttons alone", function()
+test("speed control: nothing published, junk published, or the GUI API failing: the buttons alone, no label", function()
 	local exports = loadSpeedScript()
 	publish(nil)
 	frame(exports.SpeedControl)
-	eq(#frame(exports.SpeedControl).t.children, 1)
+	eq(#frame(exports.SpeedControl).t.children, 2)
 	publish("not a table")
 	frame(exports.SpeedControl)
-	eq(#frame(exports.SpeedControl).t.children, 1)
+	eq(#frame(exports.SpeedControl).t.children, 2)
 	local real = api.gui.game.getGuiSaveData
 	api.gui.game.getGuiSaveData = function() error("restricted") end
 	frame(exports.SpeedControl)
 	api.gui.game.getGuiSaveData = real
-	eq(#frame(exports.SpeedControl).t.children, 1)
+	eq(#frame(exports.SpeedControl).t.children, 2)
 	publish(nil)
+end)
+
+-- a stand-in for game.tl's GameSpeedHelper: getSpeed is what it last asked for (what lights a button), setSpeed
+-- the base buttons' way (clamped in game, recorded here)
+local function fakeHelper(speed)
+	local h = { speed = speed, enabled = true, set = {} }
+	local a = {
+		getSpeed = function() return h.speed end,
+		isEnabled = function() return h.enabled end,
+		setSpeed = function(n) h.set[#h.set + 1] = n end,
+	}
+	h.ref = { get = function() return { getApi = function() return a end } end }
+	return h
+end
+
+-- api.cmd as the game's: the speed commands sent, in order. The estimated maximum is low (3), as on a big map.
+local function recordSpeedCmds(fn)
+	local realApi = _G.api
+	local sent = {}
+	_G.api = setmetatable({
+		cmd = {
+			makeGameSetSpeedCmd = function(n) return { kind = "speed", speed = n } end,
+			sendCommand = function(c) sent[#sent + 1] = c.speed end,
+		},
+		gui = { game = { getEstimatedMaximumGameSpeed = function() return 3 end } },
+	}, { __index = realApi })
+	local ok, err = pcall(fn)
+	_G.api = realApi
+	if not ok then error(err, 2) end
+	return sent
+end
+
+test("speed control: ×8 and ×16 send that speed, beyond the game's estimated maximum", function()
+	local exports = loadSpeedScript()
+	local h = fakeHelper(1)
+	local params = { gameSpeedHelper = h.ref }
+	frame(exports.SpeedControl, params)
+	local group = frame(exports.SpeedControl, params).t.children[2]
+	eq(group.kind, "toggle")
+	eq(#group.t.buttons, 2)
+	eq(group.t.meta.class, "hummer-remote-speed-buttons", "the class the CSS matches")
+	eq(group.t.buttons[1].content.t.text, "×8"); eq(group.t.buttons[2].content.t.text, "×16")
+	eq(group.t.buttons[1].meta.tooltip, "Speed: 8x", "English without the game's _")
+	eq(group.t.buttons[2].meta.tooltip, "Speed: 16x")
+	truthy(group.t.buttons[1].content.t.meta.class:find("hummer%-remote%-speed%-button"))
+	-- the click: on the main thread, as the base buttons' onValueChange
+	local cmds = recordSpeedCmds(function()
+		group.t.onValueChange(1)
+		group.t.onValueChange(2)
+		group.t.onValueChange(-1) -- a deselect, or an index of nothing: no command
+		group.t.onValueChange(3)
+	end)
+	eq(#cmds, 2)
+	eq(cmds[1], 8); eq(cmds[2], 16, "not capped at the estimated maximum")
+	eq(#h.set, 0, "not through the helper, which clamps")
+end)
+
+test("speed control: the lit ×8 / ×16 button follows the helper's speed; the base buttons are left alone", function()
+	local exports = loadSpeedScript()
+	local h = fakeHelper(8)
+	local params = { gameSpeedHelper = h.ref }
+	local function group() frame(exports.SpeedControl, params); return frame(exports.SpeedControl, params).t.children end
+	local kids = group()
+	eq(kids[2].t.selected, 1, "×8 lit")
+	eq(kids[2].t.deselectAllowed, false)
+	eq(kids[1].original ~= nil, true, "the base buttons, drawn by the base recipe")
+	eq(kids[1].params, params, "with the params unchanged")
+	h.speed = 16
+	eq(group()[2].t.selected, 2, "×16 lit")
+	for _, s in ipairs({ 0, 1, 2, 4, 3, 32 }) do
+		h.speed = s
+		kids = group()
+		eq(kids[2].t.selected, -1, "none lit at " .. s)
+		eq(kids[2].t.deselectAllowed, true)
+	end
+	eq(#h.set, 0, "nothing set by drawing")
+	h.enabled = false
+	eq(group()[2].t.meta.enabled, false, "disabled with the base buttons (tutorials)")
+	h.enabled = true
+	eq(group()[2].t.meta.enabled, true)
+	h.speed = 16
+	group()
+	h.ref = { get = function() error("not mounted") end }
+	params.gameSpeedHelper = h.ref
+	eq(group()[2].t.selected, 2, "a failing helper: the last speed kept, no error")
+end)
+
+test("speed control: the ×8 / ×16 tooltips come from strings.json in the game's language", function()
+	local exports = loadSpeedScript()
+	local ja = { hummer_remote_probe_tip_button = "速度: %s倍" }
+	_G._ = function(k) return ja[k] or k end
+	local ok, kids = pcall(function()
+		frame(exports.SpeedControl, {})
+		return frame(exports.SpeedControl, {}).t.children
+	end)
+	_G._ = nil
+	truthy(ok, tostring(kids))
+	eq(kids[2].t.buttons[1].meta.tooltip, "速度: 8倍")
+	eq(kids[2].t.buttons[2].meta.tooltip, "速度: 16倍")
+	eq(kids[2].t.selected, -1, "no helper in the params: none lit, no error")
 end)
 
 test("label text and window requests are written by the guiUpdate script into the GUI save data", function()
@@ -1064,7 +1169,7 @@ test("core loads where _G is not a plain table (TF3 GUI Lua) and still shares a 
 	end
 end)
 
-test("speed css: widens every right-hand layer by the same amount and styles the label", function()
+test("speed css: widens every right-hand layer by the same amount and styles the buttons and the label", function()
 	package.preload["::/gui/main/stylesheetutil.lua"] = function() return {
 		makeAdder = function(result) return function(sel, rule) result[#result + 1] = { sel, rule } end end,
 	} end
@@ -1076,10 +1181,21 @@ test("speed css: widens every right-hand layer by the same amount and styles the
 	end)
 	local widths = {}
 	for _, r in ipairs(rules) do widths[r[1]] = r[2].size and r[2].size[1] end
-	eq(widths["R::GameBarMenuRight !game-speed"], 330 + 226)
-	eq(widths["R::GameBarMenuRight !music-player"], 380 + 226)
-	eq(widths["R::GameBarMenuRight !cameras"], 508 + 226)
-	eq(widths["R::GameBarMenuRight !statistics"], 508 + 226)
+	-- the label (170) and the ×8 / ×16 buttons (2 x 32 + a 4 px gap)
+	local extra = 170 + 68
+	eq(widths["R::GameBarMenuRight !game-speed"], 330 + extra)
+	eq(widths["R::GameBarMenuRight !music-player"], 380 + extra)
+	eq(widths["R::GameBarMenuRight !cameras"], 508 + extra)
+	eq(widths["R::GameBarMenuRight !statistics"], 508 + extra)
+	eq(widths["R::GameBarMenuRight TextView!hummer-remote-speed-button"], 28, "×16 fits")
+	-- the group by the class the script gives it
+	local script = io.open(root .. "/content/gui/remote_speed.script.lua"):read("*a")
+	truthy(script:find('class = "hummer-remote-speed-buttons"', 1, true), "the script's class")
+	local found = false
+	for _, r in ipairs(rules) do
+		if r[1] == "R::GameBarMenuRight ToggleButtonGroup!hummer-remote-speed-buttons" then found = r[2] end
+	end
+	truthy(found and found.margin, "the ×8 / ×16 group's rule")
 	truthy(rules[#rules][1]:find("hummer%-remote%-speed"))
 end)
 

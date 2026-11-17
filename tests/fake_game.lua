@@ -878,11 +878,12 @@ function M.speedControl()
 			return { get = function() return hooks[k].v end, set = function(_, v) hooks[k].v = v end }
 		end,
 		onStepTimer = function(fn) timers[1] = fn end,
+		onStep = function(fn) timers[2] = fn end,
 		enqueueJoin = function(fn) joins[#joins + 1] = fn end,
 		fireEvent = function() end,
 	}
 	package.loaded["::/gui/main/builtin.lua"] = { TextView = function(t) return t end, BoxLayout = function(t) return t end,
-		type = { Orientation = { Horizontal = "h" } } }
+		ToggleButtonGroup = function(t) return t end, type = { Orientation = { Horizontal = "h" } } }
 	package.loaded["::/gui/game_bar/game_bar_widgets.tl"] = { GameSpeedControl = {} }
 	_G._react = _G._react or { recipeReplace = {} }
 	_G.data = nil
@@ -892,6 +893,7 @@ function M.speedControl()
 		i = 0
 		control({ gameCtx = {} })
 		if timers[1] then timers[1]() end
+		if timers[2] then timers[2]() end
 		local js = joins
 		joins = {}
 		M.inReact = true

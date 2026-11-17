@@ -32,7 +32,7 @@ tf3ctl.py  --答えを読み、JSON を出力し、古いファイルを消す
 `content/remote.script.lua` の冒頭にあります。
 
 いくつかのコマンドは GUI の react の状態を要します (ウィンドウを開く、イベントを送る、車両の店と同じ処理)。そのために
-MOD は速度ボタンのレシピを、同じボタンと小さな表示に差し替え、依頼を GUI の保存データでそのレシピに渡します。
+MOD は速度ボタンのレシピを、同じボタンと ×8 / ×16 のボタンと小さな表示に差し替え、依頼を GUI の保存データでそのレシピに渡します。
 そのため、`window`・`event`・`tool` と、車両・路線のコマンドの `--via gui` では、**ゲーム画面に速度ボタンが出ている**
 必要があります (出ていなければ、60 秒後に「no word from the speed control」のエラーになります)。
 
@@ -48,6 +48,9 @@ MOD は速度ボタンのレシピを、同じボタンと小さな表示に差�
 - 任意: `frame` に `ffmpeg` と Steam のバックグラウンド録画。`screenshot --preview` に ImageMagick。
 - 任意: `connect` に Track Connector MOD (mod.io、modId `ethan_track_connector`、revision 3 / v1.3 に合わせて作成、ゲーム内ではまだ動かしていない)。セーブで
   有効にしておきます。
+- Time Warp (mod.io 6453396、modId `mobarzik_faster_game_speed`) とは一緒に使えません。どちらも同じ速度ボタンを
+  置き換えるためです。`mod.json` の `incompatibilities` に載せてあるので、両方を有効にするとゲームが警告します。
+  それでも両方を有効にした場合は、Time Warp のボタンと横の表示が出て、この MOD の ×8 / ×16 は出ません。
 
 ## 導入
 
@@ -77,6 +80,11 @@ python3 tools/tf3ctl.py pause
 python3 tools/tf3ctl.py run --months 2 --speed 16     # --days N / --until YYYY-MM-DD も。その後は速度 0
 python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # コマンドファイルを読む間隔 (次のロードまで)
 ```
+
+ゲームの画面では、本体の ⏸ ▶ ▶▶ ▶▶▶ (0/1/2/4) の右に、同じ見た目の ×8 と ×16 のボタンを足します。いまの速度の
+ボタンが、本体のボタンと同じように光ります。×8 / ×16 のボタンは、その速度をそのまま指定します。ゲームの見積もりの
+上限より上でも止めません (`speed` は上限で止めますが、ボタンはプレイヤーが自分で選ぶものなので)。本体のボタンを
+押せば、本体の速度に戻ります。横の表示 (`×16 実測×3.2`) は、本体のボタンにない 8 と 16 でも今までどおり出ます。
 
 ### セーブと新しいゲーム
 
@@ -267,6 +275,7 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
   `line create --via gui` は動いた): `line update`・`line delete`・`--cargo`・`buy --line` と `--via cmd` の経路。まず
   小さいセーブで試してください。詳しくは「実装メモ」。
 - `window` と `event` でウィンドウが開くか、速度の表示の位置と見た目、`tool` が `pop` でウィンドウを閉じるか。
+- ゲーム内の ×8 / ×16 のボタン: 本体のボタンの横での見た目と幅、光るボタン、指定される速度。
 - `app.quit` が確認ダイアログなしでゲームを終えるか。
 - `connect` は全部。危ない順の一覧は「実装メモ」の「接続」。
 
@@ -315,14 +324,24 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   終了メニューを開くだけでした (2026-11-16)。`restart` は、ゲームが終わってから 5 秒おいて起動します (直後は Steam が
   まだ動いているとみなすことがある)。ゲームのメインスレッドの名前は「Main Thread」なので、
   `pgrep -x TransportFever3` では見つかりません。ツールはコマンドラインで探します。
-- **速度の表示。** 速度ボタンは 0/1/2/4 だけで、それ以外の速度ではどれも選ばれません。MOD は
-  `react-replacement-config` で `game_bar_widgets.GameSpeedControl` を差し替え、本体のレシピをそのまま描き
-  (`CallOriginalRecipe`)、その横に表示を足します。先に差し替えた MOD (Time Warp、mod.io 6453396 の 8x/16x ボタン)
-  があれば、本体のボタンの代わりにそれを描くので両立します。右の欄の幅はどちらも CSS で決めるので、後に読まれた方の
-  幅になります。モジュールの表を実行時に入れ替える GW Faster Game Speed とは、どちらかしか効きません。レシピの本体と
-  その step では、ゲームの API を呼びません。react はそれらをワーカースレッドでも動かし、そこで
-  `api.util.getApplicationTime` を呼ぶと、ロードのたびに TF3 が SIGSEGV で落ちました (2026-11-15)。ゲームの呼び出しは
-  メインスレッドで動く `react.enqueueJoin` の中だけです。
+- **速度ボタンと表示。** 本体の速度ボタンは 0/1/2/4 だけで、それ以外の速度ではどれも選ばれません。MOD は
+  `react-replacement-config` (order 500) で `game_bar_widgets.GameSpeedControl` を差し替え、本体のレシピをそのまま描き
+  (`CallOriginalRecipe`)、その横に ×8 と ×16 のボタンの組、さらに表示を足します。足した組は、本体のボタンと同じ
+  `gameSpeedHelper.getSpeed()` で光り、押すと本体のボタンと同じく `onValueChange` の中で
+  `api.cmd.makeGameSetSpeedCmd` を送ります。helper の `setSpeed` は `api.gui.game.getEstimatedMaximumGameSpeed()` で
+  止めるので通しません。helper は次の step で `GAME_SPEED` コンポーネントから新しい速度を拾います。ただし本体の
+  一時停止キーは helper を通して再開するので、16 倍を一時停止から再開すると、本体のボタンと同じく上限で止まります。
+  本体のアイコンは 4 倍までしかないので、ボタンは文字 (`×8`、`×16`) で、本体の組の横の別の組です。この MOD より
+  先に (order が小さく) 差し替えた MOD があれば、本体のボタンと ×8 / ×16 の組の代わりにそれを描き、その横に表示を
+  足します。Time Warp (mod.io 6453396) は同じレシピを自前の 8x/16x ボタンに差し替え (order 10)、同じ CSS の幅を
+  決めるので、欄の幅は後に読まれたスタイルシートだけで決まります。そのため `incompatibilities` に載せています
+  (ゲームは警告しますが、そのまま進めることもできます)。モジュールの表を実行時に入れ替える
+  GW Faster Game Speed とは、どちらかしか効きません。ゲームバーや `game.tl` を丸ごと写しで置き換える MOD
+  (Upkeep Inspector、Buy Industries) も `game_bar_widgets.GameSpeedControl` と同じ `GameSpeedHelper` を使うので、
+  そこでも差し替えが効きます。UI Overhaul は速度ボタンに触れません。レシピの本体とその step では、ゲームの API を
+  呼びません。react はそれらをワーカースレッドでも動かし、そこで `api.util.getApplicationTime` を呼ぶと、ロードの
+  たびに TF3 が SIGSEGV で落ちました (2026-11-15)。ゲームの呼び出しは、メインスレッドで動く `react.enqueueJoin` と、
+  ボタンの `onValueChange` の中だけです。
 - **`frame`** は、Steam のバックグラウンド録画 (`userdata/<id>/gamerecordings/video/bg_3493540_*`) の書き終わった
   最新の断片から、最後のコマを ffmpeg で取り出します。UI 込み、数秒遅れ、録画の解像度で、窓の前面化もキー送信も要り
   ません。録画フォルダは、最後に断片を書いた時刻で選びます (フォルダの mtime ではない。Steam は止まった録画の古い断片を

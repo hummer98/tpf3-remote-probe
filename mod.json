@@ -6,7 +6,9 @@
 	"visible": true,
 	"cosmetic": false,
 	"dependencies": null,
-	"incompatibilities": null,
+	"incompatibilities": [
+		{ "mod": { "modId": "mobarzik_faster_game_speed" } }
+	],
 	"options": null,
 	"preRunScript": { "fileName": "" },
 	"runScript": { "fileName": "" },

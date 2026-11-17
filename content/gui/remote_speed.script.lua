@@ -1,14 +1,18 @@
--- The speed buttons with a label to their right: "×16 実測×3.2 →2045-07-03" (room: remote_speed.css.lua).
+-- The speed buttons, then ×8 and ×16 buttons, then a label: "×16 実測×3.2 →2045-07-03" (room: remote_speed.css.lua).
 -- The base buttons are 0/1/2/4 only (game_bar_widgets.tl) and select none for other speeds, so a speed set by the
--- remote probe was invisible in game. The base recipe (or another mod's replacement of it) is drawn unchanged;
--- the label is added beside it, not into it, so other mods' buttons (and base updates) still apply.
+-- remote probe was invisible in game, and a player could not pick more than 4x. The base recipe is drawn unchanged;
+-- the extra buttons and the label are added beside it, not into it, so base updates still apply. Time Warp (mod.io
+-- 6453396) replaces the same recipe with 8x/16x buttons of its own and is listed in mod.json's incompatibilities;
+-- the game only warns about that, so a mod's replacement found first is drawn in place of the base buttons and
+-- of ours (it may well have its own fast buttons: Time Warp's would otherwise show twice).
 -- The recipe's meta (id "menu.dateSpeedControl", disableFocusableRecursive) is taken off its params by react and
 -- applied to this wrapper, which holds the base buttons.
 --
 -- NO GAME API IN THE RECIPE BODY OR ITS STEPS. React runs recipes and their step functions on Main Pool worker
 -- threads too, and api.util.getApplicationTime dereferences a main-thread-only pointer there: TF3 crashed with
 -- SIGSEGV right after every load (5 times, 2026-11-15 21:39-21:53 JST), uncatchable by pcall. The only
--- game calls are inside react.enqueueJoin, which the base runs on the main thread after the parallel phase.
+-- game calls are inside react.enqueueJoin, which the base runs on the main thread after the parallel phase, and
+-- in the ×8 / ×16 buttons' onValueChange, where the base buttons send their speed command too (a click).
 --
 -- What to show and do comes from the guiUpdate script (remote.script.lua, publishUi) through the GUI save data
 -- (api.gui.game.getGuiSaveData), which the game keeps per mod in C++: this recipe runs in a Lua state of its own,
@@ -29,9 +33,9 @@ local REPORT_KEY = MOD .. ".vehicles"
 local LINE_REPORT_KEY = MOD .. ".lines"
 local REPORTS_KEPT = 10
 
--- a replacement another mod installed before this one (e.g. Time Warp's 8x/16x buttons, order 10): drawn
--- instead of the base buttons, so the label adds to it rather than undoing it. Replacement configs run in
--- ascending order (bootstrap_game.tl), and ours is 500.
+-- a replacement another mod installed before this one: drawn instead of the base buttons and our ×8 / ×16, so
+-- the label adds to it rather than undoing or doubling it. Replacement configs run in ascending order
+-- (bootstrap_game.tl), and ours is 500.
 local previous
 
 -- our own speed controls, from this load or an earlier copy of this script: never "previous", or the label
@@ -128,6 +132,56 @@ local function performChannel(ch, list, warnedRef)
 	end
 end
 
+-- the speeds the base buttons lack. Sent as they are: the base helper (game.tl GameSpeedHelper.setSpeed) clamps to
+-- api.gui.game.getEstimatedMaximumGameSpeed(), but a player who picks 16x means 16x (tf3ctl's speed caps; these do
+-- not). The helper takes the new speed from the GAME_SPEED component on its next step, so getSpeed (what lights a
+-- button) follows, and a base button afterwards goes back through the helper as before.
+local EXTRA_SPEEDS = { 8, 16 }
+
+-- params.gameSpeedHelper's api, or nil (missing or not yet mounted). Plain Lua (react refs and game.tl's closures),
+-- no game API: the base speed control calls the same in its step.
+local function helperApi(params)
+	local ok, a = pcall(function() return params.gameSpeedHelper:get():getApi() end)
+	if ok and type(a) == "table" then return a end
+	return nil
+end
+
+-- in a button's onValueChange: the base buttons send their command from there too (the helper's commit), so this
+-- is the main thread, as a player's click is
+local function setSpeed(speedup)
+	local ok, err = pcall(function() api.cmd.sendCommand(api.cmd.makeGameSetSpeedCmd(speedup)) end)
+	if not ok then print("[remote_probe] speed button ×" .. tostring(speedup) .. " failed: " .. tostring(err)) end
+end
+
+-- the ×8 / ×16 buttons: a group of their own, as the base group cannot take more buttons from outside its recipe.
+-- Lit as the base lights its own: the helper's speed, read in a step.
+local function extraButtons(speed, enabled)
+	local buttons, selected = {}, -1
+	for i, s in ipairs(EXTRA_SPEEDS) do
+		buttons[i] = {
+			meta = { tooltip = core.fill(_, "hummer_remote_probe_tip_button", "Speed: %sx", tostring(s)) },
+			-- text, not an icon: the base has icons up to 4x only
+			content = builtin.TextView{
+				meta = { class = "font-scale-body, hummer-remote-speed-button" },
+				text = "×" .. tostring(s),
+			},
+		}
+		if speed == s then selected = i end
+	end
+	return builtin.ToggleButtonGroup{
+		-- a class of its own for the CSS: what react puts around the recipe's nodes is not a stable path to match
+		meta = { class = "hummer-remote-speed-buttons", enabled = enabled },
+		buttons = buttons,
+		selected = selected,
+		onValueChange = function(index)
+			local s = EXTRA_SPEEDS[index]
+			if s then setSpeed(s) end
+		end,
+		-- as the base: none lit for a speed of the other group
+		deselectAllowed = selected == -1,
+	}
+end
+
 local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(params)
 	local state = react.useState({ label = "", tip = "" })
 	-- nil until the first read: a request already in the save data when the game loads is old, not opened
@@ -157,14 +211,24 @@ local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(p
 			end
 		end, "HummerRemoteSpeedControl:read")
 	end, READ_SEC)
+	local speed = react.useState(nil)
+	local enabled = react.useState(true)
+	react.onStep(function()
+		local a = helperApi(paramsRef:get())
+		if not a then return end
+		local ok, s, e = pcall(function() return a.getSpeed(), a.isEnabled() end)
+		if not ok then return end
+		if s ~= speed:old() then speed:set(s) end
+		e = e ~= false
+		if e ~= enabled:old() then enabled:set(e) end
+	end)
 	local v = state:old() or {}
-	local buttons
+	local children
 	if previous then
-		buttons = previous(params)
+		children = { previous(params) }
 	else
-		buttons = react.CallOriginalRecipe(game_bar_widgets.GameSpeedControl, params)
+		children = { react.CallOriginalRecipe(game_bar_widgets.GameSpeedControl, params), extraButtons(speed:old(), enabled:old()) }
 	end
-	local children = { buttons }
 	if v.label ~= nil and v.label ~= "" then
 		children[#children + 1] = builtin.TextView{
 			-- the speed row sits in a mouseTransparent component; the label takes the mouse for its tooltip

@@ -370,6 +370,7 @@ local function fill(translate, key, fallback, value)
 	if ok and text:find(value, 1, true) then return text end
 	return string.format(fallback, value)
 end
+M.fill = fill
 
 -- speedup: requested; measured: game seconds per real second over the last second(s), nil when unknown;
 -- run: { target = {year, month, day}, owner } or nil; translate: the game's _ (English without it).

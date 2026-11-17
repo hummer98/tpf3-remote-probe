@@ -1124,6 +1124,12 @@ class ModFilesTest(unittest.TestCase):
         self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual((int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")), (1920, 1080))
 
+    def test_time_warp_is_incompatible(self):
+        # Time Warp (mod.io 6453396) replaces the same speed buttons with its own 8x/16x: the game must not
+        # enable both (the format is the game's, as other mods write it)
+        self.assertEqual(self.mod["incompatibilities"], [{"mod": {"modId": "mobarzik_faster_game_speed"}}])
+        self.assertIsNone(self.mod["dependencies"])
+
     def test_label_patterns_keep_their_placeholder(self):
         for lang, table in self.strings.items():
             for key, text in table.items():

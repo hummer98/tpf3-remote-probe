@@ -32,7 +32,7 @@ notice a new load. If `recordings` does not keep the files, the mod falls back t
 The file format is described at the top of `content/remote.script.lua`.
 
 A few commands need the GUI's react state (opening windows, firing events, the vehicle store's code path). For those
-the mod replaces the speed buttons' recipe with the same buttons plus a small label, and passes requests to that
+the mod replaces the speed buttons' recipe with the same buttons plus ×8 / ×16 buttons and a small label, and passes requests to that
 recipe through the GUI save data. So **the speed buttons must be on screen** for `window`, `event`, `tool`, and the
 `--via gui` way of the vehicle and line commands (without them those fail after 60 s with "no word from the speed
 control").
@@ -49,6 +49,9 @@ load, newgame, poll and quit only). `tf3ctl.py launch` and `restart` do this for
 - Optional: `ffmpeg` and Steam's background game recording for `frame`; ImageMagick for `screenshot --preview`.
 - Optional: the Track Connector mod (on mod.io, modId `ethan_track_connector`, written against revision 3 / v1.3, not yet run with it in a game) for
   `connect`, enabled for the save.
+- Not together with Time Warp (mod.io 6453396, modId `mobarzik_faster_game_speed`): both replace the same speed
+  buttons, so `mod.json` lists it under `incompatibilities` and the game warns when both are enabled. If both
+  are enabled anyway, Time Warp's buttons are shown with the label, without this mod's ×8 / ×16.
 
 ## Install
 
@@ -78,6 +81,11 @@ python3 tools/tf3ctl.py pause
 python3 tools/tf3ctl.py run --months 2 --speed 16     # or --days N / --until YYYY-MM-DD; then speed 0
 python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # how often the mod reads the command file, until the next load
 ```
+
+In game, the mod adds ×8 and ×16 buttons to the right of the base ⏸ ▶ ▶▶ ▶▶▶ (0/1/2/4), in the same style. The
+current speed lights up as with the base buttons. A ×8 / ×16 button sets that speed as it is, even above the game's
+estimated maximum (unlike `speed`, which caps: the player chose it). A base button goes back to the base speeds. The
+label beside them (`×16 real ×3.2`) still shows for 8 and 16, which the base buttons do not have.
 
 ### Saves and new games
 
@@ -279,6 +287,7 @@ Not checked yet:
   worked on a small save): `line update`, `line delete`, `--cargo`, `buy --line` and the `--via cmd` way. Try them on
   a small save first; the details are under Implementation notes.
 - `window` and `event` opening windows, the speed label's position and look, `tool` closing a window with `pop`.
+- The ×8 / ×16 buttons in game: their look and width beside the base buttons, the lit button, and the speed they set.
 - Whether `app.quit` ends the game without a confirmation dialog.
 - `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
 
@@ -328,14 +337,25 @@ mod's code, and was checked against no running copy of it.
   the game's quit menu (2026-11-16). `restart` waits 5 s after the game ended before launching, since Steam may
   still count it as running. The game's main thread is named "Main Thread", so `pgrep -x TransportFever3` does not
   find it; the tool looks at command lines.
-- **Speed label.** The speed buttons are 0/1/2/4 only and select none for other speeds. The mod replaces
-  `game_bar_widgets.GameSpeedControl` with a `react-replacement-config` and draws the base recipe unchanged
-  (`CallOriginalRecipe`) with the label beside it. A mod that replaced it first (Time Warp, mod.io 6453396, with
-  8x/16x buttons) is drawn instead of the base buttons, so both work; the width of the right-hand bar is set in CSS
-  by both, and the stylesheet loaded last wins. GW Faster Game Speed swaps the module's table at run time, and
-  only one of the two takes effect. No game API is called in the recipe body or its steps: react runs them on
-  worker threads too, and `api.util.getApplicationTime` there crashed TF3 with SIGSEGV right after every load
-  (2026-11-15). Game calls happen in `react.enqueueJoin`, on the main thread.
+- **Speed buttons and label.** The base speed buttons are 0/1/2/4 only and select none for other speeds. The mod
+  replaces `game_bar_widgets.GameSpeedControl` with a `react-replacement-config` (order 500) and draws the base
+  recipe unchanged (`CallOriginalRecipe`), then a second button group with ×8 and ×16, then the label. The extra
+  group lights from the same `gameSpeedHelper.getSpeed()` the base buttons use, and its click sends
+  `api.cmd.makeGameSetSpeedCmd` from `onValueChange`, where the base buttons send theirs; it does not go through
+  the helper's `setSpeed`, which clamps to `api.gui.game.getEstimatedMaximumGameSpeed()`. The helper picks the new
+  speed up from the `GAME_SPEED` component on its next step. Note that the base's pause key resumes through the
+  helper, so resuming 16x from a pause is clamped like a base button. The buttons hold text (`×8`, `×16`), since the
+  base has icons up to 4x only, and are a group of their own beside the base group. A mod that replaced the recipe
+  before this one (lower order) is drawn instead of the base buttons and of the ×8 / ×16 group, with the label
+  beside it. Time Warp (mod.io 6453396) replaces the same recipe with 8x/16x buttons of its own (order 10) and sets
+  the same CSS widths, so only the stylesheet loaded last would size the bar: it is listed in `incompatibilities`
+  (the game warns, but can be told to go on). GW Faster Game Speed swaps the module's table at run
+  time, and only one of the two takes effect. Mods that replace the whole game bar or `game.tl` with a copy
+  (Upkeep Inspector, Buy Industries) still call `game_bar_widgets.GameSpeedControl` and the same
+  `GameSpeedHelper`, so the replacement applies there too. UI Overhaul does not touch the speed control. No game
+  API is called in the recipe body or its steps: react runs them on worker threads too, and
+  `api.util.getApplicationTime` there crashed TF3 with SIGSEGV right after every load (2026-11-15). Game calls
+  happen in `react.enqueueJoin` and in the buttons' `onValueChange`, on the main thread.
 - **`frame`** takes the last frame of the newest finished chunk of Steam's background recording
   (`userdata/<id>/gamerecordings/video/bg_3493540_*`) with ffmpeg: with the UI, a few seconds old, at the
   recording's resolution, without focusing the window or sending keys. The recording folder is chosen by its last
