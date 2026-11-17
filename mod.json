@@ -1,0 +1,48 @@
+{
+	"modId": "hummer_remote_probe",
+	"revision": 1,
+	"severityAdd": "None",
+	"severityRemove": "None",
+	"visible": true,
+	"cosmetic": false,
+	"dependencies": null,
+	"incompatibilities": null,
+	"options": null,
+	"preRunScript": { "fileName": "" },
+	"runScript": { "fileName": "" },
+	"postRunScript": { "fileName": "" },
+	"params": [
+		{
+			"key": "pollIdle",
+			"name": "hummer_remote_probe_pollIdle_name",
+			"tooltip": "hummer_remote_probe_pollIdle_tip",
+			"uiType": "ComboBox",
+			"values": ["hummer_remote_probe_pollIdle_v1", "hummer_remote_probe_pollIdle_v2", "hummer_remote_probe_pollIdle_v3", "hummer_remote_probe_pollIdle_v4"],
+			"defaultIndex": 1
+		},
+		{
+			"key": "pollActive",
+			"name": "hummer_remote_probe_pollActive_name",
+			"tooltip": "hummer_remote_probe_pollActive_tip",
+			"uiType": "ComboBox",
+			"values": ["hummer_remote_probe_pollActive_v1", "hummer_remote_probe_pollActive_v2", "hummer_remote_probe_pollActive_v3", "hummer_remote_probe_pollActive_v4"],
+			"defaultIndex": 1
+		},
+		{
+			"key": "logLevel",
+			"name": "hummer_remote_probe_logLevel_name",
+			"tooltip": "hummer_remote_probe_logLevel_tip",
+			"uiType": "ComboBox",
+			"values": ["hummer_remote_probe_logLevel_v1", "hummer_remote_probe_logLevel_v2", "hummer_remote_probe_logLevel_v3"],
+			"defaultIndex": 1
+		},
+		{
+			"key": "speedLabel",
+			"name": "hummer_remote_probe_speedLabel_name",
+			"tooltip": "hummer_remote_probe_speedLabel_tip",
+			"uiType": "ComboBox",
+			"values": ["hummer_remote_probe_speedLabel_v1", "hummer_remote_probe_speedLabel_v2"],
+			"defaultIndex": 0
+		}
+	]
+}

@@ -1,0 +1,2944 @@
+-- Offline tests for the remote probe.  luajit tests/run.lua
+-- Pure logic (content/remote_core.lua) plus the real content/remote.script.lua over tests/fake_game.lua.
+local root = (arg and arg[0] or "tests/run.lua"):match("^(.*)/tests/[^/]*$") or "."
+package.path = root .. "/?.lua;" .. package.path
+
+local failures, passes = 0, 0
+local function test(name, fn)
+	local ok, err = pcall(fn)
+	if ok then passes = passes + 1; print("PASS " .. name)
+	else failures = failures + 1; print("FAIL " .. name .. "\n     " .. tostring(err)) end
+end
+local function eq(a, b, msg)
+	if a ~= b then error((msg or "values differ") .. ": " .. tostring(a) .. " ~= " .. tostring(b), 2) end
+end
+local function truthy(v, msg) if not v then error(msg or "expected a true value", 2) end end
+
+local fake = dofile(root .. "/tests/fake_game.lua")
+local core = require "hummer_remote_probe::/remote_core.lua"
+
+---------------------------------------------------------------------------------------------------------------------
+-- core
+
+test("json: an empty table marked a list is [], unmarked it stays {}; marking changes nothing else", function()
+	eq(core.json(core.array({})), "[]")
+	eq(core.json({}), "{}")
+	eq(core.json({ a = core.array({}), b = {} }), '{"a":[],"b":{}}')
+	eq(core.json(core.array({ 1, 2 })), "[1,2]")
+	eq(core.json(core.array({ x = 1 })), '{"x":1}') -- a marked table with keys is still an object
+	eq(core.array(nil), nil)
+	eq(core.array(5), 5)
+end)
+
+test("json: scalars, escapes, arrays, sorted objects, non-finite numbers", function()
+	eq(core.json(nil), "null")
+	eq(core.json(true), "true")
+	eq(core.json(3), "3")
+	eq(core.json(0.5), "0.5")
+	eq(core.json(0 / 0), "null")
+	eq(core.json(math.huge), "null")
+	eq(core.json('a"b\\c\n\1'), '"a\\"b\\\\c\\n\\u0001"')
+	eq(core.json({ 1, 2, "x" }), '[1,2,"x"]')
+	eq(core.json({ b = 1, a = { c = false } }), '{"a":{"c":false},"b":1}')
+	eq(core.json({}), "{}")
+	eq(core.json({ [1] = "a", [3] = "c" }), '{"1":"a","3":"c"}', "sparse lists are objects")
+	eq(core.json("日本"), '"日本"', "UTF-8 passes through")
+end)
+
+test("json: cycles do not hang", function()
+	local t = {}
+	t.self = t
+	eq(core.json(t), '{"self":"<cycle>"}')
+end)
+
+test("readCommand: new ids only, unknown commands answered with an error", function()
+	eq(core.readCommand(nil, 0), nil)
+	eq(core.readCommand({ id = 0 }, 0), nil, "the file the mod creates")
+	eq(core.readCommand({ id = 5, cmd = "status" }, 5), nil, "already done")
+	local c = core.readCommand({ id = 6, cmd = "status" }, 5)
+	eq(c.id, 6); eq(c.cmd, "status"); eq(type(c.args), "table")
+	local bad = core.readCommand({ id = 7, cmd = "format_disk" }, 6)
+	eq(bad.id, 7); truthy(bad.error:find("unknown command"))
+	eq(core.readCommand({ id = "8", cmd = "speed", args = "x" }, 0).args.x, nil, "non-table args become {}")
+end)
+
+test("speedArg: whole numbers from 0, no cap at the UI's 4x", function()
+	eq(core.speedArg(0), 0)
+	eq(core.speedArg(64), 64)
+	eq(core.speedArg("16"), 16)
+	eq(core.speedArg(2.4), 2)
+	eq(core.speedArg(-1), nil)
+	eq(core.speedArg("fast"), nil)
+	eq(core.speedArg(0 / 0), nil)
+	eq(core.speedArg(1e9), nil)
+end)
+
+test("dates: parse, add months (day clamped), add days across months and years", function()
+	local d = core.parseDate("1934-09-01")
+	eq(d.year, 1934); eq(d.month, 9); eq(d.day, 1)
+	eq(core.parseDate("1934").month, 1)
+	eq(core.parseDate("soon"), nil)
+	local m = core.addMonths({ year = 1934, month = 1, day = 31 }, 1)
+	eq(m.month, 2); eq(m.day, 28)
+	m = core.addMonths({ year = 1934, month = 11, day = 5 }, 2)
+	eq(m.year, 1935); eq(m.month, 1); eq(m.day, 5)
+	local a = core.addDays({ year = 1934, month = 12, day = 30 }, 3)
+	eq(a.year, 1935); eq(a.month, 1); eq(a.day, 2)
+	a = core.addDays({ year = 1934, month = 2, day = 27 }, 2)
+	eq(a.month, 3); eq(a.day, 1)
+end)
+
+test("runTarget: months, days, untilDate; refuses targets in the past and bad input", function()
+	local now = { date = { year = 1934, month = 7, day = 10 } }
+	eq(core.runTarget({ months = 2 }, now).key, 19340910)
+	eq(core.runTarget({ days = 25 }, now).key, 19340804)
+	eq(core.runTarget({ untilDate = "1935-01-01" }, now).key, 19350101)
+	truthy(select(2, core.runTarget({ untilDate = "1934-07-10" }, now)):find("not after"))
+	truthy(select(2, core.runTarget({ months = 0 }, now)))
+	truthy(select(2, core.runTarget({ months = 1.5 }, now)))
+	truthy(select(2, core.runTarget({}, now)))
+	truthy(select(2, core.runTarget({ months = 1 }, {})):find("unknown"))
+end)
+
+test("reached: compares calendar dates", function()
+	local t = core.runTarget({ months = 1 }, { date = { year = 1934, month = 7, day = 10 } })
+	eq(core.reached(t, { date = { year = 1934, month = 8, day = 9 } }), false)
+	eq(core.reached(t, { date = { year = 1934, month = 8, day = 10 } }), true)
+	eq(core.reached(t, { date = { year = 1934, month = 8, day = 12 } }), true, "a frame may skip past the day")
+	eq(core.reached(t, {}), false)
+end)
+
+test("meter: samples once per real second, summary over the whole run", function()
+	local m = core.newMeter(0, 100)
+	eq(core.meterStep(m, 8000, 100.5, 10), nil, "under a second")
+	eq(core.meterStep(m, 16000, 101, 10), 16)
+	eq(core.meterStep(m, 48000, 102, 20), 32)
+	local s = core.meterSummary(m, 48000, 102)
+	eq(s.realSec, 2); eq(s.gameSec, 48); eq(s.overall, 24)
+	eq(s.perSecond.min, 16); eq(s.perSecond.max, 32); eq(s.perSecond.n, 2)
+	eq(s.estimatedMax.max, 20)
+	eq(core.meterSummary(core.newMeter(0, 5), 0, 5).perSecond, nil)
+end)
+
+test("mergeMods: add/remove/set, no duplicates, the probe always stays", function()
+	local cur = { "a", "b", "hummer_remote_probe" }
+	local r = core.mergeMods(cur, { add = { "c", "a" }, remove = { "b" } }, "hummer_remote_probe")
+	eq(table.concat(r, ","), "a,hummer_remote_probe,c")
+	r = core.mergeMods(cur, { remove = { "hummer_remote_probe" } }, "hummer_remote_probe")
+	eq(table.concat(r, ","), "a,b,hummer_remote_probe", "cannot remove itself")
+	r = core.mergeMods({ "a" }, { set = { "x", "y" } }, "hummer_remote_probe")
+	eq(table.concat(r, ","), "x,y,hummer_remote_probe", "set replaces the list, probe appended")
+	r = core.mergeMods(nil, nil, "hummer_remote_probe")
+	eq(table.concat(r, ","), "hummer_remote_probe")
+	r = core.mergeMods({ "a", "", 5 }, {}, "p")
+	eq(table.concat(r, ","), "a,p", "junk entries dropped")
+end)
+
+test("mergeParams: copies, overrides, rejects non-index values, base game key", function()
+	local cur = { [""] = { ["map.size"] = 4 }, m = { a = 1, b = 2 } }
+	local r = core.mergeParams(cur, { m = { a = 3 }, n = { z = 2 } })
+	eq(r.m.a, 3); eq(r.m.b, 2); eq(r.n.z, 2); eq(r[""]["map.size"], 4)
+	eq(cur.m.a, 1, "the save's table is untouched")
+	r = core.mergeParams(nil, { m = { a = "2" } })
+	eq(r.m.a, 2)
+	local bad, err = core.mergeParams(cur, { m = { a = 0 } })
+	eq(bad, nil); truthy(err:find("1%-based"))
+	eq(core.mergeParams(cur, { m = { a = 1.5 } }), nil)
+end)
+
+test("size/at/toList/plain: tables and userdata vectors", function()
+	local u = newproxy(true)
+	local mt = getmetatable(u)
+	local items = { "x", "y" }
+	mt.__len = function() return #items end
+	mt.__index = function(_, i) return items[i] end
+	eq(core.size(u), 2); eq(core.at(u, 2), "y")
+	eq(table.concat(core.toList(u), ","), "x,y")
+	eq(core.size(nil), 0)
+	eq(#core.toList({ 1, 2, 3 }), 3)
+	local p = core.plain({ m = { a = 1 }, [""] = { k = 2 } })
+	eq(p.m.a, 1); eq(p[""].k, 2)
+	eq(type(core.plain(u)), "string", "an opaque userdata becomes its tostring")
+	eq(core.plain(5), 5)
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- the real script over the fake game
+
+local tmpBase = os.getenv("TMPDIR") or "/tmp"
+local function tempDir()
+	local d = os.tmpname()
+	os.remove(d)
+	os.execute("mkdir -p '" .. d .. "'")
+	return d
+end
+
+-- the game, and g.x = the folder the probe settled on (recordings unless opts.droppingDirs says otherwise)
+local function newGame(opts, xdir)
+	local g = fake.new(tempDir(), opts)
+	g.x = g.dir .. "/" .. (xdir or "recordings")
+	return g
+end
+
+local function files(dir, pattern)
+	local out = {}
+	local p = io.popen("ls '" .. dir .. "' 2>/dev/null")
+	for name in p:lines() do if name:match(pattern) then out[#out + 1] = name end end
+	p:close()
+	table.sort(out)
+	return out
+end
+
+local function readJson(dir, name)
+	local f = assert(loadfile(dir .. "/" .. name))
+	local env = {}
+	setfenv(f, env)
+	f()
+	return env.data().json
+end
+
+local function stampOf(dir)
+	local h = files(dir, "^remote_probe__hello_")
+	return h[#h]:match("^remote_probe__hello_(.*)%.lua$")
+end
+
+-- the same text tools/tf3ctl.py writes (command_text), so the two stay in step
+local function send(g, id, cmd, argsLua)
+	local f = assert(io.open(g.x .. "/remote_probe__cmd_" .. stampOf(g.x) .. ".lua", "w"))
+	f:write(string.format("function data()\nreturn { id = %d, cmd = %q, args = %s }\nend\n", id, cmd, argsLua or "{  }"))
+	f:close()
+end
+
+local function frames(g, n, dt) for _ = 1, n do g.step(dt) end end
+
+-- the first command after a boot is picked up by the idle poll (every 2 s), later ones within 0.25 s
+local FIRST = 80
+
+local function answerText(g, id, tag)
+	local name = "remote_probe__res_" .. id .. (tag and ("_" .. tag) or "") .. ".lua"
+	local f = io.open(g.x .. "/" .. name)
+	if not f then return nil end
+	f:close()
+	return readJson(g.x, name)
+end
+
+local SAVES = {
+	{ saveName = "probe", path = "/s/probe.sav", timestamp = 2, size = 1, mods = { "m1", "hummer_remote_probe" },
+		modParams = { m1 = { a = 1 }, [""] = { ["map.size"] = 4 } } },
+	{ saveName = "bare", path = "/s/bare.sav", timestamp = 1, size = 1, mods = { "m1" } },
+}
+
+test("boot: hello and an id-0 command file in the first folder that keeps files", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 1)
+	eq(#files(g.x, "^remote_probe__hello_"), 1)
+	eq(#files(g.x, "^remote_probe__cmd_"), 1)
+	local hello = readJson(g.x, files(g.x, "^remote_probe__hello_")[1])
+	truthy(hello:find('"version":6'), hello)
+	truthy(hello:find('"menu":false'), hello)
+	truthy(hello:find('"dir":"recordings"'), hello)
+	truthy(g.logs[1]:find("ready"), g.logs[1])
+end)
+
+test("status: answers with the game state; the same id is not answered twice", function()
+	local g = newGame({ saves = SAVES, maxSpeed = 7 })
+	frames(g, 2)
+	send(g, 11, "status")
+	frames(g, FIRST)
+	local a = answerText(g, 11)
+	truthy(a and a:find('"ok":true'), a)
+	truthy(a:find('"estimatedMaxSpeed":7'), a)
+	truthy(a:find('"date":{"day":'), a)
+	local n = #g.logs
+	frames(g, 200)
+	eq(#g.logs, n, "no second run of command 11")
+end)
+
+test("unknown command: an _error answer, nothing else happens", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 12, "rm")
+	frames(g, FIRST)
+	local a = answerText(g, 12, "error")
+	truthy(a and a:find("unknown command"), a)
+end)
+
+test("speed: capped at the game's estimate unless forced; bad values are refused", function()
+	local g = newGame({ saves = SAVES, maxSpeed = 4 })
+	frames(g, 2)
+	send(g, 13, "speed", "{ speed = 16 }")
+	frames(g, FIRST)
+	eq(g.speedup, 4, "the estimate")
+	truthy(answerText(g, 13):find('"capped":true'))
+	truthy(answerText(g, 13):find('"requested":16'))
+	send(g, 12, "speed", "{ speed = 16, force = true }")
+	frames(g, 20)
+	eq(g.speedup, 16, "forced past the estimate")
+	send(g, 14, "speed", "{ speed = -3 }")
+	frames(g, 20)
+	truthy(answerText(g, 14, "error"))
+	eq(g.speedup, 16)
+end)
+
+test("run: speeds up, stops on the target date with speed 0, reports measured speed", function()
+	local g = newGame({ saves = SAVES, maxSpeed = 10 })
+	frames(g, 2)
+	send(g, 20, "run", "{ months = 6, speed = 64 }")
+	local guard = 0
+	while not answerText(g, 20) and guard < 20000 do g.step(1 / 30); guard = guard + 1 end
+	local a = answerText(g, 20)
+	truthy(a, "no answer after " .. guard .. " frames")
+	eq(g.speedup, 0, "paused at the end")
+	eq(g.commands[1].speed, 10, "64 asked, the game's estimate of 10 sent")
+	truthy(a:find('"requested":64'), a)
+	-- the command is picked up within the 2 s idle poll, i.e. on 1900-01-01 or -02 at 1x in this fake
+	local from = a:match('"from":{"day":(%d+),"month":1,"year":1900}')
+	truthy(from, a)
+	local d = g.date()
+	eq(d.year, 1900); eq(d.month, 7)
+	truthy(d.day >= tonumber(from) and d.day <= tonumber(from) + 1, "stopped within a day of the target, on day " .. d.day)
+	truthy(a:find('"target":{"day":' .. from .. ',"month":7,"year":1900}'), a)
+	-- the fake caps at 10x, as the CPU would: the report must show the real rate, not the request
+	local overall = tonumber(a:match('"overall":([%d%.]+)'))
+	truthy(overall and overall > 9 and overall < 10.5, "measured x" .. tostring(overall))
+	truthy(#files(g.x, "^remote_probe__res_20_p") > 0, "progress answers were written")
+end)
+
+test("run: a speed command cancels it with an error answer", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 21, "run", "{ months = 6, speed = 2 }")
+	frames(g, FIRST)
+	send(g, 22, "speed", "{ speed = 0 }")
+	frames(g, 30)
+	truthy((answerText(g, 21, "error") or ""):find("cancelled"))
+	eq(g.speedup, 0)
+	frames(g, 300)
+	eq(answerText(g, 21), nil, "no late success answer")
+end)
+
+test("run: refuses a target in the past", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 23, "run", '{ untilDate = "1899-01-01" }')
+	frames(g, FIRST)
+	truthy((answerText(g, 23, "error") or ""):find("not after"))
+	eq(g.speedup, 1, "speed untouched")
+end)
+
+test("saves and info: list, then the save's mods and params after the async info arrives", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 30, "saves")
+	frames(g, FIRST)
+	truthy(answerText(g, 30):find('"saveName":"bare"'))
+	send(g, 31, "info", '{ save = "probe" }')
+	frames(g, 40)
+	local a = answerText(g, 31)
+	truthy(a and a:find('"mods":%["m1","hummer_remote_probe"%]'), a)
+	truthy(a:find('"m1":{"a":1}'), a)
+	send(g, 32, "info", '{ save = "nope" }')
+	frames(g, 30)
+	truthy((answerText(g, 32, "error") or ""):find("no save named"))
+end)
+
+test("load dryRun: shows the plan, loads nothing", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 40, "load", '{ save = "bare", mods = { add = { "m2" } }, params = { m1 = { a = 2 } }, dryRun = true }')
+	frames(g, FIRST)
+	local a = answerText(g, 40)
+	truthy(a and a:find('"mods":%["m1","m2","hummer_remote_probe"%]'), a)
+	truthy(a:find('"m1":{"a":2}'), a)
+	eq(#g.loads, 0)
+end)
+
+test("load: ack first, then loadGame with the new mods and params; the probe comes back with a new hello", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	local before = stampOf(g.x)
+	send(g, 41, "load", '{ save = "probe", mods = { remove = { "m1" } }, params = { [""] = { ["map.size"] = 2 } } }')
+	frames(g, FIRST)
+	truthy(answerText(g, 41, "ack"), "ack written")
+	eq(#g.loads, 1)
+	eq(g.waitedForStart, nil, "no setWaitForStartReadyGame: it would hold the loading screen until a click")
+	eq(g.loads[1].id.path, "/s/probe.sav")
+	eq(g.loads[1].id.saveGameNamespace, "save")
+	local names = {}
+	for _, m in ipairs(g.loads[1].info.mods) do names[#names + 1] = m.name end
+	eq(table.concat(names, ","), "hummer_remote_probe")
+	eq(g.loads[1].info.modParams[""]["map.size"], 2)
+	eq(g.loads[1].info.modParams.m1.a, 1, "other params kept")
+	frames(g, 3)
+	truthy(stampOf(g.x) ~= before, "new hello after the load")
+	-- the new game answers commands again, through its own new command file
+	send(g, 42, "status")
+	frames(g, 80)
+	truthy((answerText(g, 42) or ""):find('"map.size":2'), "params of the loaded game")
+end)
+
+test("load: bad params answer with an error and load nothing", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 43, "load", '{ save = "probe", params = { m1 = { a = 0 } } }')
+	frames(g, FIRST)
+	truthy((answerText(g, 43, "error") or ""):find("1%-based"))
+	eq(#g.loads, 0)
+end)
+
+test("save: saveGame with skipSetName, answered from its callback", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 50, "save", '{ name = "probe-after" }')
+	frames(g, FIRST)
+	eq(g.saved[1].name, "probe-after")
+	eq(g.saved[1].skipSetName, true)
+	truthy((answerText(g, 50) or ""):find('"name":"probe%-after"'))
+end)
+
+test("a half-written command file is skipped and retried, not fatal", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	local f = assert(io.open(g.x .. "/remote_probe__cmd_" .. stampOf(g.x) .. ".lua", "w"))
+	f:write("function data()\nreturn { id = 60, cmd = ")
+	f:close()
+	frames(g, FIRST) -- an idle poll reads the broken file
+	eq(g.script ~= nil, true, "still running")
+	send(g, 61, "status")
+	frames(g, 60) -- 2 s: would be enough without the back-off
+	eq(answerText(g, 61), nil, "backing off after the failed read")
+	frames(g, 300) -- the back-off is 10 s
+	truthy(answerText(g, 61), "answered after the back-off")
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- fixes after review
+
+test("parseDate: four-digit years, month 1-12, day 1-31", function()
+	local d = core.parseDate("19340901")
+	eq(d.year, 1934, "YYYYMMDD, not year 19340901"); eq(d.month, 9); eq(d.day, 1)
+	eq(core.parseDate("123456789"), nil)
+	eq(core.parseDate("1934-13-01"), nil)
+	eq(core.parseDate("1934-02-40"), nil)
+	eq(core.parseDate("1934-2-5").day, 5)
+end)
+
+test("mergeParams: an unreadable engine value is an error, not a silent empty table", function()
+	local r, err = core.mergeParams("userdata: 0x1", { m = { a = 1 } })
+	eq(r, nil); truthy(err:find("not readable"))
+end)
+
+test("boot: falls back to the next folder when recordings keeps nothing, never to the presets first", function()
+	local g = newGame({ saves = SAVES, droppingDirs = { "recordings" } }, "keyframes")
+	frames(g, 1)
+	eq(#files(g.x, "^remote_probe__hello_"), 1)
+	eq(#files(g.dir .. "/mod_presets", "^remote_probe__"), 0, "the player's mod preset list stays clean")
+	send(g, 70, "status")
+	frames(g, FIRST)
+	truthy((answerText(g, 70) or ""):find('"dir":"keyframes"'))
+end)
+
+test("every command gets a receipt before its answer", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 71, "run", "{ months = 6, speed = 2 }")
+	frames(g, FIRST)
+	truthy((answerText(g, 71, "got") or ""):find('"got":"run"'))
+	eq(answerText(g, 71), nil, "the run itself is still going")
+end)
+
+test("run: a second run cancels the first with an error answer", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 72, "run", "{ months = 6, speed = 2 }")
+	frames(g, FIRST)
+	send(g, 73, "run", "{ days = 3, speed = 2 }")
+	frames(g, 30)
+	truthy((answerText(g, 72, "error") or ""):find("cancelled: run command 73"))
+	frames(g, 200)
+	truthy(answerText(g, 73), "the second run finished")
+end)
+
+test("run: stops with 'stalled' when game time does not move for 20 s", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 74, "run", "{ months = 6, speed = 8 }")
+	frames(g, FIRST)
+	g.frozen = true -- paused by a dialog, the player or another mod
+	frames(g, 30 * 19)
+	eq(answerText(g, 74, "error"), nil, "not yet at 19 s")
+	frames(g, 30 * 3)
+	truthy((answerText(g, 74, "error") or ""):find("stalled"))
+end)
+
+test("run: a refused speed command fails the run at once", function()
+	local g = newGame({ saves = SAVES, speedFails = true })
+	frames(g, 2)
+	send(g, 75, "run", "{ months = 1, speed = 64 }")
+	frames(g, FIRST)
+	truthy((answerText(g, 75, "error") or ""):find("refused speed"))
+end)
+
+test("load: an engine modParams value goes back untouched without --param, and blocks --param", function()
+	local g = newGame({ saves = SAVES, opaqueParams = true })
+	frames(g, 2)
+	send(g, 76, "load", '{ save = "probe", params = { m1 = { a = 2 } } }')
+	frames(g, FIRST)
+	truthy((answerText(g, 76, "error") or ""):find("not readable"))
+	eq(#g.loads, 0)
+	send(g, 77, "load", '{ save = "probe" }')
+	frames(g, 30)
+	eq(#g.loads, 1)
+	eq(type(g.loads[1].info.modParams), "userdata", "the save's own object, not a copy")
+end)
+
+test("load: waitForStart keeps the base behaviour (Start Game button) on request", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 78, "load", '{ save = "probe", waitForStart = true }')
+	frames(g, FIRST)
+	eq(g.waitedForStart, true)
+end)
+
+test("load: cancels a running run, which answers with an error", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 79, "run", "{ months = 6, speed = 2 }")
+	frames(g, FIRST)
+	send(g, 80, "load", '{ save = "probe" }')
+	frames(g, 30)
+	truthy((answerText(g, 79, "error") or ""):find("cancelled: load command 80"))
+end)
+
+test("load: nameless mod entries are dropped", function()
+	local saves = { { saveName = "s", path = "/s/s.sav", timestamp = 1, size = 1, mods = { "m1", "" } } }
+	local g = newGame({ saves = saves })
+	frames(g, 2)
+	send(g, 81, "load", '{ save = "s", dryRun = true }')
+	frames(g, FIRST)
+	truthy((answerText(g, 81) or ""):find('"mods":%["m1","hummer_remote_probe"%]'))
+end)
+
+test("save: reports an overwrite, and an error when the save is not listed afterwards", function()
+	local g = newGame({ saves = { { saveName = "probe", path = "/s/probe.sav", timestamp = 1, size = 1 } } })
+	frames(g, 2)
+	send(g, 82, "save", '{ name = "probe" }')
+	frames(g, FIRST)
+	truthy((answerText(g, 82) or ""):find('"overwrote":true'))
+	local g2 = newGame({ saveFails = true })
+	frames(g2, 2)
+	send(g2, 83, "save", '{ name = "new" }')
+	frames(g2, FIRST)
+	truthy((answerText(g2, 83, "error") or ""):find("not listed"))
+end)
+
+test("a deleted command file is made again", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	os.remove(g.x .. "/remote_probe__cmd_" .. stampOf(g.x) .. ".lua")
+	frames(g, FIRST)
+	eq(#files(g.x, "^remote_probe__cmd_"), 1, "recreated on the next poll")
+end)
+
+test("parseDate: days beyond the month's length are refused", function()
+	eq(core.parseDate("1934-02-31"), nil)
+	eq(core.parseDate("1934-04-31"), nil)
+	eq(core.parseDate("1934-02-29").day, 29, "leap days unknown in the game: allowed")
+	eq(core.parseDate("1934-12-31").day, 31)
+end)
+
+test("run: a save holding game time for 30 s is not a stall", function()
+	local g = newGame({ saves = SAVES, saveSeconds = 30 })
+	frames(g, 2)
+	send(g, 90, "run", "{ months = 6, speed = 2 }")
+	frames(g, FIRST)
+	send(g, 91, "save", '{ name = "mid-run" }')
+	frames(g, 30 * 32)
+	truthy(answerText(g, 91), "the save finished")
+	eq(answerText(g, 90, "error"), nil, "no stall reported for the save")
+	truthy(g.speedup == 2, "the run goes on")
+end)
+
+local function runToEnd(g, id)
+	local guard = 0
+	while not answerText(g, id) and guard < 30000 do g.step(1 / 30); guard = guard + 1 end
+	return answerText(g, id), guard
+end
+
+test("run: the final answer shows the game paused, after the pause command's result", function()
+	local g = newGame({ saves = SAVES, callbackFrames = 5 })
+	frames(g, 2)
+	send(g, 100, "run", "{ days = 10, speed = 16 }")
+	local a = runToEnd(g, 100)
+	truthy(a, "answered")
+	truthy(a:find('"speedup":0'), "state taken after the pause: " .. a)
+	truthy(a:find('"stopConfirmed":true'), a)
+end)
+
+test("run: a lost pause callback still gets an answer, marked unconfirmed", function()
+	local g = newGame({ saves = SAVES, lostCallbacks = true })
+	frames(g, 2)
+	send(g, 101, "run", "{ days = 10, speed = 16 }")
+	local guard = 0
+	while not answerText(g, 101) and g.speedup ~= 0 and guard < 30000 do g.step(1 / 30); guard = guard + 1 end
+	eq(g.speedup, 0, "target reached, pause sent")
+	frames(g, 30) -- 1 s: still waiting for the callback
+	eq(answerText(g, 101), nil, "waits for the callback first")
+	frames(g, 45)
+	local a = answerText(g, 101)
+	truthy(a and a:find('"stopConfirmed":false'), a)
+end)
+
+test("run: a load while a finished run waits for the pause result answers the run first", function()
+	local g = newGame({ saves = SAVES, callbackFrames = 200 }) -- pause result 6.7 s late
+	frames(g, 2)
+	send(g, 102, "run", "{ days = 5, speed = 16 }")
+	local guard = 0
+	-- until the target is reached: the probe has sent the pause and waits for its result
+	while not (g.commands[#g.commands] and g.commands[#g.commands].speed == 0) do
+		g.step(1 / 30); guard = guard + 1
+		assert(guard < 30000, "never reached the target")
+	end
+	eq(answerText(g, 102), nil, "still waiting for the pause result")
+	send(g, 103, "status")
+	frames(g, 10)
+	truthy((answerText(g, 103) or ""):find('"finishing":true'), "status shows the finishing run")
+	send(g, 104, "load", '{ save = "probe" }')
+	frames(g, 10)
+	local a = answerText(g, 102)
+	truthy(a and a:find('"stopConfirmed":false'), "the run answered before the load: " .. tostring(a))
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- settings, poll command, log level, owners
+
+test("options: mod.json indices (1-based from the engine) map to values, defaults otherwise", function()
+	local o = core.options(nil)
+	eq(o.pollIdle, 2); eq(o.pollActive, 0.25); eq(o.logLevel, 2)
+	o = core.options({ pollIdle = 4, pollActive = "1", logLevel = 3 })
+	eq(o.pollIdle, 10); eq(o.pollActive, 0.1); eq(o.logLevel, 3)
+	eq(core.options({ pollIdle = 9 }).pollIdle, 2, "out of range falls back")
+end)
+
+test("pollArgs: ranges, at least one value", function()
+	local p = core.pollArgs({ idle = 5 })
+	eq(p.idle, 5); eq(p.active, nil)
+	eq(core.pollArgs({ active = "0.5" }).active, 0.5)
+	truthy(select(2, core.pollArgs({ idle = 30 })):find("between"), "idle capped below the tool's 30 s pickup wait")
+	truthy(select(2, core.pollArgs({ active = 0 })))
+	truthy(select(2, core.pollArgs({})))
+end)
+
+test("owner: a short string or nothing", function()
+	eq(core.owner({ _owner = "alice" }), "alice")
+	eq(core.owner({}), nil)
+	eq(core.owner({ _owner = 5 }), nil)
+	eq(#core.owner({ _owner = string.rep("x", 200) }), 64)
+end)
+
+local function withProbeParams(p) return { saves = SAVES, modParams = { hummer_remote_probe = p } } end
+
+test("setting: idle poll 1 s answers the first command within 1 s, 10 s does not within 2.7 s", function()
+	local g = newGame(withProbeParams({ pollIdle = 1 }))
+	frames(g, 2)
+	send(g, 110, "status")
+	frames(g, 35)
+	truthy(answerText(g, 110), "1 s idle poll")
+	g = newGame(withProbeParams({ pollIdle = 4 }))
+	frames(g, 2)
+	send(g, 111, "status")
+	frames(g, FIRST)
+	eq(answerText(g, 111), nil, "10 s idle poll")
+	frames(g, 30 * 9)
+	truthy(answerText(g, 111), "answered within 10 s")
+end)
+
+test("poll command: changes the intervals until the next load, status shows them, bad values refused", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 112, "poll", "{ idle = 0.5, active = 0.1 }")
+	frames(g, FIRST)
+	truthy((answerText(g, 112) or ""):find('"poll":{"active":0.1,"idle":0.5}'), answerText(g, 112))
+	send(g, 113, "poll", "{ idle = 60 }")
+	frames(g, 10)
+	truthy((answerText(g, 113, "error") or ""):find("between"))
+	frames(g, 30 * 130) -- past the 2 minutes of active polling: the 0.5 s idle interval applies
+	send(g, 114, "status")
+	frames(g, 20)
+	local a = answerText(g, 114)
+	truthy(a and a:find('"poll":{"active":0.1,"idle":0.5}'), a)
+	send(g, 115, "load", '{ save = "probe" }')
+	frames(g, 20)
+	send(g, 116, "status")
+	frames(g, FIRST)
+	truthy((answerText(g, 116) or ""):find('"poll":{"active":0.25,"idle":2}'), "settings again after the load")
+end)
+
+test("log level: 1 logs no commands, 3 also logs run progress", function()
+	local g = newGame(withProbeParams({ logLevel = 1 }))
+	frames(g, 2)
+	send(g, 117, "status")
+	frames(g, FIRST)
+	truthy(answerText(g, 117))
+	for _, l in ipairs(g.logs) do truthy(not l:find("command 117"), "logged at level 1: " .. l) end
+	truthy(g.logs[1]:find("ready"), "ready is always logged")
+	g = newGame(withProbeParams({ logLevel = 3 }))
+	frames(g, 2)
+	send(g, 118, "run", "{ months = 6, speed = 1 }")
+	frames(g, 30 * 20)
+	local progress = false
+	for _, l in ipairs(g.logs) do progress = progress or l:find("run 118 at ") ~= nil end
+	truthy(progress, "progress logged at level 3")
+end)
+
+test("owner: a refused or non-game command does not become the last action", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 121, "speed", '{ speed = 2, _owner = "a" }')
+	frames(g, FIRST)
+	send(g, 122, "speed", '{ speed = -1, _owner = "b" }')
+	frames(g, 20)
+	send(g, 123, "poll", '{ idle = 1, _owner = "c" }')
+	frames(g, 20)
+	send(g, 124, "status")
+	frames(g, 20)
+	truthy((answerText(g, 124) or ""):find('"lastAction":{"cmd":"speed","id":121,"owner":"a"'), answerText(g, 124))
+end)
+
+test("log level 3 logs receipts", function()
+	local g = newGame(withProbeParams({ logLevel = 3 }))
+	frames(g, 2)
+	send(g, 125, "status")
+	frames(g, FIRST)
+	local seen = false
+	for _, l in ipairs(g.logs) do seen = seen or l:find("receipt for command 125") ~= nil end
+	truthy(seen)
+end)
+
+test("owner: run and last game-changing command carry the sender; status does not replace it", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 119, "run", '{ months = 6, speed = 2, _owner = "alice" }')
+	frames(g, FIRST)
+	send(g, 120, "status", '{ _owner = "bob" }')
+	frames(g, 20)
+	local a = answerText(g, 120) or ""
+	truthy(a:find('"run":{[^}]*"owner":"alice"'), a)
+	truthy(a:find('"lastAction":{"cmd":"run","id":119,"owner":"alice"'), a)
+	local logged = false
+	for _, l in ipairs(g.logs) do logged = logged or l:find("command 119: run from alice") ~= nil end
+	truthy(logged, "the sender is in the log")
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- the label beside the speed buttons
+
+-- the game's _ with this mod's Japanese strings.json (a key it does not know comes back unchanged)
+local function jaTranslate(key)
+	local f = assert(io.open(root .. "/strings.json"))
+	local text = f:read("*a"); f:close()
+	local v = text:match('"ja"%s*:%s*{.-"' .. key:gsub("%p", "%%%0") .. '"%s*:%s*"(.-)"')
+	return v or key
+end
+
+test("speedLabel: nothing at the buttons' own speeds, the number and measured rate otherwise", function()
+	eq(core.speedLabel(4, 3.1, nil, 6), "")
+	eq(core.speedLabel(0, nil, nil, 6), "")
+	local l, tip = core.speedLabel(16, 3.24, nil, 6)
+	eq(l, "×16 real ×3.2")
+	truthy(tip:find("estimated maximum ×6"), tip)
+	eq(core.speedLabel(64, 12.7, nil, 0), "×64 real ×13")
+	eq(core.speedLabel(8, nil, nil, 0), "×8", "no rate yet")
+	eq(core.speedLabel(nil), "")
+end)
+
+test("speedLabel: in the player's language through the game's _, English when a translation is missing or broken", function()
+	local l, tip = core.speedLabel(16, 3.24, nil, 6, jaTranslate)
+	eq(l, "×16 実測×3.2")
+	truthy(tip:find("見積もり上限 ×6"), tip)
+	truthy(tip:find("指定 ×16", 1, true), tip)
+	local function unknown(key) return key end
+	eq((core.speedLabel(16, 3.24, nil, 6, unknown)), "×16 real ×3.2")
+	local function broken(key) return "no placeholder" end
+	eq((core.speedLabel(16, 3.24, nil, 6, broken)), "×16 real ×3.2")
+	local function raises() error("no translation here") end
+	eq((core.speedLabel(16, 3.24, nil, 6, raises)), "×16 real ×3.2")
+	eq(core.label(nil, "k", "fb"), "fb")
+end)
+
+test("speedLabel: a remote run shows its target even at 4x, and its owner in the tooltip", function()
+	local run = { target = { year = 2045, month = 7, day = 3 }, owner = "alice" }
+	local l, tip = core.speedLabel(4, 3.0, run, 6)
+	eq(l, "×4 real ×3.0 →2045-07-03")
+	truthy(tip:find("alice"), tip)
+	truthy(tip:find("run in progress"), tip)
+	eq(core.speedLabel(0, nil, run, 6), "→2045-07-03", "paused mid-run: only the target")
+end)
+
+test("rateStep: about once a second, smoothed, reset by a load", function()
+	local r = core.newRate()
+	eq(core.rateStep(r, 0, 10), nil)
+	eq(core.rateStep(r, 1000, 10.5), nil, "under a second")
+	eq(core.rateStep(r, 4000, 11), 4)
+	eq(core.rateStep(r, 6000, 12), 3, "half old, half new")
+	eq(core.rateStep(r, 100, 13), 3, "game time went back (a load): start over, keep the shown value")
+end)
+
+test("options: speedLabel off is a real choice, not the default", function()
+	eq(core.options({ speedLabel = 2 }).speedLabel, false)
+	eq(core.options({}).speedLabel, true)
+end)
+
+test("run publishes its target for the label and clears it when done", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 130, "run", '{ days = 30, speed = 1, _owner = "me" }')
+	frames(g, FIRST)
+	local sh = core.shared.run
+	truthy(sh and sh.target and sh.owner == "me", "shared while running")
+	local guard = 0
+	while not answerText(g, 130) and guard < 30000 do g.step(1 / 30); guard = guard + 1 end
+	eq(core.shared.run, nil, "cleared at the end")
+end)
+
+-- runs fn with api.* and app.* turned into errors, as off the main thread where they may crash the game
+function withoutGameApi(fn)
+	local realApi, realApp = _G.api, _G.app
+	local trap = function(name) return setmetatable({}, { __index = function(_, k)
+		error("game API touched off the main thread: " .. name .. "." .. tostring(k), 2) end }) end
+	_G.api, _G.app = trap("api"), trap("app")
+	local res = { pcall(fn) }
+	_G.api, _G.app = realApi, realApp
+	if not res[1] then error(res[2], 2) end
+	return unpack(res, 2)
+end
+
+-- a stand-in for the base GUI modules the speed control script requires. React runs recipes and step functions
+-- possibly off the main thread (game API forbidden: withoutGameApi) and joins on the main thread.
+local R -- the fake react's bookkeeping: timers, joins, fired events, hook state
+local function loadSpeedScript(_, _, previous)
+	local replaced = {}
+	local base = { "BASE" }
+	R = { timers = {}, joins = {}, events = {}, hooks = {}, i = 0 }
+	_G._react = { recipeReplace = { BASE_ID = previous } }
+	package.preload["::/gui/main/react.lua"] = function() return {
+		RegisterRecipe = function(name, fn) return fn end,
+		CallOriginalRecipe = function(recipe, p) return { original = recipe, params = p } end,
+		GetRecipeId = function(r) return r == base and "BASE_ID" or nil end,
+		useState = function(init)
+			R.i = R.i + 1
+			local k = R.i
+			if R.hooks[k] == nil then R.hooks[k] = { v = init } end
+			return { old = function() return R.hooks[k].v end, set = function(_, v) R.hooks[k].v = v end }
+		end,
+		useRef = function()
+			R.i = R.i + 1
+			local k = R.i
+			if R.hooks[k] == nil then R.hooks[k] = {} end
+			return { get = function() return R.hooks[k].v end, set = function(_, v) R.hooks[k].v = v end }
+		end,
+		onStepTimer = function(fn) R.timers[1] = fn end,
+		enqueueJoin = function(fn) R.joins[#R.joins + 1] = fn end,
+		fireEvent = function(target, name, param) R.events[#R.events + 1] = { name = name, param = param } end,
+	} end
+	package.preload["::/gui/main/builtin.lua"] = function() return {
+		TextView = function(t) return { kind = "text", t = t } end,
+		BoxLayout = function(t) return { kind = "box", t = t } end,
+		type = { Orientation = { Horizontal = "h" } },
+	} end
+	package.preload["::/gui/game_bar/game_bar_widgets.tl"] = function() return { GameSpeedControl = base } end
+	for _, k in ipairs({ "::/gui/main/react.lua", "::/gui/main/builtin.lua", "::/gui/game_bar/game_bar_widgets.tl" }) do
+		package.loaded[k] = nil
+	end
+	_G.data = nil
+	-- a fresh remote_core, as in game where the recipe lives in another Lua state: nothing may come through
+	-- a shared Lua table
+	package.loaded["hummer_remote_probe::/remote_core.lua"] = nil
+	return withoutGameApi(function()
+		dofile(root .. "/content/gui/remote_speed.script.lua")
+		local exports = _G.data()
+		exports.install({ ReplaceRecipe = function(a, b) replaced[#replaced + 1] = { a, b } end })
+		return exports, replaced, base
+	end)
+end
+
+-- one frame: render and step without game API (worker thread), then the joins with it (main thread)
+local function frame(control, params)
+	R.i = 0
+	local node = withoutGameApi(function() return control(params or {}) end)
+	withoutGameApi(function() if R.timers[1] then R.timers[1]() end end)
+	local joins = R.joins
+	R.joins = {}
+	-- the join runs in the recipe's react state: what loads only there (vehicle_react_util.tl) loads now
+	fake.inReact = true
+	local ok, err = pcall(function() for _, j in ipairs(joins) do j() end end)
+	fake.inReact = false
+	if not ok then error(err, 2) end
+	return node
+end
+
+local function publish(t) fake.guiSave.hummer_remote_probe = t end
+
+test("speed control: replaces the base recipe, draws the base buttons, the label from the GUI save data", function()
+	local exports, replaced, base = loadSpeedScript()
+	eq(#replaced, 1)
+	eq(replaced[1][1], base); eq(replaced[1][2], exports.SpeedControl)
+	publish({ label = "×16 実測×3.2", tip = "tip" })
+	frame(exports.SpeedControl, { gameSpeedHelper = "h" }) -- the join reads it
+	local kids = frame(exports.SpeedControl, { gameSpeedHelper = "h" }).t.children
+	eq(kids[1].original, base, "the base buttons first")
+	eq(kids[1].params.gameSpeedHelper, "h", "with the same params")
+	eq(kids[2].kind, "text")
+	eq(kids[2].t.text, "×16 実測×3.2")
+	eq(kids[2].t.meta.tooltip, "tip")
+	eq(kids[2].t.meta.mouseTransparent, false, "the label takes the mouse for its tooltip")
+	publish(nil)
+end)
+
+test("speed control: opens a requested window once, never one left in the save from the last game", function()
+	local exports = loadSpeedScript()
+	publish({ label = "", open = { seq = 5, entity = 1234 } }) -- what the loaded save still holds
+	frame(exports.SpeedControl)
+	frame(exports.SpeedControl)
+	eq(#R.events, 0, "the old request is not opened")
+	publish({ label = "", open = { seq = 6, entity = 777 } })
+	frame(exports.SpeedControl)
+	eq(#R.events, 1)
+	eq(R.events[1].name, "selectEntity"); eq(R.events[1].param.entity, 777); eq(R.events[1].param.stack, false)
+	frame(exports.SpeedControl)
+	eq(#R.events, 1, "opened once")
+	publish(nil)
+end)
+
+test("speed control: another mod's replacement (Time Warp) is drawn instead of the base buttons", function()
+	local timeWarp = function(p) return { timeWarp = true, params = p } end
+	local exports = loadSpeedScript(nil, false, timeWarp)
+	publish({ label = "×4 →2045-07-03" })
+	frame(exports.SpeedControl, { gameSpeedHelper = "h" })
+	local kids = frame(exports.SpeedControl, { gameSpeedHelper = "h" }).t.children
+	eq(kids[1].timeWarp, true, "Time Warp's buttons kept")
+	eq(kids[1].params.gameSpeedHelper, "h")
+	eq(kids[2].kind, "text", "with the label beside them")
+	publish(nil)
+	_G._react = nil
+	exports = loadSpeedScript()
+	_G._react = nil -- no _react at all: the base buttons, no error
+	eq(frame(exports.SpeedControl).t.children[1].original ~= nil, true)
+end)
+
+test("speed control: a second install, or a second copy, never draws itself as the previous buttons", function()
+	local exports = loadSpeedScript()
+	_G._react.recipeReplace.BASE_ID = exports.SpeedControl -- what the first install left there
+	exports.install({ ReplaceRecipe = function() end })
+	eq(frame(exports.SpeedControl).t.children[1].original ~= nil, true, "the base buttons, not itself")
+	local old = exports.SpeedControl
+	local again = loadSpeedScript(nil, false, old)
+	eq(frame(again.SpeedControl).t.children[1].original ~= nil, true, "not the old copy either")
+end)
+
+test("speed control: nothing published, junk published, or the GUI API failing: the buttons alone", function()
+	local exports = loadSpeedScript()
+	publish(nil)
+	frame(exports.SpeedControl)
+	eq(#frame(exports.SpeedControl).t.children, 1)
+	publish("not a table")
+	frame(exports.SpeedControl)
+	eq(#frame(exports.SpeedControl).t.children, 1)
+	local real = api.gui.game.getGuiSaveData
+	api.gui.game.getGuiSaveData = function() error("restricted") end
+	frame(exports.SpeedControl)
+	api.gui.game.getGuiSaveData = real
+	eq(#frame(exports.SpeedControl).t.children, 1)
+	publish(nil)
+end)
+
+test("label text and window requests are written by the guiUpdate script into the GUI save data", function()
+	local g = newGame({ saves = SAVES, maxSpeed = 40 })
+	frames(g, 2)
+	g.speedup = 16
+	frames(g, 30 * 3)
+	local d = fake.guiSave.hummer_remote_probe
+	truthy(d and d.label:find("^×16"), d and d.label)
+	g.speedup = 4
+	frames(g, 30)
+	eq(fake.guiSave.hummer_remote_probe.label, "", "at a button's own speed: nothing to add")
+	local g2 = newGame({ saves = SAVES, modParams = { hummer_remote_probe = { speedLabel = 2 } } })
+	frames(g2, 2)
+	g2.speedup = 16
+	frames(g2, 30 * 2)
+	eq(fake.guiSave.hummer_remote_probe.label, "", "setting off: no label")
+end)
+
+test("the guiUpdate script passes the game's _ to the label: Japanese in a Japanese game", function()
+	local saved = rawget(_G, "_")
+	_G._ = jaTranslate
+	local ok, err = pcall(function()
+		local g = newGame({ saves = SAVES, maxSpeed = 40 })
+		frames(g, 2)
+		g.speedup = 16
+		frames(g, 30 * 3)
+		local d = fake.guiSave.hummer_remote_probe
+		truthy(d and d.label:find("実測×", 1, true), d and d.label)
+		truthy(d.tip:find("指定 ×16", 1, true), d.tip)
+	end)
+	_G._ = saved
+	assert(ok, err)
+end)
+
+test("status shows the GUI save data read back; a failing setGuiSaveData is logged once", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 196, "status")
+	frames(g, FIRST)
+	truthy((answerText(g, 196) or ""):find('"ui":{"label":""'), answerText(g, 196))
+	local real = api.gui.game.setGuiSaveData
+	api.gui.game.setGuiSaveData = function() error("unknown key") end
+	g.speedup = 16
+	frames(g, 30 * 3)
+	api.gui.game.setGuiSaveData = real
+	local n = 0
+	for _, l in ipairs(g.logs) do if l:find("setGuiSaveData failed") then n = n + 1 end end
+	eq(n, 1, "logged once")
+end)
+
+test("load clears a label and a request the save carried over", function()
+	fake.guiSave.hummer_remote_probe = { label = "×16 old", open = { seq = 3, entity = 9 } }
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	eq(fake.guiSave.hummer_remote_probe.label, "")
+	eq(fake.guiSave.hummer_remote_probe.open, false)
+end)
+
+local ENT = { TOWN = { 11, 12 }, LINE = { 21 }, TRANSPORT_VEHICLE = { 31 }, STATION_GROUP = { 41 }, INDUSTRY = { 51 } }
+local NAMES = { [11] = "Emsworth", [12] = "Emsworth Bay", [21] = "Bus 1", [31] = "Bus 1 #1", [41] = "Central", [51] = "Coal mine" }
+
+test("entities: lists a kind with names, filtered and sorted", function()
+	local g = newGame({ saves = SAVES, entities = ENT, names = NAMES })
+	frames(g, 2)
+	send(g, 190, "entities", '{ kind = "town", grep = "bay" }')
+	frames(g, FIRST)
+	local a = answerText(g, 190) or ""
+	truthy(a:find('"entities":%[{"id":12,"name":"Emsworth Bay"}%]') and a:find('"total":2'), a)
+	send(g, 191, "entities", '{ kind = "planet" }')
+	frames(g, 20)
+	truthy(answerText(g, 191, "error"))
+end)
+
+test("window: by name or id, publishes the request, focuses the camera on demand, closes all", function()
+	local g = newGame({ saves = SAVES, entities = ENT, names = NAMES })
+	frames(g, 2)
+	send(g, 192, "window", '{ kind = "town", name = "emsworth", focus = true }')
+	frames(g, FIRST)
+	local a = answerText(g, 192) or ""
+	truthy(a:find('"entity":11') and a:find('"name":"Emsworth"'), "exact name wins over the longer one: " .. a)
+	eq(fake.guiSave.hummer_remote_probe.open.entity, 11)
+	eq(g.focused, 11)
+	local seq = fake.guiSave.hummer_remote_probe.open.seq
+	send(g, 193, "window", '{ entity = 31 }')
+	frames(g, 20)
+	eq(fake.guiSave.hummer_remote_probe.open.entity, 31)
+	truthy(fake.guiSave.hummer_remote_probe.open.seq > seq, "a new request number")
+	send(g, 194, "window", '{ kind = "town", name = "worth" }')
+	frames(g, 20)
+	truthy((answerText(g, 194, "error") or ""):find("2 matches"), answerText(g, 194, "error"))
+	send(g, 195, "window", "{ closeAll = true }")
+	frames(g, 20)
+	eq(g.closedAll, 1)
+end)
+
+test("core loads where _G is not a plain table (TF3 GUI Lua) and still shares a table", function()
+	for _, weird in ipairs({ "nil", "userdata", "locked" }) do
+		local chunk = assert(loadfile(root .. "/content/remote_core.lua"))
+		local env = setmetatable({}, { __index = _G })
+		if weird == "nil" then
+			env._G = false
+		elseif weird == "userdata" then
+			env._G = newproxy(true)
+		else
+			env._G = setmetatable({}, { __newindex = function() error("globals are locked") end })
+		end
+		setfenv(chunk, env)
+		local ok, m = pcall(chunk)
+		truthy(ok, weird .. ": " .. tostring(m))
+		eq(type(m.shared), "table", weird)
+	end
+end)
+
+test("speed css: widens every right-hand layer by the same amount and styles the label", function()
+	package.preload["::/gui/main/stylesheetutil.lua"] = function() return {
+		makeAdder = function(result) return function(sel, rule) result[#result + 1] = { sel, rule } end end,
+	} end
+	package.loaded["::/gui/main/stylesheetutil.lua"] = nil
+	_G.data = nil
+	local rules = withoutGameApi(function()
+		dofile(root .. "/content/gui/remote_speed.css.lua")
+		return _G.data()
+	end)
+	local widths = {}
+	for _, r in ipairs(rules) do widths[r[1]] = r[2].size and r[2].size[1] end
+	eq(widths["R::GameBarMenuRight !game-speed"], 330 + 226)
+	eq(widths["R::GameBarMenuRight !music-player"], 380 + 226)
+	eq(widths["R::GameBarMenuRight !cameras"], 508 + 226)
+	eq(widths["R::GameBarMenuRight !statistics"], 508 + 226)
+	truthy(rules[#rules][1]:find("hummer%-remote%-speed"))
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- new game
+
+local CAT = {
+	["temperate.clima"] = { economy = "temperate.eco", generators = { "temperate.gen", "temperate_hills.gen" } },
+	["dry.clima"] = { economy = "dry.eco", generators = { "dry.gen" } },
+}
+
+test("parseSize and matchName", function()
+	eq(select(1, core.parseSize("tiny")), 16)
+	local x, y = core.parseSize("40x24")
+	eq(x, 40); eq(y, 24)
+	eq(select(1, core.parseSize(nil)), 32, "small by default")
+	truthy(select(2, core.parseSize("huge")))
+	truthy(select(2, core.parseSize("2x2")))
+	eq(core.matchName({ "temperate.clima", "dry.clima" }, "temperate"), "temperate.clima")
+	eq(core.matchName({ "a/temperate.clima" }, "temperate.clima"), "a/temperate.clima")
+	eq(core.matchName({ "x.gen", "x.clima" }, "x"), nil, "ambiguous")
+end)
+
+test("newGamePlan: defaults, the running game's mods and numeric params, the probe always in", function()
+	local p = core.newGamePlan({}, { climates = CAT, mods = { "m1" }, selfId = "hummer_remote_probe", time = 7,
+		modParams = { [""] = { ["map.size"] = 4, isMapEditor = false }, m1 = { a = 2 } } })
+	eq(p.climate, "temperate.clima"); eq(p.generator, "temperate.gen", "the first by order")
+	eq(p.economy, "temperate.eco"); eq(p.numTiles[1], 32); eq(p.year, 1900)
+	eq(p.towns, true); eq(p.industries, true); eq(p.seed, "remote_probe_7")
+	eq(table.concat(p.mods, ","), "m1,hummer_remote_probe")
+	eq(p.modParams[""]["map.size"], 4); eq(p.modParams[""].isMapEditor, nil, "only integers")
+	eq(p.modParams.m1.a, 2)
+end)
+
+test("newGamePlan: choices and refusals", function()
+	local ctx = { climates = CAT, mods = {}, modParams = {}, selfId = "p" }
+	local p = core.newGamePlan({ climate = "dry", size = "tiny", year = 1950, seed = "s", towns = false,
+		mods = { add = { "x" } }, params = { x = { k = 3 } } }, ctx)
+	eq(p.climate, "dry.clima"); eq(p.generator, "dry.gen"); eq(p.numTiles[2], 16); eq(p.year, 1950)
+	eq(p.towns, false); eq(p.industries, true); eq(p.seed, "s"); eq(p.modParams.x.k, 3)
+	eq(core.newGamePlan({ generator = "temperate_hills" }, ctx).generator, "temperate_hills.gen")
+	truthy(select(2, core.newGamePlan({ climate = "arctic" }, ctx)):find("known: dry.clima, temperate.clima"))
+	truthy(select(2, core.newGamePlan({ generator = "nope" }, ctx)):find("known: temperate.gen"))
+	truthy(select(2, core.newGamePlan({ year = 1750 }, ctx)))
+	truthy(select(2, core.newGamePlan({ params = { x = { k = 0 } } }, ctx)))
+	truthy(select(2, core.newGamePlan({}, { climates = {} })))
+end)
+
+test("newgame list: climates with generators in the base page's order, import generators left out", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 140, "newgame", "{ list = true }")
+	frames(g, FIRST)
+	local a = answerText(g, 140) or ""
+	truthy(a:find('"generators":%["temperate.gen","temperate_hills.gen"%]'), a)
+	truthy(not a:find("temperate_import"), "import generator excluded")
+end)
+
+test("newgame dryRun: the plan only", function()
+	local g = newGame({ saves = SAVES, modParams = { example_mod = { extraDemand = 2 } } })
+	frames(g, 2)
+	send(g, 141, "newgame", '{ size = "tiny", dryRun = true, params = { example_mod = { treePollution = 3 } } }')
+	frames(g, FIRST)
+	local a = answerText(g, 141) or ""
+	truthy(a:find('"dryRun":true') and a:find('"treePollution":3') and a:find('"extraDemand":2'), a)
+	eq(#g.started, 0)
+end)
+
+test("newgame: ack, then startGame with the plan; the probe answers again in the new game", function()
+	local g = newGame({ saves = SAVES, modParams = { m1 = { a = 1 } } })
+	frames(g, 2)
+	local before = stampOf(g.x)
+	send(g, 142, "newgame", '{ size = "tiny", year = 1920, seed = "abc", industries = false, unsafe = true }')
+	frames(g, FIRST)
+	truthy(answerText(g, 142, "ack"), "ack")
+	eq(#g.started, 1)
+	local p = g.started[1]
+	eq(p.numTiles.x, 16); eq(p.climateGenerator, "temperate.clima"); eq(p.terrainGenerator, "temperate.gen")
+	eq(p.economy, "temperate.eco"); eq(p.startDate.year, 1920); eq(p.seed, "abc")
+	eq(p.generateTowns, true); eq(p.generateIndustries, false); eq(p.isMapEditor, false)
+	eq(table.concat(p.mods, ","), "m1,hummer_remote_probe")
+	eq(g.waitedForStart, nil, "no Start Game button wait")
+	frames(g, 3)
+	truthy(stampOf(g.x) ~= before, "new hello")
+	send(g, 143, "status")
+	frames(g, FIRST)
+	truthy((answerText(g, 143) or ""):find('"year":1920'), "the new game answers")
+end)
+
+test("newgame: a refused startGame is an error answer; a running run is cancelled first", function()
+	local g = newGame({ saves = SAVES, startFails = true })
+	frames(g, 2)
+	send(g, 144, "run", "{ months = 6, speed = 2 }")
+	frames(g, FIRST)
+	send(g, 145, "newgame", "{ unsafe = true }")
+	frames(g, 30)
+	truthy((answerText(g, 144, "error") or ""):find("cancelled: newgame command 145"))
+	truthy((answerText(g, 145, "error") or ""):find("startGame refused"))
+end)
+
+test("newgame: placement for towns and industries as the base page builds it", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 146, "newgame", '{ size = "tiny", unsafe = true }')
+	frames(g, FIRST)
+	local L = g.started[1].locationsConfig
+	truthy(L, "locationsConfig set")
+	eq(L.town.maxNumberPerArea, 0.2); eq(L.industry.absoluteMinimum, 24); eq(L.makeInitialStreets, true)
+end)
+
+test("newgame / load: an answer when the call returns but the game does not change", function()
+	local g = newGame({ saves = SAVES, startNoop = true })
+	frames(g, 2)
+	send(g, 147, "newgame", "{ unsafe = true }")
+	frames(g, FIRST)
+	truthy(answerText(g, 147, "ack"))
+	eq(answerText(g, 147, "error"), nil, "not before 30 s")
+	frames(g, 30 * 31)
+	truthy((answerText(g, 147, "error") or ""):find("kept running for 30 s"), answerText(g, 147, "error"))
+end)
+
+test("capSpeed: the estimate, the buttons' 4x without one, force and slow speeds untouched", function()
+	eq(core.capSpeed(8, 5), 5); eq(core.capSpeed(8, 0), 4); eq(core.capSpeed(8, nil), 4)
+	eq(core.capSpeed(8, 5, true), 8); eq(core.capSpeed(3, 5), 3); eq(core.capSpeed(1, 0), 1); eq(core.capSpeed(0, 0), 0)
+end)
+
+test("run: follows the game's estimate down and back up, with a hold between changes", function()
+	local opts = { saves = SAVES, maxSpeed = 10 }
+	local g = newGame(opts)
+	frames(g, 2)
+	send(g, 150, "run", "{ months = 12, speed = 16 }")
+	frames(g, FIRST)
+	eq(g.speedup, 10)
+	opts.maxSpeed = 3 -- the map got busy
+	frames(g, 30 * 3)
+	eq(g.speedup, 3, "lowered at the next check")
+	opts.maxSpeed = 20
+	frames(g, 30 * 3)
+	eq(g.speedup, 3, "not raised before the estimate has allowed it for 4 s")
+	frames(g, 30 * 4)
+	eq(g.speedup, 16, "back up, but not past the 16 asked for")
+	opts.maxSpeed = 5
+	frames(g, 30 * 3)
+	eq(g.speedup, 5, "lowered at once, even right after a raise")
+	send(g, 151, "status")
+	frames(g, 10)
+	truthy((answerText(g, 151) or ""):find('"run":{[^}]*"speed":5'), answerText(g, 151))
+end)
+
+test("run: force keeps the asked speed whatever the estimate", function()
+	local opts = { saves = SAVES, maxSpeed = 10 }
+	local g = newGame(opts)
+	frames(g, 2)
+	send(g, 152, "run", "{ months = 12, speed = 16, force = true }")
+	frames(g, FIRST)
+	eq(g.speedup, 16)
+	opts.maxSpeed = 2
+	frames(g, 30 * 6)
+	eq(g.speedup, 16)
+end)
+
+test("run: a pause from outside stays a pause, and the run ends as stalled", function()
+	local opts = { saves = SAVES, maxSpeed = 10 }
+	local g = newGame(opts)
+	frames(g, 2)
+	send(g, 153, "run", "{ months = 12, speed = 16 }")
+	frames(g, FIRST)
+	g.speedup = 0 -- the player pressed pause
+	opts.maxSpeed = 3
+	frames(g, 30 * 10)
+	eq(g.speedup, 0, "not restarted by the estimate following")
+	frames(g, 30 * 12)
+	truthy((answerText(g, 153, "error") or ""):find("stalled"))
+end)
+
+test("run: a speed changed from outside (the base UI's own clamp) is brought back to the estimate", function()
+	local opts = { saves = SAVES, maxSpeed = 3 }
+	local g = newGame(opts)
+	frames(g, 2)
+	send(g, 154, "run", "{ months = 12, speed = 3 }")
+	frames(g, FIRST)
+	eq(g.speedup, 3)
+	g.speedup = 2 -- the base UI lowered it while the estimate dipped; the estimate is back at 3
+	frames(g, 30 * 7)
+	eq(g.speedup, 3, "raised again once the estimate allowed it for 4 s")
+end)
+
+test("newgame: refused from inside a save (the base's StartGame asserts no game is running)", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 160, "newgame", '{ size = "tiny" }')
+	frames(g, FIRST)
+	truthy((answerText(g, 160, "error") or ""):find("cannot start from inside a save"))
+	eq(#g.started, 0)
+end)
+
+test("screenshot: the game's own takeScreenshot with the scale asked; bad scales refused", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 170, "screenshot", "{ scale = 1 }")
+	frames(g, FIRST)
+	truthy((answerText(g, 170) or ""):find('"scale":1'))
+	eq(g.shots, 1)
+	send(g, 171, "screenshot", "{ scale = 9 }")
+	frames(g, 20)
+	truthy((answerText(g, 171, "error") or ""):find("0%-4"))
+	send(g, 172, "screenshot", "{ scale = 1.5 }")
+	frames(g, 20)
+	truthy((answerText(g, 172, "error") or ""):find("0%-4"), "not rounded down")
+	eq(g.shots, 1)
+end)
+
+test("load / newgame: params for a mod that will not be active are refused, with --add suggested", function()
+	eq(table.concat(core.paramsWithoutMods({ x = {}, [""] = {}, m1 = {} }, { "m1" }), ","), "x")
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 180, "load", '{ save = "bare", params = { example_mod = { extraDemand = 2 } } }')
+	frames(g, FIRST)
+	truthy((answerText(g, 180, "error") or ""):find("not in the mod list: example_mod %(add them with %-%-add"),
+		answerText(g, 180, "error"))
+	eq(#g.loads, 0)
+	send(g, 181, "load", '{ save = "bare", mods = { add = { "example_mod" } }, params = { example_mod = { extraDemand = 2 } } }')
+	frames(g, 20)
+	eq(#g.loads, 1, "with --add it loads")
+	local p, err = core.newGamePlan({ params = { x = { k = 2 } } }, { climates = CAT, mods = {}, modParams = {}, selfId = "p" })
+	eq(p, nil); truthy(err:find("not in the mod list: x"))
+end)
+
+test("load: a loadGame that changes nothing is reported, without errors in the log (watchReplace defined)", function()
+	local g = newGame({ saves = SAVES, loadNoop = true })
+	frames(g, 2)
+	send(g, 182, "load", '{ save = "probe" }')
+	frames(g, FIRST)
+	for _, l in ipairs(g.logs) do truthy(not l:find("error"), "logged: " .. l) end
+	frames(g, 30 * 31)
+	truthy((answerText(g, 182, "error") or ""):find("kept running for 30 s"), answerText(g, 182, "error"))
+end)
+
+-- quit, event, tool; the main menu (startup.lua)
+
+test("toolRequest: known names, a module, close; unknown names and nothing refused", function()
+	local t = core.toolRequest({ name = "music" })
+	eq(t.module, "/gui/music_player/music_player.tl"); eq(t.field, nil); eq(t.close, false)
+	t = core.toolRequest({ name = "calendar", close = true })
+	eq(t.field, "CalendarEditorTool"); eq(t.close, true)
+	t = core.toolRequest({ module = "/x.tl", field = "" })
+	eq(t.module, "/x.tl"); eq(t.field, nil, "an empty field is none")
+	local none, err = core.toolRequest({ name = "statistics" })
+	eq(none, nil); truthy(err:find("known: calendar, music"), err)
+	truthy(select(2, core.toolRequest({})))
+	truthy(select(2, core.toolRequest(nil)))
+	truthy(select(2, core.toolRequest({ module = 5 })))
+end)
+
+test("eventRequest: a name and plain params; functions, userdata, cycles and bad names refused", function()
+	local e = core.eventRequest({ name = "example_window.show", param = { welcome = true, list = { 1, 2 } } })
+	eq(e.name, "example_window.show"); eq(e.param.welcome, true)
+	eq(core.eventRequest({ name = "x" }).param, nil, "no param is fine")
+	truthy(select(2, core.eventRequest({ name = "" })))
+	truthy(select(2, core.eventRequest({})))
+	truthy(select(2, core.eventRequest(nil)))
+	truthy(select(2, core.eventRequest({ name = "x", param = 5 })):find("must be a table"))
+	truthy(select(2, core.eventRequest({ name = "x", param = { f = print } })):find("a function"))
+	truthy(select(2, core.eventRequest({ name = "x", param = { u = newproxy(false) } })):find("a userdata"))
+	local cyc = {}
+	cyc.me = cyc
+	truthy(select(2, core.eventRequest({ name = "x", param = cyc })):find("a cycle"))
+	local shared = { 1 }
+	truthy(core.eventRequest({ name = "x", param = { a = shared, b = shared } }), "the same table twice is no cycle")
+end)
+
+test("uiRequest: carries an event and a tool; malformed ones dropped", function()
+	local r = core.uiRequest({ open = { seq = 3, event = { name = "e", param = { a = 1 } }, tool = { module = "/m.tl", field = "F", close = true } } })
+	eq(r.open.event.name, "e"); eq(r.open.event.param.a, 1)
+	eq(r.open.tool.module, "/m.tl"); eq(r.open.tool.field, "F"); eq(r.open.tool.close, true)
+	r = core.uiRequest({ open = { seq = 4, event = { name = 7 }, tool = { module = "" } } })
+	eq(r.open.event, nil); eq(r.open.tool, nil); eq(r.open.seq, 4)
+end)
+
+test("event and tool: handed to the speed control through the GUI save data", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 200, "event", '{ name = "example_window.show", param = { welcome = true } }')
+	frames(g, FIRST)
+	truthy((answerText(g, 200) or ""):find('"event":"example_window.show"'), answerText(g, 200))
+	local open = fake.guiSave.hummer_remote_probe.open
+	eq(open.event.name, "example_window.show"); eq(open.event.param.welcome, true)
+	local seq = open.seq
+	send(g, 201, "tool", '{ name = "music" }')
+	frames(g, 20)
+	open = fake.guiSave.hummer_remote_probe.open
+	eq(open.tool.module, "/gui/music_player/music_player.tl"); truthy(open.seq > seq, "a new request")
+	eq(open.event, nil, "only the newest request")
+	send(g, 202, "tool", '{ name = "nope" }')
+	frames(g, 20)
+	truthy((answerText(g, 202, "error") or ""):find("unknown tool"))
+	send(g, 203, "event", '{ name = "x", param = 3 }')
+	frames(g, 20)
+	truthy((answerText(g, 203, "error") or ""):find("must be a table"))
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
+test("quit: answered first, app.quit on the next frame, a run cancelled", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 210, "run", '{ days = 300, speed = 4 }')
+	frames(g, FIRST)
+	send(g, 211, "quit")
+	local answeredAt, quitAt
+	for i = 1, 20 do
+		g.step()
+		if not answeredAt and answerText(g, 211) then answeredAt = i end
+		if not quitAt and g.quitCalled then quitAt = i end
+		if quitAt then break end
+	end
+	eq(g.quitCalled, 1)
+	truthy(answeredAt and quitAt and quitAt > answeredAt, "the answer is on disk a frame before the game quits")
+	truthy((answerText(g, 211) or ""):find('"quitting":true'))
+	truthy((answerText(g, 210, "error") or ""):find("cancelled: quit command"), answerText(g, 210, "error"))
+	frames(g, 5)
+	eq(g.quitCalled, 1, "once")
+end)
+
+test("menu: startup.lua answers in the main menu with the same files, and says it is the menu", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	local hello = readJson(g.x, files(g.x, "^remote_probe__hello_")[1])
+	truthy(hello:find('"menu":true'), hello)
+	truthy(g.logs[1]:find("ready in the main menu"), g.logs[1])
+	send(g, 220, "status")
+	frames(g, FIRST)
+	truthy((answerText(g, 220) or ""):find('"menu":true'), answerText(g, 220))
+	send(g, 221, "saves")
+	frames(g, 20)
+	truthy((answerText(g, 221) or ""):find('"saveName":"probe"'))
+	for i, cmd in ipairs({ "speed", "run", "save", "window", "event", "tool", "entities", "screenshot" }) do
+		send(g, 221 + i, cmd, "{ speed = 1, days = 1, name = 'x', kind = 'town' }")
+		frames(g, 20)
+		truthy((answerText(g, 221 + i, "error") or ""):find("needs a running game"), cmd .. ": " .. tostring(answerText(g, 221 + i, "error")))
+	end
+	for _, l in ipairs(g.logs) do truthy(not l:find("error %("), "no script errors: " .. l) end
+end)
+
+test("menu: newgame starts without unsafe; the menu copy stops and the new game's probe answers", function()
+	local g = newGame({ saves = SAVES, menu = true, menuKeepsRunning = true })
+	frames(g, 2)
+	local menuStamp = stampOf(g.x)
+	send(g, 240, "newgame", '{ size = "tiny", year = 1900, mods = { add = { "other_mod" } } }')
+	frames(g, FIRST)
+	truthy(answerText(g, 240, "ack"), answerText(g, 240, "error"))
+	eq(#g.started, 1)
+	eq(table.concat(g.started[1].mods, ","), "other_mod,hummer_remote_probe")
+	frames(g, 5)
+	truthy(stampOf(g.x) ~= menuStamp, "the game's probe wrote a new hello")
+	local hello = readJson(g.x, "remote_probe__hello_" .. stampOf(g.x) .. ".lua")
+	truthy(hello:find('"menu":false'), hello)
+	-- a command in the menu copy's file now goes unanswered (it stopped), even though it is still updated
+	local f = assert(io.open(g.x .. "/remote_probe__cmd_" .. menuStamp .. ".lua", "w"))
+	f:write('function data()\nreturn { id = 241, cmd = "status", args = {} }\nend\n')
+	f:close()
+	frames(g, FIRST)
+	eq(answerText(g, 241), nil, "the menu copy is off")
+	send(g, 242, "status")
+	frames(g, FIRST)
+	truthy((answerText(g, 242) or ""):find('"menu":false'), "the game's copy answers")
+end)
+
+test("menu: load from the main menu, with the save's mods and the probe", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	local menuStamp = stampOf(g.x)
+	send(g, 250, "load", '{ save = "probe" }')
+	frames(g, FIRST)
+	truthy(answerText(g, 250, "ack"), answerText(g, 250, "error"))
+	eq(#g.loads, 1)
+	frames(g, 5)
+	truthy(stampOf(g.x) ~= menuStamp)
+	for _, l in ipairs(g.logs) do truthy(not l:find("kept running"), "no replace-watch failure: " .. l) end
+end)
+
+test("menu: a load waits while mod.io is busy (the base menu breaks then), and goes as soon as it is ready; the wait is logged", function()
+	local g = newGame({ saves = SAVES, menu = true, modhub = true })
+	g.modhubBusy = true
+	frames(g, 2)
+	local menuStamp = stampOf(g.x)
+	send(g, 251, "load", '{ save = "probe" }')
+	frames(g, FIRST)
+	truthy(answerText(g, 251, "ack"), answerText(g, 251, "error"))
+	eq(#g.loads, 0)
+	frames(g, 300) -- 10 s
+	eq(#g.loads, 0)
+	local said = 0
+	for _, l in ipairs(g.logs) do if l:find("waits: mod.io is not ready") then said = said + 1 end end
+	eq(said, 1) -- once, not every frame
+	g.modhubBusy = false
+	frames(g, 1)
+	eq(#g.loads, 1)
+	local waited = false
+	for _, l in ipairs(g.logs) do waited = waited or l:find("waited %d+%.%d s for mod.io") ~= nil end
+	truthy(waited)
+	frames(g, 30)
+	-- the new game's hello (stampOf takes the last name, and stamps do not sort by time)
+	local fresh = false
+	for _, h in ipairs(files(g.x, "^remote_probe__hello_")) do fresh = fresh or not h:find(menuStamp, 1, true) end
+	truthy(fresh)
+end)
+
+test("menu: a load waits for mod.io at most 30 s, then loads anyway; no restricted mode yet (the menu's first 2-3 s) is not ready", function()
+	local g = newGame({ saves = SAVES, menu = true, modhub = true })
+	g.modhubNoRestricted = true
+	frames(g, 2)
+	send(g, 252, "load", '{ save = "probe" }')
+	frames(g, FIRST)
+	truthy(answerText(g, 252, "ack"), answerText(g, 252, "error"))
+	frames(g, 25 * 30)
+	eq(#g.loads, 0)
+	frames(g, 10 * 30)
+	eq(#g.loads, 1)
+	local anyway = false
+	for _, l in ipairs(g.logs) do anyway = anyway or l:find("load goes anyway") ~= nil end
+	truthy(anyway)
+end)
+
+test("menu: an idle mod.io, or no modhub API at all, does not hold a load", function()
+	local g = newGame({ saves = SAVES, menu = true, modhub = true })
+	frames(g, 2)
+	send(g, 253, "load", '{ save = "probe" }')
+	frames(g, FIRST)
+	eq(#g.loads, 1)
+	truthy((g.modhubAsked or 0) > 0)
+	for _, l in ipairs(g.logs) do truthy(not l:find("mod.io"), "nothing said when nothing waited: " .. l) end
+	local h = newGame({ saves = SAVES, menu = true }) -- api.modhub is nil: said once, and the load goes
+	frames(h, 2)
+	send(h, 254, "load", '{ save = "probe" }')
+	frames(h, FIRST)
+	eq(#h.loads, 1)
+	local said = 0
+	for _, l in ipairs(h.logs) do if l:find("cannot read mod.io's state") then said = said + 1 end end
+	eq(said, 1)
+end)
+
+test("menu: a new game waits for mod.io the same way (the menu takes the same branch when it starts)", function()
+	local g = newGame({ saves = SAVES, menu = true, modhub = true })
+	g.modhubNoRestricted = true
+	frames(g, 2)
+	send(g, 256, "newgame", '{ size = "tiny", year = 1900 }')
+	frames(g, FIRST)
+	truthy(answerText(g, 256, "ack"), answerText(g, 256, "error"))
+	frames(g, 60)
+	eq(#g.started, 0)
+	g.modhubNoRestricted = false
+	frames(g, 1)
+	eq(#g.started, 1)
+end)
+
+test("menu: while a load waits for mod.io, a second load or a new game is refused, not run over it", function()
+	local g = newGame({ saves = SAVES, menu = true, modhub = true })
+	g.modhubBusy = true
+	frames(g, 2)
+	send(g, 257, "load", '{ save = "probe" }')
+	frames(g, FIRST)
+	truthy(answerText(g, 257, "ack"), answerText(g, 257, "error"))
+	send(g, 258, "newgame", '{ size = "tiny", year = 1900 }')
+	frames(g, 30)
+	local e = answerText(g, 258, "error") or ""
+	truthy(e:find("command 257"), e)
+	eq(#g.started, 0)
+	send(g, 259, "load", '{ save = "probe" }')
+	frames(g, 60)
+	e = answerText(g, 259, "error") or ""
+	truthy(e:find("still waiting"), e)
+	eq(#g.loads, 0)
+	g.modhubBusy = false
+	frames(g, 1)
+	eq(#g.loads, 1) -- the first one, once
+	eq(#g.started, 0)
+end)
+
+test("load inside a save does not look at mod.io: there is no main menu to break", function()
+	local g = newGame({ saves = SAVES, modhub = true })
+	g.modhubBusy = true
+	frames(g, 2)
+	send(g, 255, "load", '{ save = "probe" }')
+	frames(g, FIRST)
+	eq(#g.loads, 1)
+	eq(g.modhubAsked, nil)
+end)
+
+test("menu: quit works there too", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 260, "quit")
+	frames(g, FIRST)
+	eq(g.quitCalled, 1)
+	truthy(answerText(g, 260))
+end)
+
+test("speed control: fires a requested event and pushes or pops a tool on the game's tool stack", function()
+	newGame({ saves = SAVES }) -- the game API of a running game (the menu tests left a menu one)
+	local exports = loadSpeedScript()
+	local pushed = {}
+	local music = { "MUSIC_TOOL" }
+	package.preload["/gui/music_player/music_player.tl"] = function() return music end
+	package.preload["/gui/game_bar/game_bar_widgets.tl"] = function() return { CalendarEditorTool = { "CAL" } } end
+	local stackApi = {
+		push = function(def, key, p) pushed[#pushed + 1] = { "push", def, p } end,
+		pop = function(def, key) pushed[#pushed + 1] = { "pop", def } end,
+	}
+	local gameCtx = { toolStack = { get = function() return { getApi = function() return stackApi end } end } }
+	local params = { gameCtx = gameCtx }
+	publish({ label = "", open = { seq = 1 } })
+	frame(exports.SpeedControl, params)
+	publish({ label = "", open = { seq = 2, event = { name = "example_window.show", param = { welcome = true } } } })
+	frame(exports.SpeedControl, params)
+	eq(#R.events, 1); eq(R.events[1].name, "example_window.show"); eq(R.events[1].param.welcome, true)
+	publish({ label = "", open = { seq = 3, tool = { module = "/gui/music_player/music_player.tl" } } })
+	frame(exports.SpeedControl, params)
+	eq(#pushed, 1); eq(pushed[1][1], "push"); eq(pushed[1][2], music); eq(pushed[1][3].gameCtx, gameCtx)
+	publish({ label = "", open = { seq = 4, tool = { module = "/gui/game_bar/game_bar_widgets.tl", field = "CalendarEditorTool", close = true } } })
+	frame(exports.SpeedControl, params)
+	eq(pushed[2][1], "pop"); eq(pushed[2][2][1], "CAL")
+	frame(exports.SpeedControl, params)
+	eq(#pushed, 2, "each request once")
+	publish(nil)
+	package.preload["/gui/music_player/music_player.tl"] = nil
+end)
+
+test("speed control: a tool it cannot open is logged once, and nothing breaks", function()
+	newGame({ saves = SAVES }) -- the game API of a running game (the menu tests left a menu one)
+	local exports = loadSpeedScript()
+	local printed = {}
+	local realPrint = print
+	print = function(s) printed[#printed + 1] = s end
+	package.preload["/gui/no_tool.tl"] = function() return "not a table" end
+	local ok, err = pcall(function()
+		publish({ label = "", open = { seq = 1 } })
+		frame(exports.SpeedControl, {})
+		publish({ label = "", open = { seq = 2, tool = { module = "/gui/music_player/music_player.tl" } } })
+		package.preload["/gui/music_player/music_player.tl"] = function() return { "M" } end
+		frame(exports.SpeedControl, {}) -- no gameCtx in the params
+		publish({ label = "", open = { seq = 3, tool = { module = "/gui/music_player/music_player.tl" } } })
+		frame(exports.SpeedControl, {})
+		publish({ label = "", open = { seq = 4, tool = { module = "/gui/no_tool.tl" } } })
+		frame(exports.SpeedControl, { gameCtx = {} })
+		publish({ label = "x", open = { seq = 5, entity = 9 } })
+		frame(exports.SpeedControl, {})
+	end)
+	print = realPrint
+	package.preload["/gui/no_tool.tl"] = nil
+	package.preload["/gui/music_player/music_player.tl"] = nil
+	publish(nil)
+	truthy(ok, err)
+	eq(#printed, 2, "one line per distinct failure (the same one twice is logged once): " .. table.concat(printed, " | "))
+	truthy(printed[1]:find("no gameCtx"), printed[1])
+	truthy(printed[2]:find("is not a tool"), printed[2])
+	eq(R.events[#R.events].name, "selectEntity", "a later window request still works")
+end)
+
+test("menu: a game loaded by hand (without the probe) stops the menu copy, so no newgame inside a save", function()
+	local g = newGame({ saves = SAVES, menu = true, menuKeepsRunning = true })
+	frames(g, 2)
+	g.menu = false -- someone loaded a save from the menu; its mods lack the probe, so nothing else answers
+	frames(g, 2)
+	send(g, 270, "newgame", '{ size = "tiny" }')
+	frames(g, FIRST)
+	eq(#g.started, 0, "no startGame from inside a save")
+	eq(answerText(g, 270, "ack"), nil)
+	local said
+	for _, l in ipairs(g.logs) do said = said or l:find("a game is running; the menu copy stops") end
+	truthy(said, "logged why it stopped")
+end)
+
+test("quit: waits for a save in progress", function()
+	local g = newGame({ saves = SAVES, saveSeconds = 2 })
+	frames(g, 2)
+	send(g, 280, "save", '{ name = "q" }')
+	frames(g, FIRST)
+	send(g, 281, "quit")
+	frames(g, 20)
+	truthy((answerText(g, 281) or ""):find('"afterSave":true'), answerText(g, 281))
+	eq(g.quitCalled, nil, "not while saving")
+	frames(g, 30 * 3)
+	eq(g.quitCalled, 1, "once the save is done")
+end)
+
+test("startup.lua: run again in the same Lua state it reuses the probe; a probe that fails to load ends nothing", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	local first = g.menuScript
+	package.loaded["hummer_remote_probe::/remote.script.lua"] = true -- require's cache: the file will not run again
+	local quiet = {}
+	local realPrint0 = print
+	print = function(x) quiet[#quiet + 1] = x end
+	_G.data = nil
+	dofile(root .. "/content/startup.lua")
+	local again = _G.data()
+	print = realPrint0
+	truthy(again ~= first and again.update, "a new startup table")
+	eq(#quiet, 0, "the probe was reused, not lost: " .. table.concat(quiet, " | "))
+	g.menuScript = again
+	send(g, 290, "status")
+	frames(g, FIRST)
+	truthy((answerText(g, 290) or ""):find('"menu":true'), "the same probe still answers")
+	package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
+	_G.__hummer_remote_probe_menu = nil
+	local printed = {}
+	local realPrint = print
+	print = function(s) printed[#printed + 1] = s end
+	package.preload["hummer_remote_probe::/remote.script.lua"] = function() error("broken file") end
+	local ok, err = pcall(function()
+		_G.data = nil
+		dofile(root .. "/content/startup.lua")
+		local s = _G.data()
+		s.handleEvent()
+		s.update()
+	end)
+	print = realPrint
+	package.preload["hummer_remote_probe::/remote.script.lua"] = nil
+	package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
+	truthy(ok, err)
+	truthy((printed[1] or ""):find("could not start the probe in the main menu: .*broken file"), printed[1])
+end)
+
+test("menu: newgame takes the base's and each mod's defaults, as the base new-game page; --param on top", function()
+	local g = newGame({ saves = SAVES, menu = true, modDescs = {
+		[""] = { { key = "guideSystemConfig.tutorial", defaultIndex = 1 }, { key = "map.size", defaultIndex = 2 } },
+		other_mod = { { key = "show_window", defaultIndex = 1 } },
+		hummer_remote_probe = { { key = "pollIdle", defaultIndex = 1 } }, -- 0-based as in mod.json: all shift by 1
+	} })
+	frames(g, 2)
+	send(g, 300, "newgame", '{ size = "tiny", mods = { add = { "other_mod", "unknown_mod" } }, params = { [""] = { ["guideSystemConfig.tutorial"] = 1 } } }')
+	frames(g, FIRST)
+	truthy(answerText(g, 300, "ack"), answerText(g, 300, "error"))
+	local p = g.started[1].modParams
+	eq(p[""]["guideSystemConfig.tutorial"], 1, "--param wins (Off)")
+	eq(p[""]["map.size"], 3, "the base default, 1-based")
+	eq(p.other_mod.show_window, 2)
+	eq(p.hummer_remote_probe.pollIdle, 2)
+	eq(next(p.unknown_mod or {}), nil, "a mod without a description gets no params")
+	-- descriptions already 1-based (pollIdle 2): no shift
+	g = newGame({ saves = SAVES, menu = true, modDescs = {
+		[""] = { { key = "map.size", defaultIndex = 3 } }, hummer_remote_probe = { { key = "pollIdle", defaultIndex = 2 } } } })
+	frames(g, 2)
+	send(g, 301, "newgame", '{ size = "tiny" }')
+	frames(g, FIRST)
+	eq(g.started[1].modParams[""]["map.size"], 3)
+	eq(g.started[1].modParams.hummer_remote_probe.pollIdle, 2)
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- vehicles: buy, duplicate, replace, sell, depots, vehicles
+
+-- a small JSON reader for the answers (strings, numbers, booleans, null, arrays, objects)
+local function decode(text)
+	local i = 1
+	local function ws() i = text:find("[^ \t\r\n]", i) or #text + 1 end
+	local value
+	local function str()
+		local out = {}
+		i = i + 1
+		while true do
+			local c = text:sub(i, i)
+			if c == '"' then i = i + 1; return table.concat(out) end
+			if c == "\\" then
+				local n = text:sub(i + 1, i + 1)
+				if n == "u" then out[#out + 1] = string.char(tonumber(text:sub(i + 2, i + 5), 16) % 256); i = i + 6
+				else out[#out + 1] = ({ n = "\n", t = "\t", r = "\r", b = "\b", f = "\f" })[n] or n; i = i + 2 end
+			else out[#out + 1] = c; i = i + 1 end
+		end
+	end
+	function value()
+		ws()
+		local c = text:sub(i, i)
+		if c == "{" then
+			local t = {}
+			i = i + 1; ws()
+			if text:sub(i, i) == "}" then i = i + 1; return t end
+			while true do
+				ws(); local k = str(); ws(); i = i + 1 -- ':'
+				t[k] = value(); ws()
+				local d = text:sub(i, i); i = i + 1
+				if d == "}" then return t end
+			end
+		elseif c == "[" then
+			local t = {}
+			i = i + 1; ws()
+			if text:sub(i, i) == "]" then i = i + 1; return t end
+			while true do
+				t[#t + 1] = value(); ws()
+				local d = text:sub(i, i); i = i + 1
+				if d == "]" then return t end
+			end
+		elseif c == '"' then return str()
+		elseif text:sub(i, i + 3) == "true" then i = i + 4; return true
+		elseif text:sub(i, i + 4) == "false" then i = i + 5; return false
+		elseif text:sub(i, i + 3) == "null" then i = i + 4; return nil
+		else
+			local num = text:match("^-?[%d%.eE+-]+", i)
+			i = i + #num
+			return tonumber(num)
+		end
+	end
+	return value()
+end
+
+-- the one final answer of a command (plain or _error), decoded, and how many final answers there are
+local function final(g, id)
+	local a, e = answerText(g, id), answerText(g, id, "error")
+	return decode(a or e or "null"), (a and 1 or 0) + (e and 1 or 0)
+end
+
+test("core.vehicleArgs: defaults, and every bad value refused with a reason", function()
+	local a = core.vehicleArgs("buy", { model = "bus", depot = 301 })
+	eq(a.via, "gui"); eq(a.count, 1); eq(a.depot, 301); eq(a.model, "bus")
+	eq(core.vehicleArgs("buy", { model = 101, depot = 301, via = "cmd", count = 20, line = 21 }).model, "101")
+	for _, bad in ipairs({
+		{ "buy", nil, "give the model" },
+		{ "buy", { model = "", depot = 1 }, "give the model" },
+		{ "buy", { model = "bus" }, "give the depot" },
+		{ "buy", { model = "bus", depot = 1, via = "react" }, "via must be gui or cmd" },
+		{ "buy", { model = "bus", depot = 1, count = 0 }, "count must be" },
+		{ "buy", { model = "bus", depot = 1, count = 21 }, "count must be" },
+		{ "buy", { model = "bus", depot = 1, count = 1.5 }, "count must be" },
+		{ "buy", { model = "bus", depot = 1, count = "x" }, "count must be" },
+		{ "buy", { model = "bus", depot = -1 }, "depot must be an entity id" },
+		{ "buy", { model = "bus", depot = "abc" }, "depot must be an entity id" },
+		{ "buy", { model = "bus", depot = 1, line = {} }, "line must be an entity id" },
+		{ "sell", {}, "give the vehicle" },
+		{ "duplicate", { vehicle = 2.5 }, "vehicle must be an entity id" },
+		{ "replace", { vehicle = 4 }, "give the model" },
+		{ "fly", { vehicle = 4 }, "unknown vehicle command" },
+	}) do
+		local ok, err = core.vehicleArgs(bad[1], bad[2])
+		eq(ok, nil, bad[3])
+		truthy(tostring(err):find(bad[3], 1, true), tostring(err) .. " / " .. bad[3])
+	end
+	eq(core.vehicleArgs("sell", { vehicle = 7 }).vehicle, 7)
+end)
+
+test("core.matchModel: id, exact name, file name, unique part; ambiguous ones list candidates", function()
+	local list = { { id = 101, name = "vehicle/bus/bus_1900.mdl" }, { id = 102, name = "vehicle/bus/bus_1920.mdl" },
+		{ id = 103, name = "vehicle/truck/bus_1900_cargo.mdl" } }
+	eq(core.matchModel(list, "102").id, 102)
+	eq(core.matchModel(list, 101).id, 101)
+	eq(core.matchModel(list, "VEHICLE/BUS/BUS_1920.MDL").id, 102)
+	eq(core.matchModel(list, "bus_1900").id, 101, "the file name beats the longer one containing it")
+	eq(core.matchModel(list, "cargo").id, 103)
+	local hit, err = core.matchModel(list, "bus")
+	eq(hit, nil)
+	truthy(err:find("3 models match") and err:find("bus_1920.mdl (102)", 1, true), err)
+	truthy(select(2, core.matchModel(list, "tram")):find("no vehicle model matches"))
+	truthy(select(2, core.matchModel(list, "")):find("give the model"))
+	truthy(select(2, core.matchModel(nil, "bus")):find("no vehicle model"))
+	eq(core.spent(100, 70), 30); eq(core.spent(70, 100), -30); eq(core.spent(nil, 5), nil); eq(core.spent(5, nil), nil)
+end)
+
+local function fleetOf(model, purchaseTime, line)
+	return { vehicles = { { part = { modelId = model, reversed = false, compartment2loadConfig = {} }, purchaseTime = purchaseTime,
+		maintenanceState = 0.4, autoLoadConfig = {} } }, vehicleGroups = { 1 }, muFileNames = {}, line = line or -1, depot = -1 }
+end
+
+-- a game a little into 1900, so a stamped purchaseTime differs from 0
+-- a game with the speed control on screen (unless opts.noSpeedControl): each frame the guiUpdate script, then
+-- the recipe (render, step timer, join), which runs the gui way of the vehicle commands
+local function vehicleGame(opts)
+	opts = opts or {}
+	opts.saves = opts.saves or SAVES
+	local g = newGame(opts)
+	if not opts.noSpeedControl then
+		local exports = loadSpeedScript()
+		local step = g.step
+		g.speedControl = exports.SpeedControl
+		g.step = function(dt)
+			step(dt)
+			if not g.speedControlOff then frame(exports.SpeedControl, { gameCtx = {} }) end
+		end
+	end
+	frames(g, 2)
+	g.gameTime = 123456
+	g.frozen = true -- game time stays, so a stamped purchaseTime is known
+	return g
+end
+
+test("buy via gui: the base's HandleVehicleChanges stamps purchaseTime; balance, price and value come back", function()
+	local g = vehicleGame()
+	send(g, 401, "buy", '{ model = "bus_1900", depot = 301, line = 21 }')
+	frames(g, FIRST)
+	local a, n = final(g, 401)
+	eq(n, 1, "one answer")
+	eq(a.ok, true, tostring(a.error))
+	eq(a.via, "gui"); eq(g.guiChanges, 1)
+	eq(a.balanceBefore, 1000000); eq(a.balanceAfter, 970000); eq(a.spent, 30000)
+	eq(a.model.id, 101); eq(a.model.fileName, "vehicle/bus/bus_1900.mdl"); eq(a.model.price, 30000); eq(a.storePriceTotal, 30000)
+	eq(#a.vehicles, 1)
+	local v = a.vehicles[1]
+	truthy(a.sentParts[1].purchaseTime > 0, "HandleVehicleChanges stamped the time")
+	eq(v.parts[1].purchaseTime, a.sentParts[1].purchaseTime, "the engine keeps what was sent")
+	eq(v.parts[1].modelId, 101); eq(v.parts[1].partPrice, 30000)
+	eq(v.depreciatedValue, 27000)
+	eq(v.line, 21, "the base sent it to the line")
+	eq(g.fleet[v.entity].line, 21)
+end)
+
+-- regression: TF3 died on the first cmd buy (2026-11-16 13:21 JST, assertion in UpdateConfigFromModelIds) since
+-- autoLoadConfig went out empty; the fake now dies the same way on a size mismatch
+test("buy and replace via cmd: autoLoadConfig goes out with one entry per compartment, purchaseTime still 0", function()
+	local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5) } })
+	send(g, 491, "buy", '{ model = "bus_1900", depot = 301, via = "cmd" }')
+	frames(g, FIRST)
+	local a = final(g, 491)
+	eq(g.crashed, nil)
+	eq(a.ok, true, tostring(a.error))
+	send(g, 492, "replace", '{ vehicle = 601, model = "bus_1920", via = "cmd" }')
+	frames(g, FIRST)
+	local b = final(g, 492)
+	eq(g.crashed, nil)
+	eq(b.ok, true, tostring(b.error))
+	local seen = 0
+	for _, c in ipairs(g.commands) do
+		if c.kind == "buy" or c.kind == "replace" then
+			seen = seen + 1
+			local p = c.config.vehicles[1]
+			eq(#p.autoLoadConfig, #p.part.compartment2loadConfig)
+			truthy(#p.autoLoadConfig > 0, "the model has compartments")
+			if c.kind == "buy" then eq(p.purchaseTime, 0) end
+		end
+	end
+	eq(seen, 2)
+end)
+
+test("buy via cmd: purchaseTime 0 goes to the engine; the answer shows sent and read-back values", function()
+	local g = vehicleGame()
+	send(g, 402, "buy", '{ model = "101", depot = 301, via = "cmd", count = 3, line = 21 }')
+	frames(g, FIRST)
+	local a = final(g, 402)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.via, "cmd"); eq(g.guiChanges, nil, "the base module was not used")
+	eq(a.sentParts[1].purchaseTime, 0)
+	eq(#a.vehicles, 3); eq(a.spent, 90000); eq(a.storePriceTotal, 90000)
+	for _, v in ipairs(a.vehicles) do eq(v.parts[1].purchaseTime, 0); eq(v.line, 21) end
+	-- an engine that fills it in: the read-back differs from what was sent
+	g = vehicleGame({ engineStampsPurchaseTime = true })
+	send(g, 403, "buy", '{ model = 101, depot = 301, via = "cmd" }')
+	frames(g, FIRST)
+	a = final(g, 403)
+	eq(a.sentParts[1].purchaseTime, 0)
+	truthy(a.vehicles[1].parts[1].purchaseTime > 0, "read back from the engine")
+end)
+
+test("buy: not enough money, a failed module load, a bad model and a lost callback each answer once", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = vehicleGame({ balance = 40000 })
+		send(g, 410, "buy", string.format('{ model = "bus_1900", depot = 301, count = 2, via = %q }', via))
+		frames(g, FIRST)
+		local a, n = final(g, 410)
+		eq(n, 1)
+		eq(a.ok, false, via)
+		eq(#a.vehicles, 1, via .. ": the first one was bought")
+		eq(#a.failures, 1)
+		truthy(a.error:find("money"), a.error)
+		eq(a.spent, 30000)
+	end
+	local g = vehicleGame({ noGuiModule = true })
+	send(g, 411, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	local a = final(g, 411)
+	eq(a.ok, false)
+	truthy(a.error:find("via gui: could not load /gui/line_vehicle_mgmt/vehicle_react_util.tl", 1, true), a.error)
+	eq(g.balance, 1000000, "nothing bought, and not by cmd behind the caller's back")
+	for _, c in ipairs(g.commands) do truthy(c.kind ~= "buy", "no buy command") end
+	send(g, 412, "buy", '{ model = "bus", depot = 301, via = "cmd" }')
+	frames(g, 20)
+	a = final(g, 412)
+	truthy(a.error:find("2 models match"), "the building with bus in its name is no candidate: " .. a.error)
+	send(g, 413, "buy", '{ model = "bus_house", depot = 301, via = "cmd" }')
+	frames(g, 20)
+	truthy(final(g, 413).error:find("no vehicle model matches"))
+	g = vehicleGame({ lostCallbacks = true })
+	send(g, 414, "buy", '{ model = "bus_1900", depot = 301, via = "cmd" }')
+	frames(g, FIRST)
+	eq(answerText(g, 414), nil, "still waiting")
+	eq(answerText(g, 414, "error"), nil)
+	frames(g, 70, 1)
+	local b, m = final(g, 414)
+	eq(m, 1)
+	truthy(b.error:find("no result in 60 s %(0 of 1 arrived%)"), b.error)
+	eq(b.balanceBefore, 1000000)
+	frames(g, 70, 1)
+	eq(select(2, final(g, 414)), 1, "never answered twice")
+end)
+
+test("vehicle commands: a base function that raises is one error answer, never a second at the timeout", function()
+	for _, cmd in ipairs({ { "buy", '{ model = "bus_1900", depot = 301 }' }, { "sell", "{ vehicle = 601 }" },
+		{ "replace", '{ vehicle = 601, model = "bus_1920" }' }, { "duplicate", "{ vehicle = 601 }" } }) do
+		local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5) } })
+		fake.guiModules["/gui/line_vehicle_mgmt/vehicle_react_util.tl"].HandleVehicleChanges = function() error("boom") end
+		-- every answer written, also one the game drops because the file exists (saveUserdata never overwrites)
+		local written, save0 = 0, app.saveUserdata
+		app.saveUserdata = function(d, name, t)
+			if name:find("^remote_probe__res_416_") and not name:find("_got$") then written = written + 1 end
+			return save0(d, name, t)
+		end
+		send(g, 416, cmd[1], cmd[2])
+		frames(g, FIRST)
+		local a, n = final(g, 416)
+		eq(n, 1, cmd[1])
+		truthy(a.error:find("boom"), a.error)
+		frames(g, 70, 1)
+		eq(select(2, final(g, 416)), 1, cmd[1] .. ": answered once")
+		eq(written, 1, cmd[1] .. ": one answer written")
+		app.saveUserdata = save0
+	end
+end)
+
+test("buy: the base's vehicle_util.makePart builds the part when it loads", function()
+	local g = vehicleGame({ vehicleUtil = true })
+	send(g, 415, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	eq(final(g, 415).ok, true)
+	eq(g.madeParts, 1)
+end)
+
+
+test("duplicate: a copy with new parts (purchaseTime from now, full maintenance) on the source's line", function()
+	local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5, 21) } })
+	send(g, 420, "duplicate", "{ vehicle = 601 }")
+	frames(g, FIRST)
+	local a = final(g, 420)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.via, "gui"); eq(a.depot, 301); eq(a.line, 21)
+	eq(a.source.entity, 601); eq(a.source.parts[1].purchaseTime, 5)
+	local v = a.vehicles[1]
+	truthy(v.entity ~= 601)
+	eq(v.parts[1].purchaseTime, 123456 + 0, "stamped, not the source's 5")
+	eq(v.parts[1].maintenanceState, 1)
+	eq(v.line, 21); eq(a.spent, 30000)
+	send(g, 421, "duplicate", '{ vehicle = 601, via = "cmd", depot = 301 }')
+	frames(g, 20)
+	a = final(g, 421)
+	eq(a.ok, true); eq(a.vehicles[1].parts[1].purchaseTime, 0); eq(a.line, nil, "depot given, no line asked")
+	send(g, 422, "duplicate", "{ vehicle = 999 }")
+	frames(g, 20)
+	truthy(final(g, 422).error:find("no vehicle 999"))
+end)
+
+test("replace: the vehicle runs the new model (gui: read back, no callback); cmd refused when gone", function()
+	local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5, 21) } })
+	send(g, 430, "replace", '{ vehicle = 601, model = "bus_1920" }')
+	frames(g, FIRST)
+	local a = final(g, 430)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.before.parts[1].modelId, 101)
+	eq(a.vehicles[1].parts[1].modelId, 102)
+	eq(a.vehicles[1].parts[1].purchaseTime, 123456)
+	eq(a.sentParts[1].purchaseTime, 123456)
+	eq(a.spent, 45000); eq(a.model.price, 45000)
+	eq(a.vehicles[1].line, 21, "kept its line")
+	send(g, 431, "replace", '{ vehicle = 601, model = "truck", via = "cmd" }')
+	frames(g, 20)
+	a = final(g, 431)
+	eq(a.ok, true); eq(a.vehicles[1].parts[1].modelId, 103); eq(a.vehicles[1].parts[1].purchaseTime, 0)
+	send(g, 432, "replace", '{ vehicle = 602, model = "truck" }')
+	frames(g, 20)
+	truthy(final(g, 432).error:find("no vehicle 602"))
+end)
+
+test("replace via gui: a vehicle that never changes ends in a timeout error", function()
+	local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5) } })
+	-- the engine drops the replace: HandleVehicleChanges gives no callback, so only the read-back can tell
+	local send0 = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb) if cmd.kind ~= "replace" then return send0(cmd, cb) end end
+	send(g, 433, "replace", '{ vehicle = 601, model = "bus_1920" }')
+	frames(g, FIRST)
+	frames(g, 70, 1)
+	api.cmd.sendCommand = send0
+	local a, n = final(g, 433)
+	eq(n, 1)
+	eq(a.ok, false)
+	truthy(a.error:find("no result in 60 s"), a.error)
+	eq(a.vehicles[1].parts[1].modelId, 101, "shows the vehicle as it still is")
+end)
+
+test("sell: the vehicle is gone and spent is what it brought (negative)", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5) } })
+		send(g, 440, "sell", string.format("{ vehicle = 601, via = %q }", via))
+		frames(g, FIRST)
+		local a = final(g, 440)
+		eq(a.ok, true, via .. " " .. tostring(a.error))
+		eq(a.sold, true); eq(g.fleet[601], nil)
+		eq(a.spent, -27000); eq(a.before.depreciatedValue, 27000)
+		eq(a.vehicles[1].gone, true)
+	end
+	local g = vehicleGame()
+	send(g, 441, "sell", "{ vehicle = 601 }")
+	frames(g, FIRST)
+	truthy(final(g, 441).error:find("no vehicle 601"))
+end)
+
+test("depots and vehicles: lists to aim the commands; refused in the main menu", function()
+	local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5, 21), [602] = fleetOf(102, 6) },
+		depots = { [301] = { carrier = 0, name = "Bus depot" }, [302] = { carrier = 1, name = "Rail depot" } } })
+	g.fleet[602].depot = 301
+	send(g, 450, "depots", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 450)
+	eq(#a.depots, 2)
+	eq(a.depots[1].name, "Bus depot"); eq(a.depots[1].carrier, "ROAD"); eq(a.depots[1].vehicles, 1); eq(a.depots[1].id, 301)
+	eq(a.depots[2].carrier, "RAIL")
+	send(g, 451, "depots", '{ grep = "rail" }')
+	frames(g, 20)
+	eq(#final(g, 451).depots, 1)
+	send(g, 452, "vehicles", "{ line = 21 }")
+	frames(g, 20)
+	a = final(g, 452)
+	eq(a.total, 1); eq(a.vehicles[1].entity, 601); eq(a.vehicles[1].parts[1].fileName, "vehicle/bus/bus_1900.mdl")
+	send(g, 453, "vehicles", "{  }")
+	frames(g, 20)
+	eq(final(g, 453).total, 2)
+	g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 454, "buy", '{ model = "bus", depot = 301 }')
+	frames(g, FIRST)
+	truthy(final(g, 454).error:find("needs a running game"))
+end)
+
+test("replace via gui: answers once the vehicle holds the parts sent, not on the model alone", function()
+	-- the same model again: the model alone says nothing, the purchaseTime stamped by the base does
+	local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5) }, callbackFrames = 10 })
+	send(g, 460, "replace", '{ vehicle = 601, model = "bus_1900" }')
+	frames(g, FIRST)
+	local a = final(g, 460)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.vehicles[1].parts[1].purchaseTime, 123456, "answered after the engine took the new parts")
+	eq(a.matchesSent, true)
+	-- the parts sent equal the vehicle's own: no way to tell, so no ok
+	g = vehicleGame({ fleet = { [601] = fleetOf(101, 123456) } })
+	send(g, 461, "replace", '{ vehicle = 601, model = "bus_1900" }')
+	frames(g, FIRST)
+	a = final(g, 461)
+	eq(a.ok, false); eq(a.uncertain, true)
+	truthy(a.error:find("cannot tell"), a.error)
+end)
+
+test("duplicate: the store price is every part's cost.price, with each part's model", function()
+	local f = fleetOf(101, 5, 21)
+	f.vehicles[2] = { part = { modelId = 103, reversed = true, compartment2loadConfig = {} }, purchaseTime = 7,
+		maintenanceState = 0.4, autoLoadConfig = {} }
+	f.vehicleGroups = { 2 }
+	local g = vehicleGame({ fleet = { [601] = f } })
+	send(g, 462, "duplicate", "{ vehicle = 601 }")
+	frames(g, FIRST)
+	local a = final(g, 462)
+	eq(a.ok, true, tostring(a.error))
+	eq(#a.storeParts, 2)
+	eq(a.storeParts[1].modelId, 101); eq(a.storeParts[2].modelId, 103)
+	eq(a.storeParts[2].priceBefore, 20000)
+	eq(a.storePriceTotal, 50000); eq(a.spent, 50000)
+	eq(a.model, nil, "no single model for a vehicle of two")
+	eq(#a.sentParts, 2); eq(a.sentParts[2].modelId, 103); eq(a.sentParts[2].purchaseTime, 123456)
+	eq(#a.vehicles[1].parts, 2)
+end)
+
+test("vehicle answers: game time before and after, and a warning when it moved", function()
+	local g = vehicleGame()
+	send(g, 463, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	local a = final(g, 463)
+	eq(a.gameTimeBefore, 123456); eq(a.gameTimeAfter, 123456); eq(a.warning, nil)
+	g = vehicleGame()
+	g.frozen = false
+	send(g, 464, "buy", '{ model = "bus_1900", depot = 301, via = "cmd" }')
+	frames(g, FIRST)
+	a = final(g, 464)
+	truthy(a.gameTimeAfter > a.gameTimeBefore)
+	truthy(a.warning and a.warning:find("pause"), tostring(a.warning))
+	truthy(a.notes and a.notes[1]:find("purchaseTime sent as 0"), "cmd says what it leaves out")
+end)
+
+test("vehicle step: a job that raises is failed once, and the others are answered once", function()
+	local answers, fails = {}, {}
+	local V = dofile(root .. "/content/remote_vehicles.lua").new({ core = core,
+		answer = function(id) answers[id] = (answers[id] or 0) + 1 end,
+		fail = function(id) fails[id] = (fails[id] or 0) + 1 end,
+		appTime = function() return 0 end, try = function(fn) local ok, v = pcall(fn); return ok and v or nil end,
+		say = function() end })
+	local function job(id, check)
+		return { id = id, kind = "buy", via = "cmd", deadline = 1e9, entities = {}, failures = {}, expected = 1,
+			storeParts = {}, lineResult = {}, check = check }
+	end
+	V.jobs = { job(1, function() return true end), job(2, function() error("boom") end), job(3, function() return true end) }
+	for _ = 1, 8 do pcall(V.step) end
+	eq(answers[1], 1); eq(answers[3], 1); eq(fails[2], 1); eq(answers[2], nil)
+	eq(#V.jobs, 0)
+end)
+
+test("buy with a line: answers once the vehicle is on it (gui: the base's own send; cmd: its callback)", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = vehicleGame({ callbackFrames = 5 })
+		send(g, 465, "buy", string.format('{ model = "bus_1900", depot = 301, line = 21, via = %q }', via))
+		frames(g, FIRST)
+		local a = final(g, 465)
+		eq(a.ok, true, via .. " " .. tostring(a.error))
+		eq(a.vehicles[1].line, 21, via)
+		eq(a.setLine[1].ok, true, via)
+		eq(a.setLine[1].entity, a.vehicles[1].entity)
+	end
+end)
+
+test("a result just before the deadline settles instead of timing out", function()
+	local g = vehicleGame({ callbackFrames = 59 }) -- in at 59 s, settled at 62 s: past the 60 s deadline
+	send(g, 466, "buy", '{ model = "bus_1900", depot = 301, via = "cmd" }')
+	frames(g, 75, 1)
+	local a, n = final(g, 466)
+	eq(n, 1)
+	eq(a.ok, true, tostring(a.error))
+end)
+
+test("depots: only the company's own", function()
+	local g = vehicleGame({ depots = { [301] = { carrier = 0, name = "Ours" }, [302] = { carrier = 0, name = "Theirs", owner = 7 } } })
+	send(g, 467, "depots", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 467)
+	eq(#a.depots, 1); eq(a.depots[1].name, "Ours")
+end)
+
+test("vehicle answers: cost.price and priceScale before sending and at the answer; a negative price is noted", function()
+	local g = vehicleGame({ callbackFrames = 5, models = {
+		[101] = { name = "vehicle/bus/bus_1900.mdl", price = 30000, priceScale = 1.5, vehicle = true },
+		[104] = { name = "vehicle/bus/bus_scaled.mdl", price = -1, priceScale = 2, vehicle = true } } })
+	send(g, 468, "buy", '{ model = "bus_1900", depot = 301, via = "cmd" }')
+	for _ = 1, FIRST do
+		g.step()
+		-- a price mod rewrites the cost once the command is out
+		if #g.commands > 0 then g.models[101].price = 33000 end
+	end
+	local a = final(g, 468)
+	eq(a.model.price, 30000); eq(a.model.priceScale, 1.5)
+	eq(a.model.priceAtAnswer, 33000); eq(a.model.priceScaleAtAnswer, 1.5)
+	eq(a.storePriceTotal, 30000, "the price the command went out with")
+	eq(a.storeParts[1].priceAtAnswer, 33000)
+	send(g, 469, "buy", '{ model = "bus_scaled", depot = 301, count = 2, via = "cmd" }')
+	frames(g, 40)
+	a = final(g, 469)
+	eq(a.storePriceTotal, -2); eq(a.model.priceScale, 2)
+	local noted = false
+	for _, n in ipairs(a.notes or {}) do noted = noted or n:find("negative cost.price", 1, true) ~= nil end
+	truthy(noted, "a note on the negative price")
+end)
+
+test("buy via gui: the guiUpdate script never loads the base module; the speed control runs it and reports", function()
+	-- the game's guiUpdate state cannot load vehicle_react_util.tl (react.RegisterRecipe fails there)
+	local g = vehicleGame()
+	local okLoad = pcall(require, "/gui/line_vehicle_mgmt/vehicle_react_util.tl")
+	package.loaded["/gui/line_vehicle_mgmt/vehicle_react_util.tl"] = nil -- the failed load's mark
+	eq(okLoad, false, "the fake refuses it outside a react state, as the game")
+	send(g, 470, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	local a, n = final(g, 470)
+	eq(n, 1); eq(a.ok, true, tostring(a.error)); eq(g.guiChanges, 1)
+	local report = fake.guiSave["hummer_remote_probe.vehicles"]
+	truthy(report and report.reports[1].id == 470, "the recipe reports under its own key")
+	eq(report.reports[1].entities[1], a.vehicles[1].entity, "onBuy named the vehicle")
+	eq(a.sentParts[1].purchaseTime, 123456, "from the report: what HandleVehicleChanges stamped")
+	eq(fake.guiSave.hummer_remote_probe.vehicles[1], nil, "the request is withdrawn once answered")
+end)
+
+test("vehicles via gui: no speed control means a timeout that says so, and nothing bought", function()
+	local g = vehicleGame({ noSpeedControl = true })
+	send(g, 471, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	frames(g, 70, 1)
+	local a, n = final(g, 471)
+	eq(n, 1); eq(a.ok, false)
+	truthy(a.error:find("no word from the speed control", 1, true), a.error)
+	eq(g.balance, 1000000)
+end)
+
+test("vehicles via gui: the module failing to load in the recipe is one error answer, not a timeout", function()
+	local g = vehicleGame({ noGuiModule = true })
+	send(g, 472, "sell", "{ vehicle = 601 }")
+	g.fleet[601] = fleetOf(101, 5)
+	frames(g, FIRST)
+	local a, n = final(g, 472)
+	eq(n, 1); eq(a.ok, false)
+	truthy(a.error:find("via gui: could not load /gui/line_vehicle_mgmt/vehicle_react_util.tl", 1, true), a.error)
+	truthy(g.fleet[601] ~= nil, "not sold, and not by cmd")
+end)
+
+test("vehicles via gui: two requests at once both run, each answered with its own vehicle", function()
+	local g = vehicleGame({ callbackFrames = 200 })
+	send(g, 473, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	eq(select(2, final(g, 473)), 0, "the first still waits")
+	send(g, 474, "buy", '{ model = "bus_1920", depot = 301 }')
+	frames(g, 300)
+	local a, b = final(g, 473), final(g, 474)
+	eq(a.ok, true, tostring(a.error)); eq(b.ok, true, tostring(b.error))
+	eq(g.guiChanges, 2)
+	truthy(a.vehicles[1].entity ~= b.vehicles[1].entity)
+	eq(a.vehicles[1].parts[1].modelId, 101); eq(b.vehicles[1].parts[1].modelId, 102)
+end)
+
+test("vehicles via gui: requests left in the GUI save data by the last game are never run", function()
+	local g = vehicleGame()
+	-- a fresh speed control (as after a load) whose first read finds an old request in the save data
+	fake.guiSave.hummer_remote_probe.vehicles = { { id = 1, kind = "buy", modelId = 101, count = 1, depot = 301 } }
+	local exports = loadSpeedScript()
+	g.speedControlOff = true
+	frame(exports.SpeedControl, { gameCtx = {} })
+	frame(exports.SpeedControl, { gameCtx = {} })
+	eq(g.guiChanges, nil, "the old request is not run")
+end)
+
+test("vehicles via gui: a report that does not come through still answers from the engine, with a note", function()
+	local g = vehicleGame({ foreignKeyFails = true })
+	send(g, 475, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	local a, n = final(g, 475)
+	eq(n, 1); eq(a.ok, true, tostring(a.error))
+	eq(#a.vehicles, 1); eq(a.spent, 30000)
+	eq(a.sentParts, nil)
+	local noted = false
+	for _, x in ipairs(a.notes or {}) do noted = noted or x:find("no report", 1, true) ~= nil end
+	truthy(noted, "says the report did not come")
+end)
+
+test("depots: the kind from the transport modes (carrier reads OTHER in game), with the raw carrier", function()
+	local g = vehicleGame({ depots = { [301] = { name = "Road depot", modes = { "BUS", "TRUCK" } },
+		[302] = { name = "Train depot", modes = { "TRAIN", "ELECTRIC_TRAIN" } }, [303] = { name = "Harbour", modes = { "SHIP" } },
+		[304] = { name = "Maintenance", modes = {}, maintenancePool = 5 } } })
+	send(g, 476, "depots", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 476)
+	local by = {}
+	for _, d in ipairs(a.depots) do by[d.name] = d end
+	eq(by["Road depot"].kind, "road"); eq(by["Train depot"].kind, "rail"); eq(by.Harbour.kind, "water")
+	eq(by.Maintenance.kind, nil); eq(by.Maintenance.maintenancePool, 5)
+	eq(by["Road depot"].carrier, "OTHER"); eq(by["Road depot"].carrierRaw, "5")
+	eq(by["Road depot"].transportModes[1], "BUS")
+end)
+
+test("core.moneyArgs and moneyAmount: one of set and add, numbers in range, never with infinite money", function()
+	eq(core.moneyArgs({ set = 1e6 }).set, 1000000)
+	eq(core.moneyArgs({ add = "-2500.4" }).add, -2500)
+	for _, bad in ipairs({ { nil, "exactly one" }, { { set = 1, add = 2 }, "exactly one" }, { { set = "lots" }, "must be a number" },
+		{ { add = {} }, "must be a number" }, { { set = 0 / 0 }, "must be a number" }, { { set = 2 ^ 60 }, "out of range" },
+		{ { add = -2 ^ 60 }, "out of range" } }) do
+		local a, err = core.moneyArgs(bad[1])
+		eq(a, nil); truthy(err:find(bad[2], 1, true), err)
+	end
+	eq(core.moneyAmount({ set = 1000 }, -784468249), 784469249)
+	eq(core.moneyAmount({ add = -5 }, 10), -5)
+	local n, err = core.moneyAmount({ set = 1 }, nil)
+	eq(n, nil); truthy(err:find("infinite"), err)
+	n, err = core.moneyAmount({ add = 2 ^ 53 - 1 }, 10)
+	eq(n, nil); truthy(err:find("out of range"), err)
+end)
+
+test("money: sets or adds through a journal entry of category OTHER, as the sandbox money editor", function()
+	local g = vehicleGame({ balance = -784468249 })
+	send(g, 477, "money", "{ set = 10000000 }")
+	frames(g, FIRST)
+	local a, n = final(g, 477)
+	eq(n, 1); eq(a.ok, true, tostring(a.error))
+	eq(a.balanceBefore, -784468249); eq(a.balanceAfter, 10000000); eq(a.amount, 794468249); eq(a.callback, true)
+	eq(g.journal[1].amount, 794468249); eq(g.journal[1].time, -1); eq(g.journal[1].category.type, 7)
+	send(g, 478, "money", "{ add = -500 }")
+	frames(g, 20)
+	a = final(g, 478)
+	eq(a.balanceAfter, 9999500); eq(a.spent, 500)
+	g = vehicleGame({ infiniteMoney = true })
+	send(g, 479, "money", "{ set = 5 }")
+	frames(g, FIRST)
+	a = final(g, 479)
+	eq(a.ok, false); truthy(a.error:find("infinite"), a.error); eq(g.journal, nil)
+	g = vehicleGame({ journalFails = true })
+	send(g, 480, "money", "{ add = 5 }")
+	frames(g, FIRST)
+	a, n = final(g, 480)
+	eq(n, 1); eq(a.ok, false); eq(a.callback, false)
+	send(g, 481, "money", "{ set = 1, add = 2 }")
+	frames(g, 20)
+	truthy(final(g, 481).error:find("exactly one"))
+	g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 482, "money", "{ add = 1 }")
+	frames(g, FIRST)
+	truthy(final(g, 482).error:find("needs a running game"))
+end)
+
+test("vehicles via gui: a speed control mounted again (new refs) still runs a waiting request, reports kept", function()
+	local g = vehicleGame({ callbackFrames = 200 })
+	send(g, 483, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	eq(g.guiChanges, 1)
+	-- the same recipe mounted again: its refs start empty, the module (this Lua state) stays
+	R.hooks = {}
+	send(g, 484, "buy", '{ model = "bus_1920", depot = 301 }')
+	frames(g, 300)
+	local a, b = final(g, 483), final(g, 484)
+	eq(a.ok, true, tostring(a.error)); eq(b.ok, true, tostring(b.error))
+	eq(g.guiChanges, 2, "the request after the remount ran")
+	local ids = {}
+	for _, r in ipairs(fake.guiSave["hummer_remote_probe.vehicles"].reports) do ids[#ids + 1] = r.id end
+	eq(table.concat(ids, ","), "483,484", "the first report is still there")
+end)
+
+test("vehicles via gui without a report: duplicate and replace still answer from the engine", function()
+	local g = vehicleGame({ foreignKeyFails = true, fleet = { [601] = fleetOf(101, 5, 21) } })
+	send(g, 485, "duplicate", "{ vehicle = 601 }")
+	frames(g, FIRST)
+	local a, n = final(g, 485)
+	eq(n, 1); eq(a.ok, true, tostring(a.error))
+	eq(#a.vehicles, 1); truthy(a.vehicles[1].entity ~= 601); eq(a.vehicles[1].parts[1].modelId, 101)
+	eq(a.sentParts, nil)
+	send(g, 486, "replace", '{ vehicle = 601, model = "bus_1920" }')
+	frames(g, 40)
+	a, n = final(g, 486)
+	eq(n, 1); eq(a.ok, true, tostring(a.error))
+	eq(a.vehicles[1].parts[1].modelId, 102); eq(a.matchesSent, nil, "nothing to match without the report")
+end)
+
+test("vehicles without a report: a cmd buy's vehicle is not taken by a gui buy waiting at the same time", function()
+	local g = vehicleGame({ foreignKeyFails = true, callbackFrames = 100 })
+	send(g, 487, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	send(g, 488, "buy", '{ model = "bus_1900", depot = 301, via = "cmd" }')
+	frames(g, 300)
+	local a, b = final(g, 487), final(g, 488)
+	eq(a.ok, true, tostring(a.error)); eq(b.ok, true, tostring(b.error))
+	truthy(a.vehicles[1].entity ~= b.vehicles[1].entity, "each its own vehicle")
+end)
+
+test("load: reports the last game left under the report key are cleared, never taken for this game's", function()
+	fake.guiSave["hummer_remote_probe.vehicles"] = { reports = { { id = 489, kind = "buy", error = "old" } } }
+	local g = vehicleGame()
+	eq(#fake.guiSave["hummer_remote_probe.vehicles"].reports, 0)
+	send(g, 489, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	local a = final(g, 489)
+	eq(a.ok, true, tostring(a.error))
+end)
+
+test("depots: carriers through transportModesToCarriers when the engine has it, the modes table otherwise", function()
+	local depots = { [301] = { name = "Road depot", modes = { "BUS", "TRUCK" } }, [302] = { name = "Tram depot", modes = { "TRAM" } } }
+	local g = vehicleGame({ modesToCarriers = true, depots = depots })
+	send(g, 490, "depots", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 490)
+	eq(a.depots[1].carriers[1], "ROAD"); eq(a.depots[1].kind, "road")
+	eq(a.depots[2].carriers[1], "TRAM"); eq(a.depots[2].kind, "tram")
+	g = vehicleGame({ depots = depots })
+	send(g, 491, "depots", "{  }")
+	frames(g, FIRST)
+	a = final(g, 491)
+	eq(a.depots[1].carriers, nil); eq(a.depots[1].kind, "road")
+end)
+
+test("money: a set the balance moved past (fares while the game runs) says so", function()
+	local g = vehicleGame({ callbackFrames = 5 })
+	send(g, 492, "money", "{ set = 5000000 }")
+	for _ = 1, FIRST do
+		g.step()
+		if #g.commands > 0 and not g.fared then g.fared = true; g.balance = g.balance + 1234 end
+	end
+	local a = final(g, 492)
+	eq(a.ok, true, tostring(a.error))
+	truthy(a.balanceAfter ~= 5000000)
+	local noted = false
+	for _, x in ipairs(a.notes or {}) do noted = noted or x:find("set not reached", 1, true) ~= nil end
+	truthy(noted, "a note")
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- lines: stations, lines, line create / update / delete
+
+-- a town (11) and station groups: ours (42), nobody's (41, 43, 45, 46), another company's (44); 45 is rail only,
+-- 46 has no station. Positions in metres.
+local function lineWorld(extra)
+	local w = {
+		stationGroups = {
+			[41] = { name = "Central", stations = { { id = 411, terminals = 2, passenger = true, pos = { 0, 0 } } } },
+			[42] = { name = "Harbour", owner = 99, stations = { { id = 421, terminals = 1, passenger = true, pos = { 800, 0 } } } },
+			[43] = { name = "Central Market", stations = { { id = 431, terminals = 1, passenger = true, pos = { 3000, 0 } } } },
+			[44] = { name = "Rival Halt", owner = 7, stations = { { id = 441, terminals = 1, passenger = true, pos = { 100, 0 } } } },
+			[45] = { name = "Freight Yard", stations = { { id = 451, terminals = 2, carriers = { "RAIL" }, pos = { 200, 0 } } } },
+			[46] = { name = "Empty", stations = {} },
+		},
+		positions = { [11] = { 50, 0 } },
+		names = { [11] = "Emsworth" },
+	}
+	for k, v in pairs(extra or {}) do w[k] = v end
+	return vehicleGame(w)
+end
+
+-- every command the fake engine got of a kind
+local function sent(g, kind)
+	local out = {}
+	for _, c in ipairs(g.commands) do if c.kind == kind then out[#out + 1] = c end end
+	return out
+end
+
+local function hasNote(a, text)
+	for _, n in ipairs(a.notes or {}) do if n:find(text, 1, true) then return true end end
+	return false
+end
+
+test("core.lineArgs: create, update, delete; empty, single, nil, userdata and malformed stops refused", function()
+	local a = core.lineArgs({ action = "create", stops = { "Central", " 42 ", 43 } })
+	eq(a.via, "gui"); eq(a.stops[1], "Central"); eq(a.stops[2], 42, "digits are an id"); eq(a.stops[3], 43)
+	eq(core.lineArgs({ action = "update", line = 21, name = "[probe] A" }).name, "[probe] A")
+	eq(core.lineArgs({ action = "update", line = 21, cargo = 2 }).cargo, "2")
+	eq(core.lineArgs({ action = "delete", line = 21, sellVehicles = true }).sellVehicles, true)
+	for _, bad in ipairs({
+		{ nil, "action must be" },
+		{ { action = "make" }, "action must be" },
+		{ { action = "create" }, "give the stops" },
+		{ { action = "create", stops = {} }, "stops is empty" },
+		{ { action = "create", stops = { "Central" } }, "at least 2 stops" },
+		{ { action = "create", stops = { "Central", "" } }, "stop 2 is empty" },
+		{ { action = "create", stops = { "Central", "   " } }, "stop 2 is empty" },
+		{ { action = "create", stops = { "Central", newproxy(true) } }, "got a userdata" },
+		{ { action = "create", stops = { "Central", 4.5 } }, "stop 2 must be an entity id" },
+		{ { action = "create", stops = { "Central", -1 } }, "stop 2 must be an entity id" },
+		{ { action = "create", stops = { "Central", { 41 } } }, "got a table" },
+		{ { action = "create", stops = newproxy(true) }, "stops must be a list" },
+		{ { action = "create", stops = { a = 1, b = 2 } }, "stops must be a list" },
+		{ { action = "create", stops = { [1] = 41, [3] = 42 } }, "stops must be a list" },
+		{ { action = "create", stops = { 41, 42 }, line = 21 }, "no line" },
+		{ { action = "create", stops = { 41, 42 }, via = "react" }, "via must be" },
+		{ { action = "create", stops = { 41, 42 }, name = "" }, "name must be" },
+		{ { action = "create", stops = { 41, 42 }, name = newproxy(true) }, "name must be" },
+		{ { action = "create", stops = { 41, 42 }, name = string.rep("x", 101) }, "longer than" },
+		{ { action = "create", stops = { 41, 42 }, cargo = true }, "cargo must be" },
+		{ { action = "update", stops = { 41, 42 } }, "give the line" },
+		{ { action = "update", line = 21 }, "give stops, name or cargo" },
+		{ { action = "update", line = "x", name = "a" }, "line must be an entity id" },
+		{ { action = "delete" }, "give the line" },
+		{ { action = "delete", line = 21, stops = { 41, 42 } }, "delete takes no" },
+	}) do
+		local ok, err = core.lineArgs(bad[1])
+		eq(ok, nil, bad[2])
+		truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	local many = {}
+	for i = 1, 51 do many[i] = i end
+	truthy(select(2, core.lineArgs({ action = "create", stops = many })):find("more than 50"))
+end)
+
+test("core.lineRequests and matchCargo: plain requests only; cargo by id, name, label, unique part", function()
+	local list = core.lineRequests({
+		{ id = 1, kind = "create", stops = { { stationGroup = 41 }, { stationGroup = "42" } }, name = "A", cargo = 2 },
+		{ id = 2, kind = "update", line = 21, stops = { { stationGroup = 41 }, { bad = true } } }, -- a bad stop: dropped
+		{ id = 3, kind = "update" }, -- no line
+		{ id = 4, kind = "delete", line = 21 }, -- not a gui kind
+		{ id = 5, kind = "update", line = 21, cargo = 1, name = newproxy(true) },
+		"junk", { kind = "create" },
+	})
+	eq(#list, 2)
+	eq(list[1].stops[2].stationGroup, 42); eq(list[1].cargo, 2); eq(list[1].name, "A")
+	eq(list[2].id, 5); eq(list[2].stops, nil); eq(list[2].name, nil, "only a string name goes")
+	eq(#core.lineRequests(nil), 0); eq(#core.lineRequests(newproxy(true)), 0)
+	local cargo = { { id = 0, name = "PASSENGERS", label = "Passengers" }, { id = 1, name = "COAL", label = "Coal" },
+		{ id = 2, name = "GRAIN", label = "Grain" }, { id = 3, name = "COAL_TAR", label = "Coal tar" } }
+	eq(core.matchCargo(cargo, "grain").id, 2)
+	eq(core.matchCargo(cargo, "Coal").id, 1, "an exact label beats the longer one")
+	eq(core.matchCargo(cargo, 2).id, 2); eq(core.matchCargo(cargo, "0").id, 0)
+	eq(core.matchCargo(cargo, "rai").id, 2)
+	truthy(select(2, core.matchCargo(cargo, "o")):find("cargo types match"))
+	truthy(select(2, core.matchCargo(cargo, "milk")):find("no cargo type matches"))
+	truthy(select(2, core.matchCargo(nil, "")):find("give the cargo"))
+	eq(core.radiusArg(nil), 1000); eq(core.radiusArg("250"), 250)
+	for _, bad in ipairs({ 0, -5, "x", 1e9, 0 / 0 }) do eq(core.radiusArg(bad), nil, tostring(bad)) end
+end)
+
+test("stations: the company's and nobody's groups with stations, platforms, carriers; --name; --near and radius", function()
+	local g = lineWorld()
+	send(g, 601, "stations", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 601)
+	eq(a.ok, true, tostring(a.error))
+	local names = {}
+	for _, s in ipairs(a.stations) do names[#names + 1] = s.name end
+	eq(table.concat(names, ","), "Central,Central Market,Empty,Freight Yard,Harbour", "Rival Halt is another company's")
+	local central = a.stations[1]
+	eq(central.id, 41); eq(central.stations, 1); eq(central.terminals, 2); eq(central.carriers[1], "ROAD")
+	eq(central.owner, "none"); eq(a.stations[5].owner, "player"); eq(a.stations[4].carriers[1], "RAIL")
+	eq(central.position.x, 0); eq(central.stationIds, nil)
+	send(g, 602, "stations", '{ name = "CENT" }')
+	frames(g, 10)
+	eq(#final(g, 602).stations, 2)
+	send(g, 603, "stations", "{ near = 11, radius = 800 }")
+	frames(g, 10)
+	local b = final(g, 603)
+	names = {}
+	for _, s in ipairs(b.stations) do names[#names + 1] = s.name .. "@" .. s.distance end
+	eq(table.concat(names, ","), "Central@50,Freight Yard@150,Harbour@750", "nearest first, the rival's left out")
+	eq(b.radius, 800); eq(b.centre.x, 50)
+	send(g, 604, "stations", "{ near = 11 }")
+	frames(g, 10)
+	eq(#final(g, 604).stations, 3, "1000 m by default")
+	send(g, 605, "stations", "{ near = 12 }")
+	frames(g, 10)
+	truthy(final(g, 605).error:find("has no position"))
+	send(g, 606, "stations", '{ near = 11, radius = -1 }')
+	frames(g, 10)
+	truthy(final(g, 606).error:find("radius must be"))
+	send(g, 607, "stations", '{ near = "x" }')
+	frames(g, 10)
+	truthy(final(g, 607).error:find("near must be an entity id"))
+end)
+
+test("line create via gui: the base's line_util builds it; stops, platforms and name read back from the engine", function()
+	local g = lineWorld()
+	send(g, 610, "line", '{ action = "create", stops = { "Central", 42 } }')
+	frames(g, FIRST)
+	local a, n = final(g, 610)
+	eq(n, 1); eq(a.ok, true, tostring(a.error))
+	eq(a.via, "gui"); truthy((g.lineUtilCalls or 0) > 0, "line_util ran")
+	truthy(a.line and g.lines[a.line], "the new line's entity")
+	eq(a.name, "Line 1", "the base's makeLineName")
+	eq(#a.stops, 2)
+	eq(a.stops[1].stationGroup, 41); eq(a.stops[1].name, "Central"); eq(a.stops[1].station, 0)
+	eq(a.stops[1].terminal, 1, "the engine's assignment (getBestLineAssignment)"); eq(a.stops[1].stationEntity, 411)
+	eq(a.stops[2].stationGroup, 42); eq(a.stops[2].name, "Harbour")
+	eq(a.sentStops[1].terminal, 1, "the recipe's report")
+	eq(a.loads[1], "PASSENGERS", "autoLoadConfig: passengers at passenger stations")
+	eq(a.vehicles, 0)
+	truthy(hasNote(a, "via gui"), "says it ran in the speed control")
+	eq(#sent(g, "lineCreate"), 1)
+	eq(g.crashed, nil)
+	eq(fake.guiSave.hummer_remote_probe.lines[1], nil, "the request is withdrawn once answered")
+end)
+
+test("line create via cmd: the probe's own stops, the engine's platforms, the name asked for", function()
+	local g = lineWorld()
+	send(g, 611, "line", '{ action = "create", stops = { 41, 43 }, name = "[probe] cmd", via = "cmd" }')
+	frames(g, FIRST)
+	local a, n = final(g, 611)
+	eq(n, 1); eq(a.ok, true, tostring(a.error))
+	eq(a.via, "cmd"); eq(g.lineUtilCalls, nil, "no base module")
+	eq(a.name, "[probe] cmd"); eq(a.sentName, "[probe] cmd")
+	eq(a.stops[1].terminal, 1); eq(a.stops[2].stationGroup, 43)
+	eq(a.loads[1], "PASSENGERS")
+	truthy(hasNote(a, "via cmd"), "the cmd note")
+	local cmd = sent(g, "lineCreate")[1]
+	eq(cmd.line.reservationPriority, 1.0)
+	eq(#cmd.line.stops[1].stopConfig.load, 3, "one entry per cargo type, as the base's makeIdvector")
+	eq(cmd.line.stops[1].maxAdditionalWaitingTime, 30, "road: the base's 30 s")
+end)
+
+test("line create: unknown, ambiguous, foreign, platformless and carrier-less stops are refused before sending", function()
+	local g = lineWorld()
+	local cases = {
+		{ '{ "Central", "Nowhere" }', 'no match for "Nowhere"' },
+		{ '{ "Cent", 42 }', '2 matches for "Cent"' },
+		{ '{ 41, 999 }', "999 is no station group or station" },
+		{ '{ 41, 44 }', "belongs to another company" },
+		{ '{ 41, "Rival Halt" }', "belongs to another company" },
+		{ '{ 41, 46 }', "has no station with a platform" },
+		{ '{ 41, 45 }', "share no carrier" },
+		{ '{ 41 }', "at least 2 stops" },
+		{ '{ }', "stops is empty" },
+	}
+	for i, c in ipairs(cases) do
+		for _, via in ipairs({ "gui", "cmd" }) do
+			local id = 620 + i * 2 + (via == "cmd" and 1 or 0)
+			send(g, id, "line", string.format('{ action = "create", stops = %s, via = %q }', c[1], via))
+			frames(g, i == 1 and via == "gui" and FIRST or 10)
+			local a, n = final(g, id)
+			eq(n, 1, c[2]); eq(a.ok, false, c[2])
+			truthy(tostring(a.error):find(c[2], 1, true), tostring(a.error) .. " / " .. c[2])
+		end
+	end
+	eq(#sent(g, "lineCreate"), 0, "nothing sent")
+	eq(g.crashed, nil)
+	-- a station entity stands for its group
+	send(g, 650, "line", '{ action = "create", stops = { 411, 421 }, via = "cmd" }')
+	frames(g, 10)
+	local a = final(g, 650)
+	eq(a.ok, true, tostring(a.error)); eq(a.stops[1].stationGroup, 41); eq(a.stops[2].stationGroup, 42)
+end)
+
+test("line create: no platform from the engine is 0/0 as the base does (noted via cmd), never a -1 sent", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = lineWorld({ noAssignment = true })
+		send(g, 651, "line", string.format('{ action = "create", stops = { 41, 42 }, via = %q }', via))
+		frames(g, FIRST)
+		local a = final(g, 651)
+		eq(a.ok, true, via .. " " .. tostring(a.error))
+		eq(a.stops[1].station, 0, via); eq(a.stops[1].terminal, 0, via)
+		if via == "cmd" then truthy(hasNote(a, "found no platform"), "noted") end
+		eq(g.crashed, nil, via)
+	end
+end)
+
+test("line_configs.checkStops: a stop without a platform, or one past the station's, never goes out", function()
+	local g = lineWorld()
+	local lc = require "hummer_remote_probe::/line_configs.lua"
+	truthy(lc.checkStops({ { stationGroup = 41, station = 0, terminal = 1 }, { stationGroup = 42, station = 0, terminal = 0 } }))
+	for _, c in ipairs({
+		{ { { stationGroup = 41, station = -1, terminal = 0 } }, "no platform was assigned" },
+		{ { { stationGroup = 41, station = 0, terminal = -1 } }, "no platform was assigned" },
+		{ { { stationGroup = 41, station = 1, terminal = 0 } }, "does not exist (1 stations)" },
+		{ { { stationGroup = 41, station = 0, terminal = 2 } }, "does not exist (2 terminals)" },
+		{ { { stationGroup = 46, station = 0, terminal = 0 } }, "does not exist (0 stations)" },
+		{ { { stationGroup = nil, station = 0, terminal = 0 } }, "no platform" },
+		{ {}, "no stops" },
+		{ nil, "no stops" },
+	}) do
+		local ok, err = lc.checkStops(c[1])
+		eq(ok, nil, c[2]); truthy(tostring(err):find(c[2], 1, true), tostring(err))
+	end
+	eq(g.crashed, nil)
+end)
+
+-- a line 21 at Central (terminal 1) and Harbour, with two vehicles
+local function lineWithVehicles(extra)
+	extra = extra or {}
+	extra.lines = { [21] = { name = "Bus 1", stops = { { stationGroup = 41, station = 0, terminal = 1 },
+		{ stationGroup = 42, station = 0, terminal = 0 } } } }
+	local caps = { 30, 0, 0 } -- passengers only, per cargo type (id + 1)
+	local v1, v2 = fleetOf(101, 5, 21), fleetOf(101, 5, 21)
+	v1.capacities, v2.capacities = caps, caps
+	extra.fleet = { [601] = v1, [602] = v2 }
+	return lineWorld(extra)
+end
+
+test("lines: name, stops with their station groups' names, vehicles, what is loaded and what they carry", function()
+	local g = lineWithVehicles()
+	send(g, 660, "lines", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 660)
+	eq(a.ok, true, tostring(a.error)); eq(#a.lines, 1)
+	local l = a.lines[1]
+	eq(l.id, 21); eq(l.name, "Bus 1"); eq(l.vehicles, 2); eq(l.vehicleIds[1], 601)
+	eq(l.stops[1].name, "Central"); eq(l.stops[1].terminal, 1); eq(l.stops[2].stationGroup, 42)
+	eq(l.vehicleCargo[1], "PASSENGERS"); eq(#l.vehicleCargo, 1); eq(l.carriers[1], "ROAD")
+	send(g, 661, "lines", '{ name = "tram" }')
+	frames(g, 10)
+	eq(next(final(g, 661).lines), nil, "filtered out")
+end)
+
+test("lines / stations: empty lists go out as [], not {} (seen in game 2026-11-17)", function()
+	local g = lineWorld({})
+	send(g, 662, "lines", "{  }")
+	frames(g, FIRST)
+	local t = answerText(g, 662) or ""
+	truthy(t:find('\\"lines\\":%[%]') or t:find('"lines":%[%]'), t)
+	local h = lineWorld({ lines = { [21] = { name = "Bus 1", stops = { { stationGroup = 41, station = 0, terminal = 1 },
+		{ stationGroup = 42, station = 0, terminal = 0 } } } } })
+	send(h, 664, "lines", "{  }")
+	frames(h, FIRST)
+	local u = answerText(h, 664) or ""
+	for _, key in ipairs({ "vehicleIds", "vehicleCargo" }) do
+		truthy(u:find('\\"' .. key .. '\\":%[%]') or u:find('"' .. key .. '":%[%]'), key .. " in " .. u)
+	end
+	send(h, 665, "stations", '{ name = "nothing like this" }')
+	frames(h, 10)
+	local v = answerText(h, 665) or ""
+	truthy(v:find('\\"stations\\":%[%]') or v:find('"stations":%[%]'), v)
+end)
+
+test("line update: stops added keep the old stops' platforms; a rename alone; cargo as the cargo filter sets it", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = lineWithVehicles()
+		send(g, 670, "line", string.format('{ action = "update", line = 21, stops = { 41, 42, 43 }, name = "[probe] Bus", via = %q }', via))
+		frames(g, FIRST)
+		local a, n = final(g, 670)
+		eq(n, 1); eq(a.ok, true, via .. " " .. tostring(a.error))
+		eq(a.line, 21); eq(#a.stops, 3, via); eq(a.stops[3].stationGroup, 43)
+		eq(a.stops[1].terminal, 1, via .. ": Central keeps its platform")
+		eq(a.name, "[probe] Bus", via); eq(a.before.name, "Bus 1"); eq(#a.before.stops, 2)
+		eq(#sent(g, "setName"), 1, "the base's makeEntitySetNameCmd")
+		send(g, 671, "line", string.format('{ action = "update", line = 21, name = "renamed", via = %q }', via))
+		frames(g, 10)
+		local b = final(g, 671)
+		eq(b.ok, true, tostring(b.error)); eq(b.name, "renamed"); eq(#sent(g, "lineUpdate"), 1, "a rename alone sends no line")
+		send(g, 672, "line", string.format('{ action = "update", line = 21, cargo = "grain", via = %q }', via))
+		frames(g, 10)
+		local c = final(g, 672)
+		eq(c.ok, true, via .. " " .. tostring(c.error))
+		eq(#c.loads, 1); eq(c.loads[1], "GRAIN", via); eq(c.customFilters, true)
+		eq(#c.stops, 3, "the stops stay")
+		eq(g.crashed, nil, via)
+	end
+end)
+
+test("line update: an unknown line, someone else's, an unknown cargo and refusals answer once with an error", function()
+	local g = lineWithVehicles({ renameFails = true })
+	send(g, 680, "line", '{ action = "update", line = 999, name = "x" }')
+	frames(g, FIRST)
+	truthy(final(g, 680).error:find("no line 999"))
+	g.lines[77] = { name = "theirs", stops = {} }
+	-- 77 is a line, but not in getLinesForPlayer
+	local real = api.engine.system.lineSystem.getLinesForPlayer
+	api.engine.system.lineSystem.getLinesForPlayer = function() return { 21 } end
+	send(g, 681, "line", '{ action = "update", line = 77, name = "x" }')
+	frames(g, 10)
+	api.engine.system.lineSystem.getLinesForPlayer = real
+	g.lines[77] = nil
+	truthy(final(g, 681).error:find("is not the company's"))
+	send(g, 682, "line", '{ action = "update", line = 21, cargo = "milk" }')
+	frames(g, 10)
+	truthy(final(g, 682).error:find("no cargo type matches"))
+	send(g, 683, "line", '{ action = "update", line = 21, name = "y" }')
+	frames(g, 10)
+	local a, n = final(g, 683)
+	eq(n, 1); eq(a.ok, false); truthy(a.error:find("refused the name"), a.error)
+end)
+
+test("line delete: refused with vehicles unless sellVehicles, which sells them first as the line manager does", function()
+	local g = lineWithVehicles()
+	send(g, 690, "line", '{ action = "delete", line = 21 }')
+	frames(g, FIRST)
+	local a = final(g, 690)
+	eq(a.ok, false); truthy(a.error:find("has 2 vehicles"), a.error)
+	eq(#sent(g, "lineDestroy"), 0); truthy(g.lines[21])
+	send(g, 691, "line", '{ action = "delete", line = 21, sellVehicles = true }')
+	frames(g, 10)
+	local b, n = final(g, 691)
+	eq(n, 1); eq(b.ok, true, tostring(b.error)); eq(b.removed, true); eq(b.via, "cmd")
+	eq(#b.soldVehicles, 2); eq(g.fleet[601], nil); eq(g.lines[21], nil)
+	eq(b.before.name, "Bus 1")
+	-- an empty line goes without the flag
+	local g2 = lineWorld({ lines = { [22] = { name = "empty", stops = { { stationGroup = 41 }, { stationGroup = 42 } } } } })
+	send(g2, 692, "line", '{ action = "delete", line = 22 }')
+	frames(g2, FIRST)
+	eq(final(g2, 692).ok, true); eq(g2.lines[22], nil)
+end)
+
+test("line via gui: line_util not loading is one error answer and no cmd fallback; no speed control is a timeout", function()
+	local g = lineWorld({ noLineUtil = true })
+	send(g, 700, "line", '{ action = "create", stops = { 41, 42 } }')
+	frames(g, FIRST)
+	local a, n = final(g, 700)
+	eq(n, 1); eq(a.ok, false)
+	truthy(a.error:find("could not load /gui/line_vehicle_mgmt/line_util.tl", 1, true), a.error)
+	eq(#sent(g, "lineCreate"), 0)
+	local g2 = lineWorld({ noSpeedControl = true })
+	send(g2, 701, "line", '{ action = "create", stops = { 41, 42 } }')
+	frames(g2, FIRST)
+	frames(g2, 70, 1)
+	local b, m = final(g2, 701)
+	eq(m, 1); eq(b.ok, false); truthy(b.error:find("no word from the speed control", 1, true), b.error)
+	eq(next(g2.lines), nil)
+end)
+
+test("line via gui: requests left by the last game are never run; the engine refusing is an error", function()
+	local g = lineWorld()
+	fake.guiSave.hummer_remote_probe.lines = { { id = 1, kind = "create", stops = { { stationGroup = 41 }, { stationGroup = 42 } } } }
+	local exports = loadSpeedScript()
+	g.speedControlOff = true
+	frame(exports.SpeedControl, { gameCtx = {} })
+	frame(exports.SpeedControl, { gameCtx = {} })
+	eq(next(g.lines), nil, "the old request is not run")
+	local g2 = lineWorld({ lineFails = true })
+	send(g2, 702, "line", '{ action = "create", stops = { 41, 42 } }')
+	frames(g2, FIRST)
+	local a, n = final(g2, 702)
+	eq(n, 1); eq(a.ok, false); truthy(a.error:find("refused the line"), a.error)
+end)
+
+test("line via gui: a report that does not come through still answers from the engine, with a note", function()
+	local g = lineWorld({ foreignKeyFails = true })
+	send(g, 703, "line", '{ action = "create", stops = { 41, 42 }, name = "[probe] r" }')
+	frames(g, FIRST)
+	local a, n = final(g, 703)
+	eq(n, 1); eq(a.ok, true, tostring(a.error))
+	truthy(a.line and g.lines[a.line], "found as the company's new line at those stops")
+	eq(a.sentStops, nil); truthy(hasNote(a, "no report"))
+	send(g, 704, "line", string.format('{ action = "update", line = %d, stops = { 42, 41, 43 } }', a.line))
+	frames(g, 20)
+	local b = final(g, 704)
+	eq(b.ok, true, tostring(b.error)); eq(b.stops[3].stationGroup, 43)
+end)
+
+-- after review (2026-11-17)
+test("line --cargo: a platform that cannot take the cargo is refused before sending (gui and cmd)", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local groups = lineWorld().groups
+		groups[41].stations[1].kind = "passenger"
+		local g = lineWorld({ stationGroups = groups })
+		send(g, 730, "line", string.format('{ action = "create", stops = { 41, 42 }, cargo = "coal", via = %q }', via))
+		frames(g, FIRST)
+		local a, n = final(g, 730)
+		eq(n, 1); eq(a.ok, false, via)
+		truthy(tostring(a.error):find("takes no cargo", 1, true), tostring(a.error))
+		eq(#sent(g, "lineCreate"), 0, via)
+		send(g, 731, "line", string.format('{ action = "create", stops = { 41, 42 }, cargo = "passengers", via = %q }', via))
+		frames(g, 10)
+		eq(final(g, 731).ok, true, via .. ": passengers are fine there")
+	end
+end)
+
+test("line update via cmd: the engine assigns platforms only when a stop has none, as autoAssignTerminals", function()
+	local g = lineWithVehicles({ reassign = true })
+	send(g, 732, "line", '{ action = "update", line = 21, stops = { 42, 41 }, via = "cmd" }')
+	frames(g, FIRST)
+	local a = final(g, 732)
+	eq(a.ok, true, tostring(a.error)); eq(g.assignCalls, nil, "a reorder asks nothing")
+	eq(a.stops[2].terminal, 1, "Central keeps its platform")
+	send(g, 733, "line", '{ action = "update", line = 21, stops = { 42, 41, 43 }, via = "cmd" }')
+	frames(g, 10)
+	local b = final(g, 733)
+	eq(b.ok, true, tostring(b.error)); eq(g.assignCalls, 1)
+	eq(b.stops[2].terminal, 0, "the engine may move a kept stop then, as in the base")
+end)
+
+test("line stops: the same station group twice in a row, or last and first, is refused", function()
+	local g = lineWorld()
+	for i, stops in ipairs({ "{ 41, 41, 42 }", "{ 41, 42, 41 }", '{ "Central", 411 }' }) do
+		send(g, 740 + i, "line", string.format('{ action = "create", stops = %s, via = "cmd" }', stops))
+		frames(g, i == 1 and FIRST or 10)
+		local a = final(g, 740 + i)
+		eq(a.ok, false, stops); truthy(tostring(a.error):find("neighbours", 1, true), tostring(a.error))
+	end
+	send(g, 745, "line", '{ action = "create", stops = { 41, 42, 41, 43 }, via = "cmd" }')
+	frames(g, 10)
+	eq(final(g, 745).ok, true, "a group may come back later in the round")
+	eq(#sent(g, "lineCreate"), 1)
+end)
+
+test("line via gui without reports: two creates at the same stops each get their own line", function()
+	local g = lineWorld({ foreignKeyFails = true, callbackFrames = 30 })
+	send(g, 750, "line", '{ action = "create", stops = { 41, 42 } }')
+	frames(g, FIRST)
+	send(g, 751, "line", '{ action = "create", stops = { 41, 42 } }')
+	frames(g, 120)
+	local a, b = final(g, 750), final(g, 751)
+	eq(a.ok, true, tostring(a.error)); eq(b.ok, true, tostring(b.error))
+	truthy(a.line ~= b.line, "not the same line twice")
+end)
+
+test("a line made and a vehicle bought onto it: buy --line answers with the vehicle's id, lines counts it", function()
+	local g = lineWorld()
+	send(g, 710, "line", '{ action = "create", stops = { 41, 42 }, name = "[probe] run" }')
+	frames(g, FIRST)
+	local l = final(g, 710)
+	eq(l.ok, true, tostring(l.error))
+	send(g, 711, "buy", string.format('{ model = "bus_1900", depot = 301, line = %d }', l.line))
+	frames(g, 20)
+	local b = final(g, 711)
+	eq(b.ok, true, tostring(b.error))
+	eq(#b.vehicleIds, 1); eq(b.vehicleIds[1], b.vehicles[1].entity); eq(b.vehicles[1].line, l.line)
+	send(g, 712, "lines", '{ name = "[probe]" }')
+	frames(g, 10)
+	local ls = final(g, 712)
+	eq(ls.lines[1].vehicles, 1); eq(ls.lines[1].vehicleIds[1], b.vehicleIds[1])
+end)
+
+test("line commands are refused in the main menu", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 720, "line", '{ action = "create", stops = { 41, 42 } }')
+	frames(g, FIRST)
+	truthy(final(g, 720).error:find("needs a running game"))
+end)
+
+print(string.format("\n%d passed, %d failed", passes, failures))
+os.exit(failures == 0 and 0 or 1)
