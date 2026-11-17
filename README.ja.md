@@ -158,7 +158,7 @@ python3 tools/tf3ctl.py line delete 21 [--sell-vehicles]
 ```
 python3 tools/tf3ctl.py connect --from 5123 --to Harbour                 # 経路を計画して試算するだけ。何も建てない
 python3 tools/tf3ctl.py connect --from 5123 --to 5200 --build            # 建てる
-python3 tools/tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/country/country_new_medium.street_template]
+python3 tools/tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/country/country_old_medium.street_template]
 python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|simple|<template> --electric]
     [--slope 3 --radius 250] [--no-bridges] [--no-tunnels] [--build [--clear]] [--timeout 300]
 ```
@@ -175,12 +175,18 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
   ホームの空いている端の集まりとして扱い、互いにいちばん向き合う端の組を使います。
 - 既定値は Track Connector の設定の既定値と同じです: 線路は 2.5 % と半径 300 m、道路は 6 % と 100 m (道路の種類に造れる最大の勾配が
   書いてあれば、それより急な指定はその値に下げる)。橋とトンネルは使える。`--template` の無い道路は、Track Connector の道路ツールと同じく、始点の道路の種類と
-  車線をそのまま使います。
+  車線をそのまま使います。ただし、その種類が construction の入口の道 (`street/constructions/`。産業、駅、車庫が持つもので、
+  プレイヤーの道路のメニューには無い) か、ゲームの年に建てられない種類 (その `availability`) なら、本体の中と小の田舎道
+  (新、旧の順) のうち、その年に建てられる最初のものを、始点の道路の車線は写さずに使い、notes にそう書きます。
+- `--template` で渡した道路の種類が、そういう入口の道か、ゲームの年に建てられない種類なら、何も送る前に断ります。線路の
+  種類が年代の外のときは notes に書くだけです (スクリプトから建てるときにゲームが断るかは未確認)。返事にはゲームの `year` が入ります。
 - `--build` なしの返事は、計画と試算です: `route` (`points`、`pieces`、`pieceKinds`、`length`、`straight`、`bridge`、
   `tunnel` (m)、`steepestPercent`、`maxCut`、`maxFill`)、`plan` (秒、フレーム数、いちばん長いフレーム、探索の手数、地図の
   読み取りで見つけたもの)、`preview` (Track Connector の判定: `ok`、`short`、`summary`)、`estimate` (`cost`、`errors`、
   `problem`、`blockers`。町の建物をどかせば建つときは `clear`、`clearCost`、`clearCount`)、`buildable`、送った
   `settings`、`from` / `to` (node、位置、駅の空いている端)。`ok` は `buildable` と同じで、建たない理由は `error` に入ります。
+  費用の無い拒否 (ゲームの「建設不可」で $0) は、ゲームが値段をつける前に経路を断ったということです。notes にそう書き、
+  Track Connector が数秒後に、断られた piece をログに出します。
 - `--build` では、試算が通るとき (または `--clear` で、じゃまな町の建物をどかせるとき) に、Track Connector の
   ゲームスクリプトが建てます。`build` には Track Connector の結果 (`tc`)、`balanceBefore`、`balanceAfter`、`spent` (残高の
   差。建てた後で別の MOD が上乗せした費用も入る)、`estimatedCost`、`beyondEstimate`、`newEdges` / `newNodes` (建てる前には
@@ -461,11 +467,16 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
 地図は probe 自身のコードで作ります。考え方は Track Connector のツールと同じです (経路のまわりの土地を octree で
 読み、建物はふさがった土地、線は交差とする)。地形の高さ (4 m ごとに聞く) と水 (10 m ごと。水の上では水位 + 6.5 m に見せるので、planner は
 橋を架ける)、construction と町の建物はふさがった土地、道路と線路の piece は交差。5 m のマスを 200 m のブロックにまとめ、
-octree で読みます。2 つの端を結ぶ直線に沿った帯の中のブロックは、計画の前に 1 フレームに 6 つずつ読み、それ以外は planner
-が最初に聞いたときに読みます。planner は自分の coroutine の中から聞くので、そうして 3 つ読むごとに、そこで次のフレームまで待ちます (時間ではなく
+octree で読みます。エンジンが産業の construction とは別に持つ部分 (`INDUSTRY` か `SUBCONSTRUCTION` があり、`CONSTRUCTION`
+の無い entity) もふさがった土地です。planner が探す範囲 (2 つの端を囲む箱と、そのまわり 1.5 km。端の間の距離の 0.6 倍の
+ほうが大きければそれ。地図の内側。多くて 3000 個で、端を結ぶ直線に近いものから) のブロックは、計画の前に 1 フレームに 6 つずつ
+読み、それ以外は planner が最初に聞いたときに読みます。planner は自分の coroutine の中から聞くので、そうして 3 つ読むごとに、そこで次のフレームまで待ちます (時間ではなく
 数で区切る。Linux の `os.clock` は実時間より速く進むため)。coroutine の無い planner は待てないので、1 回の持ち時間で 8 個を
-超えたら 1 回だけログに出します。2 つの端の piece と、端が属する construction は除き、端から 75 m 以内の建物はふさがないものと
-します。Track Connector のツールと比べて無いもの: 踏切、交差する道路や線路の高さ (planner は地面の 7.5 m 上と 9.5 m 下と
+超えたら 1 回だけログに出します。2 つの端の piece と、端が属する construction の piece は交差にしません。その construction
+自体はふさがった土地のままです。開けるのは端の口だけです: 端の node から 10 m と、端の向きに外へ広がるくさび形 (node で左右
+6 m、外へ 1 m ごとに 0.15 m 広がる)。くさびの長さは 20 m か、端の node が中にある建物をすべて抜けてさらに 10 m (construction
+自身の道の端は、その construction の箱の中にある) で、長くて 150 m です。`plan.map` には `endConstructions`、
+`leftOutPieces`、`mouths` (`from` / `to`: `length` と、端の node が中にある建物の数 `inside`) が入ります。Track Connector のツールと比べて無いもの: 踏切、交差する道路や線路の高さ (planner は地面の 7.5 m 上と 9.5 m 下と
 みなす)、既存の線路や道路に沿って走ること (交差とみなすので、離れて通るか橋で越える)、建設を断られて覚える水域、piece の
 途中からの分岐、複線以上、駅のホームの並び、経路の目標。
 
@@ -477,7 +488,9 @@ octree で読みます。2 つの端を結ぶ直線に沿った帯の中のブ�
   octree が返したものの component。street system の呼び出しは node である entity にだけします (それ以外を聞くとエンジンが
   assertion で落ちる)。端は経路を送る直前にもう一度確かめます。
 - `streetConnectorSystem.getConstructionEntityForStation` (無ければ、駅のまわりでその駅を持つ construction を探す) と、
-  道路の piece の `roadTemplate` (読めなければ既定の道路の種類を使う)。
+  道路の piece の `roadTemplate` (読めなければ、ゲームの年の田舎道を使う)。
+- `api.engine.util.getYear` (無ければゲーム時間の暦の日付) と、street template の `availability`: どちらかが読めないときは、
+  年代で断ることも種類を替えることもしない。産業の入口の道から、産業の敷地を避けて引いた道路を、ゲームがそこで受け付けるか。
 - 一時停止中にゲームスクリプトがイベントを受けるか、どれだけ速いか (待つのは 30 秒)。
 - planner の持ち時間: Track Connector は `os.clock` で測り、Linux ではそれがプロセス全体の CPU 時間なので、実時間の 15 ms
   よりずっと短くなり、そのツールより計画が遅くなりうる。その前の地図の読み取りは、時間ではなく 1 フレームのブロック数で

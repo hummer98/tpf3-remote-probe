@@ -7,6 +7,8 @@
 --   nodes = { [id] = { x, y, z } }, edges = { [id] = { node0, node1, road = true (a street), template } },
 --   constructions = { [id] = { box = { x0, y0, x1, y1 }, stations = { ids }, frozenEdges = { ids }, depots } },
 --   townBuildings = { [id] = { box } }, stationConstruction = { [station] = construction },
+--   industries = { [id] = { box } } (an industry's part without a CONSTRUCTION component: INDUSTRY + SUBCONSTRUCTION),
+--   year (what api.engine.util.getYear gives; none: no such function), availability = { [template] = { yearFrom, yearTo } },
 --   height = fn(x, y), water = fn(x, y), waterLevel, bounds = { x0, y0, x1, y1 }
 --   noTc (modules do not load), noScript (no game script entity), oldTc (a planner without newJob)
 --   planSteps (frames the planner takes), planForever, noRoute, planError, kinds = fn(i, n) -> edgeType
@@ -28,13 +30,20 @@ end
 M.STANDARD = "::/infrastructure/track/standard/standard.street_template"
 M.COUNTRY = "::/infrastructure/street/country/country_new_medium.street_template"
 M.TOWN = "::/infrastructure/street/town/town_medium.street_template"
+M.OLD_COUNTRY = "::/infrastructure/street/country/country_old_medium.street_template"
+M.ENTRANCE = "::/infrastructure/street/constructions/ind_entrance_old_country.street_template"
+-- the base game's years for those (yearTo is the first year without it); a test passes them as opts.availability
+M.BASE_YEARS = { [M.COUNTRY] = { yearFrom = 1940, yearTo = 0 }, [M.OLD_COUNTRY] = { yearFrom = 0, yearTo = 1940 },
+	[M.ENTRANCE] = { yearFrom = 0, yearTo = 1925 } }
+M.STREETS = { [M.COUNTRY] = true, [M.TOWN] = true, [M.OLD_COUNTRY] = true, [M.ENTRANCE] = true }
 -- the short track names the fake game knows, and their templates (no simple track, no electric high-speed track)
 M.SHORT_NAMES = {
 	standard = { plain = M.STANDARD, electric = "::/infrastructure/track/standard/standard_catenary.street_template" },
 	high_speed = { plain = "::/infrastructure/track/high_speed/high_speed.street_template" },
 }
 -- every street template the fake game has
-M.TEMPLATES = { [M.COUNTRY] = true, [M.TOWN] = true }
+M.TEMPLATES = {}
+for name in pairs(M.STREETS) do M.TEMPLATES[name] = true end
 for _, kinds in pairs(M.SHORT_NAMES) do for _, name in pairs(kinds) do M.TEMPLATES[name] = true end end
 
 -- the modules require gives for Track Connector's paths (M.current: what the installed game has)
@@ -55,12 +64,13 @@ function M.install(g, opts)
 	M.current = t
 	g.tc = t
 	local nodes, edges = copy(opts.nodes or {}), copy(opts.edges or {})
-	local cons, tbs = opts.constructions or {}, opts.townBuildings or {}
+	local cons, tbs, inds = opts.constructions or {}, opts.townBuildings or {}, opts.industries or {}
 	t.nodes, t.edges = nodes, edges
 	local nextId = 9000
 
 	local CT = api.type.ComponentType
-	for _, k in ipairs({ "BASE_NODE", "BASE_EDGE", "CONSTRUCTION", "TOWN_BUILDING", "TERRAIN", "GAME_SCRIPT" }) do CT[k] = k end
+	for _, k in ipairs({ "BASE_NODE", "BASE_EDGE", "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY", "SUBCONSTRUCTION", "TERRAIN",
+		"GAME_SCRIPT" }) do CT[k] = k end
 	api.type.enum.RoadType = { STREET = 0, TRACK = 1 }
 	api.type.Box3 = { new = function(lo, hi) return { min = lo, max = hi } end }
 	api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
@@ -90,6 +100,7 @@ function M.install(g, opts)
 		end
 		if cons[e] then return cons[e].box end
 		if tbs[e] then return tbs[e].box end
+		if inds[e] then return inds[e].box end
 	end
 
 	local baseComp, baseExists = api.engine.getComponent, api.engine.entityExists
@@ -106,12 +117,14 @@ function M.install(g, opts)
 			return c and { stations = copy(c.stations or {}), frozenEdges = copy(c.frozenEdges or {}), depots = copy(c.depots or {}) } or nil
 		elseif kind == "TOWN_BUILDING" then
 			return tbs[e] and {} or nil
+		elseif kind == "INDUSTRY" or kind == "SUBCONSTRUCTION" then
+			return inds[e] and {} or nil
 		elseif kind == "TERRAIN" then
 			return e == 1 and { waterLevel = opts.waterLevel or 0 } or nil
 		elseif kind == "GAME_SCRIPT" then
 			-- the engine hands out a copy of the state: a change to it reaches nothing
 			return (e == 777 and not opts.noScript) and { state = copy(t.state) } or nil
-		elseif kind == "BOUNDING_VOLUME" and (cons[e] or tbs[e]) then
+		elseif kind == "BOUNDING_VOLUME" and (cons[e] or tbs[e] or inds[e]) then
 			local b = boxOf(e)
 			return { bbox = { min = { x = b[1], y = b[2], z = 0 }, max = { x = b[3], y = b[4], z = 10 } } }
 		end
@@ -119,7 +132,8 @@ function M.install(g, opts)
 	end
 	-- the world (1), the game script's entity (777), stations, and what this file and the fake game hold
 	local function known(e)
-		return nodes[e] ~= nil or edges[e] ~= nil or cons[e] ~= nil or tbs[e] ~= nil or e == 1 or (e == 777 and not opts.noScript)
+		return nodes[e] ~= nil or edges[e] ~= nil or cons[e] ~= nil or tbs[e] ~= nil or inds[e] ~= nil or e == 1
+			or (e == 777 and not opts.noScript)
 			or baseExists(e) or baseComp(e, "STATION") ~= nil
 	end
 	api.engine.entityExists = known
@@ -162,7 +176,7 @@ function M.install(g, opts)
 	sys.octreeSystem = { findIntersectingEntities = function(box, cb)
 		t.octreeCalls = (t.octreeCalls or 0) + 1
 		local ids = {}
-		for _, set in ipairs({ nodes, edges, cons, tbs }) do for e in pairs(set) do ids[#ids + 1] = e end end
+		for _, set in ipairs({ nodes, edges, cons, tbs, inds }) do for e in pairs(set) do ids[#ids + 1] = e end end
 		table.sort(ids)
 		for _, e in ipairs(ids) do
 			local b = boxOf(e)
@@ -176,10 +190,21 @@ function M.install(g, opts)
 		if opts.noScript then return -1 end
 		return 777
 	end }
+	-- (ids: each template's place in the sorted list of names)
+	local tplNames = {}
+	for name in pairs(M.TEMPLATES) do tplNames[#tplNames + 1] = name end
+	table.sort(tplNames)
 	api.res.streetTemplateRep = {
-		find = function(name) return M.TEMPLATES[name] and 1 or -1 end,
-		get = function() return { maxSlopeBuild = opts.maxSlopeBuild or 0.1 } end,
+		find = function(name)
+			for i, n in ipairs(tplNames) do if n == name then return i end end
+			return -1
+		end,
+		get = function(id)
+			local av = (opts.availability or {})[tplNames[id]]
+			return { maxSlopeBuild = opts.maxSlopeBuild or 0.1, availability = av and copy(av) or { yearFrom = 0, yearTo = 0 } }
+		end,
 	}
+	api.engine.util.getYear = opts.year and function() return opts.year end or nil
 
 	-----------------------------------------------------------------------------------------------------------------
 	-- Track Connector's modules
@@ -276,7 +301,7 @@ function M.install(g, opts)
 			local kinds = M.SHORT_NAMES[track]
 			return kinds and kinds[electric and "electric" or "plain"] or M.STANDARD
 		end,
-		isStreet = function(name) return name == M.COUNTRY or name == M.TOWN end,
+		isStreet = function(name) return M.STREETS[name] == true end,
 	}
 
 	-----------------------------------------------------------------------------------------------------------------

@@ -161,7 +161,7 @@ end up in the difference too (a `warning` says so when game time moved).
 ```
 python3 tools/tf3ctl.py connect --from 5123 --to Harbour                 # plan it and dry-run it; nothing is built
 python3 tools/tf3ctl.py connect --from 5123 --to 5200 --build            # build it
-python3 tools/tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/country/country_new_medium.street_template]
+python3 tools/tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/country/country_old_medium.street_template]
 python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|simple|<template> --electric]
     [--slope 3 --radius 250] [--no-bridges] [--no-tunnels] [--build [--clear]] [--timeout 300]
 ```
@@ -179,13 +179,21 @@ Without the mod, `connect` answers with an error saying so, and every other comm
   taken.
 - Defaults are Track Connector's default settings: tracks 2.5 % and 300 m curves, roads 6 % and 100 m (a road type that states a
   steepest grade it may be built at lowers a steeper slope to that); bridges and tunnels on. A road without `--template` gets the start road's own type and lanes,
-  as Track Connector's road tool does.
+  as Track Connector's road tool does, unless that type is a construction's own entrance road (`street/constructions/`,
+  as industries, stations and depots have; not in the player's road menu) or cannot be built in the game's year (its
+  `availability`): then it gets the first of the base game's medium and small country roads (new, old) that can be
+  built that year, without the start road's lanes, and a note says so.
+- A road type given with `--template` that is such an entrance road, or that cannot be built in the game's year, is
+  refused before anything is sent. A track type out of its years only gets a note (whether the game refuses one from a
+  script is not known). The answer has the game's `year`.
 - Without `--build` the answer is the plan and the dry run: `route` (`points`, `pieces`, `pieceKinds`, `length`,
   `straight`, `bridge`, `tunnel` in metres, `steepestPercent`, `maxCut`, `maxFill`), `plan` (seconds, frames, the
   longest frame, search steps, what the map read found), `preview` (Track Connector's verdict: `ok`, `short`,
   `summary`), `estimate` (`cost`, `errors`, `problem`, `blockers`; `clear`, `clearCost`, `clearCount` when it can be
   built once town buildings go), `buildable`, the `settings` sent, `from` / `to` (node, position, the station's free
-  ends). `ok` is `buildable`; `error` says why not.
+  ends). `ok` is `buildable`; `error` says why not. A refusal without a cost (the game's "Not buildable" at $0) means
+  the game refused the route before pricing it; a note says so, and Track Connector logs the refused pieces a few
+  seconds later.
 - With `--build`, when the dry run allows it (or `--clear` and the town buildings in the way can go), the route is
   built by Track Connector's game script. `build` then has Track Connector's outcome (`tc`), `balanceBefore`,
   `balanceAfter`, `spent` (the balance difference, so a cost another mod adds after the build is in it),
@@ -485,11 +493,18 @@ state (`preview`, `estimates[key]`, `builds`, `build`) from the `GAME_SCRIPT` co
 The map is the probe's own code; the idea is the one Track Connector's tool has too (read the land around the
 way through the octree, buildings as blocked land, lines as crossings). Terrain height (asked every 4 m) and water (every 10 m; over water the planner sees the
 water level plus 6.5 m, so it bridges), constructions and town buildings as blocked land, and road and track pieces
-as crossings, on 5 m cells in 200 m blocks read through the octree. The blocks in a band along the straight line
-between the ends are read before planning, six per frame; others when the planner first asks. The planner asks from inside its own coroutine, so after every three such reads
+as crossings, on 5 m cells in 200 m blocks read through the octree. An industry's parts that the engine keeps apart
+from its construction (entities with `INDUSTRY` or `SUBCONSTRUCTION` and no `CONSTRUCTION`) block too. The blocks of
+the area the planner searches (the ends' box and 1.5 km round it, or 0.6 times their distance when that is more; inside
+the map; at most 3000, nearest the straight line between the ends first) are read before planning, six per frame;
+others when the planner first asks. The planner asks from inside its own coroutine, so after every three such reads
 it waits for the next frame right there (a count, not a time: `os.clock` runs ahead of real time on Linux); a
 planner without a coroutine cannot wait, and more than 8 in one of its slices are logged once. The two ends' own
-pieces and the construction they belong to are left out, and buildings within 75 m of an end do not block. Not
+pieces and those of the construction they belong to are no crossings; that construction still blocks. Only each
+end's mouth is open: 10 m round the end node, and a wedge out the way the end points (6 m to each side at the node,
+0.15 m more per metre out) that runs 20 m, or 10 m past every building the end node lies in (an end of a
+construction's own road lies inside the construction's box), at most 150 m. `plan.map` has `endConstructions`,
+`leftOutPieces` and `mouths` (`from` / `to`: `length`, and `inside`, how many buildings the end node lies in). Not
 there, compared with Track Connector's own tool: level crossings, the heights of the roads and tracks crossed (the
 planner then assumes 7.5 m over and 9.5 m under the ground), running alongside an existing line (it counts as a
 crossing, so a route may keep away from one or bridge it), water areas learned from refused builds, branching off
@@ -504,7 +519,11 @@ Unchecked, riskiest first (the first ones could take the game down):
   nodes (asked about anything else, the engine dies on an assertion), and the ends are checked again before the
   route is sent.
 - `streetConnectorSystem.getConstructionEntityForStation` (if missing, a construction around the station that lists
-  it is looked for) and the `roadTemplate` field of a road piece (if unreadable, the default road type is used).
+  it is looked for) and the `roadTemplate` field of a road piece (if unreadable, a country road of the game's year is
+  used).
+- `api.engine.util.getYear` (else the calendar date of the game time) and a street template's `availability`: when
+  either cannot be read, no type is refused or replaced for its years. Whether a road from an industry's entrance
+  road, kept out of the industry's land, is accepted by the game there.
 - Whether the game script takes the events while the game is paused, and how fast (the wait is 30 s).
 - The planner's time slice: Track Connector measures it with `os.clock`, which on Linux is the CPU time of the
   whole process, so a slice may be much shorter than 15 ms of real time and planning slower than in its own tool.

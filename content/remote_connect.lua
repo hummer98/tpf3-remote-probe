@@ -24,7 +24,15 @@ M.TC_GAME_SCRIPT = "ethan_track_connector::/track_connector/track_connector.gs"
 M.TC_EVENT_ID = "TrackConnector"
 -- the release this was written against (mod.json revision, the version its tool shows); not yet run in a game
 M.TC_WRITTEN_FOR = { revision = 3, version = "v1.3" }
-M.DEFAULT_STREET = "::/infrastructure/street/country/country_new_medium.street_template"
+-- The road types a road gets when the start road's own type is no road a player builds (a construction's entrance
+-- road, or one not to be had this year), first the one to be had this year: the base game's medium country roads,
+-- then its small ones (old ones until 1940, new ones from then; read from their availability)
+M.ROAD_CHOICES = {
+	"::/infrastructure/street/country/country_new_medium.street_template",
+	"::/infrastructure/street/country/country_old_medium.street_template",
+	"::/infrastructure/street/country/country_new_small.street_template",
+	"::/infrastructure/street/country/country_old_small.street_template",
+}
 
 -- Track Connector's default settings for each of its tools (its route choices, e.g. "Recommended", may plan with
 -- others)
@@ -49,16 +57,29 @@ local SIDE_ROOM = 3.0 -- room for the new line beside an existing one
 local BUILDING_ROOM = 4.0
 local BIGGEST_BUILDING = 1000.0 -- a larger box is a town's lot or a terrain object, not something in the way
 local MAP_INSET, END_ROOM = 80.0, 40.0
-local BAND_MIN, BAND_SHARE, MAX_PRELOAD = 400.0, 0.3, 3000 -- the blocks read before planning
+-- The blocks read before planning: those of the area Track Connector's planner searches, a box around the two ends
+-- larger than theirs by the greater of PLAN_MARGIN_MIN and PLAN_MARGIN_SHARE of their distance (its v1.3 planner;
+-- its coarse map asks about every 100 m or more of that box, so a smaller band left most of the box to be read
+-- during the planner's slices: 186 late blocks against 92 read before, 1.6 km on a tiny map, 2026-11-17), the
+-- nearest the straight line between the ends first, at most MAX_PRELOAD
+local PLAN_MARGIN_MIN, PLAN_MARGIN_SHARE, MAX_PRELOAD = 1500.0, 0.6, 3000
 -- blocks read per frame before planning (a field, so a test can hold the map read back)
 -- lateBlocksPerSlice: how many blocks off the band a planner slice reads before it waits for the next frame. A
 -- count, not a time: os.clock on Linux is the whole process's CPU time and runs ahead of real time in a game with many
 -- threads, and the application time may not move within a frame.
 M.TUNE = { blocksPerFrame = 6, lateBlocksPerSlice = 3 }
--- around each end: a station's buildings stand beside its platform ends, so within END_FREE_R nothing built blocks
--- (a platform end may be that close to the station hall); within END_CROSS_R the line it leaves along is no crossing
--- (two cells of the map and a little, so the end's own cell and its neighbour never count)
-local END_FREE_R = 75.0
+-- Around each end the land stays blocked where something is built, the end's own construction (an industry, a
+-- station) too, but for its mouth: within MOUTH_OPEN_R of the end node, and a wedge from the node out the way the end
+-- points, MOUTH_HALF to each side at the node and MOUTH_SPREAD more per metre out (a new line curving away at 100 m
+-- radius is 8 m off the axis 40 m out). The wedge runs MOUTH_MIN, or past every building the end node lies in (an
+-- end of a construction's own road lies inside the construction's box, whose corners may reach far out of a turned
+-- site) by MOUTH_EXTRA (the room round a building and a cell of the map), at most MOUTH_MAX.
+-- (Before, nothing built within 75 m of an end blocked and the ends' constructions not at all: the road from a clay
+-- pit to a brickworks ran through both, 2026-11-17)
+local MOUTH_OPEN_R, MOUTH_HALF, MOUTH_SPREAD = 10.0, 6.0, 0.15
+local MOUTH_MIN, MOUTH_EXTRA, MOUTH_MAX = 20.0, 10.0, 150.0
+-- within END_CROSS_R the line an end leaves along is no crossing (two cells of the map and a little, so the end's
+-- own cell and its neighbour never count)
 local END_CROSS_R = 2 * 5.0 + 2.0
 local LATE_BLOCKS_LOG = 8 -- blocks read during one planner slice above which the log says so (they make it long)
 local ENTITY_ROOM = 40.0 -- around a route piece when looking for what a build added
@@ -166,6 +187,57 @@ local function curvePoint(cp, u)
 	return pts[1]
 end
 M.controlPoints, M.curvePoint = controlPoints, curvePoint
+
+-- Can a type with this availability ({ yearFrom, yearTo }, as street, bridge and tunnel types have it) be built in
+-- year? 0 means no limit; the base game gives a type nobody may build -1 for both (its industries' own roads).
+-- nil availability or year: nothing known, so yes.
+function M.availableIn(av, year)
+	if type(av) ~= "table" or type(year) ~= "number" then return true end
+	local from, to = tonumber(av.yearFrom) or 0, tonumber(av.yearTo) or 0
+	return (from == 0 or from <= year) and (to == 0 or year < to)
+end
+
+-- availability in words, for an answer: "from 1940", "until 1925" (the last year before it), "from 1900 until 1924",
+-- "never" (the base game's -1)
+function M.availabilityText(av)
+	local from, to = tonumber(type(av) == "table" and av.yearFrom) or 0, tonumber(type(av) == "table" and av.yearTo) or 0
+	if from < 0 or to < 0 then return "never" end
+	local parts = {}
+	if from > 0 then parts[#parts + 1] = "from " .. from end
+	if to > 0 then parts[#parts + 1] = "until " .. (to - 1) end
+	return #parts > 0 and table.concat(parts, " ") or "always"
+end
+
+-- the road types of a construction's own entrance roads (industries, stations, depots): not in the player's
+-- road menu, and no road a player lays out from the construction
+function M.isEntranceRoad(name)
+	return type(name) == "string" and name:find("/street/constructions/", 1, true) ~= nil
+end
+
+-- How far the mouth of an end at (x, y) pointing (dx, dy) runs (see MOUTH_MIN): past every box { x0, y0, x1, y1 }
+-- the end lies in, by MOUTH_EXTRA, at most MOUTH_MAX.
+function M.mouthLength(x, y, dx, dy, boxes)
+	local len = MOUTH_MIN
+	for _, b in ipairs(boxes or {}) do
+		if x >= b[1] and x <= b[3] and y >= b[2] and y <= b[4] then
+			-- where the ray from inside leaves the box: the nearer of the two sides it runs towards
+			local t = math.huge
+			if dx > 1e-9 then t = math.min(t, (b[3] - x) / dx) elseif dx < -1e-9 then t = math.min(t, (b[1] - x) / dx) end
+			if dy > 1e-9 then t = math.min(t, (b[4] - y) / dy) elseif dy < -1e-9 then t = math.min(t, (b[2] - y) / dy) end
+			if t < math.huge then len = math.max(len, t + MOUTH_EXTRA) end
+		end
+	end
+	return math.min(len, MOUTH_MAX)
+end
+
+-- Is (x, y) in the mouth m = { x, y, dx, dy, len } of an end?
+function M.inMouth(m, x, y)
+	local vx, vy = x - m.x, y - m.y
+	if vx * vx + vy * vy < MOUTH_OPEN_R * MOUTH_OPEN_R then return true end
+	local s = vx * m.dx + vy * m.dy
+	if s < 0 or s > m.len then return false end
+	return math.abs(vx * m.dy - vy * m.dx) <= MOUTH_HALF + MOUTH_SPREAD * s
+end
 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -434,8 +506,9 @@ function M.new(ctx)
 	-- a block the planner asks about later is read then. Terrain heights and water are asked of the engine per
 	-- point and kept.
 
-	-- what the planner may run through at an end: its own piece, and the construction that piece belongs to (or
-	-- the station construction the end was found in), with that construction's pieces
+	-- the pieces the planner may run along at an end, as no crossing: its own piece and those of the construction
+	-- that piece belongs to (or of the station construction the end was found in). The constructions themselves
+	-- (cons) still block: only the end's mouth is open (see MOUTH_OPEN_R).
 	local function endExclusions(e, cons, edges)
 		edges[e.piece] = true
 		local list = { e.construction }
@@ -452,6 +525,42 @@ function M.new(ctx)
 		end
 	end
 
+	-- what blocks: constructions (stations, industries' constructions), town buildings, and the parts of an
+	-- industry the engine keeps apart from its construction (INDUSTRY / SUBCONSTRUCTION entities without a
+	-- CONSTRUCTION component: what the dry run collided with at both ends, 2026-11-17)
+	local function isBuilt(e)
+		return (comp(e, "CONSTRUCTION") or comp(e, "TOWN_BUILDING") or comp(e, "INDUSTRY") or comp(e, "SUBCONSTRUCTION")) ~= nil
+	end
+
+	-- the box of a building (from the octree's bounding volume) with the room round it, or nil when it is no
+	-- building or too large to be one (BIGGEST_BUILDING)
+	local function buildingBox(bmin, bmax)
+		if not (bmin and bmax) or bmax.x - bmin.x > BIGGEST_BUILDING or bmax.y - bmin.y > BIGGEST_BUILDING then return nil end
+		return { bmin.x - BUILDING_ROOM, bmin.y - BUILDING_ROOM, bmax.x + BUILDING_ROOM, bmax.y + BUILDING_ROOM }
+	end
+
+	-- the mouth of an end: { x, y, dx, dy, len, inside = how many buildings the node lies in }
+	local function mouthOf(e)
+		local hits, boxes = {}, {}
+		pcall(function()
+			local box = api.type.Box3.new(api.type.Vec3f.new(e.x - 1, e.y - 1, Z_LOW), api.type.Vec3f.new(e.x + 1, e.y + 1, Z_HIGH))
+			api.engine.system.octreeSystem.findIntersectingEntities(box, function(h, bv)
+				local bb = bv and core.field(bv, "bbox")
+				local bx = bb and buildingBox(vec(core.field(bb, "min")), vec(core.field(bb, "max")))
+				if bx then hits[#hits + 1] = { h, bx } end
+			end)
+		end)
+		-- (components looked up after the octree walk, as readBlock does)
+		for _, h in ipairs(hits) do
+			if isBuilt(h[1]) then boxes[#boxes + 1] = h[2] end
+		end
+		local inside = 0
+		for _, bx in ipairs(boxes) do
+			if e.x >= bx[1] and e.x <= bx[3] and e.y >= bx[2] and e.y <= bx[4] then inside = inside + 1 end
+		end
+		return { x = e.x, y = e.y, dx = e.dx, dy = e.dy, len = M.mouthLength(e.x, e.y, e.dx, e.dy, boxes), inside = inside }
+	end
+
 	-- a and b: the two ends. Returns the map: map.world for the planner, map.readSome(n) reads up to n of the blocks
 	-- along the way (true once all are read), map.stats its counters.
 	function C.newMap(a, b)
@@ -459,6 +568,8 @@ function M.new(ctx)
 		local cons, edges = {}, {}
 		endExclusions(a, cons, edges)
 		endExclusions(b, cons, edges)
+		local mouths = { mouthOf(a), mouthOf(b) }
+		local function inMouth(x, y) return M.inMouth(mouths[1], x, y) or M.inMouth(mouths[2], x, y) end
 		local map = { stats = stats, sliceReads = 0 }
 
 		-- nested tables by x then y: a lookup without building a key
@@ -557,18 +668,20 @@ function M.new(ctx)
 			for _, h in ipairs(hits) do
 				local e, bmin, bmax = h[1], h[2], h[3]
 				stats.entities = stats.entities + 1
-				if comp(e, "CONSTRUCTION") or comp(e, "TOWN_BUILDING") then
-					if not cons[e] and bmin and bmax and bmax.x - bmin.x <= BIGGEST_BUILDING and bmax.y - bmin.y <= BIGGEST_BUILDING then
-						mark(blk.built, bx, by, bmin.x - BUILDING_ROOM, bmin.y - BUILDING_ROOM, bmax.x + BUILDING_ROOM, bmax.y + BUILDING_ROOM)
-						stats.buildings = stats.buildings + 1
-					end
-				elseif not edges[e] then
-					local be = comp(e, "BASE_EDGE")
+				-- (pieces first: the most of what the octree gives, and one lookup tells them)
+				local be = comp(e, "BASE_EDGE")
+				if be then
 					local pts, r = nil, nil
-					if be then pts, r = piecePoints(be) end
+					if not edges[e] then pts, r = piecePoints(be) end
 					if pts then
 						for _, q in ipairs(pts) do mark(blk.roads, bx, by, q.x - r, q.y - r, q.x + r, q.y + r) end
 						stats.pieces = stats.pieces + 1
+					end
+				elseif isBuilt(e) then
+					local box = buildingBox(bmin, bmax)
+					if box then
+						mark(blk.built, bx, by, box[1], box[2], box[3], box[4])
+						stats.buildings = stats.buildings + 1
 					end
 				end
 			end
@@ -578,7 +691,7 @@ function M.new(ctx)
 			local bx, by = math.floor(x / BLOCK), math.floor(y / BLOCK)
 			local blk = getIn(blocks, bx, by)
 			if not blk then
-				-- outside the band: read now, inside the planner's slice (counted, see stepPlan)
+				-- not read before planning: read now, inside the planner's slice (counted, see stepPlan)
 				blk = readBlock(bx, by)
 				map.sliceReads = map.sliceReads + 1
 				stats.lateBlocks = stats.lateBlocks + 1
@@ -596,21 +709,36 @@ function M.new(ctx)
 			return blk, math.floor((x - bx * BLOCK) / GRID) * 1000 + math.floor((y - by * BLOCK) / GRID)
 		end
 
-		-- the blocks within a band around the straight line between the ends, nearest the start first
-		local queue, seenQ = {}, {}
+		-- the blocks of the planner's search area (PLAN_MARGIN_MIN) inside the map, nearest the straight line between
+		-- the ends first (by whole blocks of distance: no sort over a large area), at most MAX_PRELOAD
+		local queue = {}
 		do
 			local len = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
-			local band = math.max(BAND_MIN, BAND_SHARE * len)
-			local n = math.max(1, math.ceil(len / (BLOCK / 2)))
-			for k = 0, n do
-				local x, y = a.x + (b.x - a.x) * k / n, a.y + (b.y - a.y) * k / n
-				for bx = math.floor((x - band) / BLOCK), math.floor((x + band) / BLOCK) do
-					for by = math.floor((y - band) / BLOCK), math.floor((y + band) / BLOCK) do
-						if not getIn(seenQ, bx, by) and #queue < MAX_PRELOAD then
-							putIn(seenQ, bx, by, true)
-							queue[#queue + 1] = { bx, by }
-						end
-					end
+			local margin = math.max(PLAN_MARGIN_MIN, PLAN_MARGIN_SHARE * len)
+			local x0, y0 = math.min(a.x, b.x) - margin, math.min(a.y, b.y) - margin
+			local x1, y1 = math.max(a.x, b.x) + margin, math.max(a.y, b.y) + margin
+			if bounds then
+				x0, y0 = math.max(x0, bounds[1]), math.max(y0, bounds[2])
+				x1, y1 = math.min(x1, bounds[3]), math.min(y1, bounds[4])
+			end
+			local ux, uy = b.x - a.x, b.y - a.y
+			local l2 = ux * ux + uy * uy
+			local rings, far = {}, 0
+			for bx = math.floor(x0 / BLOCK), math.floor(x1 / BLOCK) do
+				for by = math.floor(y0 / BLOCK), math.floor(y1 / BLOCK) do
+					-- the block's middle to the nearest point of the line
+					local cx, cy = (bx + 0.5) * BLOCK, (by + 0.5) * BLOCK
+					local u = l2 > 0 and math.max(0, math.min(1, ((cx - a.x) * ux + (cy - a.y) * uy) / l2)) or 0
+					local k = math.floor(math.sqrt((cx - a.x - u * ux) ^ 2 + (cy - a.y - u * uy) ^ 2) / BLOCK) + 1
+					local ring = rings[k]
+					if not ring then ring = {}; rings[k] = ring end
+					ring[#ring + 1] = { bx, by }
+					if k > far then far = k end
+				end
+			end
+			for k = 1, far do
+				for _, q in ipairs(rings[k] or {}) do
+					if #queue < MAX_PRELOAD then queue[#queue + 1] = q end
 				end
 			end
 		end
@@ -640,7 +768,7 @@ function M.new(ctx)
 			blocked = function(x, y)
 				if outside(x, y) then return true end
 				local blk, cell = cellAt(x, y)
-				return blk.built[cell] == true and not closeToEnd(x, y, END_FREE_R)
+				return blk.built[cell] == true and not inMouth(x, y)
 			end,
 			crossing = function(x, y)
 				local blk, cell = cellAt(x, y)
@@ -648,9 +776,15 @@ function M.new(ctx)
 			end,
 		}
 		stats.waterLevel = waterLevel
-		stats.leftOutConstructions, stats.leftOutPieces = 0, 0
-		for _ in pairs(cons) do stats.leftOutConstructions = stats.leftOutConstructions + 1 end
+		-- the ends' constructions (they block; only their pieces are no crossings), the pieces left out, and each
+		-- end's mouth: its length and how many buildings the end node lies in
+		stats.endConstructions, stats.leftOutPieces = 0, 0
+		for _ in pairs(cons) do stats.endConstructions = stats.endConstructions + 1 end
 		for _ in pairs(edges) do stats.leftOutPieces = stats.leftOutPieces + 1 end
+		stats.mouths = {}
+		for i, side in ipairs({ "from", "to" }) do
+			stats.mouths[side] = { length = math.floor(mouths[i].len * 10 + 0.5) / 10, inside = mouths[i].inside }
+		end
 		return map
 	end
 
@@ -686,7 +820,7 @@ function M.new(ctx)
 
 	local function payload(job)
 		local out = { ok = false, cmd = "connect", mode = job.road and "road" or "track", template = job.template,
-			tc = job.tc, from = job.fromInfo, to = job.toInfo, settings = job.tcSettings, dryRun = not job.args.build,
+			tc = job.tc, year = job.year, from = job.fromInfo, to = job.toInfo, settings = job.tcSettings, dryRun = not job.args.build,
 			seconds = math.floor((appTime() - job.started) * 10 + 0.5) / 10, notes = job.notes }
 		if job.planned then out.plan = job.planned end
 		if job.route then out.route = M.routeSummary(job.route) end
@@ -841,6 +975,12 @@ function M.new(ctx)
 			why = job.estimate.problem or job.estimate.errors or (job.preview and job.preview.summary)
 				or (job.preview == nil and "Track Connector holds no verdict on this route (its own check of the route did not run through)")
 				or "the game would refuse it"
+			-- (the game prices a route only when nothing in it is refused outright: "建設不可" at $0 came for the same six
+			-- pieces through the two industries as "衝突" at $431,576 with the entrance road type, 2026-11-17)
+			if not (tonumber(job.estimate.cost) and job.estimate.cost > 0) then
+				job.notes[#job.notes + 1] = "the dry run gave no cost: the game refused the route before pricing it. " ..
+					"Track Connector logs which pieces it refused a few seconds later ([TrackConnector] ... pieces refused)"
+			end
 			if job.estimate.clear then
 				why = why .. string.format(" (buildable for %s if %s town building(s) go: add clear)", tostring(job.estimate.clearCost),
 					tostring(job.estimate.clearCount))
@@ -978,12 +1118,44 @@ function M.new(ctx)
 	-- a load ends this script with its job; nothing to answer then (the tool sees the game go)
 	function C.reset() C.job = nil end
 
+	-- the game's year, or nil: the engine's own lookup, else the calendar date of the game time
+	local function gameYear()
+		local y = tonumber(try(function() return api.engine.util.getYear() end))
+		if y then return y end
+		local gt = gameTime()
+		local d = gt and try(function() return api.engine.util.getCalendarDate(gt) end)
+		return d and tonumber(core.field(d, "year")) or nil
+	end
+
+	-- a street template's availability as a plain { yearFrom, yearTo }, or nil when it cannot be read
+	local function availabilityOf(tpl)
+		local rep = try(function() return api.res.streetTemplateRep end)
+		local id = rep and tonumber(try(function() return rep.find(tpl) end))
+		if not id or id < 0 then return nil end
+		local av = try(function() return rep.get(id).availability end)
+		if av == nil then return nil end
+		local from, to = tonumber(core.field(av, "yearFrom")), tonumber(core.field(av, "yearTo"))
+		if from == nil and to == nil then return nil end
+		return { yearFrom = from or 0, yearTo = to or 0 }
+	end
+	local function buildableIn(tpl, year) return M.availableIn(availabilityOf(tpl), year) end
+
+	-- the first of ROAD_CHOICES the game has and that can be built this year, or nil
+	local function plainRoad(mods, year)
+		for _, name in ipairs(M.ROAD_CHOICES) do
+			if mods.proposals.isStreet(name) and buildableIn(name, year) then return name end
+		end
+		return nil
+	end
+
 	-- the template to build, or nil and why; for a road also the piece whose lanes are copied, and a note.
 	-- Tracks: Track Connector's own lookup of the short names, which quietly falls back to the standard track when
-	-- the name it makes is missing, so the result is checked against the name asked for.
-	local function templateFor(a, mods, fromEnd)
+	-- the name it makes is missing, so the result is checked against the name asked for. year: the game's (nil:
+	-- unknown, nothing is checked against it).
+	local function templateFor(a, mods, fromEnd, year)
 		local quiet = function() end
 		if not a.road then
+			local tpl
 			if a.track:find("::/", 1, true) then
 				if a.electric then
 					return nil, "electric goes with the short track names; for a full resource name give the electrified type itself"
@@ -992,30 +1164,55 @@ function M.new(ctx)
 					return nil, "no track template " .. a.track
 				end
 				if mods.proposals.isStreet(a.track) then return nil, "track names a road type: for roads give road and template" end
-				return a.track
+				tpl = a.track
+			else
+				tpl = mods.proposals.templateName(a.track, a.electric, quiet)
+				local want = string.format("/%s%s.street_template", a.track, a.electric and "_catenary" or "")
+				if type(tpl) ~= "string" or tpl:sub(-#want) ~= want then
+					return nil, string.format("the game has no %s%s track type (Track Connector would have used %s)", a.track,
+						a.electric and " electric" or "", tostring(tpl))
+				end
 			end
-			local tpl = mods.proposals.templateName(a.track, a.electric, quiet)
-			local want = string.format("/%s%s.street_template", a.track, a.electric and "_catenary" or "")
-			if type(tpl) ~= "string" or tpl:sub(-#want) ~= want then
-				return nil, string.format("the game has no %s%s track type (Track Connector would have used %s)", a.track,
-					a.electric and " electric" or "", tostring(tpl))
+			-- (a note only: whether the game refuses a track type out of its years when a script builds it is not
+			-- known; its own track menu does not offer one)
+			if not buildableIn(tpl, year) then
+				return tpl, nil, string.format("%s is to be had %s, and the year is %d: the game may refuse it", tpl,
+					M.availabilityText(availabilityOf(tpl)), year)
 			end
 			return tpl
 		end
 		if a.template then
 			if not mods.proposals.isStreet(a.template) then return nil, "template " .. a.template .. " is no road type the game has" end
+			local instead = plainRoad(mods, year)
+			local hint = instead and (" (e.g. " .. instead .. ")") or ""
+			if M.isEntranceRoad(a.template) then
+				return nil, "template " .. a.template .. " is a construction's own entrance road, not a road type a player " ..
+					"builds: give one from the road menu" .. hint
+			end
+			if not buildableIn(a.template, year) then
+				return nil, string.format("template %s is to be had %s, not in %d: give one of this year%s", a.template,
+					M.availabilityText(availabilityOf(a.template)), year, hint)
+			end
 			return a.template
 		end
-		-- as Track Connector's road tool by default: the same as the start road, its lanes too (tram tracks on it)
+		-- as Track Connector's road tool by default: the same as the start road, its lanes too (tram tracks on it),
+		-- unless that is no road a player builds now
 		local be = comp(fromEnd.piece, "BASE_EDGE")
 		local own = be and core.field(be, "roadTemplate")
 		own = type(own) == "string" and own or (own ~= nil and tostring(own) or nil)
-		if own and own ~= "" and mods.proposals.isStreet(own) then return own, fromEnd.piece end
-		if mods.proposals.isStreet(M.DEFAULT_STREET) then
-			return M.DEFAULT_STREET, nil, "the start road's type could not be read (" .. tostring(own) .. "): built as " ..
-				M.DEFAULT_STREET .. ", without copying its lanes"
+		local why
+		if not (own and own ~= "" and mods.proposals.isStreet(own)) then
+			why = "the start road's type could not be read (" .. tostring(own) .. ")"
+		elseif M.isEntranceRoad(own) then
+			why = "the start road is a construction's own entrance road (" .. own .. ")"
+		elseif not buildableIn(own, year) then
+			why = string.format("the start road's type %s is to be had %s, not in %d", own, M.availabilityText(availabilityOf(own)), year)
+		else
+			return own, fromEnd.piece
 		end
-		return nil, "the start road's type cannot be read and the default road type is missing: give template"
+		local pick = plainRoad(mods, year)
+		if pick then return pick, nil, why .. ": built as " .. pick .. ", without copying its lanes" end
+		return nil, why .. " and none of the default road types can be built" .. (year and (" in " .. year) or "") .. ": give template"
 	end
 
 	local function endInfo(r, e)
@@ -1068,7 +1265,8 @@ function M.new(ctx)
 		local ea, eb = mods.planner.bestPair(from.ends, to.ends)
 		if not ea or not eb then return fail(c.id, "the two ends are too close together (or the same)") end
 		if ea.node == eb.node then return fail(c.id, "from and to are the same end") end
-		local tpl, laneFrom, tplNote = templateFor(a, mods, ea)
+		local year = gameYear()
+		local tpl, laneFrom, tplNote = templateFor(a, mods, ea, year)
 		if not tpl then return fail(c.id, laneFrom) end
 		local d = a.road and M.ROAD_DEFAULTS or M.TRACK_DEFAULTS
 		local slope, radius = a.slope or d.slope, a.radius or d.radius
@@ -1084,7 +1282,7 @@ function M.new(ctx)
 		end
 		local release = tcRelease()
 		release.gameScript = tcEntity
-		local job = { id = c.id, args = a, road = a.road, mods = mods, a = ea, b = eb, template = tpl, slope = slope, radius = radius,
+		local job = { id = c.id, args = a, road = a.road, mods = mods, a = ea, b = eb, template = tpl, slope = slope, radius = radius, year = year,
 			started = appTime(), nextProgress = appTime() + PROGRESS_SEC, progressN = 0, sent = {}, refused = {}, notes = notes,
 			key = "remote_probe_" .. string.format("%d", c.id), tc = release,
 			fromInfo = endInfo(from, ea), toInfo = endInfo(to, eb) }

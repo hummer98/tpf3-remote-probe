@@ -1426,7 +1426,8 @@ def make_parser():
                     help="a free end's node id, a station (group) id or a part of a station's name")
     cn.add_argument("--to", required=True, metavar="END")
     cn.add_argument("--road", action="store_true", help="a road instead of a track (between dead-end roads)")
-    cn.add_argument("--template", help="--road: the road type's full resource name (default: as the start road)")
+    cn.add_argument("--template", help="--road: the road type's full resource name (default: as the start road, or a "
+                    "country road of the game's year when that is a construction's entrance road or out of its years)")
     cn.add_argument("--track", help="standard (default), high_speed, simple, or a track type's full resource name")
     cn.add_argument("--electric", action="store_true", help="with overhead wires")
     cn.add_argument("--slope", type=float, help="the steepest grade in percent (default 2.5 tracks, 6 roads)")

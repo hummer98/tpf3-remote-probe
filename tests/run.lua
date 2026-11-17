@@ -3093,7 +3093,7 @@ end
 -- runs a connect to its final answer (dt: seconds per frame)
 local function connectRun(g, id, argsLua, n, dt)
 	send(g, id, "connect", argsLua)
-	frames(g, n or FIRST + 40, dt)
+	frames(g, n or FIRST + 100, dt)
 	return final(g, id)
 end
 
@@ -3214,11 +3214,11 @@ test("connect: the route Track Connector gets has its Route shape (single track,
 	eq(g.tc.state.estimates.remote_probe_801.n, n, "the estimate is about this route")
 end)
 
-test("connect world: heights, water, buildings and roads as the planner sees them; the ends' own surroundings left out", function()
+test("connect world: heights, water, buildings and roads as the planner sees them; the ends' own pieces left out", function()
 	local g = connectWorld({ height = function(x, y) return x < -2000 and -5 or 10 + x / 100 end,
 		water = function(x, y) return x < -2000 end, waterLevel = 0, planSteps = 1000 })
 	send(g, 802, "connect", "{ from = 101, to = 'Harbour' }")
-	frames(g, FIRST + 5)
+	frames(g, FIRST + 70)
 	local w = g.tc.plans[1].world
 	truthy(w, "planning started")
 	eq(w.height(300, 0), 13); eq(w.ground(300, 0), 13)
@@ -3231,7 +3231,9 @@ test("connect world: heights, water, buildings and roads as the planner sees the
 	eq(w.crossing(-50, 0), false, "the end's own piece (201) is none")
 	eq(w.crossing(-2, 0), false, "the end's own piece right at the end is none")
 	eq(w.crossing(1050, 500), false, "the target station's platform track is excluded")
-	eq(w.blocked(1050, 500), false, "and so is its construction")
+	eq(w.blocked(1050, 500), true, "but its construction still blocks")
+	eq(w.blocked(1000, 500), false, "except at the end node"); eq(w.blocked(992, 500), false, "and out of the end it points from")
+	eq(w.blocked(1000, 489), true, "beside the end, inside the station's room, it blocks")
 	truthy(w.bounds and w.bounds[1] == -3920, "bounds a little inside the map")
 	eq(g.crashed, nil)
 end)
@@ -3254,7 +3256,7 @@ test("connect ends: node, station group by name, station, construction; junction
 		{ "{ from = 101, to = 43 }", "has no free platform track end" },
 		{ "{ from = 101, to = 101 }", "the same" },
 	}) do
-		local r = connectRun(g, 805 + i, case[1], 60)
+		local r = connectRun(g, 805 + i, case[1], 120)
 		if case[2] == true then
 			eq(r.ok, true, case[1] .. ": " .. tostring(r.error)); eq(r.to.kind, case[3])
 		else
@@ -3394,7 +3396,7 @@ test("connect: an end that goes while the route is planned is caught before anyt
 	-- the player builds on the target: a second piece at node 103
 	g.tc.nodes[130] = { 1000, 100, 20 }
 	g.tc.edges[230] = { node0 = 103, node1 = 130 }
-	frames(g, 60)
+	frames(g, 120)
 	local a = final(g, 880)
 	truthy(a.error:find("node 103 is no longer a free end"), tostring(a.error))
 	eq(#g.tc.events, 0); eq(g.crashed, nil)
@@ -3451,7 +3453,7 @@ end)
 test("connect map: the blocks along the way are read a few per frame before planning, others when asked", function()
 	local g = connectWorld({ planSteps = 1000 })
 	send(g, 911, "connect", "{ from = 101, to = 103 }")
-	frames(g, FIRST + 30)
+	frames(g, FIRST + 70)
 	eq(#g.tc.plans, 1, "planning started")
 	truthy(g.tc.plans[1].frameAtStart > 3, "after some frames")
 	local w = g.tc.plans[1].world
@@ -3494,7 +3496,7 @@ test("connect map: cells cover every block to its edge (no gap at the east and n
 	local g = connectWorld({ townBuildings = { [401] = { box = { 197, 50, 199.6, 55 } }, [402] = { box = { 50, 397.5, 55, 399.8 } } },
 		planSteps = 1000 })
 	send(g, 925, "connect", "{ from = 101, to = 103 }")
-	frames(g, FIRST + 30)
+	frames(g, FIRST + 70)
 	local w = g.tc.plans[1].world
 	eq(w.blocked(199.5, 52), true, "the last metre of block 0 eastwards")
 	eq(w.blocked(199.9, 52), true)
@@ -3539,7 +3541,7 @@ test("connect ends: a station's construction found around it when the engine's l
 	local a = connectRun(g, 940, "{ from = 101, to = 42 }")
 	eq(a.ok, true, tostring(a.error)); eq(a.to.node, 105)
 	api.engine.system.streetConnectorSystem.getConstructionEntityForStation = nil
-	a = connectRun(g, 941, "{ from = 101, to = 421 }", 60)
+	a = connectRun(g, 941, "{ from = 101, to = 421 }", 120)
 	eq(a.ok, true, tostring(a.error)); eq(a.to.kind, "station")
 end)
 
@@ -3579,7 +3581,7 @@ test("connect ends: the way out of a curved piece's end follows its curve there,
 	local k = 4 / 3 * (math.sqrt(2) - 1) * 100 * 3
 	g.tc.nodes[150], g.tc.nodes[151] = { 2000, 0, 0 }, { 1900, 100, 0 }
 	g.tc.edges[250] = { node0 = 150, node1 = 151, t0 = { x = 0, y = k, z = 0 }, t1 = { x = -k, y = 0, z = 0 } }
-	local a = connectRun(g, 953, "{ from = 151, to = 103 }", FIRST + 60)
+	local a = connectRun(g, 953, "{ from = 151, to = 103 }", FIRST + 100)
 	local plan = g.tc.plans[#g.tc.plans]
 	truthy(plan and math.abs(plan.start.heading - math.pi) < 0.002, "leaves heading -x: " .. tostring(plan and plan.start.heading))
 	eq(a.from.node, 151)
@@ -3592,6 +3594,155 @@ test("connect: the same place given twice in other words is refused (name and id
 		truthy(tostring(a.error):find("the same place"), c .. ": " .. tostring(a.error))
 	end
 	eq(#g.tc.plans, 0); eq(g.crashed, nil)
+end)
+
+test("connect helpers: years a type can be built in, entrance roads, an end's mouth", function()
+	local av = connectMod.availableIn
+	eq(av({ yearFrom = 0, yearTo = 0 }, 1909), true, "0: no limit")
+	eq(av({ yearFrom = 1940, yearTo = 0 }, 1939), false); eq(av({ yearFrom = 1940, yearTo = 0 }, 1940), true)
+	eq(av({ yearFrom = 0, yearTo = 1940 }, 1939), true); eq(av({ yearFrom = 0, yearTo = 1940 }, 1940), false, "yearTo: the first year without")
+	eq(av({ yearFrom = -1, yearTo = -1 }, 1909), false, "-1: never (the base game's industry roads)")
+	eq(av(nil, 1909), true, "nothing known: yes"); eq(av({ yearFrom = 1940 }, nil), true, "no year known: yes")
+	eq(connectMod.availabilityText({ yearFrom = 1940, yearTo = 0 }), "from 1940")
+	eq(connectMod.availabilityText({ yearFrom = 0, yearTo = 1925 }), "until 1924")
+	eq(connectMod.availabilityText({ yearFrom = 1900, yearTo = 1925 }), "from 1900 until 1924")
+	eq(connectMod.availabilityText({ yearFrom = -1, yearTo = -1 }), "never")
+	eq(connectMod.availabilityText({ yearFrom = 0, yearTo = 0 }), "always"); eq(connectMod.availabilityText(nil), "always")
+	eq(connectMod.isEntranceRoad(fakeTc.ENTRANCE), true); eq(connectMod.isEntranceRoad(fakeTc.COUNTRY), false)
+	eq(connectMod.isEntranceRoad(nil), false)
+	local ml = connectMod.mouthLength
+	eq(ml(0, 0, 1, 0, nil), 20, "nothing around: the least"); eq(ml(0, 0, 1, 0, {}), 20)
+	eq(ml(0, 0, 1, 0, { { -10, -10, 30, 10 } }), 40, "out of the box it lies in, and 10 m on")
+	eq(ml(0, 0, -1, 0, { { -10, -10, 30, 10 } }), 20, "pointing out the near side: the least")
+	eq(ml(0, 0, 1, 0, { { 5, -10, 300, 10 } }), 20, "a box the end is not in is in the way, not opened")
+	eq(ml(0, 0, 1, 0, { { -10, -10, 1000, 10 } }), 150, "at most 150 m")
+	local d = math.sqrt(0.5)
+	eq(math.floor(ml(0, 0, d, d, { { -10, -10, 50, 20 } }) * 100 + 0.5) / 100, 38.28, "diagonal: the side it meets first")
+	local m = { x = 0, y = 0, dx = 1, dy = 0, len = 40 }
+	eq(connectMod.inMouth(m, -9, 0), true, "round the node"); eq(connectMod.inMouth(m, -11, 0), false, "but not behind it")
+	eq(connectMod.inMouth(m, 30, 10), true, "the wedge widens out"); eq(connectMod.inMouth(m, 30, 11), false)
+	eq(connectMod.inMouth(m, 41, 0), false, "and ends")
+end)
+
+-- an industry: its construction 501 (with the entrance road 260 from 160 to the free end 161, of the entrance road
+-- type) and a part of it without a CONSTRUCTION component (502, as the engine keeps an industry) whose box the end
+-- lies in; and a plain road end 122 to go to
+local function industryWorld(opts)
+	local w = { constructions = { [301] = { box = { 990, 490, 1110, 510 }, stations = { 421 }, frozenEdges = { 203 } },
+			[501] = { box = { 0, 1400, 190, 1600 }, frozenEdges = { 260 } } },
+		industries = { [502] = { box = { 50, 1420, 230, 1580 } } }, availability = fakeTc.BASE_YEARS, year = 1909, planSteps = 1000 }
+	for k, v in pairs(opts or {}) do w[k] = v end
+	local g = connectWorld(w)
+	g.tc.nodes[160], g.tc.nodes[161] = { 100, 1500, 5 }, { 200, 1500, 5 }
+	g.tc.edges[260] = { node0 = 160, node1 = 161, road = true, template = fakeTc.ENTRANCE }
+	g.tc.nodes[122], g.tc.nodes[123] = { 900, 900, 5 }, { 1000, 900, 5 }
+	g.tc.edges[209] = { node0 = 123, node1 = 122, road = true }
+	return g
+end
+
+test("connect world: an end's own industry still blocks, only the mouth of the end is open", function()
+	local g = industryWorld()
+	send(g, 970, "connect", "{ from = 161, to = 122, road = true }")
+	frames(g, FIRST + 70)
+	local w = g.tc.plans[1] and g.tc.plans[1].world
+	truthy(w, "planning started")
+	eq(w.blocked(100, 1450), true, "the industry's construction, though the end's road belongs to it")
+	eq(w.blocked(150, 1430), true, "its part without a CONSTRUCTION component")
+	eq(w.blocked(200, 1500), false, "the end node"); eq(w.blocked(192, 1500), false, "and round it")
+	eq(w.blocked(225, 1500), false, "out the way the end points, through the box it lies in")
+	eq(w.blocked(225, 1525), true, "beside that way, in the box")
+	eq(w.blocked(400, 1500), false, "open land")
+	eq(w.crossing(150, 1500), false, "the end's own road is no crossing")
+	frames(g, 1100)
+	local a = final(g, 970)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.plan.map.mouths.from.length, 44, "out of the part's box (234) and 10 m on"); eq(a.plan.map.mouths.from.inside, 1)
+	eq(a.plan.map.mouths.to.length, 20); eq(a.plan.map.mouths.to.inside, 0)
+	eq(a.plan.map.endConstructions, 1); eq(a.plan.map.leftOutPieces, 2)
+	eq(g.crashed, nil)
+end)
+
+test("connect road: from an entrance road the default is a plain road of the game's year, without its lanes", function()
+	local g = industryWorld({ planSteps = 3 })
+	local a = connectRun(g, 971, "{ from = 161, to = 122, road = true }")
+	eq(a.ok, true, tostring(a.error)); eq(a.year, 1909)
+	eq(a.template, fakeTc.OLD_COUNTRY, "1909: the old medium country road (the new one is from 1940)")
+	eq(a.settings.track, fakeTc.OLD_COUNTRY); eq(a.settings.laneFrom, nil, "the entrance road's lanes are not copied")
+	truthy(a.notes and a.notes[1]:find("entrance road", 1, true) and a.notes[1]:find("built as " .. fakeTc.OLD_COUNTRY, 1, true),
+		tostring(a.notes and a.notes[1]))
+	g = industryWorld({ planSteps = 3, year = 1950 })
+	a = connectRun(g, 972, "{ from = 161, to = 122, road = true }")
+	eq(a.template, fakeTc.COUNTRY, "1950: the new one")
+	-- an ordinary start road whose type is past its years: a road of this year instead
+	g = industryWorld({ planSteps = 3, year = 1950, availability = { [fakeTc.TOWN] = { yearFrom = 0, yearTo = 1930 } } })
+	g.tc.edges[209].template = fakeTc.TOWN
+	a = connectRun(g, 973, "{ from = 122, to = 161, road = true }")
+	eq(a.template, fakeTc.COUNTRY); eq(a.settings.laneFrom, nil)
+	truthy(a.notes[1]:find("until 1929, not in 1950", 1, true), a.notes[1])
+	-- and one of this year is kept, lanes and all
+	g = industryWorld({ planSteps = 3, year = 1920 })
+	g.tc.edges[209].template = fakeTc.TOWN
+	a = connectRun(g, 974, "{ from = 122, to = 161, road = true }")
+	eq(a.template, fakeTc.TOWN); eq(a.settings.laneFrom, 209); eq(a.notes, nil)
+	-- none of the defaults to be had: refused, asking for a template
+	g = industryWorld({ planSteps = 3, year = 1909, availability = { [fakeTc.OLD_COUNTRY] = { yearFrom = 1930, yearTo = 0 },
+		[fakeTc.COUNTRY] = { yearFrom = 1940, yearTo = 0 } } })
+	a = connectRun(g, 975, "{ from = 161, to = 122, road = true }")
+	truthy(tostring(a.error):find("none of the default road types can be built in 1909: give template", 1, true), tostring(a.error))
+	eq(#g.tc.plans, 0)
+end)
+
+test("connect road: a template out of its years or an entrance road is refused before anything is sent", function()
+	local g = industryWorld({ planSteps = 3 })
+	local a = connectRun(g, 976, string.format("{ from = 161, to = 122, road = true, template = %q }", fakeTc.COUNTRY))
+	truthy(tostring(a.error):find("is to be had from 1940, not in 1909", 1, true) and a.error:find(fakeTc.OLD_COUNTRY, 1, true),
+		tostring(a.error))
+	a = connectRun(g, 977, string.format("{ from = 161, to = 122, road = true, template = %q }", fakeTc.ENTRANCE))
+	truthy(tostring(a.error):find("entrance road, not a road type a player builds", 1, true), tostring(a.error))
+	eq(#g.tc.plans, 0); eq(#g.tc.events, 0)
+	a = connectRun(g, 978, string.format("{ from = 161, to = 122, road = true, template = %q }", fakeTc.OLD_COUNTRY))
+	eq(a.ok, true, tostring(a.error)); eq(a.template, fakeTc.OLD_COUNTRY)
+	-- tracks: only a note (whether the game refuses such a track from a script is not known)
+	g = connectWorld({ year = 1909, availability = { [fakeTc.STANDARD] = { yearFrom = 1930, yearTo = 0 } } })
+	a = connectRun(g, 979, "{ from = 101, to = 103 }")
+	eq(a.ok, true, tostring(a.error)); eq(a.template, fakeTc.STANDARD)
+	truthy(a.notes and a.notes[1]:find("is to be had from 1930, and the year is 1909", 1, true), tostring(a.notes and a.notes[1]))
+end)
+
+test("connect: a dry run refused without a cost says the game refused it before pricing it", function()
+	local g = connectWorld({ blocked = true, cost = 0 })
+	local a = connectRun(g, 980, "{ from = 101, to = 103 }")
+	eq(a.ok, false)
+	local said = false
+	for _, n in ipairs(a.notes or {}) do said = said or n:find("refused the route before pricing it", 1, true) ~= nil end
+	truthy(said, "noted")
+	g = connectWorld({ blocked = true })
+	a = connectRun(g, 981, "{ from = 101, to = 103 }")
+	eq(a.notes, nil, "a priced refusal needs no such note")
+end)
+
+test("connect map: the planner's whole search area is read before it starts, so it reads nothing late", function()
+	local g = connectWorld({ planSteps = 1000 })
+	send(g, 982, "connect", "{ from = 101, to = 103 }")
+	frames(g, FIRST + 70)
+	local w = g.tc.plans[1] and g.tc.plans[1].world
+	truthy(w, "planning started")
+	local before = g.tc.octreeCalls
+	w.blocked(2450, 1450); w.blocked(-1450, -1450)
+	eq(g.tc.octreeCalls, before, "1.5 km round the ends already read")
+	w.blocked(2700, 0)
+	eq(g.tc.octreeCalls, before + 1, "further out: read when asked")
+	frames(g, 1100)
+	local a = final(g, 982)
+	eq(a.ok, true, tostring(a.error))
+	-- (x -1500..2500 and y -1500..1500: blocks -8..12 by -8..7)
+	eq(a.plan.map.preload, 21 * 16); eq(a.plan.map.lateBlocks, 1, "only the one asked for above")
+	-- the map's edge bounds the area: near the edge fewer blocks
+	g = connectWorld({ planSteps = 3, bounds = { -1000, -1000, 2000, 1000 } })
+	a = connectRun(g, 983, "{ from = 101, to = 103 }", FIRST + 100)
+	eq(a.ok, true, tostring(a.error))
+	-- (inside the map's inset: -920..1920 by -920..920, blocks -5..9 by -5..4)
+	eq(a.plan.map.preload, 15 * 10)
 end)
 
 test("connect is refused in the main menu", function()
