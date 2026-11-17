@@ -123,8 +123,14 @@ SIGKILL します (`--no-kill` で諦める。「安全上の注意」)。新し
 
 ### ゲームを見る
 
+ゲームは起動のたびに `crash_dump/stdout.txt` を書き直すので、前の回のログ (落ちた・kill した・終えた) は、次に起動すると
+消えます。そこで `launch` と `restart` は、起動の前にそれを `crash_dump/logs/stdout-<ログの時刻 (UTC)>.txt` へ写し、
+新しい 20 個を残します (返事の `launch.keptLog`)。Steam から手で起動するときは写されないので、その前に `keep-log`
+を実行してください。
+
 ```
 python3 tools/tf3ctl.py log --grep remote_probe --tail 40   # ゲームの stdout.txt
+python3 tools/tf3ctl.py keep-log [--list]                   # stdout.txt を今 crash_dump/logs へ写す。写しの一覧
 python3 tools/tf3ctl.py entities --kind town --grep ems     # ID と名前: town・line・vehicle・station・industry
 python3 tools/tf3ctl.py window --town Emsworth --focus      # そのウィンドウを開き、カメラを寄せる (--close-all)
 python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # UI 込みの画面 (Steam の録画から)
@@ -133,7 +139,7 @@ python3 tools/tf3ctl.py event example_window.show --param '{"page": 2}'   # 任�
 python3 tools/tf3ctl.py camera                              # x・y・distance・angle・pitch・heightAboveTerrain
 python3 tools/tf3ctl.py camera --set 1200,-800,600         # x,y[,distance[,angle[,pitch]]]。渡さない値は今のまま
 python3 tools/tf3ctl.py camera --entity 12345              # または --focus x,y,z [--distance d]
-python3 tools/tf3ctl.py build-tool --res station/street/bus_stop.con [--template N] [--seconds 60]   # (--close)
+python3 tools/tf3ctl.py build-tool --res depots/road/road_depot/road_depot.con [--template N] [--seconds 60]   # (--close)
 ```
 
 `camera` の返事は、動かした後に読み直した値です。数は先に確かめます。NaN・無限大・1e6 を超える中心・1〜1e5 の外の

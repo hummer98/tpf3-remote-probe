@@ -58,6 +58,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -804,10 +805,59 @@ def newest_hello():
     return best
 
 
+# The game rewrites crash_dump/stdout.txt at every start, so the last run's log (a crash, a kill, a quit) is gone
+# once the game is started again (2026-11-17: logs of a menu UI reload and of a killed game were lost that way).
+# launch / restart keep a copy first, named by the log's own time, in crash_dump/logs; the newest LOG_KEEP stay.
+LOG_KEEP = 20
+KEPT_LOG_PREFIX = "stdout-"
+
+
+def game_log_path():
+    """The game's stdout.txt: TF3_LOG, the exchange folder's, or the first userdata folder that has one."""
+    env = os.environ.get("TF3_LOG")
+    if env:
+        return env
+    try:
+        return stdout_log(exchange_dir())
+    except ToolError:
+        pass
+    for root in userdata_roots():
+        path = os.path.join(root, "crash_dump", "stdout.txt")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def keep_last_log(path=None, keep=LOG_KEEP):
+    """Copies the game log aside before a start would overwrite it. Returns the copy's path, None when there is
+    no log (or it is empty), and never raises: keeping the log must not stop a launch."""
+    try:
+        path = path or game_log_path()
+        if not path or os.path.getsize(path) == 0:
+            return None
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(os.path.getmtime(path)))
+        folder = os.path.join(os.path.dirname(path), "logs")
+        os.makedirs(folder, exist_ok=True)
+        dest = os.path.join(folder, KEPT_LOG_PREFIX + stamp + ".txt")
+        if not os.path.exists(dest):  # the same run's log, kept already (launch after a restart's quit)
+            shutil.copy2(path, dest)
+        kept = sorted(glob.glob(os.path.join(folder, KEPT_LOG_PREFIX + "*.txt")))
+        for old in kept[:-keep] if keep > 0 else []:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        return dest
+    except Exception as e:  # anything: keeping the log must never stop a launch
+        print(f"warning: could not keep the last game log: {e}", file=sys.stderr)
+        return None
+
+
 def launch_game(timeout=LAUNCH_TIMEOUT_SEC):
     """Starts the game through Steam with startup.lua, and waits until the probe answers in the main menu."""
     if game_pids():
         raise ToolError("the game is already running: use restart (or quit first)")
+    kept = keep_last_log()
     started = time.time()
     steam = os.environ.get("TF3_STEAM", "steam").split()
     try:
@@ -847,7 +897,7 @@ def launch_game(timeout=LAUNCH_TIMEOUT_SEC):
             break
         time.sleep(0.5)
     time.sleep(2)
-    return {"ok": True, "menu": True, "seconds": round(time.time() - started, 1), "hello": hello}
+    return {"ok": True, "menu": True, "seconds": round(time.time() - started, 1), "hello": hello, "keptLog": kept}
 
 
 def start_args(ns):
@@ -1278,6 +1328,20 @@ def cmd_run(ns):
         raise
 
 
+def cmd_keep_log(ns):
+    """keep-log: the copy made now (unless --list) and every kept log, newest first."""
+    path = game_log_path()
+    if path is None:
+        raise ToolError("no game log found (set TF3_LOG)")
+    out = {"ok": True, "log": path}
+    if not ns.list:
+        out["kept"] = keep_last_log(path)
+    folder = os.path.join(os.path.dirname(path), "logs")
+    files = sorted(glob.glob(os.path.join(folder, KEPT_LOG_PREFIX + "*.txt")), reverse=True)
+    out["logs"] = [{"path": f, "bytes": os.path.getsize(f)} for f in files if os.path.exists(f)]
+    return out
+
+
 def cmd_log(ns):
     path = os.environ.get("TF3_LOG") or stdout_log(exchange_dir())
     with open(path, encoding="utf-8", errors="replace") as f:
@@ -1364,7 +1428,7 @@ def make_parser():
     ca.add_argument("--focus", metavar="X,Y,Z", help="focus on this point")
     ca.add_argument("--distance", type=float, help="with --focus (default: the distance now)")
     bt = sub.add_parser("build-tool", help="open the construction menu's placing tool for one construction")
-    bt.add_argument("--res", help="the construction's resName, e.g. station/street/bus_stop.con")
+    bt.add_argument("--res", help="the construction's resName, e.g. depots/road/road_depot/road_depot.con")
     bt.add_argument("--template", type=int, help="the template number (menu tag resName@N)")
     bt.add_argument("--seconds", type=float, default=60, help="the mod clears the menu filter after this (5-600)")
     bt.add_argument("--close", action="store_true", help="clear the menu filter now")
@@ -1488,6 +1552,9 @@ def make_parser():
     lg = sub.add_parser("log", help="lines of the game's stdout.txt")
     lg.add_argument("--grep")
     lg.add_argument("--tail", type=int, default=50)
+    kl = sub.add_parser("keep-log", help="copy the game log to crash_dump/logs now (launch and restart do it "
+                                         "before every start); lists the kept logs")
+    kl.add_argument("--list", action="store_true", help="only list the kept logs")
     return p
 
 
@@ -1499,6 +1566,9 @@ def main(argv=None):
     try:
         if ns.cmd == "log":
             cmd_log(ns)
+            return 0
+        if ns.cmd == "keep-log":
+            show(cmd_keep_log(ns))
             return 0
         if ns.cmd == "frame":
             show(cmd_frame(ns))

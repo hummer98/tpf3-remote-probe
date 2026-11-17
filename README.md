@@ -125,8 +125,14 @@ The same holds for the `newgame` command.
 
 ### Looking at the game
 
+The game rewrites `crash_dump/stdout.txt` at every start, so the last run's log (after a crash, a kill or a
+quit) is lost once the game starts again. `launch` and `restart` therefore copy it first to
+`crash_dump/logs/stdout-<the log's time, UTC>.txt` and keep the newest 20 (the answer's `launch.keptLog`).
+A game started by hand from Steam skips this: run `keep-log` before starting it.
+
 ```
 python3 tools/tf3ctl.py log --grep remote_probe --tail 40   # the game's stdout.txt
+python3 tools/tf3ctl.py keep-log [--list]                   # copy stdout.txt to crash_dump/logs now; list the copies
 python3 tools/tf3ctl.py entities --kind town --grep ems     # ids and names: town, line, vehicle, station, industry
 python3 tools/tf3ctl.py window --town Emsworth --focus      # open its window and move the camera (--close-all)
 python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # the screen with UI, from Steam's recording
@@ -135,7 +141,7 @@ python3 tools/tf3ctl.py event example_window.show --param '{"page": 2}'   # fire
 python3 tools/tf3ctl.py camera                              # x, y, distance, angle, pitch, heightAboveTerrain
 python3 tools/tf3ctl.py camera --set 1200,-800,600         # x,y[,distance[,angle[,pitch]]]; the rest stays as it is
 python3 tools/tf3ctl.py camera --entity 12345              # or --focus x,y,z [--distance d]
-python3 tools/tf3ctl.py build-tool --res station/street/bus_stop.con [--template N] [--seconds 60]   # (--close)
+python3 tools/tf3ctl.py build-tool --res depots/road/road_depot/road_depot.con [--template N] [--seconds 60]   # (--close)
 ```
 
 `camera` answers the values read back after the move. Numbers are checked first: NaN, infinity, a centre beyond

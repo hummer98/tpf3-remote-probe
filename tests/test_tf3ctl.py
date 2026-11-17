@@ -835,6 +835,67 @@ class QuitLaunchTest(unittest.TestCase):
         finally:
             os.environ.pop("TF3_STEAM", None)
 
+    def test_launch_keeps_the_last_game_log_before_starting(self):
+        log = os.path.join(self.x, "crash_dump", "stdout.txt")
+        os.makedirs(os.path.dirname(log))
+        write(log, "last run's lines\n")
+        os.utime(log, (1794890000, 1794890000))
+        os.environ["TF3_LOG"] = log
+        os.environ["TF3_STEAM"] = "/nonexistent/steam"
+        tf3ctl.game_pids = lambda: []
+        try:
+            with self.assertRaises(tf3ctl.ToolError):  # the launch itself fails here, after the copy
+                tf3ctl.launch_game(timeout=5)
+        finally:
+            os.environ.pop("TF3_STEAM", None)
+            os.environ.pop("TF3_LOG", None)
+        kept = glob.glob(os.path.join(self.x, "crash_dump", "logs", "stdout-*.txt"))
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(os.path.basename(kept[0]),
+                         "stdout-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(1794890000)) + ".txt", "named by the log's time")
+        with open(kept[0]) as f:
+            self.assertEqual(f.read(), "last run's lines\n")
+
+    def test_keep_last_log_names_by_log_time_skips_repeats_and_keeps_the_newest(self):
+        log = os.path.join(self.x, "stdout.txt")
+        folder = os.path.join(self.x, "logs")
+        self.assertIsNone(tf3ctl.keep_last_log(log), "no log yet")
+        write(log, "")
+        self.assertIsNone(tf3ctl.keep_last_log(log), "an empty log is not kept")
+        for i in range(5):
+            write(log, "run %d\n" % i)
+            os.utime(log, (1794890000 + i * 60, 1794890000 + i * 60))
+            tf3ctl.keep_last_log(log, keep=3)
+        tf3ctl.keep_last_log(log, keep=3)  # the same run again (restart: quit, then launch): no second copy
+        kept = sorted(os.listdir(folder))
+        self.assertEqual(len(kept), 3, kept)
+        name = lambda t: "stdout-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(t)) + ".txt"
+        self.assertEqual(kept, [name(1794890000 + i * 60) for i in (2, 3, 4)], "the two oldest went")
+
+    def test_keep_last_log_never_stops_a_launch(self):
+        log = os.path.join(self.x, "stdout.txt")
+        write(log, "x")
+        blocker = os.path.join(self.x, "logs")
+        write(blocker, "a file where the folder should be")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(tf3ctl.keep_last_log(log))
+        self.assertIn("could not keep", err.getvalue())
+
+    def test_keep_log_command_copies_now_and_lists(self):
+        log = os.path.join(self.x, "stdout.txt")
+        write(log, "lines\n")
+        os.environ["TF3_LOG"] = log
+        try:
+            res = tf3ctl.cmd_keep_log(tf3ctl.argparse.Namespace(list=False))
+            self.assertTrue(res["kept"].endswith(".txt"))
+            self.assertEqual(len(res["logs"]), 1)
+            res = tf3ctl.cmd_keep_log(tf3ctl.argparse.Namespace(list=True))
+            self.assertNotIn("kept", res)
+            self.assertEqual(res["logs"][0]["bytes"], 6)
+        finally:
+            os.environ.pop("TF3_LOG", None)
+
     def test_launch_refuses_a_running_game(self):
         tf3ctl.game_pids = lambda: [1]
         with self.assertRaises(tf3ctl.ToolError) as cm:
