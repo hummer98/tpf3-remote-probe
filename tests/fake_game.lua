@@ -781,6 +781,7 @@ function M.new(dir, opts)
 		package.loaded["/gui/line_vehicle_mgmt/vehicle_react_util.tl"] = nil
 		package.loaded["/gui/line_vehicle_mgmt/line_util.tl"] = nil
 		package.loaded["hummer_remote_probe::/remote_lines.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_connect.lua"] = nil
 		package.loaded["hummer_remote_probe::/line_configs.lua"] = nil
 		package.loaded["/gui/line_vehicle_mgmt/vehicle_util.tl"] = nil
 		package.loaded["hummer_remote_probe::/remote_vehicles.lua"] = nil
@@ -920,6 +921,10 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			[42] = { name = "Harbour", owner = 99, stations = { { id = 421, terminals = 1, passenger = true, pos = { 900, 0 } } } },
 			[44] = { name = "Rival Halt", owner = 7, stations = { { id = 441, terminals = 1, passenger = true, pos = { 50, 0 } } } },
 		} })
+	-- Track Connector (tests/fake_tc.lua): free track ends 101 (0,0) and 103 (1000,0) for the connect command
+	dofile(here .. "/tests/fake_tc.lua").install(g, {
+		nodes = { [100] = { -100, 0, 10 }, [101] = { 0, 0, 10 }, [103] = { 1000, 0, 20 }, [104] = { 1100, 0, 20 } },
+		edges = { [201] = { node0 = 100, node1 = 101 }, [202] = { node0 = 104, node1 = 103 } } })
 	local start = os.clock()
 	local wall = 0
 	local speedControl

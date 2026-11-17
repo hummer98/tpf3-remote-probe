@@ -5,7 +5,7 @@
 A Transport Fever 3 mod (`hummer_remote_probe`) plus a command-line tool (`tools/tf3ctl.py`) that let a script
 outside the game drive a running game: set the speed beyond the UI's 4x, run until a date and stop, load and save
 games (with other mods or mod settings), start a new game from the main menu, open windows, buy and sell vehicles,
-make lines, and read the game log.
+make lines, lay track or roads between two ends (with the Track Connector mod), and read the game log.
 
 It was made to check mods without someone at the keyboard: load a test save with some settings, run a few months,
 stop, read the log, repeat. A person can use it from a shell; so can a test script or an AI agent.
@@ -47,6 +47,8 @@ load, newgame, poll and quit only). `tf3ctl.py launch` and `restart` do this for
   list, so it does not run on Windows as it is.
 - Python 3.8 or newer, and `luajit` on the `PATH` (the tool reads the mod's Lua files with it).
 - Optional: `ffmpeg` and Steam's background game recording for `frame`; ImageMagick for `screenshot --preview`.
+- Optional: the Track Connector mod (on mod.io, modId `ethan_track_connector`, written against revision 3 / v1.3, not yet run with it in a game) for
+  `connect`, enabled for the save.
 
 ## Install
 
@@ -146,6 +148,53 @@ Vehicle answers carry the balance before and after, what was spent, the store pr
 depreciated value: enough to check a mod that changes vehicle prices. Run them paused, or fares and running costs
 end up in the difference too (a `warning` says so when game time moved).
 
+### Track and roads between two ends (`connect`)
+
+```
+python3 tools/tf3ctl.py connect --from 5123 --to Harbour                 # plan it and dry-run it; nothing is built
+python3 tools/tf3ctl.py connect --from 5123 --to 5200 --build            # build it
+python3 tools/tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/country/country_new_medium.street_template]
+python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|simple|<template> --electric]
+    [--slope 3 --radius 250] [--no-bridges] [--no-tunnels] [--build [--clear]] [--timeout 300]
+```
+
+`connect` needs the Track Connector mod (on mod.io), enabled for the save (its game script
+joins a save when the save is loaded with it). The probe loads that mod's planner and proposal modules at run
+time and sends its game script the events its own tool sends; nothing of that mod is shipped here. The rest (finding
+the ends, the map the planner works on, turning its result into the route record the game script takes, reading the
+outcome) is the probe's own code, written against those modules' functions and the game script's events and state.
+Without the mod, `connect` answers with an error saying so, and every other command works as before.
+
+- Ends (`--from`, `--to`): a free end's node id (a node with exactly one track piece and no road; with `--road`, one
+  road piece and no track), or a station group, a station or a station's construction (by id, or a part of a
+  station group's name). A station stands for its free platform ends; the pair of ends that face each other best is
+  taken.
+- Defaults are Track Connector's default settings: tracks 2.5 % and 300 m curves, roads 6 % and 100 m (a road type that states a
+  steepest grade it may be built at lowers a steeper slope to that); bridges and tunnels on. A road without `--template` gets the start road's own type and lanes,
+  as Track Connector's road tool does.
+- Without `--build` the answer is the plan and the dry run: `route` (`points`, `pieces`, `pieceKinds`, `length`,
+  `straight`, `bridge`, `tunnel` in metres, `steepestPercent`, `maxCut`, `maxFill`), `plan` (seconds, frames, the
+  longest frame, search steps, what the map read found), `preview` (Track Connector's verdict: `ok`, `short`,
+  `summary`), `estimate` (`cost`, `errors`, `problem`, `blockers`; `clear`, `clearCost`, `clearCount` when it can be
+  built once town buildings go), `buildable`, the `settings` sent, `from` / `to` (node, position, the station's free
+  ends). `ok` is `buildable`; `error` says why not.
+- With `--build`, when the dry run allows it (or `--clear` and the town buildings in the way can go), the route is
+  built by Track Connector's game script. `build` then has Track Connector's outcome (`tc`), `balanceBefore`,
+  `balanceAfter`, `spent` (the balance difference, so a cost another mod adds after the build is in it),
+  `estimatedCost`, `beyondEstimate`, `newEdges` / `newNodes` (pieces and nodes along the route that were not there
+  before) and `joined` (both ends now carry the new piece). Track Connector refuses a build the company cannot pay
+  for. Run it paused: otherwise fares and running costs are in `spent` too (`warning`).
+- First the land along the way is read (a few blocks per frame), then the route is planned. That takes seconds to
+  minutes; the tool prints the progress on stderr and waits `--timeout` (default 120 s)
+  plus 30 s. One `connect` at a time.
+- Track Connector keeps one state for everyone: a player using its tool while a `connect` runs, or the other way
+  round, overwrites the picked ends and the route. `connect` checks that the state still shows its own ends and
+  route, before and after a build, and ends with an error otherwise. The settings it sends stay in that state: Track Connector's track tool
+  starts from them next time (its road tool does not read the settings in the state).
+- Removing Track Connector from a save later: its `severityRemove` is Warning. What was built is ordinary track or
+  road of the game's own types (a type from another mod, given with `--track` / `--template`, needs that mod), so it
+  stays. Track Connector's game script state stays in the save.
+
 ### Several clients at once
 
 Several tool processes may run at once (a long `run` plus `status` calls, say): a lock makes them write the single
@@ -231,6 +280,7 @@ Not checked yet:
   a small save first; the details are under Implementation notes.
 - `window` and `event` opening windows, the speed label's position and look, `tool` closing a window with `pop`.
 - Whether `app.quit` ends the game without a confirmation dialog.
+- `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
 
 ## Tests
 
@@ -239,7 +289,9 @@ luajit tests/run.lua                                   # the mod: pure logic, an
 python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py, end to end against the fake game and real files
 ```
 
-Neither needs the game.
+Neither needs the game. `tests/fake_tc.lua` is a stand-in for Track Connector written for these tests: it
+imitates what `connect` relies on (its module functions, its game script's events and state), contains none of that
+mod's code, and was checked against no running copy of it.
 
 ## Notes
 
@@ -400,6 +452,53 @@ All unchecked in game. There is no command to build stations.
   station); whether the station and line systems used work in the GUI state; whether the report key can be
   written ("line report not written" in the log if not).
 
+### Connections (`connect`)
+
+All unchecked in game. How it works: the GUI script requires Track Connector's planner and proposal modules
+(`ethan_track_connector::/track_connector/tc_planner.script.tl`, `tc_proposal.script.tl`), builds a small map for
+the planner (its `World`) from the engine, runs the planner a 15 ms slice per frame in `guiUpdate`, turns the result
+into Track Connector's `Route`, and sends its game script the events its own tool sends
+(`makeScriptingSendEventCmd("", "TrackConnector", ...)`: `tc_settings`, `tc_setFromEnd`, `tc_setToEnd`, `tc_route`,
+`tc_estimate`, then `tc_build`). The dry run and the build are Track Connector's; the answer reads its game script
+state (`preview`, `estimates[key]`, `builds`, `build`) from the `GAME_SCRIPT` component.
+
+The map is the probe's own code; the idea is the one Track Connector's tool has too (read the land around the
+way through the octree, buildings as blocked land, lines as crossings). Terrain height (asked every 4 m) and water (every 10 m; over water the planner sees the
+water level plus 6.5 m, so it bridges), constructions and town buildings as blocked land, and road and track pieces
+as crossings, on 5 m cells in 200 m blocks read through the octree. The blocks in a band along the straight line
+between the ends are read before planning, six per frame; others when the planner first asks. The planner asks from inside its own coroutine, so after every three such reads
+it waits for the next frame right there (a count, not a time: `os.clock` runs ahead of real time on Linux); a
+planner without a coroutine cannot wait, and more than 8 in one of its slices are logged once. The two ends' own
+pieces and the construction they belong to are left out, and buildings within 75 m of an end do not block. Not
+there, compared with Track Connector's own tool: level crossings, the heights of the roads and tracks crossed (the
+planner then assumes 7.5 m over and 9.5 m under the ground), running alongside an existing line (it counts as a
+crossing, so a route may keep away from one or bridge it), water areas learned from refused builds, branching off
+the middle of a piece, double and more tracks, station platform layouts, route goals.
+
+Unchecked, riskiest first (the first ones could take the game down):
+
+- Requiring Track Connector's Teal modules from this Lua GUI script, and sending scripting events from `guiUpdate`
+  (Track Connector does both from its own GUI script).
+- Engine calls made inside the planner's coroutine from `guiUpdate`: the octree, `terrain.getHeightAt` /
+  `isOnWater`, components of whatever the octree returns. Street-system calls are only made on entities that are
+  nodes (asked about anything else, the engine dies on an assertion), and the ends are checked again before the
+  route is sent.
+- `streetConnectorSystem.getConstructionEntityForStation` (if missing, a construction around the station that lists
+  it is looked for) and the `roadTemplate` field of a road piece (if unreadable, the default road type is used).
+- Whether the game script takes the events while the game is paused, and how fast (the wait is 30 s).
+- The planner's time slice: Track Connector measures it with `os.clock`, which on Linux is the CPU time of the
+  whole process, so a slice may be much shorter than 15 ms of real time and planning slower than in its own tool.
+  The map read before it goes by blocks per frame, not by time; how long six blocks take on a dense map is unknown.
+- Track types: a short `--track` name is turned into a template by Track Connector, which quietly uses the
+  standard track when that template is missing; `connect` refuses then instead.
+- A build's outcome: Track Connector writes it in the build command's callback. If the state still says "nothing
+  happened" after 5 s, the build counts as done when new pieces join both ends (a note says so).
+- `newEdges` / `newNodes` are whatever appeared along the route between before and after the build: a road a town
+  built meanwhile would be in them.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Track Connector (`ethan_track_connector`) is another author's mod. It is not part of this repository, not covered
+by its licence, and not connected with this project; `connect` only loads it from the player's own installation.

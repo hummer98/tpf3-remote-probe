@@ -32,6 +32,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py lines [--name probe]            # lines: stops (platforms), vehicles, cargo loaded and carried
   tf3ctl.py line create --stops Central,Harbour [--name "[probe] A"] [--cargo grain] [--via gui|cmd]
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
+  tf3ctl.py connect --from 5123 --to Harbour [--build]   # a track between two free ends (needs Track Connector)
+  tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
+            # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is only shown (status:
 run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes; nothing
@@ -67,7 +70,7 @@ STALE_SEC = 3600  # answers nobody read (a killed tool) are removed after this
 PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); longer means it is not running
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
-                "replace", "sell", "money", "line"}  # window: what the player sees  # poll: only the mod's file reads
+                "replace", "sell", "money", "line", "connect"}  # window: what the player sees  # poll: only the mod's file reads
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -969,6 +972,62 @@ def line_args(ns):
     return args
 
 
+CONNECT_GRACE_SEC = 30  # the mod gives up after --timeout and answers; this waits that much longer for it
+
+
+def connect_end(text, what):
+    """--from / --to: digits are an entity id (a node, station, station group or station construction),
+    anything else a part of a station group's name."""
+    s = (text or "").strip()
+    if not s:
+        raise ToolError("--%s is empty: give a node id, a station id or a station's name" % what)
+    # (isdigit alone takes "²" and other Unicode digits, which int() refuses)
+    return int(s) if s.isascii() and s.isdigit() else s
+
+
+def connect_args(ns):
+    """The connect command's args (the mod checks every one again)."""
+    args = {"from": connect_end(ns.from_, "from"), "to": connect_end(ns.to, "to")}
+    if ns.road:
+        if ns.track is not None or ns.electric:
+            raise ToolError("--track and --electric go with tracks, not with --road (give the road type as --template)")
+        args["road"] = True
+        if ns.template is not None:
+            args["template"] = ns.template
+    else:
+        if ns.template is not None:
+            raise ToolError("--template goes with --road (for tracks give --track)")
+        if ns.track is not None:
+            args["track"] = ns.track
+        if ns.electric:
+            args["electric"] = True
+    for key in ("slope", "radius"):
+        v = getattr(ns, key)
+        if v is not None:
+            args[key] = v
+    for key in ("bridges", "tunnels"):
+        if getattr(ns, key) is False:
+            args[key] = False
+    if ns.clear and not ns.build:
+        raise ToolError("--clear (knock down town buildings in the way) goes with --build")
+    if ns.build:
+        args["build"] = True
+    if ns.clear:
+        args["clear"] = True
+    args["timeout"] = ns.timeout
+    return args
+
+
+def cmd_connect(ns):
+    args = connect_args(ns)
+
+    def progress(a):
+        p = a.get("progress")
+        print("... %s%s, %.0f s" % (a.get("phase") or "?", "" if p is None else " %.0f%%" % (num(p) * 100),
+                                   num(a.get("seconds"))), file=sys.stderr)
+    return send("connect", args, timeout=ns.timeout + CONNECT_GRACE_SEC, on_progress=progress)
+
+
 def stations_args(ns):
     args = {}
     if ns.name:
@@ -1200,7 +1259,7 @@ def cmd_log(ns):
     return None
 
 
-def main(argv=None):
+def make_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--owner", default=os.environ.get("TF3CTL_OWNER"),
                    help="name of the client sending commands (shown to others, never used to refuse)")
@@ -1361,6 +1420,26 @@ def main(argv=None):
         else:
             la.add_argument("--sell-vehicles", action="store_true", help="sell the line's vehicles first, as the "
                                                                          "line manager's delete does")
+    cn = sub.add_parser("connect", help="a track (or road) between two free ends, planned and built by the Track "
+                                         "Connector mod (which the save needs); without --build only checked")
+    cn.add_argument("--from", dest="from_", required=True, metavar="END",
+                    help="a free end's node id, a station (group) id or a part of a station's name")
+    cn.add_argument("--to", required=True, metavar="END")
+    cn.add_argument("--road", action="store_true", help="a road instead of a track (between dead-end roads)")
+    cn.add_argument("--template", help="--road: the road type's full resource name (default: as the start road)")
+    cn.add_argument("--track", help="standard (default), high_speed, simple, or a track type's full resource name")
+    cn.add_argument("--electric", action="store_true", help="with overhead wires")
+    cn.add_argument("--slope", type=float, help="the steepest grade in percent (default 2.5 tracks, 6 roads)")
+    cn.add_argument("--radius", type=float, help="the tightest curve in metres (default 300 tracks, 100 roads)")
+    # (pairs of store_true / store_false, not BooleanOptionalAction: that needs Python 3.9, and the parser is built
+    # for every command)
+    for what in ("bridges", "tunnels"):
+        cn.add_argument("--" + what, dest=what, action="store_true", help="allow %s (the default)" % what)
+        cn.add_argument("--no-" + what, dest=what, action="store_false", help="no " + what)
+    cn.set_defaults(bridges=None, tunnels=None)
+    cn.add_argument("--build", action="store_true", help="build it (default: only plan and check it)")
+    cn.add_argument("--clear", action="store_true", help="with --build: knock down town buildings in the way")
+    cn.add_argument("--timeout", type=float, default=120, help="seconds for the whole command (10-1800)")
     v = sub.add_parser("save")
     v.add_argument("name")
     sub.add_parser("state", help="where the game is (menu, loading, ...), from its log; needs no mod")
@@ -1368,7 +1447,11 @@ def main(argv=None):
     lg = sub.add_parser("log", help="lines of the game's stdout.txt")
     lg.add_argument("--grep")
     lg.add_argument("--tail", type=int, default=50)
-    ns = p.parse_args(argv)
+    return p
+
+
+def main(argv=None):
+    ns = make_parser().parse_args(argv)
     global OWNER
     OWNER = ns.owner
 
@@ -1471,6 +1554,8 @@ def main(argv=None):
             res = send("lines", {"name": ns.name} if ns.name else {})
         elif ns.cmd == "line":
             res = send("line", line_args(ns), timeout=VEHICLE_TIMEOUT_SEC)  # the mod's own wait is 60 s
+        elif ns.cmd == "connect":
+            res = cmd_connect(ns)
     except GameNotReady as e:
         print("error: " + str(e), file=sys.stderr)
         show({"ok": False, "error": str(e), "gameState": e.state})

@@ -866,6 +866,10 @@ for k, fn in pairs(vehicles.handlers) do handlers[k] = fn end
 local lines = (ug_require or require)(MOD .. "::/remote_lines.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say, publishUi = publishUi, mod = MOD })
 for k, fn in pairs(lines.handlers) do handlers[k] = fn end
+-- connect (remote_connect.lua): a track or road between two ends, through the Track Connector mod
+local connect = (ug_require or require)(MOD .. "::/remote_connect.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = appTime, try = try, say = say, mod = MOD })
+for k, fn in pairs(connect.handlers) do handlers[k] = fn end
 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -877,6 +881,7 @@ local function init()
 	if not G.menu then
 		vehicles.reset()
 		lines.reset()
+		connect.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -979,6 +984,7 @@ local function step()
 	if G.menu then return end -- no game to run, and no label to show
 	vehicles.step()
 	lines.step()
+	connect.step()
 	stepFinish()
 	stepRun()
 	stepLabel()

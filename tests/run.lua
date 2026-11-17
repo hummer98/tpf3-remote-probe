@@ -234,7 +234,7 @@ test("boot: hello and an id-0 command file in the first folder that keeps files"
 	eq(#files(g.x, "^remote_probe__hello_"), 1)
 	eq(#files(g.x, "^remote_probe__cmd_"), 1)
 	local hello = readJson(g.x, files(g.x, "^remote_probe__hello_")[1])
-	truthy(hello:find('"version":6'), hello)
+	truthy(hello:find('"version":7'), hello)
 	truthy(hello:find('"menu":false'), hello)
 	truthy(hello:find('"dir":"recordings"'), hello)
 	truthy(g.logs[1]:find("ready"), g.logs[1])
@@ -2938,6 +2938,552 @@ test("line commands are refused in the main menu", function()
 	send(g, 720, "line", '{ action = "create", stops = { 41, 42 } }')
 	frames(g, FIRST)
 	truthy(final(g, 720).error:find("needs a running game"))
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- connect: a track or road between two ends through Track Connector (tests/fake_tc.lua stands in for it)
+
+local fakeTc = dofile(root .. "/tests/fake_tc.lua")
+local connectMod = require "hummer_remote_probe::/remote_connect.lua"
+
+-- Track ends 101 (at 0,0, facing +x) and 103 (at 1000,0, facing -x); a junction node 110 (three pieces); a station
+-- group 42 "Harbour" whose construction 301 has a platform track 203 with free ends 105 and 106; a town building
+-- 401 and a road 204 (nodes 107-108) across the straight line at x = 500; a road dead end 121.
+local function connectWorld(tcOpts, gameOpts)
+	tcOpts = tcOpts or {}
+	local w = { strict = true,
+		nodes = { [100] = { -100, 0, 10 }, [101] = { 0, 0, 10 }, [103] = { 1000, 0, 20 }, [104] = { 1100, 0, 20 },
+			[105] = { 1000, 500, 20 }, [106] = { 1100, 500, 20 }, [107] = { 500, -200, 0 }, [108] = { 500, 200, 0 },
+			[110] = { -300, 0, 10 }, [111] = { -400, 0, 10 }, [112] = { -300, 100, 10 }, [120] = { 0, 900, 5 }, [121] = { 100, 900, 5 } },
+		edges = { [201] = { node0 = 100, node1 = 101 }, [202] = { node0 = 104, node1 = 103 }, [203] = { node0 = 105, node1 = 106 },
+			[204] = { node0 = 107, node1 = 108, road = true }, [205] = { node0 = 110, node1 = 100 }, [206] = { node0 = 111, node1 = 110 },
+			[207] = { node0 = 112, node1 = 110 }, [208] = { node0 = 120, node1 = 121, road = true, template = fakeTc.TOWN } },
+		constructions = { [301] = { box = { 990, 490, 1110, 510 }, stations = { 421 }, frozenEdges = { 203 } } },
+		townBuildings = { [401] = { box = { 480, -20, 520, 20 } } },
+		stationConstruction = { [421] = 301 },
+	}
+	for k, v in pairs(tcOpts) do w[k] = v end
+	gameOpts = gameOpts or {}
+	gameOpts.saves = gameOpts.saves or SAVES
+	gameOpts.stationGroups = gameOpts.stationGroups or {
+		[42] = { name = "Harbour", stations = { { id = 421, terminals = 2, carriers = { "RAIL" }, pos = { 1050, 500 } } } },
+		[43] = { name = "Harbour Goods", stations = { { id = 431, terminals = 1, carriers = { "RAIL" }, pos = { 3000, 3000 } } } } }
+	local g = newGame(gameOpts)
+	fakeTc.install(g, w)
+	frames(g, 2)
+	return g
+end
+
+-- runs a connect to its final answer (dt: seconds per frame)
+local function connectRun(g, id, argsLua, n, dt)
+	send(g, id, "connect", argsLua)
+	frames(g, n or FIRST + 40, dt)
+	return final(g, id)
+end
+
+test("core.connectArgs: defaults, ids and names, and every bad value refused with a reason", function()
+	local a = core.connectArgs({ from = 101, to = " Harbour " })
+	eq(a.from, 101); eq(a.to, "Harbour"); eq(a.road, false); eq(a.track, "standard"); eq(a.build, false)
+	eq(a.bridges, true); eq(a.tunnels, true); eq(a.timeout, 120); eq(a.slope, nil); eq(a.radius, nil)
+	eq(core.connectArgs({ from = "101", to = 103, slope = 2.5 }).slope, 0.025, "slope in percent, kept as a ratio")
+	eq(core.connectArgs({ from = 1, to = 2, road = true }).template, nil)
+	eq(core.connectArgs({ from = 1, to = 2, road = true, template = fakeTc.TOWN }).template, fakeTc.TOWN)
+	eq(core.connectArgs({ from = 1, to = 2, build = true, clear = true }).clear, true)
+	eq(core.connectArgs({ from = 1, to = 2, bridges = false }).bridges, false)
+	for _, bad in ipairs({
+		{ nil, "from must be" },
+		{ { to = 2 }, "got nothing" },
+		{ { from = 1 }, "to must be" },
+		{ { from = "", to = 2 }, "from is empty" },
+		{ { from = "  ", to = 2 }, "from is empty" },
+		{ { from = newproxy(true), to = 2 }, "got a userdata" },
+		{ { from = 1.5, to = 2 }, "from must be an entity id" },
+		{ { from = 0 / 0, to = 2 }, "from must be an entity id" },
+		{ { from = -1, to = 2 }, "from must be an entity id" },
+		{ { from = 0, to = 2 }, "from must be an entity id" },
+		{ { from = 2 ^ 31, to = 2 }, "from must be an entity id" },
+		{ { from = 1, to = "99999999999" }, "to must be an entity id" },
+		{ { from = { 1 }, to = 2 }, "got a table" },
+		{ { from = 5, to = "5" }, "the same" },
+		{ { from = 1, to = 2, track = "maglev" }, "track must be" },
+		{ { from = 1, to = 2, track = newproxy(true) }, "track must be" },
+		{ { from = 1, to = 2, template = fakeTc.TOWN }, "template goes with road" },
+		{ { from = 1, to = 2, road = true, track = "standard" }, "track goes with tracks" },
+		{ { from = 1, to = 2, road = true, electric = true }, "electric goes with tracks" },
+		{ { from = 1, to = 2, road = true, template = "town_medium" }, "full resource name" },
+		{ { from = 1, to = 2, road = "yes" }, "road must be true or false" },
+		{ { from = 1, to = 2, build = 1 }, "build must be true or false" },
+		{ { from = 1, to = 2, slope = 0 }, "slope (%) must be" },
+		{ { from = 1, to = 2, slope = 16 }, "slope (%) must be" },
+		{ { from = 1, to = 2, slope = "steep" }, "slope (%) must be" },
+		{ { from = 1, to = 2, slope = 0 / 0 }, "slope (%) must be" },
+		{ { from = 1, to = 2, slope = newproxy(true) }, "slope (%) must be" },
+		{ { from = 1, to = 2, radius = 10 }, "radius (m) must be" },
+		{ { from = 1, to = 2, clear = true }, "goes with build" },
+		{ { from = 1, to = 2, timeout = 5 }, "timeout (s) must be" },
+		{ { from = 1, to = 2, timeout = 4000 }, "timeout (s) must be" },
+	}) do
+		local ok, err = core.connectArgs(bad[1])
+		eq(ok, nil, bad[2])
+		truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	truthy(core.COMMANDS.connect and core.CHANGES_GAME.connect, "a command that changes the game")
+	eq(core.MENU_COMMANDS.connect, nil, "not in the main menu")
+end)
+
+test("connect.routeOf / routeProblem / routeSummary: one entry per point, kinds, bad numbers and loose ends", function()
+	local pts = { { x = 0, y = 0, z = 10, tx = 1, ty = 0, slope = 0.01, s = 0, edgeType = "normal" },
+		{ x = 100, y = 0, z = 11, tx = 1, ty = 0, slope = 0.01, s = 100, edgeType = "bridge" },
+		{ x = 200, y = 0, z = 12, tx = 1, ty = 0, slope = 0.01, s = 200, edgeType = "tunnel" },
+		{ x = 300, y = 0, z = 13, tx = 1, ty = 0, s = 300, edgeType = "normal" } }
+	local r = connectMod.routeOf(pts, 101, 103, { length = 300, straight = 299, bridge = 100, tunnel = 100, steepest = 0.01 })
+	eq(r.fromNode, 101); eq(r.toNode, 103); eq(#r.x, 4); eq(r.kind[1], 0); eq(r.kind[2], 1); eq(r.kind[3], 2)
+	eq(r.slope[4], 0, "a missing slope is 0, not nil"); eq(r.level[3], 0); eq(r.levelCount, 0); eq(r.length, 300)
+	eq(r.maxCut, 0, "missing stats are 0")
+	eq(connectMod.routeOf(pts, 1, 2, nil).length, 300, "without stats: the last point's distance")
+	local a, b = { x = 0, y = 0 }, { x = 300, y = 0 }
+	eq(connectMod.routeProblem(r, a, b), nil)
+	truthy(connectMod.routeProblem(r, a, { x = 400, y = 0 }):find("ends 100.0 m from the target"))
+	local bad = connectMod.routeOf({ pts[1], pts[2] }, 1, 2)
+	bad.z[2] = 0 / 0
+	truthy(connectMod.routeProblem(bad, a, { x = 100, y = 0 }):find("bad number"))
+	local zero = connectMod.routeOf({ pts[1], pts[1] }, 1, 2)
+	truthy(connectMod.routeProblem(zero, a, a):find("no length"))
+	truthy(connectMod.routeProblem(connectMod.routeOf({ pts[1] }, 1, 2), a, a):find("fewer than 2"))
+	local sum = connectMod.routeSummary(r)
+	eq(sum.points, 4); eq(sum.pieces, 3); eq(sum.pieceKinds.bridge, 1); eq(sum.pieceKinds.tunnel, 1); eq(sum.steepestPercent, 1)
+end)
+
+test("connect dry run: events in Track Connector's order, its verdict and cost, nothing built", function()
+	local g = connectWorld({ planSteps = 120 })
+	local before = g.balance
+	send(g, 800, "connect", "{ from = 101, to = 103 }")
+	frames(g, FIRST + 200)
+	local a, n = final(g, 800)
+	eq(n, 1, "one final answer")
+	eq(a.ok, true, tostring(a.error)); eq(a.buildable, true); eq(a.dryRun, true); eq(a.mode, "track")
+	eq(table.concat(g.tc.events, ","), "tc_settings,tc_setFromEnd,tc_setToEnd,tc_route,tc_estimate")
+	eq(a.from.node, 101); eq(a.to.node, 103); eq(a.template, fakeTc.STANDARD)
+	eq(a.estimate.cost, 1000 * a.route.points); eq(a.preview.ok, true); eq(a.route.length, 1000)
+	eq(a.settings.maxSlope, 0.025, "Track Connector's track defaults"); eq(a.settings.minRadius, 300)
+	eq(a.settings.track, fakeTc.STANDARD); eq(a.settings.avoidBuildings, true)
+	eq(a.tc.mod, "ethan_track_connector"); eq(a.tc.writtenFor.revision, 3); eq(a.tc.gameScript, 777)
+	eq(g.tc.askedScript, "ethan_track_connector::/track_connector/track_connector.gs")
+	eq(g.balance, before, "a dry run costs nothing"); eq(g.tc.built, nil)
+	truthy(answerText(g, 800, "p1"), "a progress answer while planning")
+	truthy(decode(answerText(g, 800, "p1")).running)
+	local plan = g.tc.plans[1]
+	eq(plan.start.x, 0); eq(plan.goal.x, 1000)
+	truthy(math.abs(plan.start.heading) < 1e-9, "leaves the end along its outward direction (+x)")
+	truthy(math.abs(math.abs(plan.goal.heading)) < 1e-9, "arrives against the target's outward direction (-x)")
+	eq(plan.S.levelCrossings, false); eq(plan.S.tracks, 1); eq(plan.S.allowBridges, true)
+	truthy(plan.budget >= 0.006 and plan.budget <= 0.03, "a frame's slice as Track Connector's own tool takes")
+	truthy(plan.steps >= 120, "spread over frames")
+	eq(g.tc.simplified, 1)
+	eq(g.crashed, nil)
+end)
+
+test("connect: the route Track Connector gets has its Route shape (single track, no level crossings)", function()
+	local g = connectWorld({ kinds = function(i, n) return i == 10 and "bridge" or (i == 12 and "tunnel" or "normal") end })
+	local a = connectRun(g, 801, "{ from = 101, to = 103 }")
+	eq(a.ok, true, tostring(a.error))
+	local r = g.tc.state.route
+	eq(r.fromNode, 101); eq(r.toNode, 103)
+	local n = #r.x
+	for _, k in ipairs({ "y", "z", "tx", "ty", "slope", "kind", "level" }) do eq(#r[k], n, k .. " has one entry per point") end
+	eq(r.x[1], 0); eq(r.x[n], 1000); eq(r.z[1], 10); eq(r.z[n], 20)
+	eq(r.kind[10], 1); eq(r.kind[12], 2); eq(r.kind[1], 0); eq(r.levelCount, 0); eq(r.level[5], 0)
+	eq(r.length, 1000); eq(r.twinOffset, nil)
+	eq(a.route.pieceKinds.bridge, 1); eq(a.route.pieceKinds.tunnel, 1)
+	eq(g.tc.state.estimates.remote_probe_801.n, n, "the estimate is about this route")
+end)
+
+test("connect world: heights, water, buildings and roads as the planner sees them; the ends' own surroundings left out", function()
+	local g = connectWorld({ height = function(x, y) return x < -2000 and -5 or 10 + x / 100 end,
+		water = function(x, y) return x < -2000 end, waterLevel = 0, planSteps = 1000 })
+	send(g, 802, "connect", "{ from = 101, to = 'Harbour' }")
+	frames(g, FIRST + 5)
+	local w = g.tc.plans[1].world
+	truthy(w, "planning started")
+	eq(w.height(300, 0), 13); eq(w.ground(300, 0), 13)
+	eq(w.water(300, 0), false); eq(w.water(-3000, 0), true)
+	eq(w.height(-3000, 0), 6.5, "over water: the surface plus room for a bridge"); eq(w.ground(-3000, 0), -5)
+	eq(w.blocked(500, 0), true, "the town building"); eq(w.blocked(300, 300), false)
+	eq(w.blocked(5000, 0), true, "outside the map")
+	eq(w.crossing(500, 150), true, "the road"); eq(w.crossing(300, 300), false)
+	eq(w.crossing(-200, 0), true, "the piece behind the end's own one (205) is a crossing")
+	eq(w.crossing(-50, 0), false, "the end's own piece (201) is none")
+	eq(w.crossing(-2, 0), false, "the end's own piece right at the end is none")
+	eq(w.crossing(1050, 500), false, "the target station's platform track is excluded")
+	eq(w.blocked(1050, 500), false, "and so is its construction")
+	truthy(w.bounds and w.bounds[1] == -3920, "bounds a little inside the map")
+	eq(g.crashed, nil)
+end)
+
+test("connect ends: node, station group by name, station, construction; junctions, roads and non-nodes refused", function()
+	local g = connectWorld()
+	local a = connectRun(g, 803, "{ from = 101, to = 'harb' }")
+	truthy(a.error:find("2 matches"), tostring(a.error))
+	a = connectRun(g, 804, "{ from = 101, to = 'Harbour' }")
+	eq(a.ok, true, tostring(a.error)); eq(a.to.kind, "station group"); eq(a.to.entity, 42); eq(a.to.node, 105, "the platform end that faces the start")
+	eq(#a.to.freeEnds, 2)
+	for i, case in ipairs({
+		{ "{ from = 101, to = 421 }", true, "station" },
+		{ "{ from = 101, to = 301 }", true, "construction" },
+		{ "{ from = 110, to = 103 }", "node 110 is not a free track end (3 track" },
+		{ "{ from = 101, to = 121 }", "node 121 is not a free track end (0 track and 1 road" },
+		{ "{ from = 201, to = 103 }", "201 is no node, station" },
+		{ "{ from = 101, to = 99999 }", "99999 is no node" },
+		{ "{ from = 101, to = 'Nowhere' }", 'no match for "Nowhere"' },
+		{ "{ from = 101, to = 43 }", "has no free platform track end" },
+		{ "{ from = 101, to = 101 }", "the same" },
+	}) do
+		local r = connectRun(g, 805 + i, case[1], 60)
+		if case[2] == true then
+			eq(r.ok, true, case[1] .. ": " .. tostring(r.error)); eq(r.to.kind, case[3])
+		else
+			eq(r.ok, false, case[1]); truthy(tostring(r.error):find(case[2], 1, true), case[1] .. ": " .. tostring(r.error))
+		end
+	end
+	eq(g.crashed, nil, "no street-system call on an entity that is no node")
+end)
+
+test("connect road: road ends, the start road's own type and lanes, the road's slope limit", function()
+	local g = connectWorld({ maxSlopeBuild = 0.05 })
+	g.tc.nodes[122], g.tc.nodes[123] = { 900, 900, 5 }, { 1000, 900, 5 }
+	g.tc.edges[209] = { node0 = 123, node1 = 122, road = true }
+	local a = connectRun(g, 820, "{ from = 121, to = 122, road = true }")
+	eq(a.ok, true, tostring(a.error)); eq(a.mode, "road")
+	eq(a.template, fakeTc.TOWN, "the same as the start road"); eq(a.settings.laneFrom, 208, "its lanes copied")
+	eq(a.settings.maxSlope, 0.05, "6 % lowered to what the road type allows"); eq(a.settings.minRadius, 100)
+	truthy(a.notes and a.notes[1]:find("planned at its 5.0%", 1, true), "said so")
+	a = connectRun(g, 821, string.format("{ from = 121, to = 122, road = true, template = %q }", fakeTc.COUNTRY))
+	eq(a.template, fakeTc.COUNTRY); eq(a.settings.laneFrom, nil)
+	a = connectRun(g, 822, string.format("{ from = 121, to = 122, road = true, template = %q }", fakeTc.STANDARD))
+	truthy(a.error:find("no road type"), tostring(a.error))
+	a = connectRun(g, 823, "{ from = 101, to = 122, road = true }")
+	truthy(a.error:find("not a free road end"), tostring(a.error))
+	a = connectRun(g, 824, string.format("{ from = 101, to = 103, track = %q }", fakeTc.COUNTRY))
+	truthy(a.error:find("road type"), tostring(a.error))
+end)
+
+test("connect: a route the game would refuse is not ok and says why; build sends nothing unless clear can help", function()
+	local g = connectWorld({ blocked = true, clearable = true })
+	local a = connectRun(g, 830, "{ from = 101, to = 103 }")
+	eq(a.ok, false); eq(a.buildable, false)
+	truthy(a.error:find("houses in the way", 1, true) and a.error:find("add clear"), a.error)
+	eq(a.estimate.clear, true); eq(a.estimate.clearCount, 2); eq(a.preview.ok, false)
+	a = connectRun(g, 831, "{ from = 101, to = 103, build = true }")
+	eq(a.ok, false); truthy(a.error:find("not built"), a.error)
+	for _, e in ipairs(g.tc.events) do truthy(e ~= "tc_build", "no build sent") end
+	local before = g.balance
+	a = connectRun(g, 832, "{ from = 101, to = 103, build = true, clear = true }")
+	eq(a.ok, true, tostring(a.error)); eq(g.tc.events[#g.tc.events], "tc_build")
+	eq(g.commands[#g.commands].param.clear, true)
+	truthy(g.balance < before)
+	g = connectWorld({ blocked = true })
+	a = connectRun(g, 833, "{ from = 101, to = 103, build = true, clear = true }")
+	truthy(a.error:find("not built"), a.error)
+end)
+
+test("connect --build: built, new pieces and nodes, cost measured by the balance (a mod's extra charge too)", function()
+	local g = connectWorld({ extraCost = 777 })
+	g.balance = 500000
+	local a = connectRun(g, 840, "{ from = 101, to = 103, build = true }")
+	eq(a.ok, true, tostring(a.error)); eq(a.dryRun, false)
+	local b = a.build
+	eq(b.tc.ok, true); eq(b.balanceBefore, 500000)
+	eq(b.spent, a.estimate.cost + 777); eq(b.beyondEstimate, 777, "what another mod charged after the build")
+	eq(#b.newEdges, a.route.pieces); eq(#b.newNodes, a.route.points - 2)
+	eq(b.joined.from, true); eq(b.joined.to, true)
+	truthy(b.warning, "the game kept running meanwhile (not paused in this test)")
+	eq(g.tc.state.builds, 1)
+end)
+
+test("connect --build: not enough money, refused by Track Connector, with its reason", function()
+	local g = connectWorld()
+	g.balance = 50
+	local a = connectRun(g, 841, "{ from = 101, to = 103, build = true }")
+	eq(a.ok, false); truthy(a.error:find("balance 50 below cost", 1, true), a.error)
+	eq(a.build.spent, 0); eq(#a.build.newEdges, 0); eq(g.balance, 50)
+end)
+
+test("connect --build: an outcome Track Connector's state never got is told by the pieces that are there", function()
+	local g = connectWorld({ lateCallback = true })
+	local a = connectRun(g, 842, "{ from = 101, to = 103, build = true }", FIRST + 250)
+	eq(a.ok, true, tostring(a.error)); truthy(a.notes[#a.notes]:find("nothing happened"))
+	g = connectWorld({ buildFails = true })
+	a = connectRun(g, 843, "{ from = 101, to = 103, build = true }")
+	eq(a.ok, false); truthy(a.error:find("the engine said no", 1, true), a.error)
+end)
+
+test("connect without Track Connector: its modules missing, its game script not running, another release", function()
+	local g = connectWorld({ noTc = true })
+	local a = connectRun(g, 850, "{ from = 101, to = 103 }")
+	truthy(a.error:find("Track Connector %(ethan_track_connector%) is not available") and a.error:find("Enable the mod"), a.error)
+	g = connectWorld({ noScript = true })
+	a = connectRun(g, 851, "{ from = 101, to = 103 }")
+	truthy(a.error:find("game script is not running"), a.error)
+	g = connectWorld({ oldTc = true })
+	a = connectRun(g, 852, "{ from = 101, to = 103 }")
+	truthy(a.error:find("lack newJob"), a.error)
+	eq(#g.tc.events, 0, "nothing sent")
+end)
+
+test("connect: planner timeouts, failures and an answer that never comes each end in one error answer", function()
+	local g = connectWorld({ planForever = true })
+	local a = connectRun(g, 860, "{ from = 101, to = 103, timeout = 10 }", 200, 0.1)
+	eq(a.ok, false); truthy(a.error:find("timed out after 10 s while planning"), a.error)
+	eq(#g.tc.events, 0)
+	-- the next connect may go once the first ended
+	g.tc.opts.planForever = false
+	a = connectRun(g, 861, "{ from = 101, to = 103 }")
+	eq(a.ok, true, tostring(a.error))
+	g = connectWorld({ noRoute = true })
+	a = connectRun(g, 862, "{ from = 101, to = 103 }")
+	truthy(a.error:find("^no route: fake planner: gave up"), a.error); truthy(a.plan.searchSteps == nil)
+	g = connectWorld({ planError = true })
+	a = connectRun(g, 863, "{ from = 101, to = 103 }")
+	truthy(a.error:find("the planner failed: .*boom"), a.error)
+	g = connectWorld({ tcSilent = true })
+	local _, n
+	a, n = connectRun(g, 864, "{ from = 101, to = 103 }", 450, 0.1)
+	eq(n, 1); truthy(a.error:find("did not answer in 30 s"), a.error); eq(a.route.length, 1000)
+	g = connectWorld({ refuseEvents = true })
+	a = connectRun(g, 865, "{ from = 101, to = 103 }")
+	truthy(a.error:find("refused the event command"), a.error)
+end)
+
+test("connect: one at a time; a player using Track Connector meanwhile ends the command instead of a wrong answer", function()
+	local g = connectWorld({ planSteps = 200 })
+	send(g, 870, "connect", "{ from = 101, to = 103 }")
+	frames(g, FIRST)
+	send(g, 871, "connect", "{ from = 101, to = 'Harbour' }")
+	frames(g, 20)
+	local b = final(g, 871)
+	truthy(b.error:find("connect 870 is still running"), tostring(b.error))
+	frames(g, 250)
+	eq(final(g, 870).ok, true)
+	eq(#g.tc.plans, 1, "the second never planned")
+	g = connectWorld({ stealAfter = "tc_route" })
+	local a = connectRun(g, 872, "{ from = 101, to = 103, build = true }")
+	truthy(a.error:find("someone used its tool"), a.error)
+	for _, e in ipairs(g.tc.events) do truthy(e ~= "tc_build", "no build sent") end
+end)
+
+test("connect: an end that goes while the route is planned is caught before anything reaches the game", function()
+	local g = connectWorld({ planSteps = 30 })
+	send(g, 880, "connect", "{ from = 101, to = 103 }")
+	frames(g, FIRST)
+	-- the player builds on the target: a second piece at node 103
+	g.tc.nodes[130] = { 1000, 100, 20 }
+	g.tc.edges[230] = { node0 = 103, node1 = 130 }
+	frames(g, 60)
+	local a = final(g, 880)
+	truthy(a.error:find("node 103 is no longer a free end"), tostring(a.error))
+	eq(#g.tc.events, 0); eq(g.crashed, nil)
+end)
+
+test("connect: a state that is not a table, and a planner route with a bad number, are errors, not crashes", function()
+	local g = connectWorld()
+	local real = api.engine.getComponent
+	api.engine.getComponent = function(e, k)
+		if k == "GAME_SCRIPT" then return { state = newproxy(true) } end
+		return real(e, k)
+	end
+	local a = connectRun(g, 890, "{ from = 101, to = 103 }", 450, 0.1)
+	truthy(a.error:find("did not answer"), a.error)
+	api.engine.getComponent = real
+	g = connectWorld({ kinds = function() return "normal" end })
+	local simplify = g.tc.planner.simplify
+	g.tc.planner.simplify = function(r) local out = simplify(r); out[3].z = 0 / 0; return out end
+	a = connectRun(g, 891, "{ from = 101, to = 103 }")
+	truthy(a.error:find("cannot go to the game: route point 3 has a bad number"), a.error)
+	eq(#g.tc.events, 0)
+end)
+
+test("connect track types: a short name the game lacks is refused, not quietly built as standard track", function()
+	local g = connectWorld()
+	local cases = {
+		{ "track = 'high_speed'", "::/infrastructure/track/high_speed/high_speed.street_template" },
+		{ "electric = true", "::/infrastructure/track/standard/standard_catenary.street_template" },
+		{ "track = 'simple'", "no simple track type" },
+		{ "track = 'high_speed', electric = true", "no high_speed electric track type" },
+		{ string.format("track = %q, electric = true", fakeTc.STANDARD), "electric goes with the short track names" },
+		{ "track = '::/infrastructure/track/maglev/maglev.street_template'", "no track template" },
+	}
+	for i, c in ipairs(cases) do
+		local a = connectRun(g, 900 + i, "{ from = 101, to = 103, " .. c[1] .. " }")
+		if c[2]:sub(1, 3) == "::/" then
+			eq(a.ok, true, c[1] .. ": " .. tostring(a.error)); eq(a.template, c[2]); eq(a.settings.track, c[2])
+		else
+			truthy(tostring(a.error):find(c[2], 1, true), c[1] .. ": " .. tostring(a.error))
+		end
+	end
+end)
+
+test("connect road: a start road whose type cannot be read is built as the default road, and said so", function()
+	local g = connectWorld()
+	g.tc.nodes[122], g.tc.nodes[123] = { 900, 900, 5 }, { 1000, 900, 5 }
+	g.tc.edges[209] = { node0 = 123, node1 = 122, road = true }
+	g.tc.edges[208].template = nil
+	local a = connectRun(g, 910, "{ from = 121, to = 122, road = true }")
+	eq(a.ok, true, tostring(a.error)); eq(a.template, fakeTc.COUNTRY); eq(a.settings.laneFrom, nil)
+	truthy(a.notes and a.notes[1]:find("could not be read"), "said so")
+end)
+
+test("connect map: the blocks along the way are read a few per frame before planning, others when asked", function()
+	local g = connectWorld({ planSteps = 1000 })
+	send(g, 911, "connect", "{ from = 101, to = 103 }")
+	frames(g, FIRST + 30)
+	eq(#g.tc.plans, 1, "planning started")
+	truthy(g.tc.plans[1].frameAtStart > 3, "after some frames")
+	local w = g.tc.plans[1].world
+	local before = g.tc.octreeCalls
+	eq(w.blocked(3000, 3000), false)
+	eq(g.tc.octreeCalls, before + 1, "a block outside the band is read when asked")
+	w.blocked(3010, 3010)
+	eq(g.tc.octreeCalls, before + 1, "and only once")
+	frames(g, 1100)
+	local a = final(g, 911)
+	eq(a.ok, true, tostring(a.error))
+	local plan = g.tc.plans[1]
+	truthy(plan.octreeAtStart >= a.plan.map.preload, "every block along the way read before the planner's first step")
+	truthy(a.plan.map.preload > 6 * 3, "more blocks than one frame reads: spread over frames")
+	truthy(a.plan.map.preload > 20 and a.plan.map.blocks >= a.plan.map.preload, tostring(a.plan.map.preload))
+	truthy(a.plan.mapSeconds ~= nil)
+end)
+
+test("connect --build: a failure whose text is still empty says the short outcome, not nothing", function()
+	local g = connectWorld({ buildFails = "quiet" })
+	local a = connectRun(g, 912, "{ from = 101, to = 103, build = true }")
+	eq(a.ok, false); truthy(a.error:find("did not build it: [fake] build refused", 1, true), a.error)
+end)
+
+test("connect: a time-out in each phase (map, the game script's check, the build) is one error naming the phase", function()
+	local g = connectWorld()
+	package.loaded["hummer_remote_probe::/remote_connect.lua"].TUNE.blocksPerFrame = 0
+	local a, n = connectRun(g, 920, "{ from = 101, to = 103, timeout = 10 }", 200, 0.1)
+	eq(n, 1); truthy(a.error:find("timed out after 10 s while mapping"), a.error); eq(#g.tc.plans, 0)
+	package.loaded["hummer_remote_probe::/remote_connect.lua"].TUNE.blocksPerFrame = 6
+	g = connectWorld({ tcSilent = true })
+	a, n = connectRun(g, 921, "{ from = 101, to = 103, timeout = 10 }", 200, 0.1)
+	eq(n, 1); truthy(a.error:find("timed out after 10 s while checking"), a.error); eq(a.route.points, 21)
+	g = connectWorld({ dropBuild = true })
+	a, n = connectRun(g, 922, "{ from = 101, to = 103, build = true, timeout = 10 }", 200, 0.1)
+	eq(n, 1); truthy(a.error:find("timed out after 10 s while building") and a.error:find("may still happen"), a.error)
+end)
+
+test("connect map: cells cover every block to its edge (no gap at the east and north 2 m)", function()
+	local g = connectWorld({ townBuildings = { [401] = { box = { 197, 50, 199.6, 55 } }, [402] = { box = { 50, 397.5, 55, 399.8 } } },
+		planSteps = 1000 })
+	send(g, 925, "connect", "{ from = 101, to = 103 }")
+	frames(g, FIRST + 30)
+	local w = g.tc.plans[1].world
+	eq(w.blocked(199.5, 52), true, "the last metre of block 0 eastwards")
+	eq(w.blocked(199.9, 52), true)
+	eq(w.blocked(52, 399.7), true, "the last metre of block 1 northwards")
+	eq(w.blocked(201, 52), true, "the building's room reaches into the next block too")
+	eq(w.blocked(205, 52), false, "and no further")
+	eq(w.blocked(52, 405), false)
+end)
+
+test("connect: points or pieces without a direction are refused, never sent", function()
+	local p = { { x = 0, y = 0, z = 0, tx = 1, ty = 0, s = 0 }, { x = 100, y = 0, z = 0, tx = 0, ty = 0, s = 100 } }
+	truthy(connectMod.routeProblem(connectMod.routeOf(p, 1, 2), { x = 0, y = 0 }, { x = 100, y = 0 }):find("point 2 has no direction"))
+	local g = connectWorld()
+	g.tc.nodes[140], g.tc.nodes[141] = { 2000, 0, 0 }, { 2000, 0, 0 }
+	g.tc.edges[240] = { node0 = 141, node1 = 140 }
+	local a = connectRun(g, 926, "{ from = 101, to = 140 }")
+	truthy(a.error:find("node 140: its piece has no direction"), tostring(a.error))
+	eq(#g.tc.events, 0)
+	local cp = connectMod.controlPoints({ x = 0, y = 0, z = 0 }, { x = 90, y = 0, z = 0 }, { x = 90, y = 0, z = 9 }, { x = 90, y = 0, z = 0 })
+	local mid = connectMod.curvePoint(cp, 0.5)
+	eq(mid.x, 45); eq(mid.z, 4.5); eq(connectMod.curvePoint(cp, 1).x, 90)
+end)
+
+test("connect --build: a player taking over Track Connector during the build is told, not taken for this build", function()
+	local g = connectWorld({ stealAfter = "tc_build" })
+	local a = connectRun(g, 927, "{ from = 101, to = 103, build = true }")
+	eq(a.ok, false); truthy(a.error:find("shows other ends after the build"), a.error)
+	truthy(a.build and #a.build.newEdges > 0, "what was found is still in the answer")
+end)
+
+test("connect: ids that are no entity are never looked up (the strict fake ends the game on such a lookup)", function()
+	local g = connectWorld()
+	for i, id in ipairs({ 99999, 2 ^ 31 - 1, 123456789 }) do
+		local a = connectRun(g, 930 + i, string.format("{ from = 101, to = %d }", id))
+		truthy(a.error:find("is no node, station"), tostring(a.error))
+	end
+	eq(g.crashed, nil)
+end)
+
+test("connect ends: a station's construction found around it when the engine's lookup is missing or says none", function()
+	local g = connectWorld({ stationConstruction = {} })
+	local a = connectRun(g, 940, "{ from = 101, to = 42 }")
+	eq(a.ok, true, tostring(a.error)); eq(a.to.node, 105)
+	api.engine.system.streetConnectorSystem.getConstructionEntityForStation = nil
+	a = connectRun(g, 941, "{ from = 101, to = 421 }", 60)
+	eq(a.ok, true, tostring(a.error)); eq(a.to.kind, "station")
+end)
+
+test("connect: a route in Track Connector's state that is not this command's (another point count) ends it", function()
+	local g = connectWorld({ alterRoute = true })
+	local a = connectRun(g, 942, "{ from = 101, to = 103, build = true }")
+	truthy(a.error:find("someone used its tool"), a.error)
+	for _, e in ipairs(g.tc.events) do truthy(e ~= "tc_build", "no build sent") end
+end)
+
+test("connect map: blocks read off the band inside the planner's coroutine let the frame go every few reads", function()
+	local far = {}
+	for i = 1, 10 do far[i] = { 3000, -3000 + i * 200 } end -- (ten blocks, inside the map, off the band)
+	local g = connectWorld({ coroutine = true, farPoints = far })
+	local tune = package.loaded["hummer_remote_probe::/remote_connect.lua"].TUNE
+	tune.lateBlocksPerSlice = 1 -- a wait after every late block
+	local a = connectRun(g, 950, "{ from = 101, to = 103 }")
+	eq(a.ok, true, tostring(a.error))
+	eq(a.plan.map.yields, 10, "one wait per block read late"); eq(a.plan.map.lateBlocks, 10)
+	truthy(g.tc.plans[1].resumes >= 10 + 3, "the planner went on over later frames")
+	eq(g.tc.plans[1].farDone, 10, "and finished what it was doing")
+	g = connectWorld({ coroutine = true, farPoints = far })
+	a = connectRun(g, 951, "{ from = 101, to = 103 }")
+	eq(a.ok, true, tostring(a.error)); eq(a.plan.map.yields, 3, "the default: a wait after every 3 (10 reads)")
+	-- outside a coroutine the same reads just go on
+	g = connectWorld({ farPoints = far })
+	package.loaded["hummer_remote_probe::/remote_connect.lua"].TUNE.lateBlocksPerSlice = 1
+	a = connectRun(g, 952, "{ from = 101, to = 103 }")
+	eq(a.ok, true, tostring(a.error)); eq(a.plan.map.yields, 0); eq(a.plan.map.lateBlocks, 10)
+	truthy(g.logs[#g.logs]:find("read 10 blocks in one slice", 1, true) or table.concat(g.logs, "\n"):find("read 10 blocks in one slice", 1, true),
+		"said in the log")
+end)
+
+test("connect ends: the way out of a curved piece's end follows its curve there, not the piece's chord", function()
+	local g = connectWorld()
+	-- a quarter circle of radius 100 from (2000, 0) heading +y to (1900, 100) heading -x: its end at 151 points -x
+	local k = 4 / 3 * (math.sqrt(2) - 1) * 100 * 3
+	g.tc.nodes[150], g.tc.nodes[151] = { 2000, 0, 0 }, { 1900, 100, 0 }
+	g.tc.edges[250] = { node0 = 150, node1 = 151, t0 = { x = 0, y = k, z = 0 }, t1 = { x = -k, y = 0, z = 0 } }
+	local a = connectRun(g, 953, "{ from = 151, to = 103 }", FIRST + 60)
+	local plan = g.tc.plans[#g.tc.plans]
+	truthy(plan and math.abs(plan.start.heading - math.pi) < 0.002, "leaves heading -x: " .. tostring(plan and plan.start.heading))
+	eq(a.from.node, 151)
+end)
+
+test("connect: the same place given twice in other words is refused (name and id, station and its group)", function()
+	local g = connectWorld()
+	for i, c in ipairs({ "{ from = 'Harbour', to = 42 }", "{ from = 421, to = 42 }", "{ from = 301, to = 'Harbour' }" }) do
+		local a = connectRun(g, 960 + i, c)
+		truthy(tostring(a.error):find("the same place"), c .. ": " .. tostring(a.error))
+	end
+	eq(#g.tc.plans, 0); eq(g.crashed, nil)
+end)
+
+test("connect is refused in the main menu", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 895, "connect", "{ from = 101, to = 103 }")
+	frames(g, FIRST)
+	truthy(final(g, 895).error:find("needs a running game"))
 end)
 
 print(string.format("\n%d passed, %d failed", passes, failures))

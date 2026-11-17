@@ -5,7 +5,7 @@
 Transport Fever 3 の MOD (`hummer_remote_probe`) と、コマンドラインのツール (`tools/tf3ctl.py`) の組です。ゲームの外の
 スクリプトから、動いているゲームを操作できます。速度を UI の上限 4 倍より上げる、指定日まで進めて止める、セーブのロードと
 保存 (他の MOD や MOD の設定を変えて)、メインメニューからの新しいゲーム、ウィンドウを開く、車両の売買、路線づくり、
-ゲームのログを読むこと。
+2 つの端の間に線路や道路を引くこと (Track Connector MOD を使う)、ゲームのログを読むこと。
 
 人がキーボードの前にいなくても MOD を確かめるために作りました。試験用のセーブを設定を変えてロードし、数か月進めて止め、
 ログを読む、を繰り返す使い方です。人がシェルから使っても、試験のスクリプトや AI エージェントから使ってもかまいません。
@@ -46,6 +46,8 @@ MOD は速度ボタンのレシピを、同じボタンと小さな表示に差�
   このままでは Windows で動きません。
 - Python 3.8 以上と、`PATH` 上の `luajit` (ツールは MOD の Lua のファイルを luajit で読みます)。
 - 任意: `frame` に `ffmpeg` と Steam のバックグラウンド録画。`screenshot --preview` に ImageMagick。
+- 任意: `connect` に Track Connector MOD (mod.io、modId `ethan_track_connector`、revision 3 / v1.3 に合わせて作成、ゲーム内ではまだ動かしていない)。セーブで
+  有効にしておきます。
 
 ## 導入
 
@@ -143,6 +145,48 @@ python3 tools/tf3ctl.py line delete 21 [--sell-vehicles]
 `purchaseTime`、車両の残存価値が入ります。車両の価格を変える MOD を確かめるのに足ります。一時停止して使ってください。
 そうしないと、運賃や維持費も差に入ります (ゲームの時間が動いたら `warning` が付きます)。
 
+### 2 つの端の間の線路と道路 (`connect`)
+
+```
+python3 tools/tf3ctl.py connect --from 5123 --to Harbour                 # 経路を計画して試算するだけ。何も建てない
+python3 tools/tf3ctl.py connect --from 5123 --to 5200 --build            # 建てる
+python3 tools/tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/country/country_new_medium.street_template]
+python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|simple|<template> --electric]
+    [--slope 3 --radius 250] [--no-bridges] [--no-tunnels] [--build [--clear]] [--timeout 300]
+```
+
+`connect` には Track Connector MOD (mod.io) が要り、セーブで有効にしておきます (その
+ゲームスクリプトは、MOD を有効にしてセーブをロードしたときに加わります)。probe はその MOD の planner と proposal の
+モジュールを実行時に読み込み、そのツールが送るのと同じイベントをゲームスクリプトに送ります。その MOD のファイルはここには
+含みません。それ以外 (端を探す、planner が使う地図、planner の結果をゲームスクリプトが受け取る経路の形にする、結果を読む)
+は probe 自身のコードで、それらのモジュールの関数と、ゲームスクリプトのイベントと状態に合わせて書いています。MOD が無ければ
+`connect` はそう書いたエラーを返し、他のコマンドは今までどおり動きます。
+
+- 端 (`--from`、`--to`): 空いている端の node の id (線路の piece がちょうど 1 本で道路が無い node。`--road` なら道路の
+  piece が 1 本で線路が無い node)。または駅グループ、駅、駅の construction (id か、駅グループの名前の一部)。駅は、その
+  ホームの空いている端の集まりとして扱い、互いにいちばん向き合う端の組を使います。
+- 既定値は Track Connector の設定の既定値と同じです: 線路は 2.5 % と半径 300 m、道路は 6 % と 100 m (道路の種類に造れる最大の勾配が
+  書いてあれば、それより急な指定はその値に下げる)。橋とトンネルは使える。`--template` の無い道路は、Track Connector の道路ツールと同じく、始点の道路の種類と
+  車線をそのまま使います。
+- `--build` なしの返事は、計画と試算です: `route` (`points`、`pieces`、`pieceKinds`、`length`、`straight`、`bridge`、
+  `tunnel` (m)、`steepestPercent`、`maxCut`、`maxFill`)、`plan` (秒、フレーム数、いちばん長いフレーム、探索の手数、地図の
+  読み取りで見つけたもの)、`preview` (Track Connector の判定: `ok`、`short`、`summary`)、`estimate` (`cost`、`errors`、
+  `problem`、`blockers`。町の建物をどかせば建つときは `clear`、`clearCost`、`clearCount`)、`buildable`、送った
+  `settings`、`from` / `to` (node、位置、駅の空いている端)。`ok` は `buildable` と同じで、建たない理由は `error` に入ります。
+- `--build` では、試算が通るとき (または `--clear` で、じゃまな町の建物をどかせるとき) に、Track Connector の
+  ゲームスクリプトが建てます。`build` には Track Connector の結果 (`tc`)、`balanceBefore`、`balanceAfter`、`spent` (残高の
+  差。建てた後で別の MOD が上乗せした費用も入る)、`estimatedCost`、`beyondEstimate`、`newEdges` / `newNodes` (建てる前には
+  無かった、経路沿いの piece と node)、`joined` (両端に新しい piece がつながったか) が入ります。会社が払えない建設は
+  Track Connector が断ります。一時停止して使ってください。そうしないと運賃や維持費も `spent` に入ります (`warning`)。
+- まず経路沿いの土地を読み (1 フレームに数ブロックずつ)、それから経路を計画します。合わせて数秒から数分かかります。ツールは進み具合を stderr に出し、`--timeout` (既定 120 秒) に 30 秒を足しただけ
+  待ちます。`connect` は一度に 1 つだけです。
+- Track Connector の状態は全員で 1 つです。`connect` の最中にプレイヤーがそのツールを使うと (逆も)、選んだ端と経路を
+  上書きします。`connect` は建てる前と後に、状態が自分の端と経路のままかを確かめ、違えばエラーで終わります。送った設定はその状態に残り、
+  Track Connector の線路ツールは次にそこから始まります (道路ツールは state の設定を読みません)。
+- 後でセーブから Track Connector を外すとき: その `severityRemove` は Warning です。建てたものは本体の種類の普通の線路や
+  道路なので残ります (`--track` / `--template` で別の MOD の種類を使ったら、その MOD が要ります)。Track Connector の
+  ゲームスクリプトの状態はセーブに残ります。
+
 ### 複数のクライアント
 
 ツールは複数同時に動かせます (長い `run` と `status` など)。コマンドファイルは 1 つなので、ロックで順に書きます。
@@ -224,6 +268,7 @@ python3 tools/tf3ctl.py line delete 21 [--sell-vehicles]
   小さいセーブで試してください。詳しくは「実装メモ」。
 - `window` と `event` でウィンドウが開くか、速度の表示の位置と見た目、`tool` が `pop` でウィンドウを閉じるか。
 - `app.quit` が確認ダイアログなしでゲームを終えるか。
+- `connect` は全部。危ない順の一覧は「実装メモ」の「接続」。
 
 ## テスト
 
@@ -232,7 +277,9 @@ luajit tests/run.lua                                   # MOD: 純粋な処理と
 python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲームと本物のファイルで端から端まで
 ```
 
-どちらもゲームは要りません。
+どちらもゲームは要りません。`tests/fake_tc.lua` は、このテストのために書いた Track Connector の代わりです。`connect` が
+頼る部分 (モジュールの関数、ゲームスクリプトのイベントと状態) の動きをまねたもので、その MOD のコードは含まず、動いている
+本物と突き合わせてもいません。
 
 ## メモ
 
@@ -382,6 +429,49 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   用の bounding volume を持つか (持たなければ産業か駅を使う)、使う駅と路線の system が GUI 状態で使えるか、報告のキーに
   書けるか (書けなければログに「line report not written」)。
 
+### 接続 (`connect`)
+
+ゲーム内では全部未確認です。仕組み: GUI スクリプトが Track Connector の planner と proposal のモジュール
+(`ethan_track_connector::/track_connector/tc_planner.script.tl`、`tc_proposal.script.tl`) を require し、planner 用の
+小さな地図 (その `World`) をエンジンから作り、`guiUpdate` で 1 フレームに 15 ms ずつ planner を回し、結果を Track Connector
+の `Route` にして、そのツールが送るのと同じイベントをゲームスクリプトに送ります
+(`makeScriptingSendEventCmd("", "TrackConnector", ...)`: `tc_settings`、`tc_setFromEnd`、`tc_setToEnd`、`tc_route`、
+`tc_estimate`、それから `tc_build`)。試算と建設は Track Connector がします。返事は、そのゲームスクリプトの状態
+(`preview`、`estimates[key]`、`builds`、`build`) を `GAME_SCRIPT` component から読みます。
+
+地図は probe 自身のコードで作ります。考え方は Track Connector のツールと同じです (経路のまわりの土地を octree で
+読み、建物はふさがった土地、線は交差とする)。地形の高さ (4 m ごとに聞く) と水 (10 m ごと。水の上では水位 + 6.5 m に見せるので、planner は
+橋を架ける)、construction と町の建物はふさがった土地、道路と線路の piece は交差。5 m のマスを 200 m のブロックにまとめ、
+octree で読みます。2 つの端を結ぶ直線に沿った帯の中のブロックは、計画の前に 1 フレームに 6 つずつ読み、それ以外は planner
+が最初に聞いたときに読みます。planner は自分の coroutine の中から聞くので、そうして 3 つ読むごとに、そこで次のフレームまで待ちます (時間ではなく
+数で区切る。Linux の `os.clock` は実時間より速く進むため)。coroutine の無い planner は待てないので、1 回の持ち時間で 8 個を
+超えたら 1 回だけログに出します。2 つの端の piece と、端が属する construction は除き、端から 75 m 以内の建物はふさがないものと
+します。Track Connector のツールと比べて無いもの: 踏切、交差する道路や線路の高さ (planner は地面の 7.5 m 上と 9.5 m 下と
+みなす)、既存の線路や道路に沿って走ること (交差とみなすので、離れて通るか橋で越える)、建設を断られて覚える水域、piece の
+途中からの分岐、複線以上、駅のホームの並び、経路の目標。
+
+未確認のこと。危ない順 (はじめのほうはゲームが落ちうる):
+
+- この Lua の GUI スクリプトから Track Connector の Teal のモジュールを require すること、`guiUpdate` から scripting の
+  イベントを送ること (Track Connector は両方を自分の GUI スクリプトからしている)。
+- `guiUpdate` から planner の coroutine の中でするエンジンの呼び出し: octree、`terrain.getHeightAt` / `isOnWater`、
+  octree が返したものの component。street system の呼び出しは node である entity にだけします (それ以外を聞くとエンジンが
+  assertion で落ちる)。端は経路を送る直前にもう一度確かめます。
+- `streetConnectorSystem.getConstructionEntityForStation` (無ければ、駅のまわりでその駅を持つ construction を探す) と、
+  道路の piece の `roadTemplate` (読めなければ既定の道路の種類を使う)。
+- 一時停止中にゲームスクリプトがイベントを受けるか、どれだけ速いか (待つのは 30 秒)。
+- planner の持ち時間: Track Connector は `os.clock` で測り、Linux ではそれがプロセス全体の CPU 時間なので、実時間の 15 ms
+  よりずっと短くなり、そのツールより計画が遅くなりうる。その前の地図の読み取りは、時間ではなく 1 フレームのブロック数で
+  区切る。混んだ地図で 6 ブロックにどれだけかかるかは未確認。
+- 線路の種類: 短い `--track` の名前は Track Connector がテンプレートの名前にし、そのテンプレートが無いと黙って標準の線路に
+  する。`connect` はそのときエラーにする。
+- 建設の結果: Track Connector は建設コマンドのコールバックで書く。5 秒たっても状態が "nothing happened" のままなら、新しい
+  piece が両端につながっていれば建ったとみなす (note にそう書く)。
+- `newEdges` / `newNodes` は、建てる前と後の間に経路沿いに増えたもの全部: その間に町が道路を作れば、それも入る。
+
 ## ライセンス
 
 MIT。[LICENSE](LICENSE) を見てください。
+
+Track Connector (`ethan_track_connector`) は別の作者の MOD です。このリポジトリには含まれず、このリポジトリの MIT
+ライセンスの対象外で、このプロジェクトとの関係もありません。`connect` は、プレイヤーが自分で入れたものを読み込むだけです。

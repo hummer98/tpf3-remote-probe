@@ -1,12 +1,13 @@
 -- Pure logic of the remote probe: no game API here, so tests/run.lua can drive all of it with luajit.
 local M = {}
 
-M.VERSION = 6 -- 2: speed and run follow the game's estimate of what it can sustain (args.force overrides)
+M.VERSION = 7 -- 2: speed and run follow the game's estimate of what it can sustain (args.force overrides)
 -- 3: quit, event, tool; runs in the main menu too when the game is launched with --script (startup.lua)
 -- 4: buy, duplicate, replace, sell, depots, vehicles
 -- 5: money; vehicle commands via gui run in the speed control's react state (guiUpdate cannot require the base
 --    module: react.RegisterRecipe fails there, 2026-11-16 12:24 JST)
 -- 6: stations, lines, line (create, update, delete)
+-- 7: connect (a track or road between two ends, planned and built through the Track Connector mod)
 M.MOD_ID = "hummer_remote_probe"
 M.PREFIX = "remote_probe__"
 M.LOG = "[remote_probe] "
@@ -15,11 +16,11 @@ M.LOG = "[remote_probe] "
 M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = true, load = true, save = true, poll = true,
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
-	stations = true, lines = true, line = true }
+	stations = true, lines = true, line = true, connect = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
-	line = true }
+	line = true, connect = true }
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true }
@@ -935,6 +936,95 @@ function M.radiusArg(v)
 	local n = tonumber(v)
 	if n == nil or n ~= n or n <= 0 or n > 100000 then return nil, "radius must be a number of metres, above 0 and up to 100000" end
 	return n
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- connect: a track or road between two ends (remote_connect.lua does the game side through Track Connector)
+
+M.CONNECT_TRACKS = { standard = true, high_speed = true, simple = true }
+M.CONNECT_TIMEOUT = { default = 120, min = 10, max = 1800 }
+-- slope in percent, radius in metres: what the planner and the game can do something with. Track Connector's own
+-- lists go from 1 to 8 % (tracks) and 3 to 12 % (roads), 40 to 1500 m.
+M.CONNECT_SLOPE = { min = 0.5, max = 15 }
+M.CONNECT_RADIUS = { min = 30, max = 5000 }
+
+-- one end as given: an entity id (a node, station, station group or station construction), or a part of a
+-- station group's name. Returns the number or the trimmed string, or nil and why.
+-- (entity ids are above 0 and fit 32 bits; anything else is refused before it reaches an engine lookup)
+M.MAX_ENTITY_ID = 2 ^ 31 - 1
+local function endToken(v, what)
+	if type(v) == "number" then
+		if v ~= v or v ~= math.floor(v) or v < 1 or v > M.MAX_ENTITY_ID then
+			return nil, what .. " must be an entity id (1 to 2^31-1) or a station's name"
+		end
+		return v
+	end
+	if type(v) ~= "string" then
+		return nil, what .. " must be an entity id or a station's name (got " .. (v == nil and "nothing" or ("a " .. type(v))) .. ")"
+	end
+	local s = v:match("^%s*(.-)%s*$")
+	if s == "" then return nil, what .. " is empty" end
+	if s:match("^%d+$") then return endToken(tonumber(s), what) end
+	return s
+end
+
+local function numberIn(v, name, lo, hi)
+	local n = tonumber(v)
+	if type(v) ~= "number" and type(v) ~= "string" then n = nil end
+	if n == nil or n ~= n or n < lo or n > hi then return nil, string.format("%s must be a number from %g to %g", name, lo, hi) end
+	return n
+end
+
+-- args: from, to, road, template, track, electric, slope (%), radius (m), bridges, tunnels, build, clear, timeout.
+-- Returns { from, to, road, template, track, electric, slope (a ratio), radius, bridges, tunnels, build, clear,
+-- timeout } (slope and radius nil: the mode's defaults) or nil and why.
+function M.connectArgs(args)
+	args = type(args) == "table" and args or {}
+	local out = { road = args.road == true, electric = args.electric == true, build = args.build == true,
+		clear = args.clear == true, bridges = args.bridges ~= false, tunnels = args.tunnels ~= false }
+	local err
+	out.from, err = endToken(args.from, "from")
+	if out.from == nil then return nil, err end
+	out.to, err = endToken(args.to, "to")
+	if out.to == nil then return nil, err end
+	if out.from == out.to then return nil, "from and to are the same" end
+	for _, k in ipairs({ "road", "electric", "build", "clear", "bridges", "tunnels" }) do
+		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
+	end
+	if out.road then
+		if args.track ~= nil then return nil, "track goes with tracks, not with road (give the road type as template)" end
+		if out.electric then return nil, "electric goes with tracks, not with road" end
+		if args.template ~= nil then
+			if type(args.template) ~= "string" or not args.template:find("::/", 1, true) then
+				return nil, "template must be a street template's full resource name, e.g. " ..
+					"::/infrastructure/street/country/country_new_medium.street_template"
+			end
+			out.template = args.template
+		end
+	else
+		if args.template ~= nil then return nil, "template goes with road (for tracks give track)" end
+		local t = args.track == nil and "standard" or args.track
+		if type(t) ~= "string" or not (M.CONNECT_TRACKS[t] or t:find("::/", 1, true)) then
+			return nil, "track must be standard, high_speed, simple or a track template's full resource name"
+		end
+		out.track = t
+	end
+	if args.slope ~= nil then
+		out.slope, err = numberIn(args.slope, "slope (%)", M.CONNECT_SLOPE.min, M.CONNECT_SLOPE.max)
+		if not out.slope then return nil, err end
+		out.slope = out.slope / 100
+	end
+	if args.radius ~= nil then
+		out.radius, err = numberIn(args.radius, "radius (m)", M.CONNECT_RADIUS.min, M.CONNECT_RADIUS.max)
+		if not out.radius then return nil, err end
+	end
+	if out.clear and not out.build then return nil, "clear (knock down town buildings in the way) goes with build" end
+	out.timeout = M.CONNECT_TIMEOUT.default
+	if args.timeout ~= nil then
+		out.timeout, err = numberIn(args.timeout, "timeout (s)", M.CONNECT_TIMEOUT.min, M.CONNECT_TIMEOUT.max)
+		if not out.timeout then return nil, err end
+	end
+	return out
 end
 
 return M

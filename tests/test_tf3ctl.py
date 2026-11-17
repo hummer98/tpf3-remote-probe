@@ -647,6 +647,22 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 0, res)
         self.assertEqual((res["removed"], res["soldVehicles"]), (True, [vehicle]))
 
+    def test_9t_connect_dry_run_then_build(self):
+        code, res = self.ctl("connect", "--from", "101", "--to", "103")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["dryRun"], res["buildable"], res["from"]["node"], res["to"]["node"]), (True, True, 101, 103))
+        self.assertEqual(res["route"]["length"], 1000)
+        self.assertGreater(res["estimate"]["cost"], 0)
+        code, res = self.ctl("connect", "--from", "101", "--to", "103", "--build", "--slope", "3")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["settings"]["maxSlope"], 0.03)
+        self.assertEqual(res["build"]["spent"], res["estimate"]["cost"])
+        self.assertEqual(len(res["build"]["newEdges"]), res["route"]["pieces"])
+        self.assertEqual(res["build"]["joined"], {"from": True, "to": True})
+        code, res = self.ctl("connect", "--from", "101", "--to", "103")
+        self.assertEqual(code, 1, "the ends are taken now")
+        self.assertIn("is not a free track end", res["error"])
+
     def test_9x_entities_and_window(self):
         code, res = self.ctl("entities", "--kind", "town", "--grep", "bay")
         self.assertEqual(code, 0, res)
@@ -908,6 +924,46 @@ class QuitLaunchTest(unittest.TestCase):
         # argparse: create needs --stops, update and delete the line id
         for bad in (["line"], ["line", "create"], ["line", "update"], ["line", "delete"], ["line", "create", "--stops",
                     "A,B", "--via", "react"], ["line", "delete", "21", "--stops", "A,B"], ["stations", "--near", "x"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit, msg=bad):
+                tf3ctl.main(bad)
+
+    def test_connect_args(self):
+        def parse(*argv):
+            ns = tf3ctl.argparse.Namespace(from_="101", to="Harbour", road=False, template=None, track=None,
+                                           electric=False, slope=None, radius=None, bridges=None, tunnels=None,
+                                           build=False, clear=False, timeout=120.0)
+            for k, v in zip(argv[0::2], argv[1::2]):
+                setattr(ns, k, v)
+            return tf3ctl.connect_args(ns)
+        self.assertEqual(parse(), {"from": 101, "to": "Harbour", "timeout": 120.0})
+        self.assertEqual(parse("to", " 42 ", "slope", 3.0, "radius", 250.0, "bridges", False, "build", True,
+                               "clear", True, "track", "high_speed", "electric", True),
+                         {"from": 101, "to": 42, "slope": 3.0, "radius": 250.0, "bridges": False, "build": True,
+                          "clear": True, "track": "high_speed", "electric": True, "timeout": 120.0})
+        self.assertEqual(parse("road", True, "template", "::/x.street_template", "tunnels", False),
+                         {"from": 101, "to": "Harbour", "road": True, "template": "::/x.street_template",
+                          "tunnels": False, "timeout": 120.0})
+        self.assertNotIn("bridges", parse("bridges", True), "on is the mod's default: not sent")
+        self.assertEqual(parse("to", "12²")["to"], "12²", "a Unicode digit is no id: a name")
+        for bad in (("from_", " "), ("to", ""), ("clear", True), ("road", True, "track", "standard"),
+                    ("road", True, "electric", True), ("template", "::/x.street_template")):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                parse(*bad)
+        # what the mod reads back from the command file
+        got = mod_reads(tf3ctl.command_text(9, "connect", parse("to", "103", "bridges", False, "build", True)))
+        self.assertEqual(got["args"], {"from": 101, "to": 103, "bridges": False, "build": True, "timeout": 120})
+        self.assertIn("connect", tf3ctl.CHANGES_GAME)
+        # argparse: --no-bridges / --no-tunnels understood, neither given means the mod's default
+        parsed = tf3ctl.make_parser().parse_args(["connect", "--from", "1", "--to", "2", "--no-bridges", "--tunnels"])
+        self.assertEqual((parsed.bridges, parsed.tunnels), (False, True))
+        self.assertEqual(tf3ctl.connect_args(parsed)["bridges"], False)
+        self.assertNotIn("tunnels", tf3ctl.connect_args(parsed))
+        parsed = tf3ctl.make_parser().parse_args(["connect", "--from", "1", "--to", "2"])
+        self.assertEqual((parsed.bridges, parsed.tunnels), (None, None))
+        # argparse: both ends needed, numbers checked
+        for bad in (["connect"], ["connect", "--from", "1"], ["connect", "--to", "1"],
+                    ["connect", "--from", "1", "--to", "2", "--slope", "steep"],
+                    ["connect", "--from", "1", "--to", "2", "--bridges", "no"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit, msg=bad):
                 tf3ctl.main(bad)
 
