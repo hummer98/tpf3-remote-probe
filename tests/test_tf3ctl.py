@@ -674,6 +674,35 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no match", res["error"])
 
+    def test_9x_camera(self):
+        code, res = self.ctl("camera")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["camera"]["distance"], 500)
+        code, res = self.ctl("camera", "--set", "10,20")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["camera"]["x"], res["camera"]["y"], res["camera"]["distance"]), (10, 20, 500))
+        code, res = self.ctl("camera", "--focus", "1,2,3", "--distance", "300")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["camera"]["distance"], 300)
+        code, res = self.ctl("camera", "--set", "1,nan")
+        self.assertEqual(code, 1)
+        code, res = self.ctl("camera", "--set", "1,2", "--entity", "3")
+        self.assertEqual(code, 2, "refused by the tool")
+
+    def test_9x_build_tool(self):
+        code, res = self.ctl("build-tool", "--res", "station/street/bus_stop.con", "--template", "2", "--seconds", "5")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["tag"], "station/street/bus_stop.con@2")
+        self.assertIn("notes", res)
+        code, res = self.ctl("build-tool", "--close")
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["wasOpen"])
+        code, res = self.ctl("build-tool", "--res", "nope.con")
+        self.assertEqual(code, 1)
+        self.assertIn("no such construction", res["error"])
+        code, res = self.ctl("build-tool")
+        self.assertEqual(code, 2)
+
     def test_9y_screenshot_waits_for_the_file(self):
         code, res = self.ctl("screenshot", "--scale", "0", "--timeout", "10")
         self.assertEqual(code, 0, res)

@@ -130,7 +130,31 @@ python3 tools/tf3ctl.py window --town Emsworth --focus      # そのウィンド
 python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # UI 込みの画面 (Steam の録画から)
 python3 tools/tf3ctl.py tool music [--close]                # ツールとして開く本体のウィンドウ: music・calendar・notifications
 python3 tools/tf3ctl.py event example_window.show --param '{"page": 2}'   # 任意の react イベントを送る
+python3 tools/tf3ctl.py camera                              # x・y・distance・angle・pitch・heightAboveTerrain
+python3 tools/tf3ctl.py camera --set 1200,-800,600         # x,y[,distance[,angle[,pitch]]]。渡さない値は今のまま
+python3 tools/tf3ctl.py camera --entity 12345              # または --focus x,y,z [--distance d]
+python3 tools/tf3ctl.py build-tool --res station/street/bus_stop.con [--template N] [--seconds 60]   # (--close)
 ```
+
+`camera` の返事は、動かした後に読み直した値です。数は先に確かめます。NaN・無限大・1e6 を超える中心・1〜1e5 の外の
+距離・±2π を超える angle・±π/2 を超える pitch は断ります。`--entity` は entity があるかを確かめます。メインメニューでは断ります。
+
+`build-tool` は、建設メニューの 1 つの建物の配置ツールを開きます。本体のイベント 2 つを、速度ボタン経由で順に送ります
+(速度ボタンは 0.5 秒ごとに読み、最新の 1 つしか持たないので 1.5 秒あけます)。まず `setMenuFilter` にその建物のタグ
+(`resName`、`--template` 付きなら `resName@N`) を送ってメニューにそれだけを出し、次に `constructionMenuSelectTabForConstruction`
+でタブを開き、最初の品目を選ばせます。戻し方:
+
+- `--seconds` 秒後 (既定 60、上限 600) に MOD 自身がフィルタを空に戻します。tf3ctl が途中で死んでも、メニューが 1 つの建物のままにはなりません。
+- `build-tool --close` ですぐ戻します。
+- ゲームのロードや終了でも戻ります (フィルタは GUI の状態で、セーブに残りません)。
+
+resName は実在する必要があります (`api.res.constructionRep`)。その年に使えない建物は一覧に出ません。MODULES のタブ (dynamic) は
+対象外です。**マウスのポインタだけは、人が 3D の画面の上に置いておく必要があります**。配置の予告とツールチップは、マウスの下に
+建設案ができたときだけ出ます。表紙の撮り方: `camera --set` (または `--focus`) で場所を写し、`build-tool --res ...`、ポインタを画面の上に
+置いたまま `frame` か `screenshot`、最後に `build-tool --close`。
+
+このイベントは、速度ボタンの依頼枠 1 つを `window`・`event`・`tool` と共有します。1.5 秒の間や解除の直前にそれらを送ると、
+どちらかが上書きされます。`build-tool` が済んでから送ってください。
 
 ### 車両・所持金・路線
 

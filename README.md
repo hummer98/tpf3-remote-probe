@@ -132,7 +132,35 @@ python3 tools/tf3ctl.py window --town Emsworth --focus      # open its window an
 python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # the screen with UI, from Steam's recording
 python3 tools/tf3ctl.py tool music [--close]                # base windows that open as a tool: music, calendar, notifications
 python3 tools/tf3ctl.py event example_window.show --param '{"page": 2}'   # fire any react event
+python3 tools/tf3ctl.py camera                              # x, y, distance, angle, pitch, heightAboveTerrain
+python3 tools/tf3ctl.py camera --set 1200,-800,600         # x,y[,distance[,angle[,pitch]]]; the rest stays as it is
+python3 tools/tf3ctl.py camera --entity 12345              # or --focus x,y,z [--distance d]
+python3 tools/tf3ctl.py build-tool --res station/street/bus_stop.con [--template N] [--seconds 60]   # (--close)
 ```
+
+`camera` answers the values read back after the move. Numbers are checked first: NaN, infinity, a centre beyond
+1e6, a distance outside 1-1e5, an angle beyond +-2 pi or a pitch beyond +-pi/2 are refused. `--entity` checks that
+the entity exists. Refused in the main menu.
+
+`build-tool` opens the construction menu's placing tool for one construction, with two base events sent through
+the speed control one after the other (1.5 s apart, since it reads every 0.5 s and keeps only the newest):
+`setMenuFilter` with the construction's tag (`resName`, or `resName@N` with `--template`), so the menu lists only
+it, then `constructionMenuSelectTabForConstruction`, which opens its tab and picks the first item. Undoing it:
+
+- the mod itself clears the filter `--seconds` after (default 60, at most 600), so a tool that died midway does
+  not leave the menu showing one building;
+- `build-tool --close` clears it at once;
+- loading a game or quitting also clears it (the filter is GUI state; it is not saved).
+
+The resName must exist (`api.res.constructionRep`). A construction not available in the current year is not
+listed, and module tabs (dynamic) are not covered. **The mouse pointer has to be over the 3D view, put there by a
+person**: the placement preview and its tooltip only appear when there is a proposal under the mouse. For a cover
+shot: `camera --set` (or `--focus`) to the place, `build-tool --res ...`, keep the pointer over the view, then
+`frame` or `screenshot`, and `build-tool --close`.
+
+The events share the speed control's one request slot with `window`, `event` and `tool`: one of those sent
+within the 1.5 s gap, or just before the clear, is overwritten (or overwrites the tab request). Wait for
+`build-tool` to finish before sending them.
 
 ### Vehicles, money and lines
 

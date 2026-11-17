@@ -507,6 +507,94 @@ function handlers.tool(c)
 		note = "the speed control opens it within about a second (not checked: look at the screen or the log)" })
 end
 
+-- camera: x, y, distance, angle, pitch (getCameraData's Vec5f) and the height above the terrain
+local function cameraNow()
+	local cam = api.gui.camera
+	local v = cam.getCameraData()
+	local h = try(function() return cam.getHeightAboveTerrain() end)
+	return { x = v.x, y = v.y, distance = v.z, angle = v.w, pitch = v.q, heightAboveTerrain = h }
+end
+
+-- args: none (read), set (x,y[,distance[,angle[,pitch]]], the rest kept), entity, or focus (x,y,z) + distance.
+-- A GUI API on the main thread, as screenshot. Answers what the camera reads after the move.
+function handlers.camera(c)
+	local a, cam = c.args, api.gui.camera
+	local given = (a.set ~= nil and 1 or 0) + (a.entity ~= nil and 1 or 0) + (a.focus ~= nil and 1 or 0)
+	if given > 1 then return fail(c.id, "give one of set, entity or focus") end
+	if a.set ~= nil then
+		local set, err = core.numberList(a.set, 5)
+		if not set then return fail(c.id, "set: " .. err) end
+		local t, errT = core.cameraTarget(cameraNow(), set)
+		if not t then return fail(c.id, errT) end
+		cam.setCameraData(api.type.Vec5f.new(t.x, t.y, t.distance, t.angle, t.pitch))
+	elseif a.entity ~= nil then
+		local e = tonumber(a.entity)
+		if not e or e ~= math.floor(e) or not api.engine.entityExists(e) then return fail(c.id, "no such entity: " .. tostring(a.entity)) end
+		cam.focusEntity(e)
+	elseif a.focus ~= nil then
+		local p, err = core.numberList(a.focus, 3)
+		if not p or #p ~= 3 then return fail(c.id, "focus: " .. (err or "give x,y,z")) end
+		local d = tonumber(a.distance)
+		if a.distance ~= nil and d == nil then return fail(c.id, "distance must be a number") end
+		local L = core.CAMERA_LIMITS
+		if d == nil then d = cameraNow().distance end
+		if math.abs(p[1]) > L.xy or math.abs(p[2]) > L.xy or math.abs(p[3]) > L.xy
+			or not (d >= L.distance[1] and d <= L.distance[2]) then -- not (..) also refuses a NaN
+			return fail(c.id, string.format("focus within %g, distance %g-%g", L.xy, L.distance[1], L.distance[2]))
+		end
+		cam.focusPosition(api.type.Vec3f.new(p[1], p[2], p[3]), d)
+	end
+	answer(c.id, { ok = true, camera = cameraNow(), moved = given == 1 })
+end
+
+-- build tool: two base events through the speed control (as event), G.buildTool holds what is left to send.
+-- The filter is the construction menu's (game.tl setMenuFilter); it is undone here on time, so a tool that died
+-- midway does not leave the menu showing one building. A load or a quit builds a new GUI, without the filter.
+local function sendEvent(name, param)
+	G.uiSeq = (G.uiSeq or (os.time and os.time() or 0) * 1000) + 1
+	publishUi({ open = { seq = G.uiSeq, event = { name = name, param = param } } })
+end
+
+local function clearBuildFilter(why)
+	sendEvent("setMenuFilter", core.menuFilter(nil))
+	say("build tool: menu filter cleared (" .. why .. ")", 2)
+	G.buildTool = nil
+end
+
+local function stepBuildTool()
+	local b = G.buildTool
+	if not b then return end
+	local t = appTime()
+	if b.selectAt and t >= b.selectAt then
+		b.selectAt = nil
+		sendEvent("constructionMenuSelectTabForConstruction", { resName = b.res })
+	elseif not b.selectAt and t >= b.clearAt then
+		clearBuildFilter("after " .. b.seconds .. " s")
+	end
+end
+
+-- args: res, template, seconds; or close
+function handlers.buildTool(c)
+	if c.args.close then
+		local was = G.buildTool ~= nil
+		clearBuildFilter("close command")
+		return answer(c.id, { ok = true, closed = true, wasOpen = was })
+	end
+	local r, err = core.buildToolRequest(c.args)
+	if not r then return fail(c.id, err) end
+	local idx = try(function() return api.res.constructionRep.find(r.res) end)
+	if type(idx) ~= "number" or idx < 0 then return fail(c.id, "no such construction: " .. r.res) end
+	sendEvent("setMenuFilter", core.menuFilter(r.tag))
+	local t = appTime()
+	G.buildTool = { res = r.res, tag = r.tag, seconds = r.seconds, selectAt = t + core.BUILD_TOOL_GAP,
+		clearAt = t + core.BUILD_TOOL_GAP + r.seconds }
+	answer(c.id, { ok = true, tag = r.tag, clearInSec = core.BUILD_TOOL_GAP + r.seconds,
+		clearAtUnix = os.time and (os.time() + math.ceil(core.BUILD_TOOL_GAP + r.seconds)) or nil,
+		notes = { "a building not available in this year is not listed: the tab then opens without it",
+			"module tabs (dynamic) are not covered",
+			"the placement preview shows only with the mouse pointer over the 3D view" } })
+end
+
 -- answered first; the game quits on the next frame, once the answer is on disk
 function handlers.quit(c)
 	cancelRun("quit command " .. c.id)
@@ -877,6 +965,7 @@ local function init()
 	readOptions()
 	publishRun(nil) -- a run of the previous game does not carry over
 	G.ui, G.uiSent = nil, nil
+	G.buildTool = nil -- a new GUI: no filter left to clear
 	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {} }) -- the save may hold the last game's label and requests
 	if not G.menu then
 		vehicles.reset()
@@ -987,6 +1076,7 @@ local function step()
 	connect.step()
 	stepFinish()
 	stepRun()
+	stepBuildTool()
 	stepLabel()
 end
 

@@ -90,6 +90,7 @@ function M.new(dir, opts)
 	}
 	g.models = models -- a test may change a cost, as a price mod rewrites metadata.cost
 	g.balance = opts.balance or 1000000
+	g.cam = { x = 0, y = 0, distance = 500, angle = 0.5, pitch = 0.6 }
 	g.fleet = copy(opts.fleet or {})
 	g.nextEntity = 5000
 	-- depots: carrier is OTHER (5) unless given, as every depot of a save read in game (2026-11-16); modes: the
@@ -528,6 +529,7 @@ function M.new(dir, opts)
 				return src and copy(src) or { stops = {}, customFilters = false, reservationPriority = 0 }
 			end } }),
 			Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
+			Vec5f = { new = function(x, y, z, w, q) return { x = x, y = y, z = z, w = w, q = q } end },
 			ComponentType = { VEHICLE_DEPOT = "VEHICLE_DEPOT", GAME_TIME = "GAME_TIME", GAME_SPEED = "GAME_SPEED", TOWN = "TOWN", TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE",
 				STATION_GROUP = "STATION_GROUP", INDUSTRY = "INDUSTRY", NAME = "NAME", STATION = "STATION", LINE = "LINE",
 				PLAYER_OWNED = "PLAYER_OWNED", BOUNDING_VOLUME = "BOUNDING_VOLUME" },
@@ -580,7 +582,10 @@ function M.new(dir, opts)
 				end
 			end,
 		},
-		res = { cargoTypeRep = {
+		res = { constructionRep = {
+			-- index of a construction, -1 when there is none (as ResTypeRep.find)
+			find = function(name) return (opts.constructions or { ["station/street/bus_stop.con"] = 3 })[name] or -1 end,
+		}, cargoTypeRep = {
 			getAll = function()
 				local out = {}
 				for id, c in pairs(cargoTypes) do out[id] = c.name end
@@ -606,7 +611,12 @@ function M.new(dir, opts)
 			spawnEphemeralHudImage = function() end,
 			closeAllWindows = function() g.closedAll = (g.closedAll or 0) + 1 end,
 			camera = {
-			focusEntity = function(e) g.focused = e end,
+			focusEntity = function(e) g.focused = e; g.cam.x, g.cam.y = 100 + e, 200 + e end,
+			-- the camera as getCameraData's Vec5f: centre x, y, distance, angle, pitch
+			getCameraData = function() local c = g.cam; return { x = c.x, y = c.y, z = c.distance, w = c.angle, q = c.pitch } end,
+			setCameraData = function(v) g.cam = { x = v.x, y = v.y, distance = v.z, angle = v.w, pitch = v.q } end,
+			focusPosition = function(p, d) g.cam.x, g.cam.y, g.cam.distance = p.x, p.y, d; g.focusedAt = p end,
+			getHeightAboveTerrain = function() return g.cam.distance * 0.5 end,
 			takeScreenshot = function(scale)
 				os.execute("mkdir -p '" .. dir .. "/screenshots'")
 				local f = assert(io.open(dir .. "/screenshots/shot_" .. tostring(#g.logs) .. "_" .. tostring(scale) .. ".png", "w"))

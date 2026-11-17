@@ -70,7 +70,7 @@ STALE_SEC = 3600  # answers nobody read (a killed tool) are removed after this
 PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); longer means it is not running
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
-                "replace", "sell", "money", "line", "connect"}  # window: what the player sees  # poll: only the mod's file reads
+                "replace", "sell", "money", "line", "connect", "camera", "buildTool"}  # window: what the player sees  # poll: only the mod's file reads
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -881,6 +881,36 @@ def cmd_start(ns, restart):
     return out
 
 
+def camera_args(ns):
+    """--set / --entity / --focus (+ --distance) as the mod's camera args; none = only read."""
+    given = [x for x in (ns.set, ns.entity, ns.focus) if x is not None]
+    if len(given) > 1:
+        raise ToolError("give one of --set, --entity or --focus")
+    if ns.distance is not None and ns.focus is None:
+        raise ToolError("--distance goes with --focus (with --set it is the third number)")
+    if ns.set is not None:
+        return {"set": ns.set}
+    if ns.entity is not None:
+        return {"entity": ns.entity}
+    if ns.focus is not None:
+        args = {"focus": ns.focus}
+        if ns.distance is not None:
+            args["distance"] = ns.distance
+        return args
+    return {}
+
+
+def build_tool_args(ns):
+    if ns.close:
+        return {"close": True}
+    if not ns.res:
+        raise ToolError("give --res <resName> (or --close)")
+    args = {"res": ns.res, "seconds": ns.seconds}
+    if ns.template is not None:
+        args["template"] = ns.template
+    return args
+
+
 def event_args(ns):
     args = {"name": ns.name}
     if ns.param is not None:
@@ -1328,6 +1358,16 @@ def make_parser():
     wg.add_argument("--entity", type=int)
     wg.add_argument("--close-all", action="store_true")
     wi.add_argument("--focus", action="store_true", help="also move the camera to it")
+    ca = sub.add_parser("camera", help="read the camera, or move it (answers the values read back)")
+    ca.add_argument("--set", metavar="X,Y[,DIST[,ANGLE[,PITCH]]]", help="the numbers left out stay as they are")
+    ca.add_argument("--entity", type=int, help="focus on this entity")
+    ca.add_argument("--focus", metavar="X,Y,Z", help="focus on this point")
+    ca.add_argument("--distance", type=float, help="with --focus (default: the distance now)")
+    bt = sub.add_parser("build-tool", help="open the construction menu's placing tool for one construction")
+    bt.add_argument("--res", help="the construction's resName, e.g. station/street/bus_stop.con")
+    bt.add_argument("--template", type=int, help="the template number (menu tag resName@N)")
+    bt.add_argument("--seconds", type=float, default=60, help="the mod clears the menu filter after this (5-600)")
+    bt.add_argument("--close", action="store_true", help="clear the menu filter now")
     qu = sub.add_parser("quit", help="quit the game (app.quit through the probe)")
     qu.add_argument("--kill", action="store_true", help="SIGKILL when it does not quit (an unsaved game is lost)")
     qu.add_argument("--timeout", type=float, default=QUIT_TIMEOUT_SEC)
@@ -1521,6 +1561,10 @@ def main(argv=None):
             if ns.focus:
                 args["focus"] = True
             res = send("window", args)
+        elif ns.cmd == "camera":
+            res = send("camera", camera_args(ns))
+        elif ns.cmd == "build-tool":
+            res = send("buildTool", build_tool_args(ns))
         elif ns.cmd == "save":
             res = send("save", {"name": ns.name}, timeout=300)
         elif ns.cmd == "quit":

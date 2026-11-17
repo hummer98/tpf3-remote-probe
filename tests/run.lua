@@ -3767,5 +3767,120 @@ test("connect is refused in the main menu", function()
 	truthy(final(g, 895).error:find("needs a running game"))
 end)
 
+test("cameraTarget / numberList: kept values, NaN, infinity and out-of-range refused", function()
+	local cur = { x = 1, y = 2, distance = 300, angle = 0.1, pitch = 0.5 }
+	local t = core.cameraTarget(cur, core.numberList("10,20", 5))
+	eq(t.x, 10); eq(t.y, 20); eq(t.distance, 300); eq(t.pitch, 0.5)
+	t = core.cameraTarget(cur, core.numberList("10,20,800,1,-0.3", 5))
+	eq(t.distance, 800); eq(t.angle, 1); eq(t.pitch, -0.3)
+	truthy(select(2, core.numberList("1,nan", 5)))
+	truthy(select(2, core.numberList("1,inf", 5)))
+	truthy(select(2, core.numberList("1,,2", 5)), "an empty part")
+	truthy(select(2, core.numberList("1,2,3,4,5,6", 5)))
+	truthy(select(2, core.numberList(nil, 5)))
+	truthy(select(2, core.cameraTarget(cur, { 1 })), "x alone")
+	truthy(select(2, core.cameraTarget(cur, { 1, 2, 0 })), "distance 0")
+	truthy(select(2, core.cameraTarget(cur, { 1, 2, 300, 7 })), "angle past a turn")
+	truthy(select(2, core.cameraTarget(cur, { 1, 2, 300, 0, 2 })), "pitch past a quarter turn")
+	truthy(select(2, core.cameraTarget(cur, { 2e6, 2 })), "far off the map")
+	truthy(select(2, core.cameraTarget({ x = 0, y = 0, distance = 0 / 0, angle = 0, pitch = 0 }, { 1, 2 })), "a NaN kept from the game")
+end)
+
+test("camera: reads, sets (rest kept), focuses an entity or a point; answers the values read back", function()
+	local g = newGame({ saves = SAVES, lines = { [7] = { name = "L" } } })
+	frames(g, 2)
+	send(g, 900, "camera")
+	frames(g, FIRST)
+	local a = final(g, 900)
+	eq(a.camera.x, 0); eq(a.camera.distance, 500); eq(a.camera.angle, 0.5); eq(a.camera.heightAboveTerrain, 250); eq(a.moved, false)
+	send(g, 901, "camera", '{ set = "10,20,800" }')
+	frames(g, 20)
+	a = final(g, 901)
+	eq(a.camera.x, 10); eq(a.camera.y, 20); eq(a.camera.distance, 800); eq(a.camera.angle, 0.5, "kept"); eq(a.camera.pitch, 0.6, "kept")
+	send(g, 902, "camera", '{ focus = "5,6,7", distance = 300 }')
+	frames(g, 20)
+	a = final(g, 902)
+	eq(a.camera.x, 5); eq(a.camera.distance, 300); eq(g.focusedAt.z, 7)
+	send(g, 903, "camera", "{ entity = 7 }")
+	frames(g, 20)
+	eq(g.focused, 7); eq(final(g, 903).camera.x, 107)
+	for i, args in ipairs({ "{ entity = 99999 }", '{ set = "1,nan" }', '{ set = "1,2,0" }', '{ focus = "1,2" }',
+		'{ focus = "1,2,3", distance = -1 }', '{ set = "1,2", entity = 7 }' }) do
+		send(g, 903 + i, "camera", args)
+		frames(g, 20)
+		truthy(final(g, 903 + i).error, args)
+	end
+	eq(g.cam.x, 107, "refused ones left the camera alone")
+end)
+
+test("camera is refused in the main menu", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 920, "camera")
+	frames(g, FIRST)
+	truthy(final(g, 920).error:find("needs a running game"))
+end)
+
+test("buildToolRequest: tag with a template; bad res, template and seconds refused", function()
+	local r = core.buildToolRequest({ res = "a.con" })
+	eq(r.tag, "a.con"); eq(r.seconds, 60)
+	eq(core.buildToolRequest({ res = "a.con", template = 2, seconds = 10 }).tag, "a.con@2")
+	truthy(select(2, core.buildToolRequest({})))
+	truthy(select(2, core.buildToolRequest(nil)))
+	truthy(select(2, core.buildToolRequest({ res = "a.con@2" })), "the template goes in template")
+	truthy(select(2, core.buildToolRequest({ res = "a.con", template = 1.5 })))
+	truthy(select(2, core.buildToolRequest({ res = "a.con", seconds = 1e9 })))
+	truthy(select(2, core.buildToolRequest({ res = "a.con", seconds = 0 / 0 })))
+	eq(#core.menuFilter(nil).enabledItems, 0)
+end)
+
+-- the events the speed control would see: each new open.seq, in order, with the game time it appeared
+local function watchEvents(g, n, dt)
+	local seen = {}
+	local last = ((fake.guiSave.hummer_remote_probe or {}).open or {}).seq
+	for _ = 1, n do
+		g.step(dt)
+		local o = (fake.guiSave.hummer_remote_probe or {}).open
+		if type(o) == "table" and o.seq ~= last then
+			last = o.seq
+			seen[#seen + 1] = { name = o.event and o.event.name, param = o.event and o.event.param, t = g.time }
+		end
+	end
+	return seen
+end
+
+test("build-tool: filter, then the tab after the gap, then the filter cleared on time by the mod alone", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 930, "buildTool", '{ res = "station/street/bus_stop.con", template = 1, seconds = 5 }')
+	local ev = watchEvents(g, FIRST + 30 * 10)
+	local a = final(g, 930)
+	eq(a.tag, "station/street/bus_stop.con@1"); truthy(a.clearInSec > 5); truthy(#a.notes > 0)
+	eq(#ev, 3, "filter, select, clear")
+	eq(ev[1].name, "setMenuFilter"); eq(ev[1].param.enabledItems[1], "station/street/bus_stop.con@1")
+	eq(ev[2].name, "constructionMenuSelectTabForConstruction"); eq(ev[2].param.resName, "station/street/bus_stop.con")
+	truthy(ev[2].t - ev[1].t >= 1, "the speed control reads every 0.5 s: a second between")
+	eq(ev[3].name, "setMenuFilter"); eq(#ev[3].param.enabledItems, 0, "cleared without any tool around")
+	truthy(ev[3].t - ev[2].t >= 5 - 0.1)
+	eq(watchEvents(g, 30 * 10)[1], nil, "nothing more")
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
+test("build-tool --close clears at once and drops the pending select; unknown res refused", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 940, "buildTool", '{ res = "station/street/bus_stop.con" }')
+	frames(g, FIRST)
+	send(g, 941, "buildTool", "{ close = true }")
+	local ev = watchEvents(g, 30 * 3)
+	eq(final(g, 941).closed, true)
+	eq(#ev, 1, "only the clear: no select after it"); eq(#ev[1].param.enabledItems, 0)
+	eq(watchEvents(g, 30 * 70)[1], nil, "and no clear later")
+	send(g, 942, "buildTool", '{ res = "nope.con" }')
+	ev = watchEvents(g, 30 * 3)
+	truthy(final(g, 942).error:find("no such construction")); eq(#ev, 0)
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)

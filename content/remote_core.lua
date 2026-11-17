@@ -16,11 +16,11 @@ M.LOG = "[remote_probe] "
 M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = true, load = true, save = true, poll = true,
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
-	stations = true, lines = true, line = true, connect = true }
+	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
-	line = true, connect = true }
+	line = true, connect = true, camera = true, buildTool = true } -- camera, as window: what the player sees
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true }
@@ -664,6 +664,76 @@ function M.toolRequest(args)
 	end
 	t.close = args.close == true
 	return t
+end
+
+-- camera: the API takes any float, and a NaN or a far-off centre would leave the player looking at nothing.
+-- Limits from getCameraData read in game: angle is a heading in radians (kept within one turn either way),
+-- pitch within a quarter turn, distance a few metres to a whole map away.
+M.CAMERA_LIMITS = { xy = 1e6, distance = { 1, 1e5 }, angle = 2 * math.pi, pitch = math.pi / 2 }
+
+local function finite(v) return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge end
+
+-- "x,y[,distance[,angle[,pitch]]]" or a list -> numbers; missing ones nil
+function M.numberList(v, most)
+	local list = {}
+	if type(v) == "string" then
+		for part in (v .. ","):gmatch("([^,]*),") do list[#list + 1] = part end
+	elseif type(v) == "table" then
+		for i = 1, #v do list[i] = v[i] end
+	else
+		return nil, "give numbers separated by commas"
+	end
+	if #list > most then return nil, "at most " .. most .. " numbers" end
+	local out = {}
+	for i, x in ipairs(list) do
+		local n = tonumber(x)
+		if not finite(n) then return nil, "not a finite number: " .. tostring(x) end
+		out[i] = n
+	end
+	return out
+end
+
+-- cur: { x, y, distance, angle, pitch } now; set: numbers in that order (nil = keep). -> the new five or nil, err
+function M.cameraTarget(cur, set)
+	local L, keys, out = M.CAMERA_LIMITS, { "x", "y", "distance", "angle", "pitch" }, {}
+	if #set < 2 then return nil, "set needs at least x,y" end
+	for i, k in ipairs(keys) do
+		local v = set[i]
+		if v == nil then v = cur[k] end
+		if not finite(v) then return nil, k .. " is not a finite number" end
+		out[k] = v
+	end
+	if math.abs(out.x) > L.xy or math.abs(out.y) > L.xy then return nil, "x and y must be within " .. L.xy end
+	if out.distance < L.distance[1] or out.distance > L.distance[2] then
+		return nil, string.format("distance must be %g-%g", L.distance[1], L.distance[2])
+	end
+	if math.abs(out.angle) > L.angle then return nil, "angle must be within +-2 pi" end
+	if math.abs(out.pitch) > L.pitch then return nil, "pitch must be within +-pi/2" end
+	return out
+end
+
+-- build tool: the menu filter tag of a construction (construction.tl: resName, or resName@N with a template)
+M.BUILD_TOOL_SEC = { default = 60, max = 600 }
+M.BUILD_TOOL_GAP = 1.5 -- s between the events: the speed control reads every 0.5 s and keeps only the newest
+function M.buildToolRequest(args)
+	args = type(args) == "table" and args or {}
+	local res = args.res
+	if type(res) ~= "string" or res == "" or res:find("@", 1, true) then return nil, "give res (the construction's resName)" end
+	local tag = res
+	if args.template ~= nil then
+		local n = tonumber(args.template)
+		if not n or n ~= math.floor(n) or n < 0 or n > 1000 then return nil, "template must be a whole number 0-1000" end
+		tag = res .. "@" .. string.format("%d", n)
+	end
+	local sec = args.seconds == nil and M.BUILD_TOOL_SEC.default or tonumber(args.seconds)
+	if not finite(sec) or sec < 5 or sec > M.BUILD_TOOL_SEC.max then
+		return nil, "seconds must be 5-" .. M.BUILD_TOOL_SEC.max
+	end
+	return { res = res, tag = tag, seconds = sec }
+end
+
+function M.menuFilter(tag)
+	return { enabledItems = tag and { tag } or {}, disabledItems = {}, disabledParams = {} }
 end
 
 -- args: name (a react event, e.g. "example_window.show"), param (a table, or nothing). The param goes through the
