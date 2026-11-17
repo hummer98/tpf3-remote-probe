@@ -201,6 +201,8 @@ function M.install(g, opts)
 		end,
 		get = function(id)
 			local av = (opts.availability or {})[tplNames[id]]
+			-- (opts.noAvailability: a template without one, as an unreadable field)
+			if opts.noAvailability then return { maxSlopeBuild = opts.maxSlopeBuild or 0.1 } end
 			return { maxSlopeBuild = opts.maxSlopeBuild or 0.1, availability = av and copy(av) or { yearFrom = 0, yearTo = 0 } }
 		end,
 	}

@@ -3647,7 +3647,7 @@ test("connect world: an end's own industry still blocks, only the mouth of the e
 	local w = g.tc.plans[1] and g.tc.plans[1].world
 	truthy(w, "planning started")
 	eq(w.blocked(100, 1450), true, "the industry's construction, though the end's road belongs to it")
-	eq(w.blocked(150, 1430), true, "its part without a CONSTRUCTION component")
+	eq(w.blocked(215, 1430), true, "its part without a CONSTRUCTION component (outside the construction's box)")
 	eq(w.blocked(200, 1500), false, "the end node"); eq(w.blocked(192, 1500), false, "and round it")
 	eq(w.blocked(225, 1500), false, "out the way the end points, through the box it lies in")
 	eq(w.blocked(225, 1525), true, "beside that way, in the box")
@@ -3690,6 +3690,20 @@ test("connect road: from an entrance road the default is a plain road of the gam
 	a = connectRun(g, 975, "{ from = 161, to = 122, road = true }")
 	truthy(tostring(a.error):find("none of the default road types can be built in 1909: give template", 1, true), tostring(a.error))
 	eq(#g.tc.plans, 0)
+end)
+
+test("connect: years or availability that cannot be read are said; an end inside a site is named when no route is found", function()
+	local g = industryWorld({ planSteps = 3, noAvailability = true })
+	local a = connectRun(g, 984, "{ from = 161, to = 122, road = true }")
+	eq(a.ok, true, tostring(a.error)); eq(a.template, fakeTc.COUNTRY, "nothing known of the years: the first choice")
+	truthy(a.notes and a.notes[1]:find("could not be read: not checked against the year", 1, true), tostring(a.notes and a.notes[1]))
+	g = industryWorld({ planSteps = 3, noRoute = true })
+	a = connectRun(g, 985, "{ from = 161, to = 122, road = true }")
+	truthy(tostring(a.error):find("no route"), tostring(a.error))
+	local said = false
+	for _, n in ipairs(a.notes or {}) do said = said or n:find("the from end lies inside 1 building", 1, true) ~= nil end
+	truthy(said, "the trapped end named")
+	for _, n in ipairs(a.notes or {}) do truthy(not n:find("the to end", 1, true), "the free end not") end
 end)
 
 test("connect road: a template out of its years or an entrance road is refused before anything is sent", function()

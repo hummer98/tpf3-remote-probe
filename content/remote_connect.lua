@@ -528,8 +528,15 @@ function M.new(ctx)
 	-- what blocks: constructions (stations, industries' constructions), town buildings, and the parts of an
 	-- industry the engine keeps apart from its construction (INDUSTRY / SUBCONSTRUCTION entities without a
 	-- CONSTRUCTION component: what the dry run collided with at both ends, 2026-11-17)
+	local BUILT_KINDS = { "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY", "SUBCONSTRUCTION" }
 	local function isBuilt(e)
-		return (comp(e, "CONSTRUCTION") or comp(e, "TOWN_BUILDING") or comp(e, "INDUSTRY") or comp(e, "SUBCONSTRUCTION")) ~= nil
+		-- (one existence check for the four lookups: most entities the octree gives are none of them)
+		if not exists(e) then return false end
+		for _, kind in ipairs(BUILT_KINDS) do
+			local t = CT()[kind]
+			if t ~= nil and try(function() return api.engine.getComponent(e, t) end) ~= nil then return true end
+		end
+		return false
 	end
 
 	-- the box of a building (from the octree's bounding volume) with the room round it, or nil when it is no
@@ -929,6 +936,16 @@ function M.new(ctx)
 			map = job.worldStats, message = type(pj.message) == "string" and pj.message or nil,
 			slopePercent = job.slope * 100, radius = job.radius }
 		if not pj.ok or type(pj.route) ~= "table" or #pj.route < 2 then
+			-- (the planner's coarse map takes 100 m cells or more, each blocked when most of five points in it are: an
+			-- end deep inside a building's box may have only blocked cells round its own, its narrow mouth unseen)
+			local ms = job.worldStats and job.worldStats.mouths or {}
+			for _, side in ipairs({ "from", "to" }) do
+				local m = ms[side]
+				if m and m.inside > 0 then
+					job.notes[#job.notes + 1] = string.format("the %s end lies inside %d building(s) (its own site's box): the " ..
+						"planner may see no way out of it, though the map opens %.0f m out of the end", side, m.inside, m.length)
+				end
+			end
 			return finish(job, payload(job), "no route: " .. tostring(pj.message or "the planner found none"))
 		end
 		local okS, pts = pcall(job.mods.planner.simplify, pj.route, SIMPLIFY_LONGEST, SIMPLIFY_SIDE, SIMPLIFY_HEIGHT, job.S.minRadius,
@@ -1268,6 +1285,10 @@ function M.new(ctx)
 		local year = gameYear()
 		local tpl, laneFrom, tplNote = templateFor(a, mods, ea, year)
 		if not tpl then return fail(c.id, laneFrom) end
+		-- (unreadable years check nothing: said, so a type out of its years is not taken for a checked one)
+		local unchecked = year == nil and "the game's year could not be read" or
+			(availabilityOf(tpl) == nil and ("the years of " .. tpl .. " could not be read") or nil)
+		if unchecked then tplNote = (tplNote and (tplNote .. "; ") or "") .. unchecked .. ": not checked against the year" end
 		local d = a.road and M.ROAD_DEFAULTS or M.TRACK_DEFAULTS
 		local slope, radius = a.slope or d.slope, a.radius or d.radius
 		local notes = { tplNote }

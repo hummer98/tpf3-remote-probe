@@ -522,8 +522,12 @@ Unchecked, riskiest first (the first ones could take the game down):
   it is looked for) and the `roadTemplate` field of a road piece (if unreadable, a country road of the game's year is
   used).
 - `api.engine.util.getYear` (else the calendar date of the game time) and a street template's `availability`: when
-  either cannot be read, no type is refused or replaced for its years. Whether a road from an industry's entrance
-  road, kept out of the industry's land, is accepted by the game there.
+  either cannot be read, no type is refused or replaced for its years (a note says so). Whether a road from an
+  industry's entrance road, kept out of the industry's land, is accepted by the game there, and whether the mouth's
+  wedge is wide enough for the new road's own width.
+- An end deep inside a building's box: the planner's coarse map (100 m cells or more, each blocked when most of five
+  points in it are) may not see the narrow mouth and find no way out. When no route is found, a note names such an
+  end (`plan.map.mouths.*.inside` above 0).
 - Whether the game script takes the events while the game is paused, and how fast (the wait is 30 s).
 - The planner's time slice: Track Connector measures it with `os.clock`, which on Linux is the CPU time of the
   whole process, so a slice may be much shorter than 15 ms of real time and planning slower than in its own tool.
