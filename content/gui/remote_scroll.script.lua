@@ -56,14 +56,19 @@ local function ScrollContainer(children, first)
 			local ok, d = pcall(function() return api.gui.game.getGuiSaveData(MOD) end)
 			local r = ok and core.uiScroll(d) or nil
 			local seq = r and r.seq or false
-			local first = seen:get() == nil
-			if seq and seq ~= seen:get() and (not first or core.scrollFresh(r, os.time and os.time() or nil)) then
+			local firstRead = seen:get() == nil
+			if seq and seq ~= seen:get() and (not firstRead or core.scrollFresh(r, os.time and os.time() or nil)) then
 				seen:set(seq)
 				want:set(r) -- drawn with the marker from the next render
-				print("[remote_probe] scroll " .. r.to .. ": request " .. tostring(seq) .. " taken by a window")
+				print("[remote_probe] scroll " .. r.to .. ": request " .. tostring(seq) .. " taken by a container of "
+					.. tostring(type(children) == "table" and #children or children) .. " blocks (first " .. tostring(first) .. ")")
 				return
 			end
-			if first then seen:set(seq) end
+			if firstRead then
+				seen:set(seq)
+				print("[remote_probe] scroll: a container of " .. tostring(type(children) == "table" and #children or children)
+					.. " blocks reads requests (first " .. tostring(first) .. ")")
+			end
 			-- a render later: the marker is laid out at the asked end, so making it visible scrolls to it
 			local w = want:old()
 			if w and done:get() ~= w.seq and drawn:get() == w.seq then
