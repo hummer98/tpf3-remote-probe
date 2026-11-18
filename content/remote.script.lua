@@ -547,7 +547,8 @@ function handlers.camera(c)
 	answer(c.id, { ok = true, camera = cameraNow(), moved = given == 1 })
 end
 
--- build tool: two base events through the speed control (as event), G.buildTool holds what is left to send.
+-- build tool: base events through the speed control (as event): the toolbar's menu event, then the filter and the
+-- tab select; G.buildTool holds what is left to send.
 -- The filter is the construction menu's (game.tl setMenuFilter); it is undone here on time, so a tool that died
 -- midway does not leave the menu showing one building. A load or a quit builds a new GUI, without the filter.
 local function sendEvent(name, param)
@@ -561,19 +562,25 @@ local function clearBuildFilter(why)
 	G.buildTool = nil
 end
 
+-- G.buildTool.queue: the events still to send, each at its own time (one per GAP: the speed control keeps only the
+-- newest); clearAt: when the filter goes, if one was set
 local function stepBuildTool()
 	local b = G.buildTool
 	if not b then return end
 	local t = appTime()
-	if b.selectAt and t >= b.selectAt then
-		b.selectAt = nil
-		sendEvent("constructionMenuSelectTabForConstruction", { resName = b.res })
-	elseif not b.selectAt and t >= b.clearAt then
+	local nextEv = b.queue[1]
+	if nextEv then
+		if t >= nextEv.at then
+			table.remove(b.queue, 1)
+			sendEvent(nextEv.name, nextEv.param)
+			if not b.clearAt and not b.queue[1] then G.buildTool = nil end
+		end
+	elseif b.clearAt and t >= b.clearAt then
 		clearBuildFilter("after " .. b.seconds .. " s")
 	end
 end
 
--- args: res, template, seconds; or close
+-- args: res, template, seconds, menu; or close
 function handlers.buildTool(c)
 	if c.args.close then
 		local was = G.buildTool ~= nil
@@ -582,17 +589,39 @@ function handlers.buildTool(c)
 	end
 	local r, err = core.buildToolRequest(c.args)
 	if not r then return fail(c.id, err) end
-	local idx = try(function() return api.res.constructionRep.find(r.res) end)
-	if type(idx) ~= "number" or idx < 0 then return fail(c.id, "no such construction: " .. r.res) end
-	sendEvent("setMenuFilter", core.menuFilter(r.tag))
+	if r.res then
+		local idx = try(function() return api.res.constructionRep.find(r.res) end)
+		if type(idx) ~= "number" or idx < 0 then return fail(c.id, "no such construction: " .. r.res) end
+	end
+	local events = {}
+	-- a filter from an earlier request still waiting for its clear: a menu alone would drop that clear, so it goes
+	-- first (with res, the new filter replaces it and gets its own clear)
+	if not r.res and G.buildTool and G.buildTool.clearAt then
+		events[#events + 1] = { name = "setMenuFilter", param = core.menuFilter(nil) }
+	end
+	if r.menu then events[#events + 1] = { name = r.menu, param = {} } end
+	if r.res then
+		events[#events + 1] = { name = "setMenuFilter", param = core.menuFilter(r.tag) }
+		events[#events + 1] = { name = "constructionMenuSelectTabForConstruction", param = { resName = r.res } }
+	end
 	local t = appTime()
-	G.buildTool = { res = r.res, tag = r.tag, seconds = r.seconds, selectAt = t + core.BUILD_TOOL_GAP,
-		clearAt = t + core.BUILD_TOOL_GAP + r.seconds }
-	answer(c.id, { ok = true, tag = r.tag, clearInSec = core.BUILD_TOOL_GAP + r.seconds,
-		clearAtUnix = os.time and (os.time() + math.ceil(core.BUILD_TOOL_GAP + r.seconds)) or nil,
-		notes = { "a building not available in this year is not listed: the tab then opens without it",
-			"module tabs (dynamic) are not covered",
-			"the placement preview shows only with the mouse pointer over the 3D view" } })
+	for i, ev in ipairs(events) do ev.at = t + (i - 1) * core.BUILD_TOOL_GAP end
+	local first = table.remove(events, 1)
+	sendEvent(first.name, first.param)
+	local clearIn = r.res and (#events * core.BUILD_TOOL_GAP + r.seconds) or nil
+	G.buildTool = (r.res or events[1]) and { queue = events, seconds = r.seconds, clearAt = clearIn and t + clearIn } or nil
+	local notes = { "the placement preview shows only with the mouse pointer over the 3D view (tf3ctl pointer)" }
+	if r.res then
+		table.insert(notes, 1, "a building not available in this year is not listed: the tab then opens without it")
+		table.insert(notes, 2, "module tabs (dynamic) are not covered")
+	end
+	if r.menu then
+		notes[#notes + 1] = "the menu opens on its first item; with res, the filter and the select follow"
+		notes[#notes + 1] = "a menu whose toolbar button this game mode lacks (town, industry, tracks, warehouses) "
+			.. "may have no listener: then nothing opens"
+	end
+	answer(c.id, { ok = true, tag = r.tag, menuEvent = r.menu, clearInSec = clearIn,
+		clearAtUnix = clearIn and os.time and (os.time() + math.ceil(clearIn)) or nil, notes = notes })
 end
 
 -- answered first; the game quits on the next frame, once the answer is on disk

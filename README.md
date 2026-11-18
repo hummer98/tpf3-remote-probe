@@ -142,6 +142,8 @@ python3 tools/tf3ctl.py camera                              # x, y, distance, an
 python3 tools/tf3ctl.py camera --set 1200,-800,600         # x,y[,distance[,angle[,pitch]]]; the rest stays as it is
 python3 tools/tf3ctl.py camera --entity 12345              # or --focus x,y,z [--distance d]
 python3 tools/tf3ctl.py build-tool --res depots/road/road_depot/road_depot.con [--template N] [--seconds 60]   # (--close)
+python3 tools/tf3ctl.py build-tool --menu rail [--res ...]   # the toolbar's own menu event first (road, rail, water, ...)
+python3 tools/tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only, as fractions of its window
 ```
 
 `camera` answers the values read back after the move. Numbers are checked first: NaN, infinity, a centre beyond
@@ -159,10 +161,20 @@ it, then `constructionMenuSelectTabForConstruction`, which opens its tab and pic
 - loading a game or quitting also clears it (the filter is GUI state; it is not saved).
 
 The resName must exist (`api.res.constructionRep`). A construction not available in the current year is not
-listed, and module tabs (dynamic) are not covered. **The mouse pointer has to be over the 3D view, put there by a
-person**: the placement preview and its tooltip only appear when there is a proposal under the mouse. For a cover
-shot: `camera --set` (or `--focus`) to the place, `build-tool --res ...`, keep the pointer over the view, then
-`frame` or `screenshot`, and `build-tool --close`.
+listed, and module tabs (dynamic) are not covered.
+
+**Seen in game (2026-11-18): the filter and the select alone did not open the tool** (the road depot: the log said
+no construction menu entry was found, and the filtered menu was empty). What did work is the toolbar's own event:
+`--menu rail` sends `openRail` (as the rail button does), which opens the rail menu with its first item, a
+station, as the placing tool. `--menu` alone sends only that event, with no filter to clear. With `--res` too, the
+filter and the select follow it 1.5 s apart; whether that then picks the given construction is not checked yet.
+
+The placement preview and its tooltip only appear when there is a proposal under the mouse, so the game's pointer
+has to be over the 3D view: `pointer FX,FY` puts it there without a person. It sends the game window synthetic
+X11 `EnterNotify` and `MotionNotify` events (through libX11 with ctypes; TF3 runs under XWayland): the game's hover
+and its drawn cursor move, the real pointer does not. It never sends a button or key event. For a cover shot:
+`camera --set` to the place, `build-tool --menu rail`, `pointer 0.5,0.47`, then `frame`; reload the save (unsaved)
+to put the menu away. With the company's money at 0 the tooltip says "not enough money" instead of the cost.
 
 The events share the speed control's one request slot with `window`, `event` and `tool`: one of those sent
 within the 1.5 s gap, or just before the clear, is overwritten (or overwrites the tab request). Wait for

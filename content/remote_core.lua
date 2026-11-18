@@ -715,9 +715,28 @@ end
 -- build tool: the menu filter tag of a construction (construction.tl: resName, or resName@N with a template)
 M.BUILD_TOOL_SEC = { default = 60, max = 600 }
 M.BUILD_TOOL_GAP = 1.5 -- s between the events: the speed control reads every 0.5 s and keeps only the newest
+-- the toolbar's own events (game_bar.tl eventName): each opens one construction menu tab and picks its first item,
+-- which is how the placing tool comes up without a click; the filter alone left the menu closed (2026-11-18)
+M.BUILD_MENUS = { road = "openRoad", rail = "openRail", water = "openWater", air = "openAir",
+	landscaping = "openLandscaping", town = "openTown", industry = "openIndustry", roads = "openRoads",
+	tracks = "openTracks", warehouses = "openWarehouses" }
 function M.buildToolRequest(args)
 	args = type(args) == "table" and args or {}
+	local menu
+	if args.menu ~= nil then
+		menu = type(args.menu) == "string" and M.BUILD_MENUS[args.menu]
+		if not menu then
+			local names = {}
+			for k in pairs(M.BUILD_MENUS) do names[#names + 1] = k end
+			table.sort(names)
+			return nil, "menu must be one of " .. table.concat(names, ", ")
+		end
+	end
 	local res = args.res
+	if res == nil and menu then
+		if args.template ~= nil then return nil, "template needs res" end
+		return { menu = menu } -- the menu alone: its first item, no filter to clear
+	end
 	if type(res) ~= "string" or res == "" or res:find("@", 1, true) then return nil, "give res (the construction's resName)" end
 	local tag = res
 	if args.template ~= nil then
@@ -729,7 +748,7 @@ function M.buildToolRequest(args)
 	if not finite(sec) or sec < 5 or sec > M.BUILD_TOOL_SEC.max then
 		return nil, "seconds must be 5-" .. M.BUILD_TOOL_SEC.max
 	end
-	return { res = res, tag = tag, seconds = sec }
+	return { res = res, tag = tag, seconds = sec, menu = menu }
 end
 
 function M.menuFilter(tag)

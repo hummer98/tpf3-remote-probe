@@ -702,6 +702,11 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("no such construction", res["error"])
         code, res = self.ctl("build-tool")
         self.assertEqual(code, 2)
+        code, res = self.ctl("build-tool", "--menu", "rail")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["menuEvent"], "openRail")
+        code, res = self.ctl("build-tool", "--menu", "rail", "--template", "1")
+        self.assertEqual(code, 1, "template needs res: refused by the mod")
 
     def test_9y_screenshot_waits_for_the_file(self):
         code, res = self.ctl("screenshot", "--scale", "0", "--timeout", "10")
@@ -1225,6 +1230,124 @@ class ModFilesTest(unittest.TestCase):
             for key, text in table.items():
                 if key.startswith(("hummer_remote_probe_label_", "hummer_remote_probe_tip_")) and key != "hummer_remote_probe_tip_run":
                     self.assertEqual(text.count("%s"), 1, f"{lang}.{key}")
+
+
+class FakeX11:
+    """Stands in for libX11: records what would have been sent; never touches a display."""
+
+    def __init__(self, window=0x3c00002, size=(5120, 2160)):
+        self.window, self.wsize, self.sent, self.closed, self.titles = window, size, [], False, []
+
+    def find(self, title):
+        self.titles.append(title)
+        return self.window
+
+    def size(self, w):
+        return self.wsize
+
+    def send(self, w, typ, x, y):
+        self.sent.append((w, typ, x, y))
+
+    def close(self):
+        self.closed = True
+
+
+class BuildMenusTest(unittest.TestCase):
+    def test_the_tools_menus_are_the_mods(self):
+        r = subprocess.run(["luajit", "-e", 'package.path = "%s/content/?.lua;" .. package.path; '
+                            'local t = {} for k in pairs(require("remote_core").BUILD_MENUS) do t[#t + 1] = k end '
+                            'table.sort(t) io.write(table.concat(t, ","))' % ROOT],
+                           capture_output=True, text=True, check=True)
+        self.assertEqual(r.stdout.split(","), sorted(tf3ctl.BUILD_MENUS))
+
+    def test_menu_without_res_sends_only_the_menu(self):
+        ns = tf3ctl.make_parser().parse_args(["build-tool", "--menu", "road"])
+        self.assertEqual(tf3ctl.build_tool_args(ns), {"menu": "road"})
+        ns = tf3ctl.make_parser().parse_args(["build-tool", "--menu", "road", "--res", "a.con", "--seconds", "9"])
+        self.assertEqual(tf3ctl.build_tool_args(ns), {"menu": "road", "res": "a.con", "seconds": 9})
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            tf3ctl.make_parser().parse_args(["build-tool", "--menu", "perks"])
+
+
+class PointerTest(unittest.TestCase):
+    def ns(self, pos, px=False, title=tf3ctl.TF3_WINDOW_TITLE):
+        return tf3ctl.argparse.Namespace(pos=pos, px=px, title=title)
+
+    def test_fractions_and_pixels_map_into_the_window(self):
+        self.assertEqual(tf3ctl.pointer_target("0.5,0.47", 5120, 2160), (2560, 1015))
+        self.assertEqual(tf3ctl.pointer_target(" 0 , 0 ", 5120, 2160), (0, 0))
+        self.assertEqual(tf3ctl.pointer_target("1,1", 5120, 2160), (5119, 2159), "the far edge stays inside")
+        self.assertEqual(tf3ctl.pointer_target("1920,1080", 5120, 2160, pixels=True), (1920, 1080))
+
+    def test_bad_positions_are_refused(self):
+        for spec, px in (("", False), (None, False), ("0.5", False), ("0.5,0.5,1", False), ("a,b", False),
+                         ("1.5,0.5", False), ("-0.1,0.5", False), ("nan,0.5", False), ("inf,0", False),
+                         ("5120,0", True), ("0,-1", True), ("1e9,0", True)):
+            with self.assertRaises(tf3ctl.ToolError, msg=repr(spec)):
+                tf3ctl.pointer_target(spec, 5120, 2160, pixels=px)
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.pointer_target("0.5,0.5", 0, 0)
+
+    def test_events_are_only_enter_and_motion_and_end_on_the_target(self):
+        ev = tf3ctl.pointer_events(100, 50, 5120)
+        self.assertEqual(ev[0], (tf3ctl.X_ENTER_NOTIFY, 100, 50))
+        self.assertEqual(ev[-1], (tf3ctl.X_MOTION_NOTIFY, 100, 50))
+        self.assertEqual({t for t, _, _ in ev}, {6, 7}, "EnterNotify and MotionNotify only")
+        self.assertTrue(all(y == 50 for _, _, y in ev))
+        edge = tf3ctl.pointer_events(0, 0, 5120)
+        self.assertTrue(all(0 <= x for _, x, _ in edge), "the wiggle stays inside at the left edge")
+        right = tf3ctl.pointer_events(5119, 0, 5120)
+        self.assertTrue(all(x <= 5119 for _, x, _ in right), "and at the right edge")
+
+    def test_masks_match_the_event_types(self):
+        self.assertEqual(tf3ctl.POINTER_EVENTS, {7: 1 << 4, 6: 1 << 6})
+
+    def test_send_refuses_buttons_and_keys_before_touching_x(self):
+        # KeyPress 2, KeyRelease 3, ButtonPress 4, ButtonRelease 5: never sent, whatever the caller asks
+        for typ in (2, 3, 4, 5, 0, None):
+            with self.assertRaises(tf3ctl.ToolError, msg=repr(typ)):
+                tf3ctl.X11.send(object(), 1, typ, 0, 0)
+
+    def test_pointer_sends_the_events_to_the_game_window(self):
+        fake, waits = FakeX11(), []
+        out = tf3ctl.cmd_pointer(self.ns("0.5,0.47"), x11_factory=lambda: fake, sleep=waits.append)
+        self.assertTrue(out["ok"])
+        self.assertEqual((out["x"], out["y"], out["size"], out["window"]), (2560, 1015, [5120, 2160], "0x3c00002"))
+        self.assertEqual(fake.titles, ["Transport Fever 3"])
+        self.assertEqual([s[1:] for s in fake.sent], tf3ctl.pointer_events(2560, 1015, 5120))
+        self.assertTrue(all(s[0] == 0x3c00002 for s in fake.sent))
+        self.assertEqual(len(waits), len(fake.sent) - 1)
+        self.assertTrue(fake.closed)
+
+    def test_no_window_or_bad_position_sends_nothing_and_closes(self):
+        fake = FakeX11(window=None)
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.cmd_pointer(self.ns("0.5,0.5"), x11_factory=lambda: fake, sleep=lambda s: None)
+        self.assertEqual((fake.sent, fake.closed), ([], True))
+        fake = FakeX11()
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.cmd_pointer(self.ns("2,2"), x11_factory=lambda: fake, sleep=lambda s: None)
+        self.assertEqual((fake.sent, fake.closed), ([], True))
+
+    def test_parser_takes_position_px_and_title(self):
+        ns = tf3ctl.make_parser().parse_args(["pointer", "0.25,0.75"])
+        self.assertEqual((ns.cmd, ns.pos, ns.px, ns.title), ("pointer", "0.25,0.75", False, "Transport Fever 3"))
+        ns = tf3ctl.make_parser().parse_args(["pointer", "10,20", "--px", "--title", "X"])
+        self.assertEqual((ns.px, ns.title), (True, "X"))
+
+    def test_main_reports_a_missing_display_as_a_tool_error(self):
+        def no_display():
+            raise tf3ctl.ToolError("cannot open the X display")
+        old = tf3ctl.X11
+        tf3ctl.X11 = no_display
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                code = tf3ctl.main(["pointer", "0.5,0.5"])
+        finally:
+            tf3ctl.X11 = old
+        self.assertEqual(code, 2)
+        self.assertIn("X display", err.getvalue())
 
 
 if __name__ == "__main__":

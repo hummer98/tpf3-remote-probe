@@ -33,6 +33,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py line create --stops Central,Harbour [--name "[probe] A"] [--cargo grain] [--via gui|cmd]
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
   tf3ctl.py connect --from 5123 --to Harbour [--build]   # a track between two free ends (needs Track Connector)
+  tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
 
@@ -950,12 +951,17 @@ def camera_args(ns):
     return {}
 
 
+BUILD_MENUS = ("road", "rail", "water", "air", "landscaping", "town", "industry", "roads", "tracks", "warehouses")
+
+
 def build_tool_args(ns):
     if ns.close:
         return {"close": True}
-    if not ns.res:
-        raise ToolError("give --res <resName> (or --close)")
-    args = {"res": ns.res, "seconds": ns.seconds}
+    if not ns.res and not ns.menu:
+        raise ToolError("give --res <resName> and/or --menu (or --close)")
+    args = {"res": ns.res, "seconds": ns.seconds} if ns.res else {}
+    if ns.menu:
+        args["menu"] = ns.menu
     if ns.template is not None:
         args["template"] = ns.template
     return args
@@ -1255,6 +1261,172 @@ def cmd_frame(ns):
     return out
 
 
+# pointer: the game's own idea of where the mouse is, set from outside. TF3 runs as an XWayland window; a synthetic
+# EnterNotify + MotionNotify sent to that window moves the game's hover (the placement preview, tooltips) and its
+# drawn cursor, while the real pointer stays where it is. Only these two event types are ever sent: a button or
+# key event would act in the game on its own (2026-11-18, aom-master: pointer movement only, no buttons or keys).
+TF3_WINDOW_TITLE = "Transport Fever 3"
+X_MOTION_NOTIFY, X_ENTER_NOTIFY = 6, 7
+X_POINTER_MOTION_MASK, X_ENTER_WINDOW_MASK = 1 << 6, 1 << 4
+POINTER_EVENTS = {X_ENTER_NOTIFY: X_ENTER_WINDOW_MASK, X_MOTION_NOTIFY: X_POINTER_MOTION_MASK}
+POINTER_WIGGLE = (-2, -1, 0, 1, 2, 0)  # px steps along x ending on the target: the game reacts to movement
+POINTER_STEP_SEC = 0.05
+POINTER_RE = re.compile(r"\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*")
+
+
+def pointer_target(spec, width, height, pixels=False):
+    """(x, y) in the window's pixels from "FX,FY" (fractions of the window, 0-1) or, with pixels, "X,Y"."""
+    m = POINTER_RE.fullmatch(spec or "")
+    if not m:
+        raise ToolError("give the position as X,Y, e.g. 0.5,0.47 (fractions of the window) or 1920,1080 with --px")
+    try:
+        a, b = float(m.group(1)), float(m.group(2))
+    except ValueError:
+        raise ToolError("not a number in " + repr(spec))
+    if not all(v == v and abs(v) != float("inf") for v in (a, b)):
+        raise ToolError("not a finite number in " + repr(spec))
+    if width <= 0 or height <= 0:
+        raise ToolError("the game window has no size (%dx%d)" % (width, height))
+    if pixels:
+        x, y = a, b
+        if not (0 <= x < width and 0 <= y < height):
+            raise ToolError("%s is outside the window (%dx%d)" % (spec, width, height))
+    else:
+        if not (0 <= a <= 1 and 0 <= b <= 1):
+            raise ToolError("fractions must be 0-1 (use --px for pixels)")
+        x, y = a * width, b * height
+    return min(int(x), width - 1), min(int(y), height - 1)
+
+
+def pointer_events(x, y, width):
+    """The (type, x, y) list sent for one move: enter, a small wiggle (clamped to the window), then the target."""
+    out = [(X_ENTER_NOTIFY, x, y)]
+    out += [(X_MOTION_NOTIFY, max(0, min(width - 1, x + dx)), y) for dx in POINTER_WIGGLE]
+    return out
+
+
+class X11:
+    """The few libX11 calls the pointer needs, through ctypes (no extra package)."""
+
+    def __init__(self):
+        import ctypes
+        import ctypes.util
+        self.c = c = ctypes
+        name = ctypes.util.find_library("X11") or "libX11.so.6"
+        try:
+            self.lib = X = ctypes.CDLL(name)
+        except OSError as e:
+            raise ToolError("cannot load libX11 (" + name + "): " + str(e))
+        vp, ul, ui, i, l = c.c_void_p, c.c_ulong, c.c_uint, c.c_int, c.c_long
+        X.XOpenDisplay.restype, X.XOpenDisplay.argtypes = vp, [c.c_char_p]
+        X.XCloseDisplay.argtypes = [vp]
+        X.XDefaultRootWindow.restype, X.XDefaultRootWindow.argtypes = ul, [vp]
+        X.XQueryTree.argtypes = [vp, ul, c.POINTER(ul), c.POINTER(ul), c.POINTER(c.POINTER(ul)), c.POINTER(ui)]
+        X.XFetchName.argtypes = [vp, ul, c.POINTER(c.c_char_p)]
+        X.XFree.argtypes = [vp]
+        X.XGetGeometry.argtypes = [vp, ul, c.POINTER(ul), c.POINTER(i), c.POINTER(i), c.POINTER(ui), c.POINTER(ui),
+                                   c.POINTER(ui), c.POINTER(ui)]
+        X.XSendEvent.argtypes = [vp, ul, i, l, vp]
+        X.XFlush.argtypes = [vp]
+        X.XTranslateCoordinates.argtypes = [vp, ul, ul, i, i, c.POINTER(i), c.POINTER(i), c.POINTER(ul)]
+        # Xlib's default handler exits the process on any error, e.g. BadWindow from a popup that closed while the
+        # tree is walked; this one only notes it, so the tool still answers. Kept on self: ctypes must not free it.
+        self.errors = []
+        handler_t = c.CFUNCTYPE(i, vp, vp)
+        self._on_error = handler_t(lambda d, e: self.errors.append(1) or 0)
+        X.XSetErrorHandler.argtypes = [handler_t]
+        X.XSetErrorHandler.restype = vp
+        X.XSetErrorHandler(self._on_error)
+        head = [("type", i), ("serial", ul), ("send_event", i), ("display", vp), ("window", ul), ("root", ul),
+                ("subwindow", ul), ("time", ul), ("x", i), ("y", i), ("x_root", i), ("y_root", i)]
+
+        class Motion(c.Structure):
+            _fields_ = head + [("state", ui), ("is_hint", c.c_char), ("same_screen", i)]
+
+        class Crossing(c.Structure):
+            _fields_ = head + [("mode", i), ("detail", i), ("same_screen", i), ("focus", i), ("state", ui)]
+
+        class Event(c.Union):
+            _fields_ = [("motion", Motion), ("crossing", Crossing), ("pad", l * 24)]
+
+        self.Event = Event
+        self.d = X.XOpenDisplay(None)
+        if not self.d:
+            raise ToolError("cannot open the X display (DISPLAY=%s): TF3 runs under XWayland, the tool needs it too"
+                            % os.environ.get("DISPLAY"))
+        self.root = X.XDefaultRootWindow(self.d)
+
+    def close(self):
+        self.lib.XCloseDisplay(self.d)
+
+    def find(self, title):
+        c, X = self.c, self.lib
+        stack = [self.root]
+        while stack:
+            w = stack.pop()
+            name = c.c_char_p()
+            if X.XFetchName(self.d, w, c.byref(name)):
+                found = (name.value or b"").decode("utf-8", "replace") == title
+                X.XFree(name)
+                if found:
+                    return w
+            r, par, ch, n = c.c_ulong(), c.c_ulong(), c.POINTER(c.c_ulong)(), c.c_uint()
+            if X.XQueryTree(self.d, w, c.byref(r), c.byref(par), c.byref(ch), c.byref(n)):
+                stack.extend(ch[k] for k in range(n.value))
+                if ch:
+                    X.XFree(ch)
+        return None
+
+    def size(self, w):
+        c = self.c
+        r, x, y, ww, hh, b, dep = c.c_ulong(), c.c_int(), c.c_int(), c.c_uint(), c.c_uint(), c.c_uint(), c.c_uint()
+        if not self.lib.XGetGeometry(self.d, w, c.byref(r), c.byref(x), c.byref(y), c.byref(ww), c.byref(hh),
+                                     c.byref(b), c.byref(dep)):
+            raise ToolError("cannot read the game window's size")
+        return ww.value, hh.value
+
+    def to_root(self, w, x, y):
+        """The root window's coordinates of (x, y) in w: the same unless the window is not at 0,0 (windowed)."""
+        c = self.c
+        rx, ry, child = c.c_int(), c.c_int(), c.c_ulong()
+        if self.lib.XTranslateCoordinates(self.d, w, self.root, x, y, c.byref(rx), c.byref(ry), c.byref(child)):
+            return rx.value, ry.value
+        return x, y
+
+    def send(self, w, typ, x, y):
+        if typ not in POINTER_EVENTS:  # the one place events leave: nothing but pointer movement
+            raise ToolError("refusing to send X event type %r: only EnterNotify and MotionNotify" % (typ,))
+        ev = self.Event()
+        s = ev.crossing if typ == X_ENTER_NOTIFY else ev.motion
+        s.type, s.send_event, s.display, s.window, s.root = typ, 1, self.d, w, self.root
+        rx, ry = self.to_root(w, x, y)
+        s.x, s.y, s.x_root, s.y_root, s.same_screen = x, y, rx, ry, 1
+        if typ == X_ENTER_NOTIFY:
+            s.mode, s.detail, s.focus = 0, 0, 1  # NotifyNormal, NotifyAncestor
+        if not self.lib.XSendEvent(self.d, w, 0, POINTER_EVENTS[typ], self.c.byref(ev)):
+            raise ToolError("XSendEvent failed")
+        self.lib.XFlush(self.d)
+
+
+def cmd_pointer(ns, x11_factory=None, sleep=time.sleep):
+    x = (x11_factory or X11)()
+    try:
+        w = x.find(ns.title)
+        if not w:
+            raise ToolError("no window titled %r: is the game running?" % ns.title)
+        width, height = x.size(w)
+        tx, ty = pointer_target(ns.pos, width, height, pixels=ns.px)
+        for k, (typ, ex, ey) in enumerate(pointer_events(tx, ty, width)):
+            if k:
+                sleep(POINTER_STEP_SEC)
+            x.send(w, typ, ex, ey)
+    finally:
+        x.close()
+    return {"ok": True, "window": "0x%x" % w, "size": [width, height], "x": tx, "y": ty,
+            "note": "only the game's pointer moved (synthetic EnterNotify/MotionNotify); the real pointer did not. "
+                    "The game may take a frame or two to redraw; frame pictures lag a few seconds."}
+
+
 def num(v):
     try:
         return float(v)
@@ -1406,6 +1578,11 @@ def make_parser():
     fr = sub.add_parser("frame", help="the game's picture with UI, from Steam's background recording")
     fr.add_argument("--out", required=True, help="image to write (.png or .jpg)")
     fr.add_argument("--crop", help="WxH+X+Y in the recording's pixels, e.g. 1150x170+2690+1450 for the speed row")
+    po = sub.add_parser("pointer", help="move the game's mouse pointer (hover, placement preview) without the real "
+                        "one; pointer movement only, never a click or a key")
+    po.add_argument("pos", metavar="FX,FY", help="fractions of the game window, e.g. 0.5,0.47 (0,0 = top left)")
+    po.add_argument("--px", action="store_true", help="the position is in the window's pixels instead")
+    po.add_argument("--title", default=TF3_WINDOW_TITLE, help="the game window's title")
     sc = sub.add_parser("screenshot", help="the game's own screenshot (photo mode, likely without the UI)")
     sc.add_argument("--scale", type=int, default=1, help="1 (default) = twice the screen size, as photo mode")
     sc.add_argument("--preview", help="also write a small JPEG here (needs ImageMagick)")
@@ -1432,6 +1609,8 @@ def make_parser():
     bt.add_argument("--template", type=int, help="the template number (menu tag resName@N)")
     bt.add_argument("--seconds", type=float, default=60, help="the mod clears the menu filter after this (5-600)")
     bt.add_argument("--close", action="store_true", help="clear the menu filter now")
+    bt.add_argument("--menu", choices=BUILD_MENUS, help="first open this toolbar menu (its own button's event), which "
+                    "picks its first item as the placing tool; the only way seen to open the tool (2026-11-18)")
     qu = sub.add_parser("quit", help="quit the game (app.quit through the probe)")
     qu.add_argument("--kill", action="store_true", help="SIGKILL when it does not quit (an unsaved game is lost)")
     qu.add_argument("--timeout", type=float, default=QUIT_TIMEOUT_SEC)
@@ -1569,6 +1748,9 @@ def main(argv=None):
             return 0
         if ns.cmd == "keep-log":
             show(cmd_keep_log(ns))
+            return 0
+        if ns.cmd == "pointer":
+            show(cmd_pointer(ns))
             return 0
         if ns.cmd == "frame":
             show(cmd_frame(ns))

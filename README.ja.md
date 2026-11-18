@@ -140,6 +140,8 @@ python3 tools/tf3ctl.py camera                              # x・y・distance�
 python3 tools/tf3ctl.py camera --set 1200,-800,600         # x,y[,distance[,angle[,pitch]]]。渡さない値は今のまま
 python3 tools/tf3ctl.py camera --entity 12345              # または --focus x,y,z [--distance d]
 python3 tools/tf3ctl.py build-tool --res depots/road/road_depot/road_depot.con [--template N] [--seconds 60]   # (--close)
+python3 tools/tf3ctl.py build-tool --menu rail [--res ...]   # 先にツールバーと同じメニューのイベント (road・rail・water など)
+python3 tools/tf3ctl.py pointer 0.5,0.47 [--px]          # ゲームの中のポインタだけを動かす。窓の中の割合で指定
 ```
 
 `camera` の返事は、動かした後に読み直した値です。数は先に確かめます。NaN・無限大・1e6 を超える中心・1〜1e5 の外の
@@ -155,9 +157,19 @@ python3 tools/tf3ctl.py build-tool --res depots/road/road_depot/road_depot.con [
 - ゲームのロードや終了でも戻ります (フィルタは GUI の状態で、セーブに残りません)。
 
 resName は実在する必要があります (`api.res.constructionRep`)。その年に使えない建物は一覧に出ません。MODULES のタブ (dynamic) は
-対象外です。**マウスのポインタだけは、人が 3D の画面の上に置いておく必要があります**。配置の予告とツールチップは、マウスの下に
-建設案ができたときだけ出ます。表紙の撮り方: `camera --set` (または `--focus`) で場所を写し、`build-tool --res ...`、ポインタを画面の上に
-置いたまま `frame` か `screenshot`、最後に `build-tool --close`。
+対象外です。
+
+**ゲームで試した結果 (2026-11-18): フィルタと選択のイベントだけでは配置ツールが開きませんでした** (道路の車庫。ログには
+建設メニューの項目が見つからないと出て、絞り込んだメニューは空でした)。開いたのはツールバーと同じイベントです。`--menu rail` は
+`openRail` を送ります (鉄道のボタンと同じ)。鉄道メニューが開き、最初の品目の駅舎がそのまま配置ツールになります。`--menu` だけなら
+このイベントだけを送り、戻すフィルタはありません。`--res` も渡すと、1.5 秒ずつあけてフィルタと選択が続きます。それで指定の建物が
+選ばれるかは、まだ確かめていません。
+
+配置の予告とツールチップは、マウスの下に建設案ができたときだけ出ます。なので、ゲームのポインタが 3D の画面の上にある必要があります。
+`pointer FX,FY` で、人の手なしにそこへ置けます。ゲームの窓に X11 の合成イベント `EnterNotify` と `MotionNotify` を送ります
+(ctypes で libX11 を使います。TF3 は XWayland で動いています)。ゲームの中のポインタと予告は動き、本物のポインタは動きません。
+ボタンやキーのイベントは決して送りません。表紙の撮り方: `camera --set` で場所を写し、`build-tool --menu rail`、`pointer 0.5,0.47`、
+`frame`。メニューは、セーブを読み直して (保存せずに) 片付けます。会社のお金が 0 だと、ツールチップはコストの代わりに資金不足と出ます。
 
 このイベントは、速度ボタンの依頼枠 1 つを `window`・`event`・`tool` と共有します。1.5 秒の間や解除の直前にそれらを送ると、
 どちらかが上書きされます。`build-tool` が済んでから送ってください。
