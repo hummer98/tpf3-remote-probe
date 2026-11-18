@@ -60,6 +60,7 @@ local function ScrollContainer(children, first)
 			if seq and seq ~= seen:get() and (not first or core.scrollFresh(r, os.time and os.time() or nil)) then
 				seen:set(seq)
 				want:set(r) -- drawn with the marker from the next render
+				print("[remote_probe] scroll " .. r.to .. ": request " .. tostring(seq) .. " taken by a window")
 				return
 			end
 			if first then seen:set(seq) end
@@ -69,8 +70,12 @@ local function ScrollContainer(children, first)
 				local okM, node = pcall(function() return marker:get() end)
 				if okM and node then
 					local okV, err = pcall(function() node:ensureVisible() end)
-					if not okV then print("[remote_probe] scroll " .. w.to .. " failed: " .. tostring(err)) end
+					print("[remote_probe] scroll " .. w.to .. ": " .. (okV and "marker made visible" or ("failed: " .. tostring(err))))
 					done:set(w.seq)
+				elseif done:get() ~= -w.seq then
+					-- once per request: the marker was drawn but its node never came
+					done:set(-w.seq)
+					print("[remote_probe] scroll " .. w.to .. ": no marker node (" .. tostring(okM and node or node) .. ")")
 				end
 			end
 		end, "HummerRemoteScrollContainer:read")
@@ -96,6 +101,7 @@ local exports = {}
 function exports.install(replacementApi)
 	previous = findPrevious()
 	replacementApi.ReplaceRecipe(entity_window_util.ContentWidgetScrollContainer, ScrollContainer)
+	print("[remote_probe] scroll: the base windows' scrolled content wrapped" .. (previous and " (over another mod's)" or ""))
 end
 
 exports.ScrollContainer = ScrollContainer
