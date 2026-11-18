@@ -496,6 +496,19 @@ function handlers.event(c)
 		note = "the speed control fires it within about a second (not checked: look at the screen or the log)" })
 end
 
+-- args: id, name, param. Sent to the game scripts at once (a command, as a mod's button sends it), not through
+-- the speed control: a game script listens to commands, not react events. Whether a script took it shows only in
+-- its log
+function handlers.scriptEvent(c)
+	local ev, err = core.scriptEventRequest(c.args)
+	if not ev then return fail(c.id, err) end
+	api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("", ev.id, ev.name, ev.param), function(_, success)
+		if success == false then say("script event " .. ev.id .. " " .. ev.name .. ": refused by the engine", 1) end
+	end)
+	answer(c.id, { ok = true, id = ev.id, event = ev.name,
+		note = "sent; whether the game script acted on it shows only in its log (tf3ctl log --grep ...)" })
+end
+
 -- args: name (music, calendar) or module + field; close. Pushed onto (or popped from) the game's tool stack by
 -- the speed control, as the base's own buttons do
 function handlers.tool(c)

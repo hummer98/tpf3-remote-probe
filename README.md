@@ -138,6 +138,7 @@ python3 tools/tf3ctl.py window --town Emsworth --focus      # open its window an
 python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # the screen with UI, from Steam's recording
 python3 tools/tf3ctl.py tool music [--close]                # base windows that open as a tool: music, calendar, notifications
 python3 tools/tf3ctl.py event example_window.show --param '{"page": 2}'   # fire any react event
+python3 tools/tf3ctl.py script-event example_mod.apply --id example_mod --param '{"step": 2}'   # a game script event, as a mod's button sends it
 python3 tools/tf3ctl.py camera                              # x, y, distance, angle, pitch, heightAboveTerrain
 python3 tools/tf3ctl.py camera --set 1200,-800,600         # x,y[,distance[,angle[,pitch]]]; the rest stays as it is
 python3 tools/tf3ctl.py camera --entity 12345              # or --focus x,y,z [--distance d]

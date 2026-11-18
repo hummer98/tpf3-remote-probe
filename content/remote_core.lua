@@ -16,11 +16,11 @@ M.LOG = "[remote_probe] "
 M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = true, load = true, save = true, poll = true,
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
-	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true }
+	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
-	line = true, connect = true, camera = true, buildTool = true } -- camera, as window: what the player sees
+	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true } -- camera, as window: what the player sees
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true }
@@ -780,6 +780,17 @@ function M.eventRequest(args)
 	local ok, why = plainValue(args.param, 0)
 	if not ok then return nil, "param holds " .. why .. ": only plain values go through" end
 	return { name = args.name, param = args.param }
+end
+
+-- args: id (the script event's id, e.g. a mod's UI id), name, param: a game script event as a GUI component sends
+-- it (api.cmd.makeScriptingSendEventCmd), for a mod's game script that only listens to its own buttons. The same
+-- checks as eventRequest on the name and the param.
+function M.scriptEventRequest(args)
+	args = type(args) == "table" and args or {}
+	if type(args.id) ~= "string" or args.id == "" then return nil, "give the script event's id (e.g. the mod's UI id)" end
+	local ev, err = M.eventRequest(args)
+	if not ev then return nil, err end
+	return { id = args.id, name = ev.name, param = ev.param or {} }
 end
 
 ---------------------------------------------------------------------------------------------------------------------

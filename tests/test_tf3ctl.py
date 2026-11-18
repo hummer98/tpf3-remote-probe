@@ -953,6 +953,33 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertIsNone(tf3ctl.tool_event(ns(name="music", module=None, field=None, close=False)))
         self.assertIsNone(tf3ctl.tool_event(ns(name=None, module="/m.tl", field=None, close=False)))
 
+    def test_script_event_args(self):
+        ns = lambda **k: tf3ctl.argparse.Namespace(**k)
+        self.assertEqual(tf3ctl.script_event_args(ns(name="industry_upgrades.apply", id="hummer_age_of_mobility",
+                                                     param='{"construction": 9, "step": 3}')),
+                         {"name": "industry_upgrades.apply", "id": "hummer_age_of_mobility",
+                          "param": {"construction": 9, "step": 3}})
+        self.assertEqual(tf3ctl.script_event_args(ns(name="x", id="m", param=None)), {"name": "x", "id": "m"})
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.script_event_args(ns(name="x", id="", param=None))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.script_event_args(ns(name="x", id="m", param="[1]"))
+        self.assertIn("scriptEvent", tf3ctl.CHANGES_GAME)
+
+    def test_script_event_main_sends_script_event(self):
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = tf3ctl.main(["script-event", "industry_upgrades.apply", "--id", "hummer_age_of_mobility",
+                                "--param", '{"step": 3}'])
+        self.assertEqual(code, 0)
+        self.assertEqual(sent, [("scriptEvent", {"name": "industry_upgrades.apply", "id": "hummer_age_of_mobility",
+                                                 "param": {"step": 3}})])
+
     def test_event_and_tool_args(self):
         ns = tf3ctl.argparse.Namespace
         self.assertEqual(tf3ctl.event_args(ns(name="example_window.show", param='{"welcome": true}')),

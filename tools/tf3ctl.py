@@ -72,7 +72,7 @@ STALE_SEC = 3600  # answers nobody read (a killed tool) are removed after this
 PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); longer means it is not running
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
-                "replace", "sell", "money", "line", "connect", "camera", "buildTool"}  # window: what the player sees  # poll: only the mod's file reads
+                "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent"}  # window: what the player sees  # poll: only the mod's file reads
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -980,6 +980,15 @@ def event_args(ns):
     return args
 
 
+def script_event_args(ns):
+    """A game script event: the event's args plus the id the script listens to."""
+    if not ns.id:
+        raise ToolError("--id is needed: the id the game script listens to (e.g. the mod's UI id)")
+    args = event_args(ns)
+    args["id"] = ns.id
+    return args
+
+
 # Tools whose base button passes more than gameCtx, so a plain push breaks the GUI; their button listens to an
 # event that opens them with the right params. notification_log.tl calls param.toolParam.storeFilterState(...) in
 # its recipe body (line 509): pushed with only gameCtx that is a nil call, "Failed during state update of
@@ -1642,6 +1651,10 @@ def make_parser():
     ev = sub.add_parser("event", help="fire a react event in the game's GUI (e.g. example_window.show)")
     ev.add_argument("name")
     ev.add_argument("--param", help="a JSON object")
+    se = sub.add_parser("script-event", help="send a game script event, as a mod's button does (e.g. an upgrade)")
+    se.add_argument("name")
+    se.add_argument("--id", required=True, help="the id the game script listens to, e.g. a mod's UI id")
+    se.add_argument("--param", help="a JSON object")
     to = sub.add_parser("tool", help="open or close a base window that is a tool (music, calendar, notifications)")
     to.add_argument("name", nargs="?")
     to.add_argument("--module", help="a GUI module that returns the tool, e.g. /gui/music_player/music_player.tl")
@@ -1825,6 +1838,8 @@ def main(argv=None):
             res = cmd_start(ns, ns.cmd == "restart")
         elif ns.cmd == "event":
             res = send("event", event_args(ns))
+        elif ns.cmd == "script-event":
+            res = send("scriptEvent", script_event_args(ns))
         elif ns.cmd == "tool":
             ev = tool_event(ns)
             if ev:

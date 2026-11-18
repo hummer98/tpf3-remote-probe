@@ -1467,6 +1467,47 @@ test("eventRequest: a name and plain params; functions, userdata, cycles and bad
 	truthy(core.eventRequest({ name = "x", param = { a = shared, b = shared } }), "the same table twice is no cycle")
 end)
 
+test("scriptEventRequest: an id, a name and plain params (an empty table when none)", function()
+	local e = core.scriptEventRequest({ id = "hummer_age_of_mobility", name = "industry_upgrades.apply",
+		param = { construction = 123, kind = "pollution", step = 3 } })
+	eq(e.id, "hummer_age_of_mobility"); eq(e.name, "industry_upgrades.apply"); eq(e.param.step, 3)
+	eq(next(core.scriptEventRequest({ id = "m", name = "x" }).param), nil, "no param: an empty table")
+	truthy(select(2, core.scriptEventRequest({ name = "x" })):find("id"))
+	truthy(select(2, core.scriptEventRequest({ id = "", name = "x" })):find("id"))
+	truthy(select(2, core.scriptEventRequest({ id = 5, name = "x" })):find("id"))
+	truthy(select(2, core.scriptEventRequest({ id = "m" })):find("name"))
+	truthy(select(2, core.scriptEventRequest({ id = "m", name = "x", param = { f = print } })):find("a function"))
+	truthy(select(2, core.scriptEventRequest(nil)))
+end)
+
+test("scriptEvent: sent as a command at once, not through the speed control; a refusal goes to the log", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	local before = fake.guiSave.hummer_remote_probe and fake.guiSave.hummer_remote_probe.open
+	send(g, 210, "scriptEvent", '{ id = "hummer_age_of_mobility", name = "industry_upgrades.apply", param = { construction = 9, step = 3 } }')
+	frames(g, FIRST)
+	truthy((answerText(g, 210) or ""):find('"event":"industry_upgrades.apply"'), answerText(g, 210, "error"))
+	local sent
+	for _, c in ipairs(g.commands) do if c.kind == "scriptEvent" then sent = c end end
+	truthy(sent, "a script event command")
+	eq(sent.id, "hummer_age_of_mobility"); eq(sent.name, "industry_upgrades.apply"); eq(sent.param.construction, 9)
+	eq(sent.src, "")
+	eq(fake.guiSave.hummer_remote_probe and fake.guiSave.hummer_remote_probe.open, before, "the speed control is not asked")
+	send(g, 211, "scriptEvent", '{ name = "x" }')
+	frames(g, 20)
+	truthy((answerText(g, 211, "error") or ""):find("id"))
+	fake.guiSave.hummer_remote_probe = nil
+	local g2 = newGame({ saves = SAVES, scriptEventFails = true })
+	frames(g2, 2)
+	send(g2, 212, "scriptEvent", '{ id = "m", name = "x" }')
+	frames(g2, FIRST)
+	truthy((answerText(g2, 212) or ""):find('"ok":true'), "answered: the engine's refusal comes later")
+	local logged = false
+	for _, l in ipairs(g2.logs) do if tostring(l):find("refused by the engine") then logged = true end end
+	truthy(logged, "the refusal is logged")
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
 test("uiRequest: carries an event and a tool; malformed ones dropped", function()
 	local r = core.uiRequest({ open = { seq = 3, event = { name = "e", param = { a = 1 } }, tool = { module = "/m.tl", field = "F", close = true } } })
 	eq(r.open.event.name, "e"); eq(r.open.event.param.a, 1)

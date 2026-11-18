@@ -559,6 +559,9 @@ function M.new(dir, opts)
 			makeLineUpdateCmd = function(e, line) return { kind = "lineUpdate", lineEntity = e, line = copy(line) } end,
 			makeLineDestroyCmd = function(e) return { kind = "lineDestroy", lineEntity = e } end,
 			makeEntitySetNameCmd = function(e, name) return { kind = "setName", entity = e, name = name } end,
+			makeScriptingSendEventCmd = function(src, id, name, param)
+				return { kind = "scriptEvent", src = src, id = id, name = name, param = copy(param) }
+			end,
 			sendCommand = function(cmd, cb)
 				g.commands[#g.commands + 1] = cmd
 				if opts.speedFails then
@@ -567,6 +570,7 @@ function M.new(dir, opts)
 				end
 				local function apply()
 					if cmd.kind == "speed" then g.speedup = cmd.speed; return true end
+					if cmd.kind == "scriptEvent" then return not opts.scriptEventFails end
 					return applyVehicle(cmd)
 				end
 				-- opts.callbackFrames: the command runs, and its result arrives, that many frames later, as commands
