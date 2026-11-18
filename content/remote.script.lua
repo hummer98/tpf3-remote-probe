@@ -496,18 +496,6 @@ function handlers.event(c)
 		note = "the speed control fires it within about a second (not checked: look at the screen or the log)" })
 end
 
--- args: to (top, bottom). Every open base window whose content scrolls (industry, town, warehouse, construction;
--- entity_window_util.ContentWidgetScrollContainer) goes to that end, through the GUI save data as the window
--- requests (gui/remote_scroll.script.lua reads it). No mouse wheel and no click.
-function handlers.scroll(c)
-	local r, err = core.scrollRequest(c.args)
-	if not r then return fail(c.id, err) end
-	G.uiSeq = (G.uiSeq or (os.time and os.time() or 0) * 1000) + 1
-	publishUi({ scroll = { seq = G.uiSeq, to = r.to, at = os.time and os.time() or nil } })
-	answer(c.id, { ok = true, to = r.to, seq = G.uiSeq,
-		note = "the open windows scroll within about a second (not checked: look at the screen); a window opened more than a few seconds later does not" })
-end
-
 -- args: id, name, param. Sent to the game scripts at once (a command, as a mod's button sends it), not through
 -- the speed control: a game script listens to commands, not react events. Whether a script took it shows only in
 -- its log
@@ -1020,7 +1008,7 @@ local function init()
 	publishRun(nil) -- a run of the previous game does not carry over
 	G.ui, G.uiSent = nil, nil
 	G.buildTool = nil -- a new GUI: no filter left to clear
-	publishUi({ label = "", tip = "", open = false, scroll = false, vehicles = {}, lines = {} }) -- the save may hold the last game's label and requests
+	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {} }) -- the save may hold the last game's label and requests
 	if not G.menu then
 		vehicles.reset()
 		lines.reset()
