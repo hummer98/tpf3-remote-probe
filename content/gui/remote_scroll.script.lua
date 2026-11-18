@@ -70,7 +70,9 @@ local function ScrollContainer(children, first)
 				local okM, node = pcall(function() return marker:get() end)
 				if okM and node then
 					local okV, err = pcall(function() node:ensureVisible() end)
-					print("[remote_probe] scroll " .. w.to .. ": " .. (okV and "marker made visible" or ("failed: " .. tostring(err))))
+					local okP, pos = pcall(function() local p = node:getPosition(0, 0); return p.x .. "," .. p.y end)
+					print("[remote_probe] scroll " .. w.to .. ": " .. (okV and "marker made visible" or ("failed: " .. tostring(err)))
+						.. " (marker at " .. tostring(okP and pos or "?") .. ")")
 					done:set(w.seq)
 				elseif done:get() ~= -w.seq then
 					-- once per request: the marker was drawn but its node never came
