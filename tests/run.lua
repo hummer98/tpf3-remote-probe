@@ -995,6 +995,7 @@ local function loadScrollScript(previous)
 		Component = function(refFill, t)
 			local node = { kind = "component", t = t }
 			node.ensureVisible = function(self) S.visible[#S.visible + 1] = self end
+			node.focus = function() end
 			refFill.refFill.slot.node = node
 			return node
 		end,

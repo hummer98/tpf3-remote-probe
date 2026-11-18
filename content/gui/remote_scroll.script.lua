@@ -74,8 +74,12 @@ local function ScrollContainer(children, first)
 			if w and done:get() ~= w.seq and drawn:get() == w.seq then
 				local okM, node = pcall(function() return marker:get() end)
 				if okM and node then
+					-- focus first: the scroll area of this recipe has gamepad navigation off, and ensureVisible alone
+					-- did not move it (2026-11-19 01:50 JST)
+					local okF, errF = pcall(function() node:focus() end)
+					if not okF then print("[remote_probe] scroll: focus failed: " .. tostring(errF)) end
 					local okV, err = pcall(function() node:ensureVisible() end)
-					local okP, pos = pcall(function() local p = node:getPosition(0, 0); return p.x .. "," .. p.y end)
+					local okP, pos = pcall(function() local p = node:getPosition(0.5, 0.5); return p.x .. "," .. p.y end)
 					print("[remote_probe] scroll " .. w.to .. ": " .. (okV and "marker made visible" or ("failed: " .. tostring(err)))
 						.. " (marker at " .. tostring(okP and pos or "?") .. ")")
 					done:set(w.seq)
@@ -91,7 +95,7 @@ local function ScrollContainer(children, first)
 	local kids = children
 	if w and type(children) == "table" then
 		drawn:set(w.seq)
-		local m = builtin.Component(react.ref(marker), { meta = { class = "hummer-remote-scroll-marker" } })
+		local m = builtin.Component(react.ref(marker), { meta = { class = "hummer-remote-scroll-marker", focusable = true } })
 		kids = {}
 		if w.to == "top" then kids[1] = m end
 		for _, c in ipairs(children) do kids[#kids + 1] = c end
