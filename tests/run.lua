@@ -965,7 +965,7 @@ local function loadScrollScript(previous)
 	S = { timers = {}, joins = {}, hooks = {}, i = 0, visible = {} }
 	_G._react = { recipeReplace = { SCROLL_ID = previous } }
 	package.preload["::/gui/main/react.lua"] = function() return {
-		RegisterRecipe = function(name, fn) return fn end,
+		RegisterRecipe = function(name, fn) S.registered = name; return fn end,
 		CallOriginalRecipe = function(recipe, kids, first) return { original = recipe, kids = kids, first = first } end,
 		GetRecipeId = function(r) return r == base and "SCROLL_ID" or nil end,
 		useState = function(init)
@@ -1026,6 +1026,7 @@ end
 test("scroll container: the base recipe unchanged until a request, then a marker at that end made visible once", function()
 	local exports, replaced, base = loadScrollScript()
 	eq(#replaced, 1); eq(replaced[1][1], base); eq(replaced[1][2], exports.ScrollContainer)
+	eq(S.registered, nil, "a plain function as the base recipe's body, never a recipe of its own (that broke the UI)")
 	local kids = { "a", "b", "c" }
 	publish({ scroll = { seq = 7, to = "bottom" } }) -- left in the save from before: old
 	local n = scrollFrame(exports.ScrollContainer, kids, true)

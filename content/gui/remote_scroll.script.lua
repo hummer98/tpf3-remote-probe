@@ -35,7 +35,12 @@ local function findPrevious()
 	return prev
 end
 
-local ScrollContainer = react.RegisterRecipe("HummerRemoteScrollContainer", function(children, first)
+-- A plain function, not a registered recipe: it runs as the base recipe's body (its hooks are that recipe's),
+-- as Auto Assign Terminals replaces the same recipe. A registered recipe in its place made a node of its own from
+-- (children, first), and the first industry window opened made React's step fail and the UI reload
+-- (2026-11-19 01:21 JST). Another mod that replaces this recipe after us and calls the original by the recipe it
+-- kept (AAT does) draws the base content without our marker: scroll then does nothing in its windows.
+local function ScrollContainer(children, first)
 	-- want: the newest request this container took ({ seq, to }), nil before one; seen: the newest seq read, nil
 	-- until the first read (a request already in the save data when the window opens is old); done: the seq the
 	-- marker was made visible for
@@ -82,7 +87,7 @@ local ScrollContainer = react.RegisterRecipe("HummerRemoteScrollContainer", func
 	end
 	if previous then return previous(kids, first) end
 	return react.CallOriginalRecipe(entity_window_util.ContentWidgetScrollContainer, kids, first)
-end)
+end
 
 core.shared.ownScrollContainers[ScrollContainer] = true
 
