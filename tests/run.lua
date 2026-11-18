@@ -957,6 +957,174 @@ test("speed control: nothing published, junk published, or the GUI API failing: 
 	publish(nil)
 end)
 
+-- the scroll container (gui/remote_scroll.script.lua) over the same kind of fake react, with node refs
+local S
+local function loadScrollScript(previous)
+	local replaced = {}
+	local base = { "SCROLL_BASE" }
+	S = { timers = {}, joins = {}, hooks = {}, i = 0, visible = {} }
+	_G._react = { recipeReplace = { SCROLL_ID = previous } }
+	package.preload["::/gui/main/react.lua"] = function() return {
+		RegisterRecipe = function(name, fn) return fn end,
+		CallOriginalRecipe = function(recipe, kids, first) return { original = recipe, kids = kids, first = first } end,
+		GetRecipeId = function(r) return r == base and "SCROLL_ID" or nil end,
+		useState = function(init)
+			S.i = S.i + 1
+			local k = S.i
+			if S.hooks[k] == nil then S.hooks[k] = { v = init } end
+			return { old = function() return S.hooks[k].v end, set = function(_, v) S.hooks[k].v = v end }
+		end,
+		useRef = function()
+			S.i = S.i + 1
+			local k = S.i
+			if S.hooks[k] == nil then S.hooks[k] = {} end
+			return { get = function() return S.hooks[k].v end, set = function(_, v) S.hooks[k].v = v end }
+		end,
+		useNodeRef = function()
+			S.i = S.i + 1
+			local k = S.i
+			if S.hooks[k] == nil then S.hooks[k] = {} end
+			return { get = function() return S.hooks[k].node end, slot = S.hooks[k] }
+		end,
+		ref = function(r) return { refFill = r } end,
+		onStepTimer = function(fn) S.timers[1] = fn end,
+		enqueueJoin = function(fn) S.joins[#S.joins + 1] = fn end,
+	} end
+	package.preload["::/gui/main/builtin.lua"] = function() return {
+		-- a node made with a ref: the ref points at it from then on, as react fills it
+		Component = function(refFill, t)
+			local node = { kind = "component", t = t }
+			node.ensureVisible = function(self) S.visible[#S.visible + 1] = self end
+			refFill.refFill.slot.node = node
+			return node
+		end,
+	} end
+	package.preload["::/gui/entity_window/entity_window_util.tl"] = function() return { ContentWidgetScrollContainer = base } end
+	for _, k in ipairs({ "::/gui/main/react.lua", "::/gui/main/builtin.lua", "::/gui/entity_window/entity_window_util.tl" }) do
+		package.loaded[k] = nil
+	end
+	_G.data = nil
+	package.loaded["hummer_remote_probe::/remote_core.lua"] = nil
+	return withoutGameApi(function()
+		dofile(root .. "/content/gui/remote_scroll.script.lua")
+		local exports = _G.data()
+		exports.install({ ReplaceRecipe = function(a, b) replaced[#replaced + 1] = { a, b } end })
+		return exports, replaced, base
+	end)
+end
+
+local function scrollFrame(recipe, kids, first)
+	S.i = 0
+	local node = withoutGameApi(function() return recipe(kids, first) end)
+	withoutGameApi(function() if S.timers[1] then S.timers[1]() end end)
+	local joins = S.joins
+	S.joins = {}
+	for _, j in ipairs(joins) do j() end
+	return node
+end
+
+test("scroll container: the base recipe unchanged until a request, then a marker at that end made visible once", function()
+	local exports, replaced, base = loadScrollScript()
+	eq(#replaced, 1); eq(replaced[1][1], base); eq(replaced[1][2], exports.ScrollContainer)
+	local kids = { "a", "b", "c" }
+	publish({ scroll = { seq = 7, to = "bottom" } }) -- left in the save from before: old
+	local n = scrollFrame(exports.ScrollContainer, kids, true)
+	eq(n.original, base); eq(n.kids, kids, "the same children, untouched"); eq(n.first, true)
+	n = scrollFrame(exports.ScrollContainer, kids, true)
+	eq(n.kids, kids, "an old request scrolls nothing"); eq(#S.visible, 0)
+	publish({ scroll = { seq = 8, to = "bottom" } })
+	scrollFrame(exports.ScrollContainer, kids, true) -- read: wanted from the next render
+	n = scrollFrame(exports.ScrollContainer, kids, true) -- drawn with the marker, made visible in the join
+	eq(#n.kids, 4); eq(n.kids[1], "a"); eq(n.kids[4].kind, "component")
+	eq(n.kids[4].t.meta.class, "hummer-remote-scroll-marker")
+	eq(#S.visible, 1); eq(S.visible[1], n.kids[4])
+	scrollFrame(exports.ScrollContainer, kids, true)
+	eq(#S.visible, 1, "once per request")
+	eq(#kids, 3, "the caller's children list is not changed")
+	publish({ scroll = { seq = 9, to = "top" } })
+	scrollFrame(exports.ScrollContainer, kids, false)
+	n = scrollFrame(exports.ScrollContainer, kids, false)
+	eq(n.kids[1].kind, "component", "top: the marker first"); eq(n.kids[2], "a"); eq(#n.kids, 4)
+	eq(#S.visible, 2); eq(S.visible[2], n.kids[1], "the top marker made visible, not the bottom one of before")
+	publish(nil)
+end)
+
+test("scroll container: junk or no request, the GUI API failing, another mod's replacement, a second install", function()
+	local other = function(kids, first) return { other = true, kids = kids, first = first } end
+	local exports = loadScrollScript(other)
+	publish({ scroll = { seq = 1, to = "middle" } })
+	scrollFrame(exports.ScrollContainer, { "a" }, true)
+	publish({ scroll = { seq = 2, to = "sideways" } })
+	local n = scrollFrame(exports.ScrollContainer, { "a" }, true)
+	eq(n.other, true, "the other mod's recipe is drawn"); eq(#n.kids, 1, "junk asks nothing")
+	local real = api.gui.game.getGuiSaveData
+	api.gui.game.getGuiSaveData = function() error("restricted") end
+	n = scrollFrame(exports.ScrollContainer, { "a" }, true)
+	api.gui.game.getGuiSaveData = real
+	eq(#n.kids, 1)
+	publish({ scroll = { seq = 3, to = "bottom" } })
+	scrollFrame(exports.ScrollContainer, { "a" }, true)
+	n = scrollFrame(exports.ScrollContainer, { "a" }, true)
+	eq(n.other, true); eq(#n.kids, 2, "the marker goes to the other mod's recipe too")
+	_G._react.recipeReplace.SCROLL_ID = exports.ScrollContainer
+	exports.install({ ReplaceRecipe = function() end })
+	eq(scrollFrame(exports.ScrollContainer, { "a" }, true).original ~= nil, true, "never itself as the previous recipe")
+	publish(nil)
+	_G._react = nil
+end)
+
+test("scroll container: a window opened just before the request still scrolls; an older request does not", function()
+	local exports = loadScrollScript()
+	local now = os.time()
+	publish({ scroll = { seq = 4, to = "bottom", at = now - 1 } })
+	scrollFrame(exports.ScrollContainer, { "a" }, true) -- first read: fresh, so taken
+	local n = scrollFrame(exports.ScrollContainer, { "a" }, true)
+	eq(#n.kids, 2); eq(#S.visible, 1)
+	exports = loadScrollScript()
+	publish({ scroll = { seq = 5, to = "bottom", at = now - 60 } })
+	scrollFrame(exports.ScrollContainer, { "a" }, true)
+	n = scrollFrame(exports.ScrollContainer, { "a" }, true)
+	eq(#n.kids, 1, "a minute old: from before this window"); eq(#S.visible, 0)
+	publish(nil)
+	_G._react = nil
+end)
+
+test("scrollFresh: a few seconds at most, a time from the future or none is not fresh", function()
+	truthy(core.scrollFresh({ at = 100 }, 103)); truthy(core.scrollFresh({ at = 100 }, 100))
+	eq(core.scrollFresh({ at = 100 }, 100 + core.SCROLL_FRESH_SEC + 1), false)
+	eq(core.scrollFresh({ at = 100 }, 99), false)
+	eq(core.scrollFresh({}, 100), false); eq(core.scrollFresh({ at = 100 }, nil), false); eq(core.scrollFresh(nil, 1), false)
+end)
+
+test("scrollRequest / uiScroll: top or bottom only", function()
+	eq(core.scrollRequest({ to = "top" }).to, "top")
+	eq(core.scrollRequest({ to = "bottom" }).to, "bottom")
+	truthy(select(2, core.scrollRequest({ to = "middle" })):find("top or bottom"))
+	truthy(select(2, core.scrollRequest(nil)))
+	eq(core.uiScroll({ scroll = { seq = 3, to = "top" } }).seq, 3)
+	eq(core.uiScroll({ scroll = { seq = "x", to = "top" } }), nil)
+	eq(core.uiScroll({ scroll = { seq = 3, to = "left" } }), nil)
+	eq(core.uiScroll("junk"), nil); eq(core.uiScroll(nil), nil)
+end)
+
+test("scroll: published for the windows with a new seq; a bad end refused", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 220, "scroll", '{ to = "bottom" }')
+	frames(g, FIRST)
+	truthy((answerText(g, 220) or ""):find('"to":"bottom"'), answerText(g, 220, "error"))
+	local sc = fake.guiSave.hummer_remote_probe.scroll
+	eq(sc.to, "bottom"); truthy(tonumber(sc.seq)); truthy(tonumber(sc.at), "stamped, for a window opened just before")
+	local seq = sc.seq
+	send(g, 221, "scroll", '{ to = "top" }')
+	frames(g, 20)
+	truthy(fake.guiSave.hummer_remote_probe.scroll.seq > seq, "a new request")
+	send(g, 222, "scroll", '{ to = "middle" }')
+	frames(g, 20)
+	truthy((answerText(g, 222, "error") or ""):find("top or bottom"))
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
 -- a stand-in for game.tl's GameSpeedHelper: getSpeed is what it last asked for (what lights a button), setSpeed
 -- the base buttons' way (clamped in game, recorded here)
 local function fakeHelper(speed)

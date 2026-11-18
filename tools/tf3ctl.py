@@ -72,7 +72,7 @@ STALE_SEC = 3600  # answers nobody read (a killed tool) are removed after this
 PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); longer means it is not running
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
-                "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent"}  # window: what the player sees  # poll: only the mod's file reads
+                "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "scroll"}  # window: what the player sees  # poll: only the mod's file reads
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -967,6 +967,10 @@ def build_tool_args(ns):
     return args
 
 
+# the ends tf3ctl scroll can reach (remote_core.SCROLL_ENDS): the base scroll area takes no position from outside
+SCROLL_ENDS = ("top", "bottom")
+
+
 def event_args(ns):
     args = {"name": ns.name}
     if ns.param is not None:
@@ -1651,6 +1655,8 @@ def make_parser():
     ev = sub.add_parser("event", help="fire a react event in the game's GUI (e.g. example_window.show)")
     ev.add_argument("name")
     ev.add_argument("--param", help="a JSON object")
+    sc = sub.add_parser("scroll", help="scroll the open base windows (industry, town, ...) to the top or bottom")
+    sc.add_argument("to", choices=SCROLL_ENDS)
     se = sub.add_parser("script-event", help="send a game script event, as a mod's button does (e.g. an upgrade)")
     se.add_argument("name")
     se.add_argument("--id", required=True, help="the id the game script listens to, e.g. a mod's UI id")
@@ -1838,6 +1844,8 @@ def main(argv=None):
             res = cmd_start(ns, ns.cmd == "restart")
         elif ns.cmd == "event":
             res = send("event", event_args(ns))
+        elif ns.cmd == "scroll":
+            res = send("scroll", {"to": ns.to})
         elif ns.cmd == "script-event":
             res = send("scriptEvent", script_event_args(ns))
         elif ns.cmd == "tool":

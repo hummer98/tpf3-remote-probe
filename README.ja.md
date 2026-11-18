@@ -137,6 +137,7 @@ python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # UI 
 python3 tools/tf3ctl.py tool music [--close]                # ツールとして開く本体のウィンドウ: music・calendar・notifications
 python3 tools/tf3ctl.py event example_window.show --param '{"page": 2}'   # 任意の react イベントを送る
 python3 tools/tf3ctl.py script-event example_mod.apply --id example_mod --param '{"step": 2}'   # ゲームスクリプトのイベントを、MOD のボタンと同じように送る
+python3 tools/tf3ctl.py scroll bottom                       # 開いている本体の窓（産業・町など）を一番下（top で一番上）へ。ホイールもクリックも使わない
 python3 tools/tf3ctl.py camera                              # x・y・distance・angle・pitch・heightAboveTerrain
 python3 tools/tf3ctl.py camera --set 1200,-800,600         # x,y[,distance[,angle[,pitch]]]。渡さない値は今のまま
 python3 tools/tf3ctl.py camera --entity 12345              # または --focus x,y,z [--distance d]

@@ -966,6 +966,16 @@ class QuitLaunchTest(unittest.TestCase):
             tf3ctl.script_event_args(ns(name="x", id="m", param="[1]"))
         self.assertIn("scriptEvent", tf3ctl.CHANGES_GAME)
 
+    def test_scroll_main_sends_the_end(self):
+        sent = []
+        tf3ctl.send = lambda cmd, args=None, timeout=20, **kw: sent.append((cmd, args)) or {"ok": True}
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["scroll", "bottom"]), 0)
+        self.assertEqual(sent, [("scroll", {"to": "bottom"})])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            tf3ctl.main(["scroll", "middle"])
+        self.assertIn("scroll", tf3ctl.CHANGES_GAME)
+
     def test_script_event_main_sends_script_event(self):
         sent = []
 

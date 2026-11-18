@@ -16,11 +16,12 @@ M.LOG = "[remote_probe] "
 M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = true, load = true, save = true, poll = true,
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
-	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true }
+	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true,
+	scroll = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
-	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true } -- camera, as window: what the player sees
+	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, scroll = true } -- camera, as window: what the player sees
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true }
@@ -780,6 +781,32 @@ function M.eventRequest(args)
 	local ok, why = plainValue(args.param, 0)
 	if not ok then return nil, "param holds " .. why .. ": only plain values go through" end
 	return { name = args.name, param = args.param }
+end
+
+-- args: to ("top" or "bottom"). Where the open base windows' scrolled content goes (gui/remote_scroll.script.lua).
+-- Only the two ends: the base ScrollArea takes no position from outside, so the content is scrolled by making a
+-- marker at one end visible.
+M.SCROLL_ENDS = { top = true, bottom = true }
+function M.scrollRequest(args)
+	args = type(args) == "table" and args or {}
+	if not M.SCROLL_ENDS[args.to] then return nil, "to must be top or bottom" end
+	return { to = args.to }
+end
+
+-- what the scroll recipe takes from the GUI save data: { seq, to }, or nil for anything else
+function M.uiScroll(d)
+	local s = type(d) == "table" and d.scroll or nil
+	if type(s) ~= "table" or not tonumber(s.seq) or not M.SCROLL_ENDS[s.to] then return nil end
+	return { seq = tonumber(s.seq), to = s.to, at = tonumber(s.at) }
+end
+
+-- a request made at most this many seconds ago is taken by a container that reads it first (a window opened just
+-- before the request): an older one is from before the window, and is left alone
+M.SCROLL_FRESH_SEC = 5
+function M.scrollFresh(r, now)
+	if type(r) ~= "table" or not tonumber(r.at) or not tonumber(now) then return false end
+	local age = now - r.at
+	return age >= 0 and age <= M.SCROLL_FRESH_SEC
 end
 
 -- args: id (the script event's id, e.g. a mod's UI id), name, param: a game script event as a GUI component sends
