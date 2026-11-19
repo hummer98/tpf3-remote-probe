@@ -1161,16 +1161,29 @@ test("entities: lists a kind with names, filtered and sorted", function()
 	frames(g, 20)
 	truthy(answerText(g, 191, "error"))
 	-- industries carry their construction (an upgrade's script-event addresses it), left out when unknown
-	local sys = api.engine.system
+	-- 51 has one, 52 none (-1), 53 an error: only 51 carries the key. Every id answers 5100 for towns here, so a
+	-- town must not get one either.
+	local g2 = newGame({ saves = SAVES, entities = { TOWN = { 11 }, INDUSTRY = { 51, 52, 53 } },
+		names = { [11] = "Emsworth", [51] = "Coal mine", [52] = "Farm", [53] = "Mill" } })
+	frames(g2, 2)
+	local sys = api.engine.system -- the second game's fake engine
 	local realScs = sys.streetConnectorSystem
 	sys.streetConnectorSystem = setmetatable({ getConstructionEntityForSubconstruction = function(e)
-		return e == 51 and 5100 or -1 end }, { __index = realScs })
-	send(g, 194, "entities", '{ kind = "industry" }')
-	frames(g, 20)
-	local b = answerText(g, 194) or ""
+		if e == 53 then error("broken") end
+		return (e == 51 or e == 11) and 5100 or -1 end }, { __index = realScs })
+	local ok, err = pcall(function()
+		send(g2, 194, "entities", '{ kind = "industry" }')
+		frames(g2, FIRST)
+		send(g2, 195, "entities", '{ kind = "town" }')
+		frames(g2, 20)
+	end)
 	sys.streetConnectorSystem = realScs
-	truthy(b:find('"construction":5100', 1, true) and b:find('"name":"Coal mine"', 1, true), b)
-	truthy(not (answerText(g, 190) or ""):find("construction", 1, true), "towns have none")
+	assert(ok, err)
+	local b = answerText(g2, 194) or ""
+	truthy(b:find('{"construction":5100,"id":51,"name":"Coal mine"}', 1, true), b)
+	truthy(b:find('{"id":52,"name":"Farm"}', 1, true), "none: left out: " .. b)
+	truthy(b:find('{"id":53,"name":"Mill"}', 1, true), "an error: left out: " .. b)
+	truthy(not (answerText(g2, 195) or ""):find("construction", 1, true), "towns have none")
 end)
 
 test("window: by name or id, publishes the request, focuses the camera on demand, closes all", function()
