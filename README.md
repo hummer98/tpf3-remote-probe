@@ -501,8 +501,10 @@ All unchecked in game. There is no command to build stations.
   times out after 60 s.
 - `line delete <line>` sells the vehicles first (only with `--sell-vehicles`), and sends `makeLineDestroyCmd` once
   the sale succeeded.
-- `--cargo <id or name>` makes every stop load only that cargo, as the base cargo filter does (`load` true for
-  that cargo, `maxLoad` 1, `customFilters = true`). A stop whose platform handles neither loading nor unloading of
+- `--cargo <id or name>` loads only that cargo, at the stops whose station has it in an output stock, as the base
+  does (`load` true there, false elsewhere, `maxLoad` 1, `customFilters = true`): a stop that loads a cargo does not
+  unload it, so loading it everywhere meant it was never delivered. No stop giving it is an error; where the base's
+  `cargo_util` cannot be read (the cmd way may run without it), every stop loads, as before. A stop whose platform handles neither loading nor unloading of
   that kind (passengers or cargo) is an error before anything is sent. There is no `buy --cargo`: the base store
   does not pick cargo per vehicle; what a vehicle loads is set by the line's stops.
 - `--via gui` (default) builds the line with the base `line_util.tl` as the line manager does (`makeNewStop`,

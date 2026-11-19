@@ -1710,7 +1710,7 @@ def make_parser():
             la.add_argument("--stops", required=(action == "create"),
                             help="station groups in order, comma-separated: ids or parts of names (stations command)")
             la.add_argument("--name", help="the line's name (create: default the base's next 'Line N')")
-            la.add_argument("--cargo", help="load only this cargo at every stop (id or name), as the cargo filter")
+            la.add_argument("--cargo", help="load only this cargo (id or name), at the stops that make it, as the cargo filter")
             la.add_argument("--via", choices=["gui", "cmd"], default="gui",
                             help="gui: the base's line_util (in the speed control); cmd: stops built by the probe")
         else:

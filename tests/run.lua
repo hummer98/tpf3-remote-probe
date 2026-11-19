@@ -3080,6 +3080,97 @@ test("line --cargo: a platform that cannot take the cargo is refused before send
 	end
 end)
 
+test("line --cargo: load only at the stops that give the cargo, so the destination unloads it (BUG 2026-11-19)", function()
+	-- the base's cargo_util, faked: Central (411) has coal in an output stock, Central Market (431) takes it
+	local CU = "::/gui/main/cargo_util.tl"
+	local function withCargoUtil(outputs, f)
+		-- outputs[station] = { [cargo] = "output" | "storage" }: storage counts only with skipStorage false
+		package.loaded[CU] = { getInputOutputStocksForStation = function(station, skipStorage)
+			local out = {}
+			for c, kind in pairs(outputs[station] or {}) do
+				if kind == "output" or (kind == "storage" and not skipStorage) then out[c] = true end
+			end
+			return {}, 0, out, 0
+		end }
+		local ok, err = pcall(f)
+		package.loaded[CU] = nil
+		assert(ok, err)
+	end
+	for _, via in ipairs({ "gui", "cmd" }) do
+		withCargoUtil({ [411] = { [1] = "output" } }, function()
+			local g = lineWorld()
+			send(g, 760, "line", string.format('{ action = "create", stops = { 41, 43 }, cargo = "coal", via = %q }', via))
+			frames(g, FIRST)
+			local a = final(g, 760)
+			eq(a.ok, true, via .. " " .. tostring(a.error))
+			local stops = sent(g, "lineCreate")[1].line.stops
+			eq(stops[1].stopConfig.load[2], true, via .. ": loaded where it is made")
+			eq(stops[2].stopConfig.load[2], false, via .. ": not at the destination, so it is unloaded there")
+			eq(#stops[2].stopConfig.load, 3, "still one entry per cargo type")
+			eq(sent(g, "lineCreate")[1].line.customFilters, true)
+		end)
+		withCargoUtil({}, function()
+			local g = lineWorld()
+			send(g, 761, "line", string.format('{ action = "create", stops = { 41, 43 }, cargo = "coal", via = %q }', via))
+			frames(g, FIRST)
+			local a = final(g, 761)
+			eq(a.ok, false, via)
+			truthy(tostring(a.error):find("no stop gives", 1, true), tostring(a.error))
+			eq(#sent(g, "lineCreate"), 0, via .. ": nothing sent")
+		end)
+	end
+end)
+
+test("line --cargo: a warehouse gives what it stores; passengers load everywhere; unreadable stops load, with a note", function()
+	local CU = "::/gui/main/cargo_util.tl"
+	local function fakeCU(outputs)
+		package.loaded[CU] = { getInputOutputStocksForStation = function(station, skipStorage)
+			local out = {}
+			for c, kind in pairs(outputs[station] or {}) do
+				if kind == "output" or (kind == "storage" and not skipStorage) then out[c] = true end
+			end
+			return {}, 0, out, 0
+		end }
+	end
+	-- a warehouse (storage stock) at Central: it gives coal, as in the base's keepCargo (skipStorage false)
+	fakeCU({ [411] = { [1] = "storage" } })
+	local g = lineWorld()
+	send(g, 770, "line", '{ action = "create", stops = { 41, 43 }, cargo = "coal", via = "gui" }')
+	frames(g, FIRST)
+	eq(final(g, 770).ok, true, tostring(final(g, 770).error))
+	local stops = sent(g, "lineCreate")[1].line.stops
+	eq(stops[1].stopConfig.load[2], true, "the warehouse loads"); eq(stops[2].stopConfig.load[2], false)
+	-- passengers: every stop, whatever the stocks say
+	fakeCU({})
+	g = lineWorld()
+	send(g, 771, "line", '{ action = "create", stops = { 41, 43 }, cargo = "passengers", via = "gui" }')
+	frames(g, FIRST)
+	eq(final(g, 771).ok, true, tostring(final(g, 771).error))
+	stops = sent(g, "lineCreate")[1].line.stops
+	eq(stops[1].stopConfig.load[1], true); eq(stops[2].stopConfig.load[1], true)
+	-- no cargo_util at all (the cmd way's Lua state may lack it): every stop loads, as before, and the answer says so
+	package.loaded[CU] = nil
+	package.preload[CU] = function() error("not cached") end
+	g = lineWorld()
+	send(g, 772, "line", '{ action = "create", stops = { 41, 43 }, cargo = "coal", via = "cmd" }')
+	frames(g, FIRST)
+	local a = final(g, 772)
+	eq(a.ok, true, tostring(a.error))
+	stops = sent(g, "lineCreate")[1].line.stops
+	eq(stops[1].stopConfig.load[2], true); eq(stops[2].stopConfig.load[2], true)
+	truthy(hasNote(a, "could not be read"), "the fallback is in the notes")
+	package.preload[CU] = nil
+end)
+
+test("line_configs.applyCargo: a stop that cannot be told loads; a platform that does not load gives nothing", function()
+	local lc = require "hummer_remote_probe::/line_configs.lua"
+	eq(lc.stopGives({ stationGroup = 41, station = 0 }, 1, nil), nil, "no cargo_util: cannot be told")
+	local cu = { getInputOutputStocksForStation = function() return {}, 0, { [1] = true }, 0 end }
+	eq(lc.stopGives({ stationGroup = 46, station = 0 }, 1, cu), nil, "no station: cannot be told")
+	local boom = { getInputOutputStocksForStation = function() error("broken") end }
+	eq(lc.stopGives({ stationGroup = 41, station = 0, terminal = 0 }, 1, boom), nil, "an error: cannot be told")
+end)
+
 test("line update via cmd: the engine assigns platforms only when a stop has none, as autoAssignTerminals", function()
 	local g = lineWithVehicles({ reassign = true })
 	send(g, 732, "line", '{ action = "update", line = 21, stops = { 42, 41 }, via = "cmd" }')

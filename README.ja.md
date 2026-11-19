@@ -474,8 +474,10 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   完了とみなすので、`--cargo` だけの変更や並びが同じ変更は 60 秒で時間切れになります。
 - `line delete <line>` は、先に車両を売り (`--sell-vehicles` のときだけ)、売却が成功してから `makeLineDestroyCmd`
   を送ります。
-- `--cargo <id か名前>` は、本体の貨物フィルターと同じく、全停車駅でその貨物だけを積む設定にします (その貨物の
-  `load` を true、`maxLoad` を 1、`customFilters = true`)。ホームがその種類 (旅客か貨物) の積み降ろしをどちらも扱わない
+- `--cargo <id か名前>` は、その貨物だけを、その貨物を出す (出荷の在庫がある) 停車駅で積む設定にします。本体と
+  同じです (そこで `load` を true、ほかは false、`maxLoad` を 1、`customFilters = true`)。積む設定の停車駅ではその
+  貨物を降ろさないため、全停車駅で積むと届きませんでした。出す停車駅が無ければエラーです。本体の `cargo_util` が
+  読めないとき (cmd の経路) は、前と同じく全停車駅で積みます。ホームがその種類 (旅客か貨物) の積み降ろしをどちらも扱わない
   停車駅があれば、何も送らずエラーです。`buy --cargo` はありません。本体の店は車両ごとに貨物を選ばず、何を積むかは
   路線の停車駅の設定で決まるためです。
 - `--via gui` (既定) は、路線管理と同じく本体の `line_util.tl` で組み立てます (`makeNewStop`、`autoLoadConfig`、

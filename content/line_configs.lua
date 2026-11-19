@@ -76,23 +76,81 @@ function M.terminalTakes(stop, cargoId)
 	return true
 end
 
-function M.applyCargo(comp, cargoId)
-	local stops = {}
-	for i, s in ipairs(toList(comp.stops)) do
+-- the base's cargo_util (a GUI module): which cargo a station's catchment takes and gives, as autoLoadConfig and
+-- the cargo filter window read it. nil where it does not load (then every stop loads, as before: see applyCargo).
+M.CARGO_UTIL = "::/gui/main/cargo_util.tl"
+function M.loadCargoUtil()
+	local req = ug_require or require
+	local ok, cu = pcall(req, M.CARGO_UTIL)
+	if ok and type(cu) == "table" and type(cu.getInputOutputStocksForStation) == "function" then return cu end
+	return nil
+end
+
+-- whether the stop gives cargoId, as autoLoadConfig's keepCargo decides it: the station's catchment has it in an
+-- output or storage stock (skipStorage false: a warehouse gives what it stores) and the platform loads cargo.
+-- nil when that cannot be told (no cargo_util, no station, an error).
+function M.stopGives(stop, cargoId, cu)
+	if not cu then return nil end
+	local ok, gives = pcall(function()
+		local group = api.engine.getComponent(field(stop, "stationGroup"), CT().STATION_GROUP)
+		local stations = toList(group and field(group, "stations"))
+		local station = stations[(tonumber(field(stop, "station")) or -1) + 1]
+		if not station then return nil end
+		local sc = api.engine.getComponent(station, CT().STATION)
+		local t = sc and toList(field(sc, "terminals"))[(tonumber(field(stop, "terminal")) or -1) + 1]
+		if t and field(t, "cargoLoad") == false then return false end
+		local _, _, outputs = cu.getInputOutputStocksForStation(station, false)
+		return outputs ~= nil and outputs[cargoId] == true
+	end)
+	if not ok then return nil end
+	return gives
+end
+
+-- --cargo: load only cargoId, at the stops that give it. The base (autoLoadConfig's keepCargo, the cargo filter)
+-- turns load on only at stops that give the cargo; a stop with load on does not unload it, so loading it at every
+-- stop meant it was never delivered (the game's line warning "loaded at stop 1 but cannot be unloaded anywhere",
+-- 2026-11-19, BUG.md). Passengers load everywhere as before: they get off at their destination either way. A stop
+-- that cannot be told (cargo_util missing in the cmd way, or a read that failed) loads, as before, and the returned
+-- note says so; no stop giving it while every stop could be told is an error. cu: M.loadCargoUtil() (tests: a fake).
+-- Returns a note or nil.
+function M.applyCargo(comp, cargoId, cu)
+	local passenger = cargoId == api.res.cargoTypeRep.getPassengerCargoTypeId()
+	if cu == nil and not passenger then cu = M.loadCargoUtil() end
+	local list = toList(comp.stops)
+	local load, unknown, any = {}, 0, false
+	for i, s in ipairs(list) do
 		-- the base never turns on a cargo a platform cannot handle (autoLoadConfig's keepCargo, the cargo filter's
 		-- allowed rows); what the engine does with one is unknown, so it is not sent
 		local ok, why = M.terminalTakes(s, cargoId)
 		if not ok then
 			error(string.format("stop %d (station group %s): its platform %s; nothing sent", i, tostring(field(s, "stationGroup")), why), 0)
 		end
+		local g = true
+		if not passenger then
+			g = M.stopGives(s, cargoId, cu)
+			if g == nil then unknown, g = unknown + 1, true end
+			if g then any = true end
+		end
+		load[i] = g
+	end
+	if not passenger and unknown == 0 and not any then
+		error("no stop gives this cargo (no output or storage stock of it in reach of a loading platform); nothing sent", 0)
+	end
+	local stops = {}
+	for i, s in ipairs(list) do
 		local cfg = api.type.Line.StopConfig.new(s.stopConfig)
-		cfg.load = M.cargoLoads(cargoId)
+		cfg.load = load[i] and M.cargoLoads(cargoId) or M.idVector(false)
 		cfg.maxLoad = M.idVector(1)
 		s.stopConfig = cfg
 		stops[#stops + 1] = s
 	end
 	comp.stops = stops
 	comp.customFilters = true
+	if unknown > 0 then
+		return string.format("--cargo: %d of %d stops could not be read (no cargo_util here?), so they load it too; " ..
+			"a stop that loads a cargo does not unload it", unknown, #list)
+	end
+	return nil
 end
 
 -- { stationGroup, station, terminal } per stop, as numbers
@@ -226,7 +284,10 @@ function M.cmdLine(r)
 		end
 		comp.stops = stops
 	end
-	if r.cargo then M.applyCargo(comp, r.cargo) end
+	if r.cargo then
+		local note = M.applyCargo(comp, r.cargo)
+		if note then notes[#notes + 1] = note end
+	end
 	local ok, why = M.checkStops(comp.stops)
 	if not ok then error(why, 0) end
 	return comp, notes
@@ -264,7 +325,11 @@ local function guiLine(lu, req, r)
 	comp.stops = lu.autoAssignTerminals(entity, state.path)
 	if state.customFilters ~= nil then comp.customFilters = state.customFilters end
 	if state.reservationPriority ~= nil then comp.reservationPriority = state.reservationPriority end
-	if r.cargo then M.applyCargo(comp, r.cargo) end
+	if r.cargo then
+		local note = M.applyCargo(comp, r.cargo)
+		-- the gui way has no notes in its answer: the log, only when it happens
+		if note then print("[remote_probe] " .. note) end
+	end
 	local ok, why = M.checkStops(comp.stops)
 	if not ok then error(why, 0) end
 	return comp
