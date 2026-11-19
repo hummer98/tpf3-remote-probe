@@ -183,7 +183,7 @@ local function extraButtons(speed, enabled)
 end
 
 local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(params)
-	local state = react.useState({ label = "", tip = "" })
+	local state = react.useState({ label = "", tip = "", buttons = true })
 	-- nil until the first read: a request already in the save data when the game loads is old, not opened
 	local seenSeq = react.useRef(nil)
 	local warnedRef = react.useRef(nil)
@@ -196,7 +196,9 @@ local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(p
 			if not ok then return end
 			local r = core.uiRequest(d)
 			local old = state:old() or {}
-			if r.label ~= old.label or r.tip ~= old.tip then state:set({ label = r.label, tip = r.tip }) end
+			if r.label ~= old.label or r.tip ~= old.tip or r.buttons ~= old.buttons then
+				state:set({ label = r.label, tip = r.tip, buttons = r.buttons })
+			end
 			for name, ch in pairs(channels) do
 				local okV, errV = pcall(performChannel, ch, r[name] or {}, warnedRef)
 				if not okV then warnOnce(warnedRef, name .. " " .. tostring(errV), ch.what .. " requests failed: " .. tostring(errV)) end
@@ -227,7 +229,9 @@ local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(p
 	if previous then
 		children = { previous(params) }
 	else
-		children = { react.CallOriginalRecipe(game_bar_widgets.GameSpeedControl, params), extraButtons(speed:old(), enabled:old()) }
+		children = { react.CallOriginalRecipe(game_bar_widgets.GameSpeedControl, params) }
+		-- the setting "hide": the recipe (and so the remote's gui requests) stays, only the buttons go
+		if v.buttons ~= false then children[2] = extraButtons(speed:old(), enabled:old()) end
 	end
 	if v.label ~= nil and v.label ~= "" then
 		children[#children + 1] = builtin.TextView{

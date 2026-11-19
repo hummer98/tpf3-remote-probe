@@ -45,6 +45,14 @@
 			"uiType": "ComboBox",
 			"values": ["hummer_remote_probe_speedLabel_v1", "hummer_remote_probe_speedLabel_v2"],
 			"defaultIndex": 0
+		},
+		{
+			"key": "speedButtons",
+			"name": "hummer_remote_probe_speedButtons_name",
+			"tooltip": "hummer_remote_probe_speedButtons_tip",
+			"uiType": "ComboBox",
+			"values": ["hummer_remote_probe_speedButtons_v1", "hummer_remote_probe_speedButtons_v2"],
+			"defaultIndex": 0
 		}
 	]
 }

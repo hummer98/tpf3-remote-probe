@@ -1231,7 +1231,7 @@ class ModFilesTest(unittest.TestCase):
     def test_settings_keep_their_meaning_for_saved_choices(self):
         # a save stores each setting as an index: the keys, the number of values and the defaults must not move
         got = [(p["key"], len(p["values"]), p["defaultIndex"]) for p in self.mod["params"]]
-        self.assertEqual(got, [("pollIdle", 4, 1), ("pollActive", 4, 1), ("logLevel", 3, 1), ("speedLabel", 2, 0)])
+        self.assertEqual(got, [("pollIdle", 4, 1), ("pollActive", 4, 1), ("logLevel", 3, 1), ("speedLabel", 2, 0), ("speedButtons", 2, 0)])
 
     def test_mod_list_info_has_a_name_authors_and_the_repository(self):
         # the game's mod list reads these, not strings.json: without them it shows the folder name and empty fields

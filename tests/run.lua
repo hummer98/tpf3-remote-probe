@@ -914,6 +914,26 @@ test("speed control: opens a requested window once, never one left in the save f
 	publish(nil)
 end)
 
+test("speed control: the speedButtons setting hides only the ×8 / ×16; label and window requests go on", function()
+	local exports = loadSpeedScript()
+	publish({ label = "×16 実測×3.2", tip = "tip", buttons = false })
+	frame(exports.SpeedControl, { gameSpeedHelper = "h" })
+	local kids = frame(exports.SpeedControl, { gameSpeedHelper = "h" }).t.children
+	eq(#kids, 2)
+	truthy(kids[1].original ~= nil, "the base buttons stay")
+	eq(kids[2].kind, "text", "the label right after the base buttons")
+	eq(kids[2].t.text, "×16 実測×3.2")
+	local before = #R.events
+	publish({ label = "", buttons = false, open = { seq = 41, entity = 4242 } })
+	frame(exports.SpeedControl)
+	eq(#R.events, before + 1, "a window request is still carried out")
+	eq(R.events[#R.events].param.entity, 4242)
+	publish({ label = "", buttons = true })
+	frame(exports.SpeedControl)
+	eq(frame(exports.SpeedControl).t.children[2].kind, "toggle", "shown again when the setting is back")
+	publish(nil)
+end)
+
 test("speed control: another mod's replacement is drawn instead of the base buttons", function()
 	local other = function(p) return { other = true, params = p } end
 	local exports = loadSpeedScript(nil, false, other)
@@ -1074,6 +1094,19 @@ test("label text and window requests are written by the guiUpdate script into th
 	eq(fake.guiSave.hummer_remote_probe.label, "", "setting off: no label")
 end)
 
+test("the guiUpdate script publishes the speedButtons setting for the speed control", function()
+	local g = newGame({ saves = SAVES })
+	frames(g, 2)
+	frames(g, 30 * 2)
+	eq(fake.guiSave.hummer_remote_probe.buttons, true, "default: shown")
+	local g2 = newGame({ saves = SAVES, modParams = { hummer_remote_probe = { speedButtons = 2 } } })
+	frames(g2, 2)
+	eq(fake.guiSave.hummer_remote_probe.buttons, false, "hidden from the first frames, before any label step")
+	frames(g2, 30 * 2)
+	eq(fake.guiSave.hummer_remote_probe.buttons, false, "setting hide")
+	eq(core.uiRequest(fake.guiSave.hummer_remote_probe).buttons, false, "and the speed control reads it as hidden")
+end)
+
 test("the guiUpdate script passes the game's _ to the label: Japanese in a Japanese game", function()
 	local saved = rawget(_G, "_")
 	_G._ = jaTranslate
@@ -1095,7 +1128,7 @@ test("status shows the GUI save data read back; a failing setGuiSaveData is logg
 	frames(g, 2)
 	send(g, 196, "status")
 	frames(g, FIRST)
-	truthy((answerText(g, 196) or ""):find('"ui":{"label":""'), answerText(g, 196))
+	truthy((answerText(g, 196) or ""):find('"ui":{[^}]*"label":""'), answerText(g, 196))
 	local real = api.gui.game.setGuiSaveData
 	api.gui.game.setGuiSaveData = function() error("unknown key") end
 	g.speedup = 16
@@ -1506,6 +1539,20 @@ test("scriptEvent: sent as a command at once, not through the speed control; a r
 	for _, l in ipairs(g2.logs) do if tostring(l):find("refused by the engine") then logged = true end end
 	truthy(logged, "the refusal is logged")
 	fake.guiSave.hummer_remote_probe = nil
+end)
+
+test("options: speedButtons shown by default, hide is a real choice", function()
+	eq(core.options({}).speedButtons, true)
+	eq(core.options({ speedButtons = 2 }).speedButtons, false)
+	eq(core.options({ speedButtons = 9 }).speedButtons, true, "an unknown index falls back to the default")
+end)
+
+test("uiRequest: buttons hidden only by an explicit false", function()
+	eq(core.uiRequest(nil).buttons, true)
+	eq(core.uiRequest({}).buttons, true, "nothing published yet: shown, as before the setting")
+	eq(core.uiRequest({ buttons = false }).buttons, false)
+	eq(core.uiRequest({ buttons = true }).buttons, true)
+	eq(core.uiRequest({ buttons = "no" }).buttons, true, "anything but false keeps them")
 end)
 
 test("uiRequest: carries an event and a tool; malformed ones dropped", function()

@@ -33,8 +33,10 @@ M.OPTION_VALUES = {
 	pollActive = { 0.1, 0.25, 0.5, 1 }, -- the same for ACTIVE_SEC after a command and during a run
 	logLevel = { 1, 2, 3 }, -- 1 minimal (ready, loads, errors), 2 each command, 3 also progress and receipts
 	speedLabel = { true, false }, -- the label beside the speed buttons (gui/remote_speed.script.lua)
+	-- our ×8 / ×16 buttons: off for screenshots, where they are another mod's UI in the bottom bar (05, 2026-11-19)
+	speedButtons = { true, false },
 }
-M.OPTION_DEFAULT = { pollIdle = 2, pollActive = 2, logLevel = 2, speedLabel = 1 }
+M.OPTION_DEFAULT = { pollIdle = 2, pollActive = 2, logLevel = 2, speedLabel = 1, speedButtons = 1 }
 
 function M.options(raw)
 	local out = {}
@@ -599,8 +601,9 @@ end
 
 -- what the speed control's join reads from the GUI save data (api.gui.game.getGuiSaveData): plain values only
 function M.uiRequest(d)
-	if type(d) ~= "table" then return { label = "", tip = "" } end
-	local out = { label = tostring(d.label or ""), tip = tostring(d.tip or "") }
+	if type(d) ~= "table" then return { label = "", tip = "", buttons = true } end
+	-- buttons: only an explicit false hides them (no word from the guiUpdate script yet: shown, as before)
+	local out = { label = tostring(d.label or ""), tip = tostring(d.tip or ""), buttons = d.buttons ~= false }
 	if type(d.open) == "table" and tonumber(d.open.seq) then
 		out.open = { seq = tonumber(d.open.seq), entity = tonumber(d.open.entity) }
 		local ev = d.open.event

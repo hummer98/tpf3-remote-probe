@@ -1008,7 +1008,9 @@ local function init()
 	publishRun(nil) -- a run of the previous game does not carry over
 	G.ui, G.uiSent = nil, nil
 	G.buildTool = nil -- a new GUI: no filter left to clear
-	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {} }) -- the save may hold the last game's label and requests
+	-- the save may hold the last game's label and requests; buttons now, not at the first label step, so a game
+	-- set to hide them never shows them
+	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {}, buttons = G.options.speedButtons ~= false })
 	if not G.menu then
 		vehicles.reset()
 		lines.reset()
@@ -1088,6 +1090,7 @@ local function stepLabel()
 	local t = appTime()
 	if t < (G.nextLabel or 0) then return end
 	G.nextLabel = t + LABEL_SEC
+	publishUi({ buttons = G.options.speedButtons ~= false })
 	if not G.options.speedLabel then
 		publishUi({ label = "", tip = "" })
 		return
