@@ -14,11 +14,16 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 spec = importlib.util.spec_from_file_location("tf3ctl", os.path.join(ROOT, "tools", "tf3ctl.py"))
 tf3ctl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tf3ctl)
+
+# launch / restart / quit put back a backup of the game's profile.lua: never look at the real one here
+os.environ["TF3_PROFILE"] = os.path.join(tempfile.mkdtemp(), "no_profile.lua")
+os.environ.pop("TF3CTL_OTHER_BACKUPS", None)
 
 # what the mod makes of a command file: remote_core.readCommand over loadUserdata's table, as JSON
 PARSE_CMD = r"""
@@ -1158,6 +1163,281 @@ class QuitLaunchTest(unittest.TestCase):
               'function data() return { json = "{\\"menu\\":false}" } end')
         with self.assertRaises(tf3ctl.GameNotReady):
             tf3ctl.send("status", folder=d)
+
+
+PROFILE = """function data()
+return {
+	mods = { },
+	profile = {
+		language = { 
+			code = "ja",
+			mod = { "", },
+		},
+		lastGame = { 0, },
+	},
+}
+end
+"""
+
+
+class LanguageTest(unittest.TestCase):
+    """launch / restart --lang: profile.lua's language for one start, and putting it back."""
+
+    def setUp(self):
+        self.saved = {k: getattr(tf3ctl, k) for k in ("game_pids", "send", "launch_game", "quit_game")}
+        self.saved_env = {k: os.environ.get(k) for k in ("TF3_PROFILE", "TF3_GAME_DIR", "TF3CTL_OTHER_BACKUPS",
+                                                         "TF3_REMOTE_DIR")}
+        self.d = tempfile.mkdtemp()
+        self.profile = os.path.join(self.d, "profile.lua")
+        self.backup = self.profile + tf3ctl.PROFILE_BACKUP_SUFFIX
+        write(self.profile, PROFILE)
+        game = os.path.join(self.d, "game")
+        for lang in ("de", "en", "ja", "pt_BR"):
+            os.makedirs(os.path.join(game, "base", "strings", lang))
+        os.environ.update(TF3_PROFILE=self.profile, TF3_GAME_DIR=game, TF3_REMOTE_DIR=self.d)
+        os.environ.pop("TF3CTL_OTHER_BACKUPS", None)
+        self.pids = []
+        tf3ctl.game_pids = lambda: list(self.pids)
+        self.launched = []  # the profile's language each time the game was started
+
+        def fake_launch(timeout=None):
+            self.launched.append(tf3ctl.profile_language(self.profile))
+            self.pids.append(77)
+            return {"ok": True, "menu": True}
+        tf3ctl.launch_game = fake_launch
+
+        def fake_quit(timeout=None, kill=False, force=False):
+            if not self.pids:
+                return {"ok": True, "how": "not running"}
+            self.pids.clear()
+            return {"ok": True, "how": "quit"}
+        tf3ctl.quit_game = fake_quit
+        tf3ctl.send = lambda cmd, args=None, **kw: {"ok": True, "cmd": cmd}
+        self.saved_pause = tf3ctl.RELAUNCH_PAUSE_SEC
+        tf3ctl.RELAUNCH_PAUSE_SEC = 0
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(tf3ctl, k, v)
+        tf3ctl.RELAUNCH_PAUSE_SEC = self.saved_pause
+        for k, v in self.saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def ctl(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = tf3ctl.main(list(argv))
+        self.err = err.getvalue()
+        return code, json.loads(out.getvalue()) if out.getvalue().strip() else None
+
+    def test_launch_with_lang_backs_up_and_quit_puts_it_back(self):
+        code, res = self.ctl("launch", "--lang", "de")
+        self.assertEqual(code, 0, self.err)
+        self.assertEqual(self.launched, ["de"])
+        self.assertEqual(res["language"]["was"], "ja")
+        self.assertEqual(read(self.backup), PROFILE, "the backup is the original")
+        self.assertEqual(read(self.profile), PROFILE.replace('code = "ja"', 'code = "de"'), "only the code changed")
+        code, res = self.ctl("state")
+        self.assertEqual(res["profileBackup"]["language"], "de")
+        self.assertEqual(res["profileBackup"]["originalLanguage"], "ja")
+        code, res = self.ctl("status")
+        self.assertEqual(res["profileBackup"]["backup"], self.backup)
+        code, res = self.ctl("quit")
+        self.assertEqual(code, 0, self.err)
+        self.assertEqual(res["profileRestored"]["language"], "ja")
+        self.assertEqual(read(self.profile), PROFILE)
+        self.assertFalse(os.path.exists(self.backup), "removed once equal")
+        code, res = self.ctl("state")
+        self.assertNotIn("profileBackup", res)
+
+    def test_a_second_lang_keeps_the_first_backup(self):
+        tf3ctl.set_profile_language("de")
+        tf3ctl.set_profile_language("en")
+        self.assertEqual(tf3ctl.profile_language(self.profile), "en")
+        self.assertEqual(read(self.backup), PROFILE, "still the original, not the German one")
+        tf3ctl.restore_profile()
+        self.assertEqual(read(self.profile), PROFILE)
+
+    def test_restart_with_lang_twice_starts_from_the_original(self):
+        self.assertEqual(self.ctl("launch", "--lang", "de")[0], 0, self.err)
+        self.assertEqual(self.ctl("restart", "--lang", "en")[0], 0, self.err)
+        self.assertEqual(self.launched, ["de", "en"])
+        self.assertEqual(read(self.backup), PROFILE)
+        code, res = self.ctl("restart")
+        self.assertEqual(code, 0, self.err)
+        self.assertEqual(self.launched[-1], "ja", "no --lang: the player's own language")
+        self.assertEqual(res["profileRestored"]["language"], "ja")
+        self.assertFalse(os.path.exists(self.backup))
+
+    def test_launch_after_a_crash_puts_it_back_first(self):
+        tf3ctl.set_profile_language("de")  # the game ran in German and crashed: the backup is left
+        code, res = self.ctl("launch")
+        self.assertEqual(code, 0, self.err)
+        self.assertEqual(self.launched, ["ja"])
+        self.assertEqual(res["profileRestored"]["restored"], self.profile)
+        self.assertNotIn("language", res)
+
+    def test_quit_of_a_crashed_game_and_restore_profile_put_it_back(self):
+        tf3ctl.set_profile_language("de")
+        code, res = self.ctl("quit")
+        self.assertEqual((code, res["how"]), (0, "not running"))
+        self.assertEqual(read(self.profile), PROFILE)
+        tf3ctl.set_profile_language("de")
+        code, res = self.ctl("restore-profile")
+        self.assertEqual(code, 0, self.err)
+        self.assertEqual(read(self.profile), PROFILE)
+        code, res = self.ctl("restore-profile")
+        self.assertEqual(code, 0)
+        self.assertIsNone(res["profileRestored"], "nothing to do is no error")
+
+    def test_nothing_is_touched_while_the_game_runs(self):
+        tf3ctl.set_profile_language("de")
+        changed = read(self.profile)
+        self.pids.append(5)
+        code, _ = self.ctl("restore-profile")
+        self.assertEqual(code, 2)
+        self.assertIn("running", self.err)
+        self.assertEqual(read(self.profile), changed)
+        self.assertTrue(os.path.exists(self.backup))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.set_profile_language("en")
+        self.assertEqual(read(self.profile), changed)
+        code, _ = self.ctl("launch", "--lang", "en")
+        self.assertEqual(code, 2)
+        self.assertIn("already running", self.err)
+        self.assertEqual(read(self.profile), changed)
+        self.assertEqual(self.launched, [])
+
+    def test_a_restore_that_does_not_come_out_equal_keeps_the_backup(self):
+        tf3ctl.set_profile_language("de")
+
+        def bad_write(path, data):
+            write(path, "something else\n")
+        with unittest.mock.patch.object(tf3ctl, "write_replacing", bad_write):
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.restore_profile()
+        self.assertIn("backup is kept", str(cm.exception))
+        self.assertTrue(os.path.exists(self.backup))
+        self.assertEqual(read(self.backup), PROFILE)
+
+    def test_a_profile_without_one_language_block_is_left_alone(self):
+        for text in (PROFILE.replace("language = { ", "lang = { "),
+                     PROFILE.replace("\t\tlastGame", '\t\tlanguage = { code = "en", },\n\t\tlastGame'),
+                     PROFILE.replace('code = "ja",', "")):
+            write(self.profile, text)
+            with self.assertRaises(tf3ctl.ToolError):
+                tf3ctl.set_profile_language("de")
+            self.assertEqual(read(self.profile), text)
+            self.assertFalse(os.path.exists(self.backup), "no backup of a file that was not changed")
+
+    def test_the_language_block_on_one_line(self):
+        write(self.profile, 'profile = {\n\tlanguage = { code = "en", mod = { "", }, },\n}\n')
+        tf3ctl.set_profile_language("ja")
+        self.assertEqual(read(self.profile), 'profile = {\n\tlanguage = { code = "ja", mod = { "", }, },\n}\n')
+
+    def test_bad_language_codes_are_refused_before_anything_is_quit(self):
+        self.pids.append(5)
+        for bad in ("deu", "DE", "d", "de-DE", "", "fr", "de\n"):  # fr: the test install has no French
+            code, _ = self.ctl("restart", "--lang", bad)
+            self.assertEqual(code, 2, bad)
+            self.assertEqual(self.pids, [5], "not quit: " + bad)
+        self.assertEqual(read(self.profile), PROFILE)
+        tf3ctl.check_lang("pt_BR")
+        os.environ["TF3_GAME_DIR"] = os.path.join(self.d, "nowhere")  # install not found: only the shape is checked
+        tf3ctl.check_lang("fr")
+
+    def test_the_install_is_found_beside_the_userdata(self):
+        steam = os.path.join(self.d, "Steam")
+        local = os.path.join(steam, "userdata", "123", tf3ctl.APP_ID, "local")
+        os.makedirs(os.path.join(steam, "steamapps", "common", "Transport Fever 3", "base", "strings", "ko"))
+        os.environ.pop("TF3_GAME_DIR")
+        with unittest.mock.patch.object(tf3ctl, "userdata_roots", lambda: [local]):
+            self.assertEqual(tf3ctl.game_languages(), ["ko"])
+
+    def test_restart_refuses_before_the_quit_what_it_would_refuse_after(self):
+        self.pids.append(5)
+        write(self.profile, PROFILE.replace("language = { ", "lang = { "))
+        code, _ = self.ctl("restart", "--lang", "de")
+        self.assertEqual(code, 2)
+        self.assertEqual(self.pids, [5], "a profile of another shape: not quit")
+        write(self.profile, PROFILE)
+        other = os.path.join(self.d, "other.lua")
+        write(other, PROFILE)
+        os.environ["TF3CTL_OTHER_BACKUPS"] = other
+        code, _ = self.ctl("restart", "--lang", "de")
+        self.assertEqual(code, 2)
+        self.assertEqual(self.pids, [5], "another tool's backup: not quit")
+        os.environ["TF3_PROFILE"] = os.path.join(self.d, "missing.lua")
+        os.environ.pop("TF3CTL_OTHER_BACKUPS")
+        code, _ = self.ctl("restart", "--lang", "de")
+        self.assertEqual(code, 2)
+        self.assertEqual(self.pids, [5], "no profile: not quit")
+        code, _ = self.ctl("restart")
+        self.assertEqual(code, 0, "without --lang the profile does not matter")
+
+    def test_a_failed_restore_after_quit_still_shows_the_quit(self):
+        tf3ctl.set_profile_language("de")
+        self.pids.append(5)
+        other = os.path.join(self.d, "other.lua")
+        write(other, PROFILE)
+        os.environ["TF3CTL_OTHER_BACKUPS"] = other
+        code, res = self.ctl("quit")
+        self.assertEqual(code, 1)
+        self.assertEqual(res["how"], "quit")
+        self.assertIn(other, res["profileError"])
+        self.assertTrue(os.path.exists(self.backup))
+
+    def test_status_shows_the_backup_when_the_game_cannot_answer(self):
+        tf3ctl.set_profile_language("de")
+
+        def not_ready(*a, **kw):
+            raise tf3ctl.GameNotReady("loading", {"state": "loading"})
+        tf3ctl.send = not_ready
+        code, res = self.ctl("status")
+        self.assertEqual(code, 3)
+        self.assertEqual(res["profileBackup"]["originalLanguage"], "ja")
+
+    def test_the_profile_next_to_the_exchange_folder(self):
+        local = os.path.join(self.d, "local")
+        os.makedirs(os.path.join(local, "mod_presets"))
+        write(os.path.join(local, "profile.lua"), PROFILE)
+        os.environ.pop("TF3_PROFILE")
+        os.environ["TF3_REMOTE_DIR"] = os.path.join(local, "mod_presets")
+        self.assertEqual(tf3ctl.profile_path(), os.path.join(local, "profile.lua"))
+
+    def test_the_same_language_changes_nothing(self):
+        res = tf3ctl.set_profile_language("ja")
+        self.assertFalse(res["changed"])
+        self.assertFalse(os.path.exists(self.backup))
+
+    def test_another_tools_backup_blocks_lang_and_the_restore(self):
+        other = os.path.join(self.d, "other_backup", "profile.lua")
+        os.environ["TF3CTL_OTHER_BACKUPS"] = os.path.join(self.d, "absent") + os.pathsep + other
+        os.makedirs(os.path.dirname(other))
+        tf3ctl.set_profile_language("de")
+        write(other, PROFILE)  # taken after ours: it has to go back first
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            tf3ctl.restore_profile()
+        self.assertIn(other, str(cm.exception))
+        self.assertTrue(os.path.exists(self.backup))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.set_profile_language("en")
+        os.remove(other)
+        tf3ctl.restore_profile()
+        self.assertEqual(read(self.profile), PROFILE)
+
+    def test_without_lang_and_backup_nothing_changes(self):
+        mtime = os.path.getmtime(self.profile)
+        code, res = self.ctl("launch")
+        self.assertEqual(code, 0, self.err)
+        self.assertNotIn("profileRestored", res)
+        self.assertNotIn("language", res)
+        self.ctl("quit")
+        self.assertEqual(os.path.getmtime(self.profile), mtime)
+        self.assertEqual(sorted(os.listdir(self.d)), ["game", "profile.lua"], "no backup or temporary file left")
 
 
 class LaunchEndToEndTest(unittest.TestCase):

@@ -108,8 +108,10 @@ answer.
 python3 tools/tf3ctl.py launch [--load SAVE | --new ...]   # when the game is not running
 python3 tools/tf3ctl.py restart --load my-save [--param ...]
 python3 tools/tf3ctl.py restart --new --year 1900 --size small --add example_mod
+python3 tools/tf3ctl.py restart --lang de --load my-save   # this start in German (launch takes --lang too)
 python3 tools/tf3ctl.py quit [--kill]
 python3 tools/tf3ctl.py state                         # in_game / menu / loading / main_menu / starting / closed / crashed
+python3 tools/tf3ctl.py restore-profile               # put profile.lua back from --lang's backup now
 ```
 
 `launch` runs `steam -applaunch 3493540 --script hummer_remote_probe::/startup.lua` and waits until the probe
@@ -122,6 +124,19 @@ current game, so the mods are this mod plus those given with `--add` / `--set-mo
 New games start with the base tutorial off (`:guideSystemConfig.tutorial=1`), since nobody is there to click
 through it; `--tutorial` keeps the base default (on), and an explicit `--param :guideSystemConfig.tutorial=N` wins.
 The same holds for the `newgame` command.
+
+`--lang CODE` starts the game in another language (`de`, `en`, `ja`, ... or `pt_BR`, `zh_CN`, `zh_TW`; a code the
+install's `base/strings` lacks is refused), e.g. to see a mod's texts fall back to English. The game takes its
+language only from `profile.lua` (`language = { code = "ja", ... }`, next to `settings.lua` in the userdata
+`local` folder); no command-line option for it was found. So, while the game is not running, the tool copies
+`profile.lua` to `profile.lua.tf3ctl-backup` beside it (only when no such backup is there: the first one holds the
+original) and changes only that code. The backup is put back, compared with the file and then removed: by `quit`
+once the game is gone, before the next `launch` / `restart` (a crashed game leaves it behind; without `--lang` that
+start is in the original language), and by `restore-profile`. Never while the game runs, since the game rewrites
+`profile.lua` itself; whatever it wrote there during the `--lang` run (e.g. the last game) goes with the restore.
+`state` and `status` show `profileBackup` while a backup is there. When the file does not come out equal to the
+backup, the backup is kept and the command fails. If another tool keeps its own copy of `profile.lua`, name it in
+`TF3CTL_OTHER_BACKUPS`: while it exists, `--lang` and the restore refuse, so the copies go back in the reverse order.
 
 ### Looking at the game
 
@@ -277,6 +292,11 @@ who uses the game. `quit --kill` is the exception: it will not SIGKILL a game an
 - `TF3_STEAM`: the command that starts Steam (default `steam`).
 - `LUAJIT`: the luajit binary.
 - `TF3CTL_OWNER`: the default for `--owner`.
+- `TF3_PROFILE`: the game's `profile.lua` for `--lang` (default: next to the exchange folder, else the newest under
+  Steam's userdata). Its backup is the same path plus `.tf3ctl-backup`.
+- `TF3_GAME_DIR`: the game's install folder, for the languages `--lang` may pick (default: `steamapps/common/Transport
+  Fever 3` of the Steam that has the userdata).
+- `TF3CTL_OTHER_BACKUPS`: other tools' backups of `profile.lua`, separated by `:` (see `--lang`).
 
 ## Mod settings
 

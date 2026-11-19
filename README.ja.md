@@ -106,8 +106,10 @@ python3 tools/tf3ctl.py newgame --list                # 気候と地形生成器
 python3 tools/tf3ctl.py launch [--load SAVE | --new ...]   # ゲームが動いていないとき
 python3 tools/tf3ctl.py restart --load my-save [--param ...]
 python3 tools/tf3ctl.py restart --new --year 1900 --size small --add example_mod
+python3 tools/tf3ctl.py restart --lang de --load my-save   # この起動だけドイツ語で (launch にも --lang)
 python3 tools/tf3ctl.py quit [--kill]
 python3 tools/tf3ctl.py state                         # in_game / menu / loading / main_menu / starting / closed / crashed
+python3 tools/tf3ctl.py restore-profile               # --lang の控えから profile.lua を今戻す
 ```
 
 `launch` は `steam -applaunch 3493540 --script hummer_remote_probe::/startup.lua` を実行し、probe がメインメニューで
@@ -120,6 +122,19 @@ SIGKILL します (`--no-kill` で諦める。「安全上の注意」)。新し
 新しいゲームは、本体のチュートリアルをオフにして始めます (`:guideSystemConfig.tutorial=1`)。進める人がいないためです。
 `--tutorial` を付けると本体の既定 (オン) のまま、`--param :guideSystemConfig.tutorial=N` を明示すればそれが優先です。
 `newgame` コマンドも同じです。
+
+`--lang CODE` は、ゲームを別の言語で起動します (`de`、`en`、`ja` など。`pt_BR`、`zh_CN`、`zh_TW` も。インストールの
+`base/strings` に無いコードは断ります)。例えば、MOD の文が英語に落ちるかを見るためです。ゲームは言語を `profile.lua`
+(`language = { code = "ja", ... }`。userdata の `local` フォルダの `settings.lua` の隣) からだけ読み、起動の引数で
+変える方法は見つかりませんでした。そこで、ゲームが動いていないあいだに、`profile.lua` を隣の
+`profile.lua.tf3ctl-backup` へ写し (その控えが無いときだけ。最初の控えが元の値)、そのコードだけを変えます。控えは、
+戻してファイルと比べ、同じなら消します。戻すのは、`quit` でゲームが終わったあと、次の `launch` / `restart` の前
+(落ちたゲームは控えを残します。`--lang` が無ければ、その起動は元の言語)、`restore-profile` のときです。ゲームが
+動いているあいだは触りません (ゲームが `profile.lua` を自分で書き直すため)。`--lang` の回にゲームがそこへ書いたもの
+(最後のゲームなど) は、戻すと消えます。控えがあるあいだは、`state` と `status` に `profileBackup` が出ます。戻した
+ファイルが控えと同じにならなければ、控えを残してエラーにします。別の道具が `profile.lua` の写しを持つなら、
+`TF3CTL_OTHER_BACKUPS` にその場所を書いてください。それがあるあいだは `--lang` も戻すことも断るので、写しは作った
+のと逆の順で戻ります。
 
 ### ゲームを見る
 
@@ -261,6 +276,11 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
 - `TF3_STEAM`: Steam を起動するコマンド (既定 `steam`)。
 - `LUAJIT`: luajit の実行ファイル。
 - `TF3CTL_OWNER`: `--owner` の既定値。
+- `TF3_PROFILE`: `--lang` で変えるゲームの `profile.lua` (既定: 交換フォルダの隣、無ければ Steam の userdata のうち
+  一番新しいもの)。控えは同じ場所に `.tf3ctl-backup` を足した名前。
+- `TF3_GAME_DIR`: ゲームのインストール先。`--lang` で選べる言語を見るため (既定: userdata のある Steam の
+  `steamapps/common/Transport Fever 3`)。
+- `TF3CTL_OTHER_BACKUPS`: 別の道具による `profile.lua` の控え。`:` で区切る (`--lang` を参照)。
 
 ## MOD の設定
 
