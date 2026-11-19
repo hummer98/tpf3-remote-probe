@@ -437,7 +437,16 @@ local function entitiesOf(kind)
 		if type(name) ~= "string" or name == "" then
 			name = try(function() return api.engine.getComponent(id, CT.NAME).name end)
 		end
-		out[#out + 1] = { id = id, name = tostring(name or "") }
+		local e = { id = id, name = tostring(name or "") }
+		-- industries: their construction too, which mods' scripts address (a rebuild, an upgrade's script-event),
+		-- not always the id next to the industry's
+		if kind == "industry" then
+			e.construction = try(function()
+				return api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(id)
+			end)
+			if type(e.construction) ~= "number" or e.construction < 0 then e.construction = nil end
+		end
+		out[#out + 1] = e
 	end
 	table.sort(out, function(a, b) return a.name < b.name end)
 	return out

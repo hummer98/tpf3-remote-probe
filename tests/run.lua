@@ -1160,6 +1160,17 @@ test("entities: lists a kind with names, filtered and sorted", function()
 	send(g, 191, "entities", '{ kind = "planet" }')
 	frames(g, 20)
 	truthy(answerText(g, 191, "error"))
+	-- industries carry their construction (an upgrade's script-event addresses it), left out when unknown
+	local sys = api.engine.system
+	local realScs = sys.streetConnectorSystem
+	sys.streetConnectorSystem = setmetatable({ getConstructionEntityForSubconstruction = function(e)
+		return e == 51 and 5100 or -1 end }, { __index = realScs })
+	send(g, 194, "entities", '{ kind = "industry" }')
+	frames(g, 20)
+	local b = answerText(g, 194) or ""
+	sys.streetConnectorSystem = realScs
+	truthy(b:find('"construction":5100', 1, true) and b:find('"name":"Coal mine"', 1, true), b)
+	truthy(not (answerText(g, 190) or ""):find("construction", 1, true), "towns have none")
 end)
 
 test("window: by name or id, publishes the request, focuses the camera on demand, closes all", function()
