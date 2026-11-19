@@ -2704,6 +2704,67 @@ local function lineWorld(extra)
 	return vehicleGame(w)
 end
 
+test("renameRequest: an id and a name that is not blank", function()
+	local r = core.renameRequest({ entity = 48064, name = "Chesham" })
+	eq(r.entity, 48064); eq(r.name, "Chesham")
+	eq(core.renameRequest({ entity = "7", name = "x" }).entity, 7, "an id as text, as JSON may carry it")
+	eq(core.renameRequest({ entity = 0, name = "x" }).entity, 0)
+	for _, bad in ipairs({ { name = "x" }, { entity = -1, name = "x" }, { entity = 1.5, name = "x" }, { entity = "a", name = "x" } }) do
+		truthy(select(2, core.renameRequest(bad)):find("entity"))
+	end
+	for _, bad in ipairs({ { entity = 1 }, { entity = 1, name = "" }, { entity = 1, name = "  " }, { entity = 1, name = 5 } }) do
+		truthy(select(2, core.renameRequest(bad)):find("name"))
+	end
+	truthy(select(2, core.renameRequest({ entity = 1, name = ("x"):rep(core.MAX_NAME_LEN + 1) })):find("longer"))
+	eq(core.renameRequest({ entity = 1, name = ("x"):rep(core.MAX_NAME_LEN) }).name:len(), core.MAX_NAME_LEN)
+	truthy(select(2, core.renameRequest(nil)))
+end)
+
+test("rename: a station group's name changes through the engine command, read back in the answer", function()
+	local g = lineWorld()
+	frames(g, 2)
+	send(g, 230, "rename", '{ entity = 41, name = "Chesham" }')
+	frames(g, FIRST)
+	local a = answerText(g, 230) or ""
+	truthy(a:find('"name":"Chesham"'), answerText(g, 230, "error"))
+	truthy(a:find('"before":"Central"'), a)
+	truthy(not a:find('"note"'), "no note when the name reads back as asked")
+	eq(api.engine.util.getEntityName(41), "Chesham")
+	local sent
+	for _, c in ipairs(g.commands) do if c.kind == "setName" then sent = c end end
+	eq(sent.entity, 41); eq(sent.name, "Chesham")
+	-- refused by the engine (here: an entity the fake cannot name): an error answer, the old name stays
+	send(g, 231, "rename", '{ entity = 999, name = "Nowhere" }')
+	frames(g, FIRST)
+	truthy((answerText(g, 231, "error") or ""):find("refused"), answerText(g, 231))
+	-- a bad request is refused before any command is sent
+	local n = #g.commands
+	send(g, 232, "rename", '{ entity = 41, name = "" }')
+	frames(g, FIRST)
+	truthy((answerText(g, 232, "error") or ""):find("name"))
+	eq(#g.commands, n, "nothing sent")
+	-- the engine refuses a name it could take (renameFails): an error, and the old name stays
+	local g2 = lineWorld({ renameFails = true })
+	frames(g2, 2)
+	send(g2, 233, "rename", '{ entity = 41, name = "X" }')
+	frames(g2, FIRST)
+	truthy((answerText(g2, 233, "error") or ""):find("refused"))
+	eq(api.engine.util.getEntityName(41), "Central", "unchanged after a refusal")
+	local logged = false
+	for _, l in ipairs(g2.logs) do if tostring(l):find("rename 41: refused") then logged = true end end
+	truthy(logged, "the refusal is logged")
+	-- accepted, but the entity reads back another name (a station id whose group took it): ok, with a note
+	local g3 = lineWorld()
+	frames(g3, 2)
+	local real = api.engine.util.getEntityName
+	api.engine.util.getEntityName = function(e) if e == 42 then return "Harbour" end return real(e) end
+	send(g3, 234, "rename", '{ entity = 42, name = "Port" }')
+	frames(g3, FIRST)
+	api.engine.util.getEntityName = real
+	local a3 = answerText(g3, 234) or ""
+	truthy(a3:find('"ok":true') and a3:find('"requested":"Port"') and a3:find('"note"'), a3)
+end)
+
 -- every command the fake engine got of a kind
 local function sent(g, kind)
 	local out = {}

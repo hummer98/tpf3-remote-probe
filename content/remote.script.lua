@@ -518,6 +518,25 @@ function handlers.scriptEvent(c)
 		note = "sent; whether the game script acted on it shows only in its log (tf3ctl log --grep ...)" })
 end
 
+-- args: entity, name. Answered from the command's callback, with the name read back, since the engine may refuse
+-- (an entity that has no name of its own and no stem) or keep the old one
+function handlers.rename(c)
+	local r, err = core.renameRequest(c.args)
+	if not r then return fail(c.id, err) end
+	local before = try(function() return api.engine.util.getEntityName(r.entity) end)
+	api.cmd.sendCommand(api.cmd.makeEntitySetNameCmd(r.entity, r.name), function(_, success)
+		local after = try(function() return api.engine.util.getEntityName(r.entity) end)
+		if success == false then
+			say("rename " .. r.entity .. ": refused by the engine", 1)
+			return answer(c.id, { ok = false, error = "the engine refused the name (makeEntitySetNameCmd failed)",
+				entity = r.entity, before = before }, "error")
+		end
+		-- a station's id renames its group (the stem), so the station itself may read back otherwise
+		local note = after ~= r.name and "the entity reads back another name: give the station group's id (stations) to check" or nil
+		answer(c.id, { ok = true, entity = r.entity, requested = r.name, before = before, name = after, note = note })
+	end)
+end
+
 -- args: name (music, calendar) or module + field; close. Pushed onto (or popped from) the game's tool stack by
 -- the speed control, as the base's own buttons do
 function handlers.tool(c)

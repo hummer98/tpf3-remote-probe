@@ -237,7 +237,9 @@ function M.new(dir, opts)
 			return true
 		elseif cmd.kind == "setName" then
 			if opts.renameFails then return false end
-			if g.lines[cmd.entity] then g.lines[cmd.entity].name = cmd.name else return false end
+			if g.lines[cmd.entity] then g.lines[cmd.entity].name = cmd.name
+			elseif groups[cmd.entity] then groups[cmd.entity].name = cmd.name
+			else return false end
 			return true
 		end
 		return true

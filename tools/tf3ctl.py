@@ -21,6 +21,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py restart --new --year 1900 --size small --add example_mod
   tf3ctl.py launch [--load ... | --new ...]           # the same, when the game is not running
   tf3ctl.py event example_window.show --param '{"welcome": true}'   # a react event (fired by the speed control)
+  tf3ctl.py rename "Chesham" --entity 48064   # a station (its group), line, vehicle or depot, as the base's windows do
   tf3ctl.py tool music [--close]            # a base window that opens as a tool (music, calendar)
   tf3ctl.py depots [--grep bus]             # depot entities to buy at
   tf3ctl.py vehicles [--line 21]            # the company's vehicles: models, purchaseTime, value
@@ -72,7 +73,7 @@ STALE_SEC = 3600  # answers nobody read (a killed tool) are removed after this
 PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); longer means it is not running
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
-                "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent"}  # window: what the player sees  # poll: only the mod's file reads
+                "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename"}  # window: what the player sees  # poll: only the mod's file reads
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -989,6 +990,15 @@ def script_event_args(ns):
     return args
 
 
+def rename_args(ns):
+    """A rename: the entity's id and the new name, checked here as the mod checks them."""
+    if ns.entity < 0:
+        raise ToolError("--entity must be an id (0 or more)")
+    if not ns.name.strip():
+        raise ToolError("the new name must not be empty")
+    return {"entity": ns.entity, "name": ns.name}
+
+
 # Tools whose base button passes more than gameCtx, so a plain push breaks the GUI; their button listens to an
 # event that opens them with the right params. notification_log.tl calls param.toolParam.storeFilterState(...) in
 # its recipe body (line 509): pushed with only gameCtx that is a nil call, "Failed during state update of
@@ -1655,6 +1665,9 @@ def make_parser():
     se.add_argument("name")
     se.add_argument("--id", required=True, help="the id the game script listens to, e.g. a mod's UI id")
     se.add_argument("--param", help="a JSON object")
+    rn = sub.add_parser("rename", help="rename an entity (a station, line, vehicle, depot), as the base's windows do")
+    rn.add_argument("name", help="the new name")
+    rn.add_argument("--entity", type=int, required=True, help="its id (stations, lines, vehicles, depots, entities)")
     to = sub.add_parser("tool", help="open or close a base window that is a tool (music, calendar, notifications)")
     to.add_argument("name", nargs="?")
     to.add_argument("--module", help="a GUI module that returns the tool, e.g. /gui/music_player/music_player.tl")
@@ -1840,6 +1853,8 @@ def main(argv=None):
             res = send("event", event_args(ns))
         elif ns.cmd == "script-event":
             res = send("scriptEvent", script_event_args(ns))
+        elif ns.cmd == "rename":
+            res = send("rename", rename_args(ns))
         elif ns.cmd == "tool":
             ev = tool_event(ns)
             if ev:

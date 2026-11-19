@@ -980,6 +980,24 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(sent, [("scriptEvent", {"name": "industry_upgrades.apply", "id": "hummer_age_of_mobility",
                                                  "param": {"step": 3}})])
 
+    def test_rename_args_and_main(self):
+        ns = tf3ctl.argparse.Namespace
+        self.assertEqual(tf3ctl.rename_args(ns(entity=48064, name="Chesham")), {"entity": 48064, "name": "Chesham"})
+        for bad in (dict(entity=-1, name="x"), dict(entity=1, name="  "), dict(entity=1, name="")):
+            with self.assertRaises(tf3ctl.ToolError):
+                tf3ctl.rename_args(ns(**bad))
+        self.assertIn("rename", tf3ctl.CHANGES_GAME)
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = tf3ctl.main(["rename", "Petworth", "--entity", "48118"])
+        self.assertEqual(code, 0)
+        self.assertEqual(sent, [("rename", {"entity": 48118, "name": "Petworth"})])
+
     def test_event_and_tool_args(self):
         ns = tf3ctl.argparse.Namespace
         self.assertEqual(tf3ctl.event_args(ns(name="example_window.show", param='{"welcome": true}')),

@@ -16,11 +16,11 @@ M.LOG = "[remote_probe] "
 M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = true, load = true, save = true, poll = true,
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
-	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true }
+	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
-	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true } -- camera, as window: what the player sees
+	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true } -- camera, as window: what the player sees
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true }
@@ -794,6 +794,20 @@ function M.scriptEventRequest(args)
 	local ev, err = M.eventRequest(args)
 	if not ev then return nil, err end
 	return { id = args.id, name = ev.name, param = ev.param or {} }
+end
+
+-- args: entity (id), name: a rename as the base's windows send it (api.cmd.makeEntitySetNameCmd). A station's
+-- name is its group's, and the engine renames the group when given a station. Names are fixed when a thing is
+-- built, in the game's language at the time, so a station built in Japanese stays "… 駅" in an English shot.
+M.MAX_NAME_LEN = 200
+function M.renameRequest(args)
+	args = type(args) == "table" and args or {}
+	local e = tonumber(args.entity)
+	if e == nil or e ~= math.floor(e) or e < 0 then return nil, "give the entity (an id, e.g. from stations or entities)" end
+	local name = args.name
+	if type(name) ~= "string" or not name:find("%S") then return nil, "give the new name (not empty)" end
+	if #name > M.MAX_NAME_LEN then return nil, "the name is longer than " .. M.MAX_NAME_LEN .. " bytes" end
+	return { entity = e, name = name }
 end
 
 ---------------------------------------------------------------------------------------------------------------------
