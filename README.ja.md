@@ -124,17 +124,24 @@ SIGKILL します (`--no-kill` で諦める。「安全上の注意」)。新し
 `newgame` コマンドも同じです。
 
 `--lang CODE` は、ゲームを別の言語で起動します (`de`、`en`、`ja` など。`pt_BR`、`zh_CN`、`zh_TW` も。インストールの
-`base/strings` に無いコードは断ります)。例えば、MOD の文が英語に落ちるかを見るためです。ゲームは言語を `profile.lua`
-(`language = { code = "ja", ... }`。userdata の `local` フォルダの `settings.lua` の隣) からだけ読み、起動の引数で
-変える方法は見つかりませんでした。そこで、ゲームが動いていないあいだに、`profile.lua` を隣の
-`profile.lua.tf3ctl-backup` へ写し (その控えが無いときだけ。最初の控えが元の値)、そのコードだけを変えます。控えは、
-戻してファイルと比べ、同じなら消します。戻すのは、`quit` でゲームが終わったあと、次の `launch` / `restart` の前
-(落ちたゲームは控えを残します。`--lang` が無ければ、その起動は元の言語)、`restore-profile` のときです。ゲームが
-動いているあいだは触りません (ゲームが `profile.lua` を自分で書き直すため)。`--lang` の回にゲームがそこへ書いたもの
-(最後のゲームなど) は、戻すと消えます。控えがあるあいだは、`state` と `status` に `profileBackup` が出ます。戻した
-ファイルが控えと同じにならなければ、控えを残してエラーにします。別の道具が `profile.lua` の写しを持つなら、
-`TF3CTL_OTHER_BACKUPS` にその場所を書いてください。それがあるあいだは `--lang` も戻すことも断るので、写しは作った
-のと逆の順で戻ります。
+`base/strings` に無いコードは断ります。インストールが見つからないときは、本体の13言語に無いコードを断ります)。例えば、
+MOD の文が英語に落ちるかを見るためです。ゲームは言語を `profile.lua` (`language = { code = "ja", ... }`。userdata の
+`local` フォルダの `settings.lua` の隣) からだけ読み、起動の引数で変える方法は見つかりませんでした。そこで、ゲームが
+動いていないあいだに、`profile.lua` を隣の `profile.lua.tf3ctl-backup` へ写し (その控えが無いときだけ。最初の控えが
+元の値)、そのコードだけを変えます。戻すときもコードだけです。いまのファイルのコードを控えにある元のコードに置き換え、
+ファイルがそのコードになったら控えを消します。ゲームは動いているあいだに `profile.lua` を書き直すので、そのあいだに
+ゲームやプレイヤーが変えたもの (最後のゲーム、ほかの設定) は、控えが何日も残ったあとでも消えません。戻すのは、`quit`
+でゲームが終わったあと、次の `launch` / `restart` の前 (落ちたゲームは控えを残します。`--lang` が無ければ、その起動は
+元の言語)、`restore-profile` のときです。ゲームが動いているあいだは触りません。ファイルか控えに `language = {` の
+ブロックがちょうど1つでないとき、また戻したコードが合わないときは、控えを残してエラーにします。控えがあるあいだは、
+`state` と `status` に `profileBackup` が出ます。控えを取る・書き換える・戻すは `profile.lua.tf3ctl-lock` (ファイルの
+隣に残ります) のロックの中で行うので、2つの tf3ctl が同時に動いても、書き換えたファイルを元として控えることはありません。
+`restart` が quit のあとで戻す・書き換えるのに失敗したときは、`quit` と同じく quit の結果と `profileError` を出して
+終了コード 1 になります (ゲームは止まったままです)。別の道具が `profile.lua` の写しを持つなら、`TF3CTL_OTHER_BACKUPS`
+にその場所を書いてください。それがあるあいだは (フォルダは中にファイルがあるときだけ) `--lang` も戻すことも断るので、
+写しは作ったのと逆の順で戻ります。扱っていないこと: tf3ctl を通らずにゲームが終わったあと (落ちた、ゲームのメニュー
+から終えた) に Steam から起動すると、`--lang` の言語のまま始まります。次の tf3ctl の `launch` / `restart` / `quit`
+か `restore-profile` で戻ります。
 
 ### ゲームを見る
 
@@ -280,7 +287,7 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
   一番新しいもの)。控えは同じ場所に `.tf3ctl-backup` を足した名前。
 - `TF3_GAME_DIR`: ゲームのインストール先。`--lang` で選べる言語を見るため (既定: userdata のある Steam の
   `steamapps/common/Transport Fever 3`)。
-- `TF3CTL_OTHER_BACKUPS`: 別の道具による `profile.lua` の控え。`:` で区切る (`--lang` を参照)。
+- `TF3CTL_OTHER_BACKUPS`: 別の道具による `profile.lua` の控え (ファイルかフォルダ)。`:` で区切る (`--lang` を参照)。
 
 ## MOD の設定
 

@@ -126,17 +126,25 @@ through it; `--tutorial` keeps the base default (on), and an explicit `--param :
 The same holds for the `newgame` command.
 
 `--lang CODE` starts the game in another language (`de`, `en`, `ja`, ... or `pt_BR`, `zh_CN`, `zh_TW`; a code the
-install's `base/strings` lacks is refused), e.g. to see a mod's texts fall back to English. The game takes its
-language only from `profile.lua` (`language = { code = "ja", ... }`, next to `settings.lua` in the userdata
-`local` folder); no command-line option for it was found. So, while the game is not running, the tool copies
-`profile.lua` to `profile.lua.tf3ctl-backup` beside it (only when no such backup is there: the first one holds the
-original) and changes only that code. The backup is put back, compared with the file and then removed: by `quit`
-once the game is gone, before the next `launch` / `restart` (a crashed game leaves it behind; without `--lang` that
-start is in the original language), and by `restore-profile`. Never while the game runs, since the game rewrites
-`profile.lua` itself; whatever it wrote there during the `--lang` run (e.g. the last game) goes with the restore.
-`state` and `status` show `profileBackup` while a backup is there. When the file does not come out equal to the
-backup, the backup is kept and the command fails. If another tool keeps its own copy of `profile.lua`, name it in
-`TF3CTL_OTHER_BACKUPS`: while it exists, `--lang` and the restore refuse, so the copies go back in the reverse order.
+install's `base/strings` lacks is refused; when the install is not found, a code outside the base game's 13 languages
+is refused), e.g. to see a mod's texts fall back to English. The game takes its language only from `profile.lua`
+(`language = { code = "ja", ... }`, next to `settings.lua` in the userdata `local` folder); no command-line option
+for it was found. So, while the game is not running, the tool copies `profile.lua` to `profile.lua.tf3ctl-backup`
+beside it (only when no such backup is there: the first one holds the original) and changes only that code. Putting
+it back also changes only the code: the original code from the backup goes into the file as it is now, and once the
+file has it, the backup is removed. The game rewrites `profile.lua` while it runs, so whatever it or the player
+changed there in the meantime (the last game, other settings) stays, even when the backup was left for days. This
+happens after `quit` once the game is gone, before the next `launch` / `restart` (a crashed game leaves the backup
+behind; without `--lang` that start is in the original language), and by `restore-profile`; never while the game
+runs. When the file or the backup does not have exactly one `language = {` block, or the code does not come out
+right, the backup is kept and the command fails. `state` and `status` show `profileBackup` while a backup is there.
+The backup, the change and the restore are done under a lock on `profile.lua.tf3ctl-lock` (left beside the file),
+so two tf3ctl at once cannot take a changed file as the original. If `restart` fails to put the profile back or
+change it after the quit, it prints the quit and `profileError` and exits 1, like `quit`: the game is then stopped.
+If another tool keeps its own copy of `profile.lua`, name it in `TF3CTL_OTHER_BACKUPS`: while it exists (a folder
+counts only while a file is in it), `--lang` and the restore refuse, so the copies go back in the reverse order.
+Not covered: when the game ends without tf3ctl (a crash, or quit from its own menu) and is then started from Steam,
+it starts in the `--lang` language; the next tf3ctl `launch` / `restart` / `quit` or `restore-profile` puts it back.
 
 ### Looking at the game
 
@@ -296,7 +304,7 @@ who uses the game. `quit --kill` is the exception: it will not SIGKILL a game an
   Steam's userdata). Its backup is the same path plus `.tf3ctl-backup`.
 - `TF3_GAME_DIR`: the game's install folder, for the languages `--lang` may pick (default: `steamapps/common/Transport
   Fever 3` of the Steam that has the userdata).
-- `TF3CTL_OTHER_BACKUPS`: other tools' backups of `profile.lua`, separated by `:` (see `--lang`).
+- `TF3CTL_OTHER_BACKUPS`: other tools' backups of `profile.lua` (files or folders), separated by `:` (see `--lang`).
 
 ## Mod settings
 

@@ -54,8 +54,9 @@ Environment: TF3_REMOTE_DIR = the exchange folder (default: the newest hello fil
 TF3_LOG = the game log, TF3_STEAM = the command that starts Steam, TF3CTL_OWNER = the default --owner,
 LUAJIT = the luajit binary, TF3_PROFILE = the game's profile.lua (default: next to the exchange folder, else the newest
 under Steam's userdata), TF3_GAME_DIR = the game's install folder (for the languages --lang may pick),
-TF3CTL_OTHER_BACKUPS = backups of profile.lua made by other tools (paths, separated by ':'): while one exists, --lang
-and the restore refuse, so the backups are put back in the reverse order they were made.
+TF3CTL_OTHER_BACKUPS = backups of profile.lua made by other tools (files or folders, separated by ':'; a folder counts
+while a file is in it): while one exists, --lang and the restore refuse, so the backups are put back in the reverse
+order they were made.
 """
 import argparse
 import contextlib
@@ -863,13 +864,18 @@ def keep_last_log(path=None, keep=LOG_KEEP):
 
 # --lang: the game takes its language only from profile.lua (language = { code = "ja", ...}), read at startup; no
 # command-line option for it was found in the binary (2026-11-20). So launch / restart change that one value for the
-# start, keep the original next to the file, and put it back once the game is gone: after quit, before the next
+# start, keep the original next to the file, and put its code back once the game is gone: after quit, before the next
 # launch / restart (a crashed game leaves the backup behind), or by restore-profile. Never while the game runs: it
-# rewrites profile.lua itself.
+# rewrites profile.lua itself, which is also why only the code goes back, not the whole backup.
 LANG_RE = re.compile(r"^[a-z]{2}(_[A-Z]{2})?$")  # de, ja; the base also has pt_BR, zh_CN, zh_TW
 LANGUAGE_LINE_RE = re.compile(rb"^[ \t]*language[ \t]*=[ \t]*\{", re.M)
 LANGUAGE_CODE_RE = re.compile(rb'\bcode[ \t]*=[ \t]*"([^"]*)"')
 PROFILE_BACKUP_SUFFIX = ".tf3ctl-backup"
+PROFILE_LOCK_SUFFIX = ".tf3ctl-lock"
+# the base game's languages (base/strings, 2026-11-20), for when the install is not found
+BASE_LANGUAGES = ("de", "en", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt_BR", "ru", "zh_CN", "zh_TW")
+_warned = {"install": False}
+_profile_lock_depth = [0]
 
 
 def profile_path():
@@ -930,18 +936,34 @@ def check_lang(lang):
         raise ToolError("--lang takes a language code like de, en, ja (or pt_BR): %r" % lang)
     langs = game_languages()
     if langs is None:
-        print("warning: the game's install was not found (TF3_GAME_DIR names it): --lang %s is not checked against "
-              "its languages" % lang, file=sys.stderr)
-    # the engine asserts that the profile's language exists (m_languageRep->Exists): refuse one the base lacks
-    if langs is not None and lang not in langs:
+        # without the install, the base's own list: the engine asserts that the profile's language exists
+        # (m_languageRep->Exists), so a code it lacks would crash the start, not fall back
+        if not _warned["install"]:  # restart checks before and after the quit: say it once
+            _warned["install"] = True
+            print("warning: the game's install was not found (TF3_GAME_DIR names it): --lang %s is checked against "
+                  "the base game's languages only" % lang, file=sys.stderr)
+        if lang not in BASE_LANGUAGES:
+            raise ToolError("the base game has no language %r (it has %s; TF3_GAME_DIR names the install)"
+                            % (lang, ", ".join(BASE_LANGUAGES)))
+        return
+    if lang not in langs:
         raise ToolError("the game has no language %r (base/strings has %s; TF3_GAME_DIR names the install)"
                         % (lang, ", ".join(langs)))
+
+
+def backup_is_there(path):
+    """A file counts while it exists; a folder only while it holds a file (shot_settings.sh keeps its folder after
+    putting its copies back, so the folder alone would block every --lang)."""
+    path = os.path.expanduser(path)
+    if not os.path.isdir(path):
+        return os.path.exists(path)
+    return any(files for _, _, files in os.walk(path))
 
 
 def other_backups():
     """Backups of profile.lua by other tools (TF3CTL_OTHER_BACKUPS) that exist now."""
     paths = [p for p in os.environ.get("TF3CTL_OTHER_BACKUPS", "").split(os.pathsep) if p]
-    return [p for p in paths if os.path.exists(os.path.expanduser(p))]
+    return [p for p in paths if backup_is_there(p)]
 
 
 def refuse_other_backups(what):
@@ -952,71 +974,135 @@ def refuse_other_backups(what):
                         % (what, ", ".join(others)))
 
 
+def _remove_quietly(path):
+    with contextlib.suppress(OSError):
+        os.remove(path)
+
+
 def write_replacing(path, data):
-    """Writes data to path through a file next to it, so the game never finds a half-written profile."""
+    """Writes data to path through a file next to it, so the game never finds a half-written profile. The file is
+    synced before the rename (a power cut must not leave an empty profile.lua) and removed if anything fails, Ctrl-C
+    too, so no *.tf3ctl-tmp is left beside the player's files."""
     tmp = path + ".tf3ctl-tmp"
-    with open(tmp, "wb") as f:
-        f.write(data)
-    shutil.copymode(path, tmp)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        _remove_quietly(tmp)
+        raise
+
+
+def copy_backup(profile, backup):
+    """The original as the backup, through a file beside it and compared: a half-written backup would later give
+    back a wrong code. The temporary file goes on any failure."""
+    tmp = backup + ".tmp"
+    try:
+        shutil.copy2(profile, tmp)
+        with open(tmp, "rb") as f:
+            os.fsync(f.fileno())
+        if not filecmp.cmp(profile, tmp, shallow=False):
+            raise ToolError("--lang: the backup of %s did not come out equal to it" % profile)
+        os.replace(tmp, backup)
+    except BaseException:
+        _remove_quietly(tmp)
+        raise
+
+
+@contextlib.contextmanager
+def profile_lock(profile):
+    """Serialises tf3ctl processes over the profile (backup, change, restore): two at once could each find no backup
+    and the second take the first one's changed file as the original. Re-entrant within one process, since flock
+    on a second descriptor of the same file would wait for ourselves."""
+    if _profile_lock_depth[0]:
+        _profile_lock_depth[0] += 1
+        try:
+            yield
+        finally:
+            _profile_lock_depth[0] -= 1
+        return
+    with open(profile + PROFILE_LOCK_SUFFIX, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        _profile_lock_depth[0] = 1
+        try:
+            yield
+        finally:
+            _profile_lock_depth[0] = 0
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def set_profile_language(lang, profile=None):
     """--lang: backs profile.lua up (unless tf3ctl's backup is there already: the first one holds the original) and
     sets the language code."""
     check_lang(lang)
-    if game_pids():
-        raise ToolError("--lang: the game is running and rewrites profile.lua itself: quit it first")
-    refuse_other_backups("--lang")
     profile = profile or profile_path()
     if not profile or not os.path.exists(profile):
         raise ToolError("--lang: no profile.lua found (TF3_PROFILE names it)")
-    with open(profile, "rb") as f:
-        data = f.read()
-    s, e = language_code_span(data, profile)  # before the backup: a file of another shape is left alone
-    was = data[s:e].decode("utf-8", "replace")
-    backup = profile_backup_path(profile)
-    out = {"language": lang, "was": was, "profile": profile}
-    if was == lang and not os.path.exists(backup):
-        out["changed"] = False
+    with profile_lock(profile):
+        if game_pids():
+            raise ToolError("--lang: the game is running and rewrites profile.lua itself: quit it first")
+        refuse_other_backups("--lang")
+        with open(profile, "rb") as f:
+            data = f.read()
+        s, e = language_code_span(data, profile)  # before the backup: a file of another shape is left alone
+        was = data[s:e].decode("utf-8", "replace")
+        backup = profile_backup_path(profile)
+        out = {"language": lang, "was": was, "profile": profile}
+        if was == lang and not os.path.exists(backup):
+            out["changed"] = False
+            return out
+        if not os.path.exists(backup):
+            copy_backup(profile, backup)
+        write_replacing(profile, data[:s] + lang.encode() + data[e:])
+        out.update(changed=True, backup=backup)
         return out
-    if not os.path.exists(backup):
-        # through a file beside it and compared: a half-written backup would later be put back as the original
-        tmp = backup + ".tmp"
-        shutil.copy2(profile, tmp)
-        if not filecmp.cmp(profile, tmp, shallow=False):
-            os.remove(tmp)
-            raise ToolError("--lang: the backup of %s did not come out equal to it" % profile)
-        os.replace(tmp, backup)
-    write_replacing(profile, data[:s] + lang.encode() + data[e:])
-    out.update(changed=True, backup=backup)
-    return out
+
+
+def backup_language(backup):
+    """The original code kept in tf3ctl's backup; ToolError when the backup is not of the one-block shape."""
+    with open(backup, "rb") as f:
+        data = f.read()
+    s, e = language_code_span(data, backup)
+    return data[s:e]
 
 
 def restore_profile(profile=None):
-    """Puts tf3ctl's backup of profile.lua back and removes it once the file equals it. None when there is no
-    backup; ToolError (the backup kept) while the game runs or when the file does not come out equal."""
+    """Puts the original language code from tf3ctl's backup back into profile.lua and removes the backup once the
+    file has that code. Only the code: the game rewrites profile.lua while it runs, and a backup left for days (a
+    crash, a quit by hand) would otherwise take the player's later changes with it. None when there is no backup;
+    ToolError (the backup kept) while the game runs, when either file is not of the one-block shape, or when the
+    file does not come out with the code."""
     profile = profile or profile_path()
     if not profile:
         return None
     backup = profile_backup_path(profile)
     if not os.path.exists(backup):
-        return None
-    if game_pids():
-        raise ToolError("the game is running and rewrites profile.lua itself: the backup %s stays until it is gone"
-                        % backup)
-    refuse_other_backups("restoring " + profile)
-    with open(backup, "rb") as f:
-        write_replacing(profile, f.read())
-    if not filecmp.cmp(backup, profile, shallow=False):
-        raise ToolError("%s differs from its backup %s after putting it back: the backup is kept" % (profile, backup))
-    os.remove(backup)
-    out = {"restored": profile}
-    try:
-        out["language"] = profile_language(profile)
-    except ToolError:
-        pass  # put back as it was, whatever its shape
-    return out
+        return None  # before the lock: without a backup there is nothing to serialise, and no lock file is made
+    with profile_lock(profile):
+        if not os.path.exists(backup):
+            return None  # another tf3ctl put it back while we waited
+        if game_pids():
+            raise ToolError("the game is running and rewrites profile.lua itself: the backup %s stays until it is "
+                            "gone" % backup)
+        refuse_other_backups("restoring " + profile)
+        code = backup_language(backup)
+        with open(profile, "rb") as f:
+            data = f.read()
+        s, e = language_code_span(data, profile)
+        if data[s:e] != code:
+            write_replacing(profile, data[:s] + code + data[e:])
+        try:
+            now = profile_language(profile).encode("utf-8")
+        except ToolError:
+            now = None
+        if now != code:
+            raise ToolError("%s does not have the language %r of its backup %s after putting it back: the backup is "
+                            "kept" % (profile, code.decode("utf-8", "replace"), backup))
+        os.remove(backup)
+        return {"restored": profile, "language": code.decode("utf-8", "replace")}
 
 
 def check_profile_start(lang):
@@ -1026,14 +1112,17 @@ def check_profile_start(lang):
         check_lang(lang)
     profile = profile_path()
     backup = profile and profile_backup_path(profile)
-    if lang is None and not (backup and os.path.exists(backup)):
+    has_backup = bool(backup and os.path.exists(backup))
+    if lang is None and not has_backup:
         return
     refuse_other_backups("--lang" if lang is not None else "restoring " + profile)
-    if lang is not None:
-        if not profile or not os.path.exists(profile):
-            raise ToolError("--lang: no profile.lua found (TF3_PROFILE names it)")
-        with open(profile, "rb") as f:
-            language_code_span(f.read(), profile)
+    if not profile or not os.path.exists(profile):
+        raise ToolError("%s: no profile.lua found (TF3_PROFILE names it)"
+                        % ("--lang" if lang is not None else "restoring tf3ctl's backup " + backup))
+    with open(profile, "rb") as f:
+        language_code_span(f.read(), profile)
+    if has_backup:
+        backup_language(backup)
 
 
 def profile_note():
@@ -1132,11 +1221,28 @@ def cmd_start(ns, restart):
         raise ToolError("the game is already running: use restart (or quit first)")
     # an earlier --lang start that crashed or was quit by hand left its backup: this start is in the player's
     # language unless --lang says otherwise
-    restored = restore_profile()
-    if restored:
-        out["profileRestored"] = restored
-    if lang is not None:
-        out["language"] = set_profile_language(lang)
+    try:
+        profile = profile_path()
+        # put back and changed under one lock; without --lang or a backup nothing is touched, not even the lock file
+        touch = profile and (lang is not None or os.path.exists(profile_backup_path(profile)))
+        with profile_lock(profile) if touch else contextlib.nullcontext():
+            restored = restore_profile(profile)
+            if restored:
+                out["profileRestored"] = restored
+            if lang is not None:
+                out["language"] = set_profile_language(lang, profile)
+    except (ToolError, OSError, KeyboardInterrupt) as e:
+        if not restart:
+            if isinstance(e, OSError):  # nothing was quit: the plain refusal, not a traceback
+                raise ToolError("--lang: " + str(e))
+            raise
+        # the game is stopped now: a bare exit 2 (or 130 for Ctrl-C) would hide that, so show the quit and why it
+        # was not started again, as quit does
+        why = str(e) or "interrupted"
+        print("error: %s, but %s" % ("the game quit" if out["quit"]["how"] != "not running" else
+                                     "the game was not running", why), file=sys.stderr)
+        out.update(ok=False, profileError=why)
+        return out
     out["launch"] = launch_game(ns.launch_timeout)
     if plan:
         res = replace_game(plan[0], plan[1], False, ns.timeout)
