@@ -13,24 +13,30 @@ local MOD = "hummer_remote_probe"
 local req = ug_require or require
 
 -- A failure here must not end the game (an error in data(), handleEvent or update does): it is logged and the
--- game runs on without the probe in the menu. The script is kept in a global, since require caches
--- remote.script.lua: if the game runs this file again in the same Lua state, that file does not run again.
--- (a plain global, not rawget(_G, ...): _G is not a plain table in the game's GUI Lua, 2026-11-15)
-local remote = __hummer_remote_probe_menu
-if not remote then
-	local ok, err = pcall(function()
-		data = nil
-		req(MOD .. "::/remote.script.lua") -- defines data(), which hands out the script
-		if type(data) ~= "function" then error("remote.script.lua did not define data()") end
-		remote = data()
-		remote.setMenu()
-	end)
-	if ok then
-		__hummer_remote_probe_menu = remote
-	else
-		remote = nil
-		print("[remote_probe] startup.lua could not start the probe in the main menu: " .. tostring(err))
-	end
+-- game runs on without the probe in the menu.
+-- No new globals: the base's init.lua puts a __newindex on _G, and a new global from a mod's file is logged as
+-- "ERROR Global variable in mod" and sent as a crash report (every launch, 2026-11-20 to 21). So:
+-- - the probe is kept in remote_core.lua's module table, not in a global. A module that returns a value stays in
+--   package.loaded (init.lua's require), so if the game runs this file again in the same Lua state the probe is
+--   found there and not made twice; remote.script.lua returns nothing, so the base would run it again. (Read in
+--   init.lua; that the game ever runs this file twice in one state is not seen in game.)
+-- - data is cleared to false, not nil: init.lua declares it (data = false), and nil would drop the key, so the
+--   "function data()" in remote.script.lua would make a new global.
+local remote
+local ok, err = pcall(function()
+	local core = req(MOD .. "::/remote_core.lua")
+	remote = core.menuProbe
+	if remote then return end
+	data = false
+	req(MOD .. "::/remote.script.lua") -- defines data(), which hands out the script
+	if type(data) ~= "function" then error("remote.script.lua did not define data()") end
+	remote = data()
+	remote.setMenu()
+	core.menuProbe = remote
+end)
+if not ok then
+	remote = nil
+	print("[remote_probe] startup.lua could not start the probe in the main menu: " .. tostring(err))
 end
 
 local startup = {}

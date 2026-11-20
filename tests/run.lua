@@ -1897,28 +1897,40 @@ test("startup.lua: run again in the same Lua state it reuses the probe; a probe 
 	local g = newGame({ saves = SAVES, menu = true })
 	frames(g, 2)
 	local first = g.menuScript
-	package.loaded["hummer_remote_probe::/remote.script.lua"] = true -- require's cache: the file will not run again
+	-- the base reruns a module that returns nothing (remote.script.lua): count how often it runs
+	local runs = 0
+	package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
+	package.preload["hummer_remote_probe::/remote.script.lua"] = function()
+		runs = runs + 1
+		return assert(loadfile(root .. "/content/remote.script.lua"))()
+	end
 	local quiet = {}
 	local realPrint0 = print
 	print = function(x) quiet[#quiet + 1] = x end
-	_G.data = nil
-	dofile(root .. "/content/startup.lua")
-	local again = _G.data()
+	local again = g.asMod(function()
+		_G.data = false
+		dofile(root .. "/content/startup.lua")
+		return _G.data()
+	end)
 	print = realPrint0
+	package.preload["hummer_remote_probe::/remote.script.lua"] = nil
 	truthy(again ~= first and again.update, "a new startup table")
+	eq(runs, 0, "remote.script.lua did not run again: the probe was made once")
 	eq(#quiet, 0, "the probe was reused, not lost: " .. table.concat(quiet, " | "))
 	g.menuScript = again
 	send(g, 290, "status")
 	frames(g, FIRST)
 	truthy((answerText(g, 290) or ""):find('"menu":true'), "the same probe still answers")
+	eq(#g.globalWrites, 0, "no new globals: " .. table.concat(g.globalWrites, ", "))
+	-- a fresh process: nothing kept, and a broken remote.script.lua is logged, not raised
 	package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
-	_G.__hummer_remote_probe_menu = nil
+	package.loaded["hummer_remote_probe::/remote_core.lua"] = nil
 	local printed = {}
 	local realPrint = print
 	print = function(s) printed[#printed + 1] = s end
 	package.preload["hummer_remote_probe::/remote.script.lua"] = function() error("broken file") end
 	local ok, err = pcall(function()
-		_G.data = nil
+		_G.data = false
 		dofile(root .. "/content/startup.lua")
 		local s = _G.data()
 		s.handleEvent()
@@ -1929,6 +1941,23 @@ test("startup.lua: run again in the same Lua state it reuses the probe; a probe 
 	package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 	truthy(ok, err)
 	truthy((printed[1] or ""):find("could not start the probe in the main menu: .*broken file"), printed[1])
+end)
+
+test("startup.lua makes no new globals (the base logs each as an error and sends a crash report)", function()
+	-- the base's guard, as in ::/base/init.lua: a new key on _G is logged; data is declared up front
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	truthy(g.menuScript and g.menuScript.update, "the menu probe started")
+	eq(#g.globalWrites, 0, "no new globals at load: " .. table.concat(g.globalWrites, ", "))
+	send(g, 295, "status")
+	frames(g, FIRST)
+	truthy((answerText(g, 295) or ""):find('"menu":true'), answerText(g, 295))
+	eq(#g.globalWrites, 0, "none from update either: " .. table.concat(g.globalWrites, ", "))
+	-- the guard itself sees one: what the old startup.lua did (data = nil, then a global for the probe)
+	g.asMod(function() _G.data = nil; data = function() end; __hummer_remote_probe_test_global = 1 end)
+	eq(table.concat(g.globalWrites, ","), "data,__hummer_remote_probe_test_global")
+	_G.__hummer_remote_probe_test_global = nil
+	_G.data = false
 end)
 
 test("menu: newgame takes the base's and each mod's defaults, as the base new-game page; --param on top", function()

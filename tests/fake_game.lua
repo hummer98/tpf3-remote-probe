@@ -10,6 +10,7 @@ local M = {}
 M.guiSave = {}
 
 -- "hummer_remote_probe::/x.lua" -> content/x.lua, as the game resolves a mod's require
+-- (unlike the game, plain require keeps a module that returns nothing, as true; the game runs it again)
 table.insert(package.loaders or package.searchers, 2, function(name)
 	local rel = name:match("^hummer_remote_probe::/(.*)$")
 	if rel then return assert(loadfile(here .. "/content/" .. rel)) end
@@ -1042,6 +1043,24 @@ function M.new(dir, opts)
 		M.guiModules["/gui/line_vehicle_mgmt/line_util.tl"] = lu
 	end
 
+	-- the base's ::/base/init.lua: it declares the globals the game itself uses up front (data = false, ...) and
+	-- then puts a __newindex on _G; a mod's file that makes a new global still gets it, but the game logs
+	-- "ERROR Global variable in mod ... key = <name>", which goes out as a crash report (2026-11-20, every launch
+	-- with --script). The guard runs while the mod's code does (the menu's startup.lua, its update); the keys it
+	-- saw are in g.globalWrites.
+	g.globalWrites = {}
+	function g.asMod(fn, ...)
+		local prev = getmetatable(_G)
+		setmetatable(_G, { __newindex = function(t, k, v)
+			rawset(t, k, v)
+			g.globalWrites[#g.globalWrites + 1] = tostring(k)
+		end })
+		local res = { pcall(fn, ...) }
+		setmetatable(_G, prev)
+		if not res[1] then error(res[2], 0) end
+		return (table.unpack or unpack)(res, 2)
+	end
+
 	-- a fresh copy of the script, as after a game load
 	function g.boot()
 		package.loaded["/gui/line_vehicle_mgmt/vehicle_react_util.tl"] = nil
@@ -1058,9 +1077,11 @@ function M.new(dir, opts)
 		if g.menu then
 			-- launched with --script: the game calls data() and then update() every frame (a new game process:
 			-- nothing kept from an earlier one)
-			_G.__hummer_remote_probe_menu = nil
-			dofile(here .. "/content/startup.lua")
-			g.menuScript = _G.data()
+			_G.data = false -- as init.lua declares it
+			g.menuScript = g.asMod(function()
+				dofile(here .. "/content/startup.lua")
+				return _G.data()
+			end)
 			g.script = nil
 			return
 		end
@@ -1112,7 +1133,7 @@ function M.new(dir, opts)
 			if self then g.boot() else g.script = nil end
 		end
 		-- the --script copy: in the menu, and (opts.menuKeepsRunning) maybe in the game too
-		if g.menuScript and (g.menu or opts.menuKeepsRunning) then g.menuScript.update() end
+		if g.menuScript and (g.menu or opts.menuKeepsRunning) then g.asMod(g.menuScript.update) end
 		if g.script then g.script.guiUpdate() end
 	end
 
