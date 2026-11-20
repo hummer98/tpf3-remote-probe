@@ -1272,6 +1272,36 @@ class QuitLaunchTest(unittest.TestCase):
         # what the mod reads back from the command file: the list in order, ids as numbers
         got = mod_reads(tf3ctl.command_text(9, "line", parse("create", "stops", "Central,42")))
         self.assertEqual(got["args"]["stops"], ["Central", 42])
+        self.assertNotIn("terminals", got["args"], "none given: the engine assigns, as before")
+        # --terminals: station:terminal (or a terminal of station 0), one per stop; --load-mode one or one per stop
+        self.assertEqual(parse("create", "stops", "47,48", "terminals", "0:2, 1 : 0", "load_mode", "ANY"),
+                         {"action": "create", "via": "gui", "stops": [47, 48],
+                          "terminals": [{"station": 0, "terminal": 2}, {"station": 1, "terminal": 0}], "loadModes": "any"})
+        self.assertEqual(parse("create", "stops", "47,48", "terminals", "2,1", "load_mode", "all,available")["terminals"],
+                         [{"station": 0, "terminal": 2}, {"station": 0, "terminal": 1}])
+        self.assertEqual(parse("create", "stops", "47,48", "load_mode", "all,available")["loadModes"], ["all", "available"])
+        self.assertEqual(parse("update", "line", 23, "terminals", "0:2,0:1"),
+                         {"action": "update", "via": "gui", "line": 23,
+                          "terminals": [{"station": 0, "terminal": 2}, {"station": 0, "terminal": 1}]},
+                         "an update of the line's own stops: the mod checks the count")
+        self.assertEqual(parse("update", "line", 23, "load_mode", "any")["loadModes"], "any")
+        got = mod_reads(tf3ctl.command_text(9, "line", parse("create", "stops", "47,48", "terminals", "0:2,0:1",
+                                                             "load_mode", "all,any")))
+        self.assertEqual(got["args"]["terminals"], [{"station": 0, "terminal": 2}, {"station": 0, "terminal": 1}])
+        self.assertEqual(got["args"]["loadModes"], ["all", "any"])
+        for bad, why in ((("create", "stops", "47,48", "terminals", "0:2"), "one for every stop"),
+                         (("create", "stops", "47,48", "terminals", "0:2,0:1,0:0"), "one for every stop"),
+                         (("create", "stops", "47,48", "terminals", "0:2,"), "item 2"),
+                         (("create", "stops", "47,48", "terminals", "0:-1,0:1"), "item 1"),
+                         (("create", "stops", "47,48", "terminals", "a,1"), "item 1"),
+                         (("create", "stops", "47,48", "terminals", "0:1:2,1"), "item 1"),
+                         (("create", "stops", "47,48", "load_mode", "fast"), "available, any or all"),
+                         (("create", "stops", "47,48", "load_mode", "any,"), "item 2"),
+                         (("create", "stops", "47,48", "load_mode", "legacy_unload_only"), "available, any or all"),
+                         (("create", "stops", "47,48,49", "load_mode", "any,all"), "one for every stop, or one for all")):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad) as cm:
+                parse(*bad)
+            self.assertIn(why, str(cm.exception))
         self.assertIn("line", tf3ctl.CHANGES_GAME)
         self.assertFalse({"stations", "lines"} & tf3ctl.CHANGES_GAME)
         ns = tf3ctl.argparse.Namespace
@@ -1282,7 +1312,8 @@ class QuitLaunchTest(unittest.TestCase):
             tf3ctl.stations_args(ns(name=None, near=None, radius=5.0))
         # argparse: create needs --stops, update and delete the line id
         for bad in (["line"], ["line", "create"], ["line", "update"], ["line", "delete"], ["line", "create", "--stops",
-                    "A,B", "--via", "react"], ["line", "delete", "21", "--stops", "A,B"], ["stations", "--near", "x"]):
+                    "A,B", "--via", "react"], ["line", "delete", "21", "--stops", "A,B"], ["stations", "--near", "x"],
+                    ["line", "delete", "21", "--terminals", "0:1"], ["line", "delete", "21", "--load-mode", "any"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit, msg=bad):
                 tf3ctl.main(bad)
 

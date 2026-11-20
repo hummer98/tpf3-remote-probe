@@ -223,6 +223,8 @@ python3 tools/tf3ctl.py stations [--name cent] [--near 11 --radius 800]
 python3 tools/tf3ctl.py lines [--name probe]
 python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--cargo coal] [--via gui|cmd]
 python3 tools/tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C]
+python3 tools/tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 [--load-mode all,available]
+python3 tools/tf3ctl.py line update 23 [--terminals 0:2,0:1] [--load-mode any]
 python3 tools/tf3ctl.py line delete 21 [--sell-vehicles]
 ```
 
@@ -549,8 +551,17 @@ All unchecked in game. There is no command to build stations.
   statistics): `id`, `name`, `stations`, `terminals`, `carriers`, `owner`, `lines`, `position` (centre of the
   first station's bounding volume). `--name` matches a part of the name (any case); `--near <entity> --radius <m>`
   (default 1000 m) filters by horizontal distance from an entity with a bounding volume and adds `distance`.
-- `lines` lists the company's lines: stops (station group, station and terminal, 0-based), vehicles, carriers,
-  `customFilters`, `loads` (cargo some stop loads) and `vehicleCargo` (cargo the line's vehicles can carry).
+  `platforms` lists every platform (read only), for `--terminals`: `station` and `terminal` (0-based, as a line
+  stop holds them), `stationEntity`, `tag` (in a vanilla harbour the module's cell, `1000 * coordI + coordJ`, from
+  modules.script.lua), `position` (where vehicles stop: the terminal's first vehicle edge through
+  `transport.calcPosition`, as the base finds a waypoint), `cargoLoad` / `cargoUnload` / `passengersLoad` /
+  `passengersUnload`, `cargoTransferSpeeds` (`length`, `loadSpeedModifier` each), `carriers`
+  (`getCarriers(group, station, terminal)`), `transportModes` (the modes that are on, by name: a vanilla large
+  pier has SHIP and SMALL_SHIP, a small one SMALL_SHIP only) and `capacity`. What cannot be read is left out
+  (nil); `position` may well be missing at piers, whose terminals are made from a vehicle node (unverified).
+- `lines` lists the company's lines: stops (station group, station and terminal, 0-based, and `loadMode`: 0
+  available, 1 full load any, 2 full load all), vehicles, carriers, `customFilters`, `loads` (cargo some stop
+  loads) and `vehicleCargo` (cargo the line's vehicles can carry).
 - `line create --stops A,B,...` takes station groups in order, by id (a station entity means its group) or name
   (exact match first, then a unique part; several matches are an error with the candidates; names with commas need
   the id). Platforms are assigned automatically. The default name is the base `makeLineName` (gui) or "Line N"
@@ -562,6 +573,24 @@ All unchecked in game. There is no command to build stations.
   Reordering alone keeps platforms. Waypoints are lost. Via gui without the recipe's report, an update counts as
   done when the stops are as asked and differ from before, so a `--cargo`-only change, or one that keeps the stops,
   times out after 60 s.
+- `--terminals S:T,...` (create and update) gives every stop's platform, in order: `station:terminal`, or a bare
+  terminal for station 0, 0-based as `stations` lists them in `platforms`. All stops or none: when one stop has no
+  platform the base `autoAssignTerminals` takes the engine's assignment for every stop (allowing changes), so the
+  others would not hold; a list shorter or longer than the stops is refused. With every stop given, no
+  assignment is asked for. Without `--stops`, an update sets the platforms of the line's own stops (waypoints
+  kept). Before anything is sent, each station and terminal must exist (checked before the engine is asked about
+  it), its carriers must be readable, the platforms must share a carrier, and on an update of a line with
+  vehicles that carrier must be one of the line's (the first stop's platform, as the base `getLineCarriers`). The
+  Lua state that sends checks them again (via gui before the base `line_util` reads them), and that the built
+  stops hold them. The check goes by carrier only: a ship of mode SHIP at a small pier (SMALL_SHIP) passes it
+  (both WATER); see `transportModes` in `stations`. An update keeps the stops' `alternativeTerminals`, as the
+  base's main-terminal change does. Without `--terminals` nothing changes: the engine assigns, as before.
+- `--load-mode MODE[,...]` sets `Line.Stop.loadMode`: `available` (0, `LOAD_IF_AVAILABLE`), `any` (1,
+  `FULL_LOAD_ANY`) or `all` (2, `FULL_LOAD_ALL`), the three the base line window offers; one for every stop, or
+  one per stop. `LEGACY_UNLOAD_ONLY` is refused (the base does not offer it). Without `--stops` an update sets it
+  on the line's own stops. `ok` is false when the platforms or load modes read back differ from those asked for.
+  Via gui without the recipe's report, an update that changes only platforms or load modes times out, as a
+  `--cargo`-only one.
 - `line delete <line>` sells the vehicles first (only with `--sell-vehicles`), and sends `makeLineDestroyCmd` once
   the sale succeeded.
 - `--cargo <id or name>` loads only that cargo, at the stops whose station has it in an output stock, as the base
@@ -590,7 +619,11 @@ All unchecked in game. There is no command to build stations.
   engine; the line entity in `makeLineCreateCmd`'s callback; deleting a line with vehicles (the mod keeps the base
   order: sell, then delete); whether a town entity has a bounding volume for `--near` (if not, use an industry or
   station); whether the station and line systems used work in the GUI state; whether the report key can be
-  written ("line report not written" in the log if not).
+  written ("line report not written" in the log if not). For `--terminals` / `--load-mode` and `platforms`:
+  whether `getCarriers` with a station and terminal gives the platform's own carriers (the base asks it so in
+  `getLineCarriers`), whether setting `loadMode` to a number holds (the base cargo filter does it), whether
+  `vehicleEdges` / `TRANSPORT_NETWORK` / `calcPosition` read in the GUI state, and what the engine does with a
+  platform of the wrong carrier (the probe refuses it before sending, so this was never tried).
 
 ### Connections (`connect`)
 

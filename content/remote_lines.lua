@@ -15,7 +15,9 @@
 -- Every answer is read back from the engine (the line's stops, platforms, name, vehicles), never what was sent.
 -- Stops are checked before anything goes out: every stop at a station group of the company (or nobody's), at
 -- least two of them, one carrier they share, and after assignment a station and terminal that exist. A stop the
--- engine cannot place asserts, and an assertion takes the game down whatever pcall says.
+-- engine cannot place asserts, and an assertion takes the game down whatever pcall says. Platforms given by the
+-- caller (terminals: every stop or none) are checked to exist and to share a carrier before the engine is asked
+-- anything about them (line_configs.checkTerminals).
 local M = {}
 
 local ASYNC_TIMEOUT_SEC = 60
@@ -38,6 +40,7 @@ function M.new(ctx)
 	local publishUi = ctx.publishUi or function() end
 	local L = { jobs = {}, frames = 0, requests = {}, claimed = {} }
 	local handlers = {}
+	local perStop
 
 	local function CT() return api.type.ComponentType end
 	local function player() return api.engine.util.getPlayer() end
@@ -89,6 +92,88 @@ function M.new(ctx)
 		local x1, y1 = tonumber(hi and core.field(hi, "x")), tonumber(hi and core.field(hi, "y"))
 		if not (x0 and y0 and x1 and y1) then return nil end
 		return { x = (x0 + x1) / 2, y = (y0 + y1) / 2 }
+	end
+
+	local function flag(v)
+		if v == true or v == false then return v end
+		return nil
+	end
+
+	-- where vehicles stop at a terminal: its first vehicle edge's position (EdgePos: edge and param), as the base
+	-- finds a waypoint (line_react_util.tl: TRANSPORT_NETWORK edges[index + 1].geometry, transport.calcPosition).
+	-- nil when any of it cannot be read; the index is checked first (an engine vector read past its end may assert)
+	local function terminalPos(t)
+		return try(function()
+			local edges = core.field(t, "vehicleEdges")
+			if core.size(edges) < 1 then return nil end
+			local ep = core.at(edges, 1)
+			local id = core.field(ep, "edgeId")
+			local ent, idx = tonumber(core.field(id, "entity")), tonumber(core.field(id, "index"))
+			if not ent or not idx or idx < 0 then return nil end
+			local tn = comp(ent, "TRANSPORT_NETWORK")
+			local list = tn and core.field(tn, "edges")
+			if idx >= core.size(list) then return nil end
+			local geo = core.field(core.at(list, idx + 1), "geometry")
+			if geo == nil then return nil end
+			local p = api.engine.util.transport.calcPosition(geo, tonumber(core.field(ep, "param")) or 0)
+			local x, y, z = tonumber(core.field(p, "x")), tonumber(core.field(p, "y")), tonumber(core.field(p, "z"))
+			if not (x and y) then return nil end
+			return { x = x, y = y, z = z }
+		end)
+	end
+
+	-- a terminal's cargoTransferSpeeds: { length, loadSpeedModifier } each; nil when the terminal has none to read
+	local function transferSpeeds(t)
+		local v = core.field(t, "cargoTransferSpeeds")
+		if v == nil or not pcall(function() return #v end) then return nil end
+		local out = {}
+		for _, x in ipairs(core.toList(v)) do
+			out[#out + 1] = { length = tonumber(core.field(x, "length")), loadSpeedModifier = tonumber(core.field(x, "loadSpeedModifier")) }
+		end
+		return core.array(out)
+	end
+
+	-- a terminal's transportModes ({ [TransportMode] = true }) by name, sorted: what tells a large pier (SHIP and
+	-- SMALL_SHIP) from a small one (SMALL_SHIP only; medium_pier / small_pier.module.lua), both WATER as carriers.
+	-- nil when it cannot be read.
+	local function modesOf(t)
+		local v = core.field(t, "transportModes")
+		if v == nil then return nil end
+		local enum = try(function() return api.type.enum.TransportMode end)
+		local names = {}
+		local ok = pcall(function()
+			for m, on in pairs(v) do
+				if on == true then
+					local n = tostring(m)
+					for k, x in pairs(enum or {}) do if x == m then n = k end end
+					names[#names + 1] = n
+				end
+			end
+		end)
+		if not ok then return nil end
+		table.sort(names)
+		return core.array(names)
+	end
+
+	-- every platform of a station group, for picking one (line create --terminals): station and terminal 0-based as
+	-- a line stop holds them, the terminal's tag (a vanilla harbour's module cell, 1000 * coordI + coordJ:
+	-- modules.script.lua), where vehicles stop, the load flags, cargoTransferSpeeds and the carriers it serves.
+	-- Read only; what cannot be read is nil.
+	local function platformsOf(group, stations)
+		local out = {}
+		for si, st in ipairs(stations) do
+			local sc = comp(st, "STATION")
+			for ti, t in ipairs(core.toList(sc and core.field(sc, "terminals"))) do
+				local carriers = carriersOf(group, si - 1, ti - 1)
+				out[#out + 1] = { station = si - 1, terminal = ti - 1, stationEntity = st, tag = tonumber(core.field(t, "tag")),
+					position = terminalPos(t), cargoLoad = flag(core.field(t, "cargoLoad")),
+					cargoUnload = flag(core.field(t, "cargoUnload")), passengersLoad = flag(core.field(t, "passengersLoad")),
+					passengersUnload = flag(core.field(t, "passengersUnload")), cargoTransferSpeeds = transferSpeeds(t),
+					carriers = #carriers > 0 and core.array(carriers) or nil, transportModes = modesOf(t),
+					capacity = tonumber(core.field(t, "capacity")) }
+			end
+		end
+		return core.array(out)
 	end
 
 	-- one station group as the engine holds it; nil when e is none
@@ -218,8 +303,10 @@ function M.new(ctx)
 			local sg, st, te = tonumber(core.field(s, "stationGroup")), tonumber(core.field(s, "station")), tonumber(core.field(s, "terminal"))
 			local group = sg and comp(sg, "STATION_GROUP")
 			local stationEntity = group and st and core.at(core.field(group, "stations"), st + 1) or nil
+			-- loadMode: a number as the base's cargo filter reads it (0 available, 1 any, 2 all); nil if not one
+			local lm = core.field(s, "loadMode")
 			stops[#stops + 1] = { stationGroup = sg, name = sg and nameOf(sg) or nil, station = st, terminal = te,
-				stationEntity = tonumber(stationEntity) }
+				stationEntity = tonumber(stationEntity), loadMode = type(lm) == "number" and lm or nil }
 			local cfg = core.field(s, "stopConfig")
 			local load = core.toList(cfg and core.field(cfg, "load"))
 			for i, on in ipairs(load) do
@@ -409,7 +496,29 @@ function M.new(ctx)
 		return api.type.Vec3f.new(c[1], c[2], c[3])
 	end
 
-	local function create(c, a, stops, cargoId)
+	-- the platforms and load modes of a request (perStop below) onto a request or cmdLine's argument
+	local function withPerStop(r, per)
+		r.terminals, r.loadModes, r.carriers = per.terminals, per.loadModes, per.carriers
+		return r
+	end
+
+	-- the line's stops read back hold the platforms and load modes asked for: an error, or nil
+	local function perStopDiffers(stopsNow, per)
+		for i, s in ipairs(stopsNow or {}) do
+			local t = per.terminals and per.terminals[i]
+			if t and (s.station ~= t.station or s.terminal ~= t.terminal) then
+				return string.format("stop %d is at station %s terminal %s, not %d:%d as asked", i, tostring(s.station),
+					tostring(s.terminal), t.station, t.terminal)
+			end
+			local m = per.loadModes and per.loadModes[i]
+			if m and s.loadMode ~= nil and s.loadMode ~= m then
+				return string.format("stop %d has load mode %s, not %d as asked", i, tostring(s.loadMode), m)
+			end
+		end
+		return nil
+	end
+
+	local function create(c, a, stops, cargoId, per)
 		local job = newJob(c, a)
 		job.wanted = idsOf(stops)
 		local known = {}
@@ -443,10 +552,12 @@ function M.new(ctx)
 			if a.name and out.name ~= a.name then
 				out.ok, out.error = false, "the line's name is not the one asked for"
 			end
+			local differs = out.exists and perStopDiffers(out.stops, per)
+			if differs then out.ok, out.error = false, differs end
 		end
 		start(job, function()
 			if a.via == "gui" then
-				local r = { id = job.id, kind = "create", stops = {}, name = a.name, cargo = cargoId }
+				local r = withPerStop({ id = job.id, kind = "create", stops = {}, name = a.name, cargo = cargoId }, per)
 				for _, s in ipairs(stops) do r.stops[#r.stops + 1] = { stationGroup = s.id } end
 				job.request = r
 				L.requests[job.id] = r
@@ -454,7 +565,7 @@ function M.new(ctx)
 			else
 				local stopList = {}
 				for _, s in ipairs(stops) do stopList[#stopList + 1] = { stationGroup = s.id } end
-				local line, notes = lc.cmdLine({ kind = "create", stops = stopList, cargo = cargoId })
+				local line, notes = lc.cmdLine(withPerStop({ kind = "create", stops = stopList, cargo = cargoId }, per))
 				for _, n in ipairs(notes) do job.notes[#job.notes + 1] = n end
 				job.built, job.sentStops = true, lc.stopsOf(line.stops)
 				job.sentName = lineName(a.name)
@@ -469,12 +580,12 @@ function M.new(ctx)
 		say(string.format("line %d: create, %d stops via %s", c.id, #stops, a.via), 2)
 	end
 
-	local function update(c, a, stops, cargoId)
+	local function update(c, a, stops, cargoId, per)
 		local before = lineInfo(a.line)
 		local job = newJob(c, a)
 		job.entity, job.before = a.line, before
 		job.wanted = stops and idsOf(stops) or nil
-		local rebuild = stops ~= nil or cargoId ~= nil
+		local rebuild = stops ~= nil or cargoId ~= nil or per.terminals ~= nil or per.loadModes ~= nil
 		job.check = function()
 			if job.reportError then return true end
 			if rebuild then
@@ -505,6 +616,8 @@ function M.new(ctx)
 				out.ok, out.error = false, "the line's stops differ from those asked for"
 			end
 			if a.name and out.name ~= a.name then out.ok, out.error = false, "the line's name is not the one asked for" end
+			local differs = perStopDiffers(out.stops, per)
+			if differs then out.ok, out.error = false, differs end
 		end
 		start(job, function()
 			-- the rename first: a raise after a gui request was published would leave it to run unanswered
@@ -519,12 +632,12 @@ function M.new(ctx)
 					for _, s in ipairs(stops) do stopList[#stopList + 1] = { stationGroup = s.id } end
 				end
 				if a.via == "gui" then
-					local r = { id = job.id, kind = "update", line = a.line, stops = stopList, cargo = cargoId }
+					local r = withPerStop({ id = job.id, kind = "update", line = a.line, stops = stopList, cargo = cargoId }, per)
 					job.request = r
 					L.requests[job.id] = r
 					publishRequests()
 				else
-					local line, notes = lc.cmdLine({ kind = "update", line = a.line, stops = stopList, cargo = cargoId })
+					local line, notes = lc.cmdLine(withPerStop({ kind = "update", line = a.line, stops = stopList, cargo = cargoId }, per))
 					for _, n in ipairs(notes) do job.notes[#job.notes + 1] = n end
 					job.built, job.sentStops = true, lc.stopsOf(line.stops)
 					api.cmd.sendCommand(api.cmd.makeLineUpdateCmd(a.line, line), function(_, success) job.result = success == true end)
@@ -575,7 +688,55 @@ function M.new(ctx)
 		end)
 	end
 
-	-- args: action (create, update, delete), line, stops, name, cargo, sellVehicles, via
+	-- the platforms (terminals) and load modes of a create or update, one per stop of the line as it will be (the
+	-- stops given, or the line's own), checked here so a refusal answers at once; line_configs checks the platforms
+	-- again in the Lua state that sends. On an update of a line with vehicles the platforms must serve the carrier
+	-- those run on, taken as the base's line_util.getLineCarriers does: from the first stop's platform. Returns
+	-- { terminals, loadModes, carriers } (each may be nil), or nil and why.
+	function perStop(a, stops)
+		local out = {}
+		if not (a.terminals or a.loadModes or a.loadModeAll) then return out end
+		local groups = {}
+		local before = a.action == "update" and lineInfo(a.line) or nil
+		for _, s in ipairs(stops or (before and before.stops) or {}) do groups[#groups + 1] = { stationGroup = s.id or s.stationGroup } end
+		local n = #groups
+		if a.terminals and #a.terminals ~= n then
+			return nil, string.format("give a terminal for every stop (%d stops, %d terminals): when one stop has none, " ..
+				"the base assigns every stop's platform anew (autoAssignTerminals), so some would not hold", n, #a.terminals)
+		end
+		if a.loadModeAll then
+			out.loadModes = {}
+			for i = 1, n do out.loadModes[i] = a.loadModeAll end
+		elseif a.loadModes then
+			if #a.loadModes ~= n then
+				return nil, string.format("give one load mode for every stop, or one for all (%d stops, %d load modes)", n, #a.loadModes)
+			end
+			out.loadModes = a.loadModes
+		end
+		if a.terminals then
+			local need
+			local first = before and before.stops[1]
+			if first and before.vehicles > 0 and first.station and first.terminal then
+				need = lc.terminalCarriers(first.stationGroup, first.station, first.terminal)
+				-- the vehicles' carrier unknown: whether they could stop at the new platforms cannot be told
+				if not need then
+					return nil, string.format("the carriers of line %d's first stop could not be read, so whether its %d " ..
+						"vehicles can use the platforms given is unknown", a.line, before.vehicles)
+				end
+			end
+			local ok, why = lc.checkTerminals(groups, a.terminals, need)
+			if not ok then return nil, why end
+			out.terminals = a.terminals
+			if need then
+				out.carriers = {}
+				for k in pairs(need) do out.carriers[#out.carriers + 1] = k end
+				table.sort(out.carriers)
+			end
+		end
+		return out
+	end
+
+	-- args: action (create, update, delete), line, stops, name, cargo, sellVehicles, via, terminals, loadModes
 	function handlers.line(c)
 		local a, err = core.lineArgs(c.args)
 		if not a then return fail(c.id, err) end
@@ -598,8 +759,10 @@ function M.new(ctx)
 			if not hit then return fail(c.id, err3) end
 			cargoId = hit.id
 		end
-		if a.action == "create" then return create(c, a, stops, cargoId) end
-		return update(c, a, stops, cargoId)
+		local per, err4 = perStop(a, stops)
+		if not per then return fail(c.id, err4) end
+		if a.action == "create" then return create(c, a, stops, cargoId, per) end
+		return update(c, a, stops, cargoId, per)
 	end
 
 	---------------------------------------------------------------------------------------------------------------
@@ -631,6 +794,7 @@ function M.new(ctx)
 				end
 			end
 			if keep then
+				g.platforms = platformsOf(g.id, g.stationIds)
 				g.stationIds = nil
 				out[#out + 1] = g
 			end

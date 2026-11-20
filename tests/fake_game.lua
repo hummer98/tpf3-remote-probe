@@ -149,9 +149,28 @@ function M.new(dir, opts)
 			local cfg = newStopConfig()
 			for id in pairs(cargoTypes) do cfg.load[id + 1] = s.loads and s.loads[id] == true or false; cfg.maxLoad[id + 1] = 1 end
 			stops[#stops + 1] = { stationGroup = s.stationGroup, station = s.station or 0, terminal = s.terminal or 0,
-				stopConfig = cfg, alternativeTerminals = {}, waypoints = s.waypoints or {}, maxAdditionalWaitingTime = 60 }
+				stopConfig = cfg, alternativeTerminals = {}, waypoints = s.waypoints or {}, maxAdditionalWaitingTime = 60,
+				loadMode = s.loadMode or 0 }
 		end
 		g.lines[e] = { name = l.name, stops = stops, customFilters = l.customFilters == true, reservationPriority = 1 }
+	end
+	-- one platform's carriers: st.terminalCarriers[i] (1-based) where given, else the station's carriers. A station
+	-- or terminal that does not exist is taken as the engine's assertion: nothing says the engine checks, and the
+	-- probe must look before it asks.
+	local function terminalCarriers(gid, station, terminal)
+		local grp = groups[gid]
+		local st = grp and (grp.stations or {})[station + 1]
+		if not st or terminal < 0 or terminal >= (st.terminals or 1) then
+			g.crashed = "ASSERT: getCarriers of station " .. tostring(station) .. " terminal " .. tostring(terminal) ..
+				" of station group " .. tostring(gid)
+			error(g.crashed)
+		end
+		local out = {}
+		for _, c in ipairs((st.terminalCarriers or {})[terminal + 1] or st.carriers or { "ROAD" }) do
+			out[#out + 1] = api.type.enum.Carrier[c]
+		end
+		table.sort(out)
+		return out
 	end
 	local function groupCarriers(gid)
 		local out, seen = {}, {}
@@ -179,6 +198,27 @@ function M.new(dir, opts)
 				g.crashed = "ASSERT: stop config of line stop " .. i .. " is not one entry per cargo type"
 				error(g.crashed)
 			end
+			-- a load mode outside the LoadMode enum (0..3, engine.d.tl)
+			if s.loadMode ~= nil and (type(s.loadMode) ~= "number" or s.loadMode < 0 or s.loadMode > 3 or s.loadMode % 1 ~= 0) then
+				g.crashed = "ASSERT: line stop " .. i .. " has load mode " .. tostring(s.loadMode)
+				error(g.crashed)
+			end
+		end
+		-- a stop at a platform none of the line's vehicles could use: every platform must share a carrier. Whether
+		-- the engine asserts or refuses is not known; the fake takes the worse.
+		local common
+		for _, s in ipairs(line.stops or {}) do
+			local set = {}
+			for _, c in ipairs(terminalCarriers(s.stationGroup, s.station, s.terminal)) do set[c] = true end
+			if common == nil then
+				common = set
+			else
+				for c in pairs(common) do if not set[c] then common[c] = nil end end
+			end
+		end
+		if common and next(common) == nil then
+			g.crashed = "ASSERT: the line's platforms share no carrier"
+			error(g.crashed)
 		end
 	end
 	local function lineVehicleIds(line)
@@ -400,7 +440,11 @@ function M.new(dir, opts)
 					return stationOf[st] ~= nil and (stationOf[st].passenger == true) == (cargo == false)
 				end },
 				-- opts.modesToCarriers: the engine maps transport modes to carriers (statistics_react_util.tl uses it)
-				transport = opts.modesToCarriers and { transportModesToCarriers = function(modes)
+				-- transport.calcPosition: the fake geometry's x, y (param added to x), z 0
+				transport = { calcPosition = function(geo, param)
+					if type(geo) ~= "table" or not geo.x then error("no geometry") end
+					return { x = geo.x + (param or 0), y = geo.y, z = 0 }
+				end, transportModesToCarriers = opts.modesToCarriers and function(modes)
 					local C, M2 = api.type.enum.Carrier, api.type.enum.TransportMode
 					local by = { [M2.BUS] = C.ROAD, [M2.TRUCK] = C.ROAD, [M2.CAR] = C.ROAD, [M2.TRAM] = C.TRAM,
 						[M2.ELECTRIC_TRAM] = C.TRAM, [M2.TRAIN] = C.RAIL, [M2.ELECTRIC_TRAIN] = C.RAIL, [M2.SHIP] = C.WATER,
@@ -412,7 +456,7 @@ function M.new(dir, opts)
 					end
 					table.sort(out)
 					return out
-				end } or nil,
+				end or nil },
 				-- opts.infiniteMoney: nil, as the engine gives for infinite money
 				finance = { getPlayersBalance = function() if opts.infiniteMoney then return nil end return g.balance end,
 					-- opts.vehicleBalances = { [entity] = { { time, amount } } }: the journal of a vehicle
@@ -523,7 +567,12 @@ function M.new(dir, opts)
 					end,
 				},
 				stationGroupSystem = {
-					getCarriers = function(gid) return { groupCarriers(gid), {} } end,
+					-- station and terminal -1: the group's carriers; else one platform's (see terminalCarriers)
+					getCarriers = function(gid, station, terminal)
+						g.carrierCalls = (g.carrierCalls or 0) + 1
+						if station ~= nil and station >= 0 then return { terminalCarriers(gid, station, terminal), {} } end
+						return { groupCarriers(gid), {} }
+					end,
 					getStationGroup = function(st) return groupOfStation[st] or -1 end,
 				},
 				simEntityAtVehicleSystem = { getVehicleSimEntitiesCountForCargoType = function(e, cargo)
@@ -617,14 +666,23 @@ function M.new(dir, opts)
 					if not st then return nil end
 					local t = {}
 					-- st.kind "passenger" / "cargo": the terminals' load flags (none given: the probe cannot tell)
+					-- st.terminalInfo[i]: fields as the engine's Terminal (tag, the four flags, cargoTransferSpeeds,
+					-- vehicleEdges), over the defaults
 					for i = 1, st.terminals or 1 do
 						local p, c = st.kind == "passenger", st.kind == "cargo"
 						t[i] = { tag = i }
 						if st.kind then
 							t[i].passengersLoad, t[i].passengersUnload, t[i].cargoLoad, t[i].cargoUnload = p, p, c, c
 						end
+						for k, v in pairs((st.terminalInfo or {})[i] or {}) do t[i][k] = copy(v) end
 					end
 					return { terminals = t }
+				end
+				-- opts.networks = { [entity] = { edges = { { geometry = { x, y } } } } }: calcPosition below gives
+				-- the geometry's x, y (param added to x)
+				if kind == "TRANSPORT_NETWORK" then
+					local n = (opts.networks or {})[e]
+					return n and copy(n) or nil
 				end
 				if kind == "PLAYER_OWNED" then
 					local o = (groups[e] and groups[e].owner) or (stationOf[e] and stationOf[e].owner)
@@ -673,7 +731,7 @@ function M.new(dir, opts)
 			Line = setmetatable({
 				Stop = { new = function()
 					return { stationGroup = -1, station = -1, terminal = -1, stopConfig = newStopConfig(), alternativeTerminals = {},
-						waypoints = {}, maxAdditionalWaitingTime = 0 }
+						waypoints = {}, maxAdditionalWaitingTime = 0, loadMode = 0 }
 				end },
 				StopConfig = { new = function(src) return src and copy(src) or newStopConfig() end },
 			}, { __index = { new = function(src)
@@ -684,7 +742,8 @@ function M.new(dir, opts)
 			ComponentType = { VEHICLE_DEPOT = "VEHICLE_DEPOT", GAME_TIME = "GAME_TIME", GAME_SPEED = "GAME_SPEED", TOWN = "TOWN", TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE",
 				STATION_GROUP = "STATION_GROUP", INDUSTRY = "INDUSTRY", NAME = "NAME", STATION = "STATION", LINE = "LINE",
 				PLAYER_OWNED = "PLAYER_OWNED", BOUNDING_VOLUME = "BOUNDING_VOLUME", GAME_SCRIPT = "GAME_SCRIPT",
-				PERSON_CAPACITY = "PERSON_CAPACITY", STOCK_LIST = "STOCK_LIST", CONSTRUCTION = "CONSTRUCTION" },
+				PERSON_CAPACITY = "PERSON_CAPACITY", STOCK_LIST = "STOCK_LIST", CONSTRUCTION = "CONSTRUCTION",
+				TRANSPORT_NETWORK = "TRANSPORT_NETWORK" },
 			SavegameId = { new = function() return {} end },
 			StartGameParams = { new = function() return {} end },
 			BaseConfig = { Locations = { new = function() return { town = {}, industry = {} } end } },
@@ -905,6 +964,9 @@ function M.new(dir, opts)
 					if s.station < 0 or s.terminal < 0 then auto = true end
 					s.stopConfig = v.stop.passThroughStopData.stopConfig
 					s.maxAdditionalWaitingTime = v.stop.passThroughStopData.maxAdditionalWaitingTime
+					-- as the base: the via's loadMode, then passThroughStopData's
+					if v.stop.loadMode ~= nil then s.loadMode = v.stop.loadMode end
+					if v.stop.passThroughStopData.loadMode then s.loadMode = v.stop.passThroughStopData.loadMode end
 					comp.stops[#comp.stops + 1] = s
 				end
 			end
@@ -923,6 +985,18 @@ function M.new(dir, opts)
 		end
 		lu.autoLoadConfig = function(line)
 			if line.customFilters then return end
+			-- as the base's getTerminal (line_util.tl): stations[station1], terminals[terminal1] read without a look;
+			-- past the end of the engine's vectors is taken as its assertion
+			for _, v in ipairs(line.path) do
+				if v.stop and v.stop.station1 then
+					local grp = groups[v.stop.stationGroup]
+					local st = grp and (grp.stations or {})[v.stop.station1]
+					if not st or not v.stop.terminal1 or v.stop.terminal1 < 1 or v.stop.terminal1 > (st.terminals or 1) then
+						g.crashed = "ASSERT: line_util.getTerminal read past the end"
+						error(g.crashed)
+					end
+				end
+			end
 			local need = false
 			for _, v in ipairs(line.path) do need = need or (v.stop and v.stop.station1 == nil) end
 			if need then
@@ -952,7 +1026,7 @@ function M.new(dir, opts)
 			for _, s in ipairs(l.stops) do
 				path[#path + 1] = { stop = { stationGroup = s.stationGroup, station1 = s.station + 1, terminal1 = s.terminal + 1,
 					alternativeTerminals = s.alternativeTerminals, passThroughStopData = { stopConfig = s.stopConfig,
-					maxAdditionalWaitingTime = s.maxAdditionalWaitingTime } } }
+					maxAdditionalWaitingTime = s.maxAdditionalWaitingTime, loadMode = s.loadMode } } }
 				for _, w in ipairs(s.waypoints or {}) do path[#path + 1] = { waypoint = w } end
 			end
 			return { entityAndRevision = { entity = e }, path = path, customFilters = l.customFilters,

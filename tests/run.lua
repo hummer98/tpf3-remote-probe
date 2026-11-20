@@ -2805,10 +2805,12 @@ test("core.lineArgs: create, update, delete; empty, single, nil, userdata and ma
 		{ { action = "create", stops = { 41, 42 }, name = string.rep("x", 101) }, "longer than" },
 		{ { action = "create", stops = { 41, 42 }, cargo = true }, "cargo must be" },
 		{ { action = "update", stops = { 41, 42 } }, "give the line" },
-		{ { action = "update", line = 21 }, "give stops, name or cargo" },
+		{ { action = "update", line = 21 }, "give stops, name, cargo, terminals or load modes" },
 		{ { action = "update", line = "x", name = "a" }, "line must be an entity id" },
 		{ { action = "delete" }, "give the line" },
 		{ { action = "delete", line = 21, stops = { 41, 42 } }, "delete takes no" },
+		{ { action = "delete", line = 21, terminals = { 0, 0 } }, "delete takes no" },
+		{ { action = "delete", line = 21, loadModes = "any" }, "delete takes no" },
 	}) do
 		local ok, err = core.lineArgs(bad[1])
 		eq(ok, nil, bad[2])
@@ -3310,6 +3312,275 @@ test("a line made and a vehicle bought onto it: buy --line answers with the vehi
 	frames(g, 10)
 	local ls = final(g, 712)
 	eq(ls.lines[1].vehicles, 1); eq(ls.lines[1].vehicleIds[1], b.vehicleIds[1])
+end)
+
+-- harbours: Port A (47) a station with a truck bay (terminal 0, ROAD) and two piers (1 and 2, WATER), the second
+-- with a tag, transfer speeds and a vehicle edge; Port B (48) two piers; Port C (49) a truck bay and a pier. Line
+-- 23 runs a ship between Port A's pier 1 and Port C's pier.
+local function portWorld(extra)
+	extra = extra or {}
+	local w = {
+		stationGroups = {
+			[47] = { name = "Port A", stations = { { id = 471, terminals = 3, kind = "cargo", carriers = { "ROAD", "WATER" },
+				terminalCarriers = { { "ROAD" }, { "WATER" }, { "WATER" } }, pos = { 0, 0 },
+				terminalInfo = { [3] = { tag = 2003, cargoTransferSpeeds = { { length = 40, loadSpeedModifier = 1.5 } },
+					transportModes = { [10] = true, [12] = true, [0] = false }, capacity = 50,
+					vehicleEdges = { { edgeId = { entity = 900, index = 1 }, param = 0.5 } } },
+					[2] = { vehicleEdges = { { edgeId = { entity = 900, index = 5 }, param = 0 } } } } } } },
+			[48] = { name = "Port B", stations = { { id = 481, terminals = 2, kind = "cargo", carriers = { "WATER" }, pos = { 900, 0 },
+				terminalInfo = { [1] = { tag = newproxy(false), cargoTransferSpeeds = newproxy(false) } } } } },
+			[49] = { name = "Port C", stations = { { id = 491, terminals = 2, kind = "cargo", carriers = { "ROAD", "WATER" },
+				terminalCarriers = { { "ROAD" }, { "WATER" } }, pos = { 1800, 0 } } } },
+			[41] = { name = "Central", stations = { { id = 411, terminals = 2, passenger = true, pos = { 0, 500 } } } },
+		},
+		networks = { [900] = { edges = { { geometry = { x = 1, y = 2 } }, { geometry = { x = 10, y = 20 } } } } },
+	}
+	for k, v in pairs(extra) do w[k] = v end
+	return vehicleGame(w)
+end
+
+test("core.lineArgs: terminals for every stop or none; load modes one per stop or one for all", function()
+	local a = core.lineArgs({ action = "create", stops = { 47, 48 }, terminals = { { station = 0, terminal = 2 }, "0:1" },
+		loadModes = "ANY" })
+	eq(a.terminals[1].station, 0); eq(a.terminals[1].terminal, 2); eq(a.terminals[2].terminal, 1)
+	eq(a.loadModeAll, 1); eq(a.loadModes, nil)
+	a = core.lineArgs({ action = "create", stops = { 47, 48 }, terminals = { 2, "1" }, loadModes = { "available", "full_load_all" } })
+	eq(a.terminals[1].station, 0, "a bare number is station 0's terminal"); eq(a.terminals[2].terminal, 1)
+	eq(a.loadModes[1], 0); eq(a.loadModes[2], 2)
+	eq(core.lineArgs({ action = "create", stops = { 47, 48 }, loadModes = { 0, 2 } }).loadModes[2], 2)
+	eq(core.lineArgs({ action = "update", line = 23, loadModes = "all" }).loadModeAll, 2, "an update of the line's own stops")
+	eq(#core.lineArgs({ action = "update", line = 23, terminals = { 1, 1 } }).terminals, 2)
+	eq(core.lineArgs({ action = "create", stops = { 47, 48 } }).terminals, nil, "none given: none sent")
+	for _, bad in ipairs({
+		{ { action = "create", stops = { 47, 48 }, terminals = { 2 } }, "give a terminal for every stop (2 stops, 1 terminals)" },
+		{ { action = "create", stops = { 47, 48 }, terminals = { 2, 1, 0 } }, "give a terminal for every stop" },
+		{ { action = "create", stops = { 47, 48 }, terminals = { [1] = 2, [3] = 1 } }, "terminals must be a list" },
+		{ { action = "create", stops = { 47, 48 }, terminals = {} }, "terminals must be a list" },
+		{ { action = "create", stops = { 47, 48 }, terminals = newproxy(true) }, "terminals must be a list" },
+		{ { action = "create", stops = { 47, 48 }, terminals = 2 }, "terminals must be a list" },
+		{ { action = "create", stops = { 47, 48 }, terminals = { 2, -1 } }, "terminal 2 must be" },
+		{ { action = "create", stops = { 47, 48 }, terminals = { 2, 1.5 } }, "terminal 2 must be" },
+		{ { action = "create", stops = { 47, 48 }, terminals = { 2, "a:1" } }, "terminal 2 must be" },
+		{ { action = "create", stops = { 47, 48 }, terminals = { 2, newproxy(true) } }, "terminal 2 must be" },
+		{ { action = "create", stops = { 47, 48 }, terminals = { 2, { station = 0 } } }, "terminal 2 must be" },
+		{ { action = "create", stops = { 47, 48 }, terminals = { 2, 0 / 0 } }, "terminal 2 must be" },
+		{ { action = "create", stops = { 47, 48 }, loadModes = "legacy_unload_only" }, "must be available, any or all" },
+		{ { action = "create", stops = { 47, 48 }, loadModes = 3 }, "must be available, any or all" },
+		{ { action = "create", stops = { 47, 48 }, loadModes = "fast" }, "must be available, any or all" },
+		{ { action = "create", stops = { 47, 48 }, loadModes = true }, "must be available, any or all" },
+		{ { action = "create", stops = { 47, 48 }, loadModes = newproxy(true) }, "must be available, any or all" },
+		{ { action = "create", stops = { 47, 48 }, loadModes = {} }, "loadModes must be one mode" },
+		{ { action = "create", stops = { 47, 48 }, loadModes = { "any" } }, "one load mode for every stop" },
+		{ { action = "create", stops = { 47, 48 }, loadModes = { "any", 7 } }, "load mode 2 must be" },
+	}) do
+		local ok, err = core.lineArgs(bad[1])
+		eq(ok, nil, bad[2])
+		truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	-- the requests the speed control takes: a malformed or short terminals / loadModes list drops the request whole
+	local list = core.lineRequests({
+		{ id = 1, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } },
+			terminals = { { station = 0, terminal = 2 }, { station = 0, terminal = 1 } }, loadModes = { 1, 2 }, carriers = { 4 } },
+		{ id = 2, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } }, terminals = { { station = 0, terminal = 2 } } },
+		{ id = 3, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } }, terminals = { { station = 0 }, { station = 0, terminal = 1 } } },
+		{ id = 4, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } }, loadModes = { 1, 3 } },
+		{ id = 5, kind = "update", line = 23, loadModes = { 2, 2 } },
+		{ id = 6, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } }, terminals = newproxy(true) },
+	})
+	eq(#list, 2)
+	eq(list[1].terminals[1].terminal, 2); eq(list[1].loadModes[2], 2); eq(list[1].carriers[1], 4)
+	eq(list[2].id, 5); eq(list[2].loadModes[1], 2); eq(list[2].terminals, nil)
+end)
+
+test("line create --terminals: every stop at the platform given, no assignment asked; load modes set (gui and cmd)", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = portWorld()
+		send(g, 730, "line", string.format('{ action = "create", stops = { 47, 48 }, terminals = { "0:2", "0:1" }, ' ..
+			'loadModes = { "all", "available" }, via = %q }', via))
+		frames(g, FIRST)
+		local a, n = final(g, 730)
+		eq(n, 1); eq(a.ok, true, via .. " " .. tostring(a.error))
+		eq(a.stops[1].terminal, 2, via); eq(a.stops[2].terminal, 1, via)
+		eq(a.stops[1].loadMode, 2, via); eq(a.stops[2].loadMode, 0, via)
+		eq(a.sentStops[1].terminal, 2, via)
+		eq(g.assignCalls, nil, via .. ": the engine's assignment is not asked, so it cannot move them")
+		eq(g.lines[a.line].stops[1].loadMode, 2, via .. ": what the engine holds")
+		eq(g.crashed, nil, via)
+		-- the same without terminals: the engine assigns, as before
+		send(g, 731, "line", string.format('{ action = "create", stops = { 47, 48 }, via = %q }', via))
+		frames(g, 10)
+		local b = final(g, 731)
+		eq(b.ok, true, via .. " " .. tostring(b.error))
+		truthy((g.assignCalls or 0) > 0, via .. ": assigned by the engine")
+		eq(b.stops[1].terminal, 2, via .. ": the fake engine's pick (the last terminal)"); eq(b.stops[1].loadMode, 0, via)
+	end
+end)
+
+test("line create --terminals: out of range, unreadable carriers and carriers that do not match are refused unsent", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = portWorld()
+		local cases = {
+			{ '{ "0:5", "0:1" }', "terminal 5 of station 471 (station group 47) does not exist (3 terminals" },
+			{ '{ "1:0", "0:1" }', "station 1 of station group 47 does not exist (1 stations)" },
+			{ '{ "0:2", "0:2" }', "terminal 2 of station 481 (station group 48) does not exist (2 terminals" },
+			{ '{ "0:0", "0:1" }', "share no carrier (stop 1 0:0 ROAD; stop 2 0:1 WATER)" },
+			{ '{ "0:2" }', "give a terminal for every stop" },
+		}
+		for i, c in ipairs(cases) do
+			local id = 740 + i
+			send(g, id, "line", string.format('{ action = "create", stops = { 47, 48 }, terminals = %s, via = %q }', c[1], via))
+			frames(g, i == 1 and FIRST or 10)
+			local a, n = final(g, id)
+			eq(n, 1, c[2]); eq(a.ok, false, c[2])
+			truthy(tostring(a.error):find(c[2], 1, true), via .. ": " .. tostring(a.error) .. " / " .. c[2])
+		end
+		eq(#sent(g, "lineCreate"), 0, via .. ": nothing sent")
+		eq(g.crashed, nil, via .. ": never asked the engine about a platform that does not exist")
+	end
+	-- carriers that cannot be read: refused, since whether a ship can stop there is unknown
+	local g = portWorld()
+	local real = api.engine.system.stationGroupSystem.getCarriers
+	api.engine.system.stationGroupSystem.getCarriers = function(gid, st, te)
+		if st ~= nil and st >= 0 then error("no carriers here") end
+		return real(gid, st, te)
+	end
+	send(g, 749, "line", '{ action = "create", stops = { 47, 48 }, terminals = { "0:2", "0:1" }, via = "cmd" }')
+	frames(g, FIRST)
+	local a = final(g, 749)
+	api.engine.system.stationGroupSystem.getCarriers = real
+	eq(a.ok, false); truthy(tostring(a.error):find("could not be read", 1, true), tostring(a.error))
+	eq(#sent(g, "lineCreate"), 0)
+end)
+
+test("line_configs: the platforms are checked again where the line is built, and a stop it moves is not sent", function()
+	local g = portWorld()
+	local lc = require "hummer_remote_probe::/line_configs.lua"
+	local stops = { { stationGroup = 47 }, { stationGroup = 48 } }
+	-- out of range in cmdLine (the station changed after the guiUpdate script looked): an error, no engine call
+	local ok, err = pcall(lc.cmdLine, { kind = "create", stops = stops, terminals = { { station = 0, terminal = 9 }, { station = 0, terminal = 1 } } })
+	eq(ok, false); truthy(tostring(err):find("does not exist", 1, true), tostring(err))
+	ok, err = pcall(lc.cmdLine, { kind = "create", stops = stops, terminals = { { station = 0, terminal = 0 }, { station = 0, terminal = 1 } } })
+	eq(ok, false); truthy(tostring(err):find("share no carrier", 1, true), tostring(err))
+	ok, err = pcall(lc.cmdLine, { kind = "create", stops = stops, terminals = { { station = 0, terminal = 2 } } })
+	eq(ok, false); truthy(tostring(err):find("for every stop", 1, true), tostring(err))
+	-- the vehicles' carrier (r.carriers) must be among those of the platforms
+	ok, err = pcall(lc.cmdLine, { kind = "create", stops = stops, terminals = { { station = 0, terminal = 2 }, { station = 0, terminal = 1 } },
+		carriers = { api.type.enum.Carrier.ROAD } })
+	eq(ok, false); truthy(tostring(err):find("the line's vehicles run on ROAD", 1, true), tostring(err))
+	local line = lc.cmdLine({ kind = "create", stops = stops, terminals = { { station = 0, terminal = 2 }, { station = 0, terminal = 1 } },
+		loadModes = { 1, 1 } })
+	eq(line.stops[1].terminal, 2); eq(line.stops[2].loadMode, 1)
+	-- checkRequested: a stop the builder moved, or a load mode it dropped, does not go
+	local r = { terminals = { { station = 0, terminal = 2 }, { station = 0, terminal = 1 } }, loadModes = { 1, 1 } }
+	truthy(lc.checkRequested({ { stationGroup = 47, station = 0, terminal = 2, loadMode = 1 }, { stationGroup = 48, station = 0, terminal = 1, loadMode = 1 } }, r))
+	ok, err = lc.checkRequested({ { stationGroup = 47, station = 0, terminal = 1, loadMode = 1 }, { stationGroup = 48, station = 0, terminal = 1, loadMode = 1 } }, r)
+	eq(ok, nil); truthy(err:find("not 0:2 as asked", 1, true), err)
+	ok, err = lc.checkRequested({ { stationGroup = 47, station = 0, terminal = 2, loadMode = 0 }, { stationGroup = 48, station = 0, terminal = 1, loadMode = 1 } }, r)
+	eq(ok, nil); truthy(err:find("load mode 0, not 1", 1, true), err)
+	truthy(lc.checkRequested({ { stationGroup = 47, station = 0, terminal = 2, loadMode = newproxy(true) },
+		{ stationGroup = 48, station = 0, terminal = 1 } }, r), "a load mode that is no number cannot be compared")
+	truthy(lc.checkRequested({ { stationGroup = 47, station = 0, terminal = 0 } }, {}), "nothing asked: nothing to hold")
+	eq(lc.checkTerminals({}, {}), nil); eq(lc.checkTerminals(nil, nil), nil)
+	eq(g.crashed, nil)
+end)
+
+test("line via gui: the platforms are checked before the base's line_util reads them (autoLoadConfig, getTerminal)", function()
+	local g = portWorld()
+	local lc = require "hummer_remote_probe::/line_configs.lua"
+	local function perform(r)
+		fake.inReact = true
+		local report = {}
+		local ok, err = pcall(lc.performGui, require, r, report)
+		fake.inReact = false
+		return ok, err, report
+	end
+	-- the port lost a pier after the guiUpdate script checked: refused before line_util reads past the end
+	local ok, err = perform({ id = 1, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } },
+		terminals = { { station = 0, terminal = 9 }, { station = 0, terminal = 1 } } })
+	eq(ok, false); truthy(tostring(err):find("terminal 9 of station 471", 1, true), tostring(err))
+	eq(g.crashed, nil, "line_util never read it")
+	ok, err = perform({ id = 2, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } },
+		terminals = { { station = 0, terminal = 2 }, { station = 0, terminal = 1 } }, carriers = { api.type.enum.Carrier.ROAD } })
+	eq(ok, false); truthy(tostring(err):find("run on ROAD", 1, true), tostring(err))
+	local report
+	ok, err, report = perform({ id = 3, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } },
+		terminals = { { station = 0, terminal = 2 }, { station = 0, terminal = 1 } }, loadModes = { 2, 0 } })
+	eq(ok, true, tostring(err)); eq(report.sentStops[1].terminal, 2)
+	eq(#sent(g, "lineCreate"), 1, "only the good one"); eq(g.crashed, nil)
+end)
+
+test("line update --terminals: a line with vehicles whose first stop's carriers cannot be read is refused", function()
+	local g = portWorld({ lines = { [23] = { name = "Ship 1", stops = { { stationGroup = 47, station = 0, terminal = 1 },
+		{ stationGroup = 49, station = 0, terminal = 1 } } } }, fleet = { [601] = fleetOf(101, 5, 23) } })
+	local real = api.engine.system.stationGroupSystem.getCarriers
+	api.engine.system.stationGroupSystem.getCarriers = function(gid, st, te)
+		if gid == 47 and st == 0 and te == 1 then error("unreadable") end
+		return real(gid, st, te)
+	end
+	send(g, 755, "line", '{ action = "update", line = 23, terminals = { "0:2", "0:1" }, via = "cmd" }')
+	frames(g, FIRST)
+	local a = final(g, 755)
+	api.engine.system.stationGroupSystem.getCarriers = real
+	eq(a.ok, false); truthy(tostring(a.error):find("first stop could not be read", 1, true), tostring(a.error))
+	eq(#sent(g, "lineUpdate"), 0)
+end)
+
+test("line update --terminals / --load-mode: the line's own stops, the vehicles' carrier held (gui and cmd)", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local ship = fleetOf(101, 5, 23)
+		local g = portWorld({ lines = { [23] = { name = "Ship 1", stops = { { stationGroup = 47, station = 0, terminal = 1,
+			waypoints = { { tag = 1 } } }, { stationGroup = 49, station = 0, terminal = 1 } } } }, fleet = { [601] = ship } })
+		send(g, 750, "line", string.format('{ action = "update", line = 23, terminals = { "0:2", "0:1" }, loadModes = "any", via = %q }', via))
+		frames(g, FIRST)
+		local a, n = final(g, 750)
+		eq(n, 1); eq(a.ok, true, via .. " " .. tostring(a.error))
+		eq(a.stops[1].terminal, 2, via); eq(a.stops[1].loadMode, 1, via); eq(a.stops[2].loadMode, 1, via)
+		eq(a.before.stops[1].terminal, 1)
+		-- (the fake line_util drops waypoints, which the base keeps through its waypointMap: cmd only)
+		if via == "cmd" then eq(#g.lines[23].stops[1].waypoints, 1, "an update of the line's own stops keeps its waypoints") end
+		-- both truck bays share ROAD, but the line's ship runs on WATER
+		send(g, 751, "line", string.format('{ action = "update", line = 23, terminals = { "0:0", "0:0" }, via = %q }', via))
+		frames(g, 10)
+		local b = final(g, 751)
+		eq(b.ok, false); truthy(tostring(b.error):find("the line's vehicles run on WATER", 1, true), tostring(b.error))
+		send(g, 752, "line", string.format('{ action = "update", line = 23, terminals = { "0:1" }, via = %q }', via))
+		frames(g, 10)
+		truthy(tostring(final(g, 752).error):find("give a terminal for every stop (2 stops, 1 terminals)", 1, true))
+		send(g, 753, "line", string.format('{ action = "update", line = 23, loadModes = { "any" }, via = %q }', via))
+		frames(g, 10)
+		truthy(tostring(final(g, 753).error):find("one load mode for every stop", 1, true))
+		eq(#sent(g, "lineUpdate"), 1, via .. ": only the good one sent")
+		eq(g.crashed, nil, via)
+	end
+end)
+
+test("stations: each platform with tag, position, load flags, transfer speeds and carriers; nil what cannot be read", function()
+	local g = portWorld()
+	send(g, 760, "stations", '{ name = "Port A" }')
+	frames(g, FIRST)
+	local a = final(g, 760)
+	eq(a.ok, true, tostring(a.error))
+	local p = a.stations[1].platforms
+	eq(#p, 3)
+	eq(p[1].station, 0); eq(p[1].terminal, 0); eq(p[1].stationEntity, 471); eq(p[1].carriers[1], "ROAD")
+	eq(p[1].tag, 1); eq(p[1].position, nil, "no vehicle edge"); eq(p[1].cargoTransferSpeeds, nil, "none to read")
+	eq(p[1].cargoLoad, true); eq(p[1].passengersLoad, false)
+	eq(p[2].position, nil, "an edge index past the network's end is not read")
+	eq(p[3].tag, 2003); eq(p[3].carriers[1], "WATER")
+	eq(p[3].position.x, 10.5); eq(p[3].position.y, 20)
+	eq(p[3].cargoTransferSpeeds[1].length, 40); eq(p[3].cargoTransferSpeeds[1].loadSpeedModifier, 1.5)
+	eq(table.concat(p[3].transportModes, ","), "SHIP,SMALL_SHIP", "a large pier: only the modes that are on, by name")
+	eq(p[3].capacity, 50); eq(p[1].transportModes, nil, "none to read"); eq(p[1].capacity, nil)
+	send(g, 761, "stations", '{ name = "Central" }')
+	frames(g, 10)
+	local c = final(g, 761).stations[1].platforms
+	eq(#c, 2); eq(c[1].cargoLoad, nil, "flags the engine does not give are nil"); eq(c[2].terminal, 1)
+	send(g, 762, "stations", '{ name = "Port B" }')
+	frames(g, 10)
+	local b = final(g, 762).stations[1].platforms
+	eq(b[1].tag, nil, "a tag that is no number"); eq(b[1].cargoTransferSpeeds, nil, "a value without a length")
+	eq(b[2].cargoTransferSpeeds, nil); eq(b[2].tag, 2)
+	eq(g.crashed, nil)
 end)
 
 test("line commands are refused in the main menu", function()

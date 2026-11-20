@@ -190,6 +190,155 @@ function M.checkStops(stops)
 	return true
 end
 
+-- the carriers one platform serves (stationGroupSystem.getCarriers with a station and terminal, as the base's
+-- line_util.getLineCarriers asks for a stop that has one), as a set of the Carrier enum's values. nil when it cannot
+-- be read. Only to be asked for a station and terminal that exist (checkTerminals looks first): what the engine does
+-- with one past the end is unknown.
+function M.terminalCarriers(groupId, station, terminal)
+	local ok, set = pcall(function()
+		local out, any = {}, false
+		for _, c in ipairs(toList(toList(api.engine.system.stationGroupSystem.getCarriers(groupId, station, terminal))[1])) do
+			if tonumber(c) then out[tonumber(c)], any = true, true end
+		end
+		return any and out or nil
+	end)
+	return ok and set or nil
+end
+
+local function carrierNames(set)
+	local names = {}
+	local ok, enum = pcall(function() return api.type.enum.Carrier end)
+	for c in pairs(set or {}) do
+		local n = tostring(c)
+		for _, k in ipairs({ "ROAD", "RAIL", "TRAM", "AIR", "WATER", "OTHER" }) do
+			if ok and enum and field(enum, k) == c then n = k end
+		end
+		names[#names + 1] = n
+	end
+	table.sort(names)
+	return #names > 0 and table.concat(names, "+") or "none"
+end
+M.carrierNames = carrierNames
+
+-- Platforms given by the caller (--terminals), checked before anything goes out: per stop, a station of its
+-- station group and a terminal of that station that exist (the engine asserts on one that does not, and an
+-- assertion kills the game whatever pcall says), whose carriers can be read; then one carrier that every given
+-- platform serves, and that is in need (a set of Carrier values: the carriers of the line's vehicles) when given.
+-- A ship line at a road platform, or at a pier out of the station's range, would otherwise reach the engine.
+-- stops: { { stationGroup } } in order; terminals: { { station, terminal } }, one per stop. Returns the carriers
+-- they share (a set), or nil and why.
+function M.checkTerminals(stops, terminals, need)
+	stops, terminals = toList(stops), toList(terminals)
+	if #stops == 0 then return nil, "no stops" end
+	if #terminals ~= #stops then
+		return nil, string.format("give a terminal for every stop (%d stops, %d terminals): when one stop has none, " ..
+			"the base assigns every stop's platform anew (autoAssignTerminals), so some would not hold; nothing sent",
+			#stops, #terminals)
+	end
+	local common, each = nil, {}
+	for i, s in ipairs(stops) do
+		local g = tonumber(field(s, "stationGroup"))
+		local t = terminals[i]
+		local st, te = tonumber(field(t, "station")), tonumber(field(t, "terminal"))
+		if not g or not st or not te or st < 0 or te < 0 then
+			return nil, string.format("stop %d: no station and terminal given; nothing sent", i)
+		end
+		local group = api.engine.getComponent(g, CT().STATION_GROUP)
+		local stations = toList(group and field(group, "stations"))
+		local station = stations[st + 1]
+		if station == nil then
+			return nil, string.format("stop %d: station %d of station group %d does not exist (%d stations); nothing sent",
+				i, st, g, #stations)
+		end
+		local sc = api.engine.getComponent(station, CT().STATION)
+		local n = #toList(sc and field(sc, "terminals"))
+		if te >= n then
+			return nil, string.format("stop %d: terminal %d of station %d (station group %d) does not exist (%d " ..
+				"terminals; the stations command lists them); nothing sent", i, te, station, g, n)
+		end
+		local set = M.terminalCarriers(g, st, te)
+		if not set then
+			return nil, string.format("stop %d: the carriers of station %d terminal %d (station group %d) could not be " ..
+				"read, so whether the line's vehicles can stop there is unknown; nothing sent", i, st, te, g)
+		end
+		each[#each + 1] = string.format("stop %d %d:%d %s", i, st, te, carrierNames(set))
+		if common == nil then
+			common = {}
+			for c in pairs(set) do common[c] = true end
+		else
+			for c in pairs(common) do if not set[c] then common[c] = nil end end
+		end
+	end
+	if next(common) == nil then
+		return nil, "the terminals given share no carrier (" .. table.concat(each, "; ") .. "): no vehicle could " ..
+			"serve them all; nothing sent"
+	end
+	if need and next(need) ~= nil then
+		local both = {}
+		for c in pairs(common) do if need[c] then both[c] = true end end
+		if next(both) == nil then
+			return nil, string.format("the terminals given serve %s, the line's vehicles run on %s; nothing sent",
+				carrierNames(common), carrierNames(need))
+		end
+		common = both
+	end
+	return common
+end
+
+-- the per-stop settings of a request onto the stops (Line.Stop) about to be sent: station and terminal (r.terminals)
+-- and loadMode (r.loadModes), by position. stops: a Lua list, changed in place. Errors when the counts differ.
+function M.applyPerStop(stops, r)
+	if r.terminals and #r.terminals ~= #stops then
+		error(string.format("give a terminal for every stop (%d stops, %d terminals); nothing sent", #stops, #r.terminals), 0)
+	end
+	if r.loadModes and #r.loadModes ~= #stops then
+		error(string.format("give a load mode for every stop (%d stops, %d load modes); nothing sent", #stops, #r.loadModes), 0)
+	end
+	for i, s in ipairs(stops) do
+		if r.terminals then s.station, s.terminal = r.terminals[i].station, r.terminals[i].terminal end
+		-- a number, as the base's cargo filter window sets it (compStop.loadMode = newStopState.loadMode)
+		if r.loadModes then s.loadMode = r.loadModes[i] end
+	end
+end
+
+-- the stops as built hold what the request asked for: the platforms given (checked again here, in the Lua state
+-- that sends: the station may have changed since the guiUpdate script looked) and the load modes. Returns true, or
+-- nil and why.
+function M.checkRequested(stops, r)
+	local list = toList(stops)
+	if r.terminals then
+		local groups = {}
+		for i, s in ipairs(list) do
+			groups[i] = { stationGroup = field(s, "stationGroup") }
+			local want = r.terminals[i]
+			if want and (tonumber(field(s, "station")) ~= want.station or tonumber(field(s, "terminal")) ~= want.terminal) then
+				return nil, string.format("stop %d: built with station %s terminal %s, not %d:%d as asked; nothing sent", i,
+					tostring(field(s, "station")), tostring(field(s, "terminal")), want.station, want.terminal)
+			end
+		end
+		local need
+		if r.carriers then
+			need = {}
+			for _, c in ipairs(r.carriers) do need[c] = true end
+		end
+		local ok, why = M.checkTerminals(groups, r.terminals, need)
+		if not ok then return nil, why end
+	end
+	if r.loadModes then
+		if #r.loadModes ~= #list then return nil, "the load modes are not one per stop; nothing sent" end
+		for i, s in ipairs(list) do
+			-- a number, as the base's cargo filter reads it (data.loadMode as integer + 1); anything else cannot
+			-- be compared. The value sent is ours (0..2, checked), so this only catches a builder that dropped it.
+			local m = field(s, "loadMode")
+			if type(m) == "number" and m ~= r.loadModes[i] then
+				return nil, string.format("stop %d: built with load mode %s, not %d as asked; nothing sent", i,
+					tostring(m), r.loadModes[i])
+			end
+		end
+	end
+	return true
+end
+
 -- the waiting time the base gives a new stop (line_util.makeNewStop): 30 s where road or tram stop without rail
 local function waitingTime(groupId)
 	local C = api.type.enum.Carrier
@@ -262,6 +411,8 @@ function M.cmdLine(r)
 			end
 			stops[#stops + 1] = stop or M.newStop(want.stationGroup)
 		end
+		-- the platforms given go on before the assignment, so it is not asked for (every stop has one)
+		M.applyPerStop(stops, r)
 		comp.stops = stops
 		-- as autoAssignTerminals: only when a stop has no platform, then the engine's assignment for every stop
 		-- (allowing changes, so kept stops may move too, as in the base), 0/0 where it has none
@@ -283,6 +434,11 @@ function M.cmdLine(r)
 			end
 		end
 		comp.stops = stops
+	elseif r.terminals or r.loadModes then
+		-- an update of the line's own stops (waypoints kept): their platforms and load modes as given
+		local stops = toList(comp.stops)
+		M.applyPerStop(stops, r)
+		comp.stops = stops
 	end
 	if r.cargo then
 		local note = M.applyCargo(comp, r.cargo)
@@ -290,7 +446,31 @@ function M.cmdLine(r)
 	end
 	local ok, why = M.checkStops(comp.stops)
 	if not ok then error(why, 0) end
+	ok, why = M.checkRequested(comp.stops, r)
+	if not ok then error(why, 0) end
 	return comp, notes
+end
+
+-- the per-stop settings onto the base's path (Line.ReactVia, waypoints skipped): station1 / terminal1 (1-based, as
+-- makeNewStop's stationIndex1 / terminalIndex1) and passThroughStopData.loadMode, which autoAssignTerminals copies
+-- into the Line.Stop (line_util.tl). With a platform on every stop, neither autoLoadConfig nor autoAssignTerminals
+-- asks the engine for an assignment.
+local function applyPerStopVias(path, r)
+	local vias = {}
+	for _, v in ipairs(path) do if v.stop then vias[#vias + 1] = v.stop end end
+	if r.terminals and #r.terminals ~= #vias then
+		error(string.format("give a terminal for every stop (%d stops, %d terminals); nothing sent", #vias, #r.terminals), 0)
+	end
+	if r.loadModes and #r.loadModes ~= #vias then
+		error(string.format("give a load mode for every stop (%d stops, %d load modes); nothing sent", #vias, #r.loadModes), 0)
+	end
+	for i, stop in ipairs(vias) do
+		if r.terminals then stop.station1, stop.terminal1 = r.terminals[i].station + 1, r.terminals[i].terminal + 1 end
+		if r.loadModes then
+			stop.passThroughStopData = stop.passThroughStopData or {}
+			stop.passThroughStopData.loadMode = r.loadModes[i]
+		end
+	end
 end
 
 -- The gui way: the line built by the base's line_util as the line manager builds it. Returns the Line component.
@@ -301,6 +481,26 @@ local function guiLine(lu, req, r)
 		if not state then error("no line " .. tostring(r.line), 0) end
 	else
 		state = { path = {}, reservationPriority = 1.0 } -- manager_window.tl newLine
+	end
+	-- the platforms given, checked before the base's line_util sees them: its autoLoadConfig reads
+	-- stationGroup.stations[station1] and station.terminals[terminal1] without looking (line_util.getTerminal), and
+	-- the station may have changed since the guiUpdate script checked
+	if r.terminals then
+		local groups = {}
+		if r.stops then
+			for i, s in ipairs(r.stops) do groups[i] = { stationGroup = s.stationGroup } end
+		else
+			for _, v in ipairs(state.path or {}) do
+				if v.stop then groups[#groups + 1] = { stationGroup = v.stop.stationGroup } end
+			end
+		end
+		local need
+		if r.carriers then
+			need = {}
+			for _, c in ipairs(r.carriers) do need[c] = true end
+		end
+		local ok, why = M.checkTerminals(groups, r.terminals, need)
+		if not ok then error(why, 0) end
 	end
 	if r.stops then
 		-- a stop of the line at the same station group keeps its via (platform, settings), as when the line
@@ -317,8 +517,11 @@ local function guiLine(lu, req, r)
 			path[#path + 1] = via or lu.makeNewStop({ stationGroup = want.stationGroup })
 		end
 		state.path = path
-		-- autoLoadConfig assigns platforms only to stops without one, as after a click
+		applyPerStopVias(state.path, r)
+		-- autoLoadConfig assigns platforms only to stops without one, as after a click (none, when they are given)
 		lu.autoLoadConfig(state)
+	elseif r.terminals or r.loadModes then
+		applyPerStopVias(state.path or {}, r)
 	end
 	local entity = state.entityAndRevision and state.entityAndRevision.entity or nil
 	local comp = api.type.Line.new()
@@ -331,6 +534,8 @@ local function guiLine(lu, req, r)
 		if note then print("[remote_probe] " .. note) end
 	end
 	local ok, why = M.checkStops(comp.stops)
+	if not ok then error(why, 0) end
+	ok, why = M.checkRequested(comp.stops, r)
 	if not ok then error(why, 0) end
 	return comp
 end

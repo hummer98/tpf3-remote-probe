@@ -39,6 +39,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # stocks, rules, construction params
   tf3ctl.py line create --stops Central,Harbour [--name "[probe] A"] [--cargo grain] [--via gui|cmd]
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
+  tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 --load-mode all,available   # piers picked, full load
   tf3ctl.py connect --from 5123 --to Harbour [--build]   # a track between two free ends (needs Track Connector)
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
@@ -1402,6 +1403,38 @@ def parse_stops(text):
     return [int(s) if s.isdigit() else s for s in items]
 
 
+LOAD_MODES = ("available", "any", "all")  # Line.Stop.loadMode 0, 1, 2, as the base's line window offers them
+
+
+def parse_terminals(text):
+    """--terminals "0:2,0:1" (station:terminal per stop, 0-based as `lines` and `stations` show them) or "2,1"
+    (station 0) -> [{"station": 0, "terminal": 2}, ...]. One per stop or none: when a stop has none the base assigns
+    every stop's platform anew."""
+    if text is None:
+        return None
+    out = []
+    for i, item in enumerate(text.split(","), 1):
+        item = item.strip()
+        parts = [p.strip() for p in item.split(":")] if ":" in item else ["0", item]
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            raise ToolError("--terminals item %d %r: give station:terminal or terminal (whole numbers, 0-based), one "
+                            "per stop, e.g. --terminals 0:2,0:1" % (i, item))
+        out.append({"station": int(parts[0]), "terminal": int(parts[1])})
+    return out
+
+
+def parse_load_modes(text):
+    """--load-mode any (every stop) or "all,available" (one per stop) -> "any" or ["all", "available"]."""
+    if text is None:
+        return None
+    items = [s.strip().lower() for s in text.split(",")]
+    for i, m in enumerate(items, 1):
+        if m not in LOAD_MODES:
+            raise ToolError("--load-mode item %d %r: give available, any or all (one for every stop, or one per stop)"
+                            % (i, m))
+    return items[0] if len(items) == 1 else items
+
+
 def line_args(ns):
     """The line command's args: action and what it takes (the mod checks every one again)."""
     args = {"action": ns.action}
@@ -1416,10 +1449,22 @@ def line_args(ns):
         v = getattr(ns, key, None)
         if v is not None:
             args[key] = v
+    terminals = parse_terminals(getattr(ns, "terminals", None))
+    if terminals is not None:
+        if stops is not None and len(terminals) != len(stops):
+            raise ToolError("--terminals: give one for every stop (%d stops, %d terminals): when one stop has none, the "
+                            "base assigns every stop's platform anew, so some would not hold" % (len(stops), len(terminals)))
+        args["terminals"] = terminals
+    modes = parse_load_modes(getattr(ns, "load_mode", None))
+    if modes is not None:
+        if isinstance(modes, list) and stops is not None and len(modes) != len(stops):
+            raise ToolError("--load-mode: give one for every stop, or one for all (%d stops, %d modes)"
+                            % (len(stops), len(modes)))
+        args["loadModes"] = modes
     if getattr(ns, "sell_vehicles", False):
         args["sellVehicles"] = True
-    if ns.action == "update" and not any(k in args for k in ("stops", "name", "cargo")):
-        raise ToolError("line update: give --stops, --name or --cargo")
+    if ns.action == "update" and not any(k in args for k in ("stops", "name", "cargo", "terminals", "loadModes")):
+        raise ToolError("line update: give --stops, --name, --cargo, --terminals or --load-mode")
     return args
 
 
@@ -2113,7 +2158,8 @@ def make_parser():
     mdl.add_argument("--carrier", type=str.upper, choices=["ROAD", "RAIL", "TRAM", "AIR", "WATER"], help="any case")
     mdl.add_argument("--limit", type=int, default=200, help="details for this many, 1-1000 (total counts them all)")
     sg = sub.add_parser("stations", help="the company's (and nobody's) station groups: id, stations, platforms, "
-                                         "carriers, position")
+                                         "carriers, position; per platform (station:terminal) its tag, position, "
+                                         "load flags, cargoTransferSpeeds and carriers")
     sg.add_argument("--name", help="a part of the name, any case")
     sg.add_argument("--near", type=int, help="only those within --radius of this entity (a town, industry, ...)")
     sg.add_argument("--radius", type=float, help="metres around --near (default 1000)")
@@ -2129,8 +2175,8 @@ def make_parser():
     ls.add_argument("--name", help="a part of the name, any case")
     ln = sub.add_parser("line", help="create, change or remove a line (the line manager's way by default)")
     lsub = ln.add_subparsers(dest="action", required=True)
-    for action, helptext in (("create", "a new line through the stops, platforms assigned by the engine"),
-                             ("update", "change a line's stops, name or cargo"),
+    for action, helptext in (("create", "a new line through the stops, platforms assigned by the engine or given"),
+                             ("update", "change a line's stops, name, cargo, platforms or load modes"),
                              ("delete", "remove a line (its vehicles too with --sell-vehicles)")):
         la = lsub.add_parser(action, help=helptext)
         if action != "create":
@@ -2140,6 +2186,14 @@ def make_parser():
                             help="station groups in order, comma-separated: ids or parts of names (stations command)")
             la.add_argument("--name", help="the line's name (create: default the base's next 'Line N')")
             la.add_argument("--cargo", help="load only this cargo (id or name), at the stops that make it, as the cargo filter")
+            la.add_argument("--terminals", metavar="S:T,...",
+                            help="the platform of every stop, in order: station:terminal (or terminal, station 0), "
+                                 "0-based as the stations command lists them (platforms); all stops or none. Each "
+                                 "is checked to exist and to serve a carrier all of them share (update of a line "
+                                 "with vehicles: the vehicles' carrier). Default: the engine assigns them")
+            la.add_argument("--load-mode", metavar="MODE[,...]",
+                            help="available, any (full load, any cargo) or all (full load, all cargo): one for every "
+                                 "stop, or one per stop in order (Line.Stop.loadMode)")
             la.add_argument("--via", choices=["gui", "cmd"], default="gui",
                             help="gui: the base's line_util (in the speed control); cmd: stops built by the probe")
         else:

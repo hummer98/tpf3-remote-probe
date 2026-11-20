@@ -216,6 +216,8 @@ python3 tools/tf3ctl.py stations [--name cent] [--near 11 --radius 800]
 python3 tools/tf3ctl.py lines [--name probe]
 python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--cargo coal] [--via gui|cmd]
 python3 tools/tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C]
+python3 tools/tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 [--load-mode all,available]
+python3 tools/tf3ctl.py line update 23 [--terminals 0:2,0:1] [--load-mode any]
 python3 tools/tf3ctl.py line delete 21 [--sell-vehicles]
 ```
 
@@ -520,8 +522,16 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   `id`、`name`、`stations`、`terminals`、`carriers`、`owner`、`lines`、`position` (最初の駅の bounding volume の中心)。
   `--name` は名前の部分一致 (大文字小文字を問わない)。`--near <entity> --radius <m>` (既定 1000 m) は、bounding volume
   を持つ entity からの水平距離で絞り、`distance` を付けます。
-- `lines` は自社の路線を返します: 停車駅 (駅グループ、駅とホーム、0 始まり)、車両、乗り物の種類、`customFilters`、
-  `loads` (どこかの停車駅で積む貨物)、`vehicleCargo` (路線の車両が積める貨物)。
+  `platforms` は全部のホームの一覧です (読むだけ。`--terminals` を選ぶため): `station` と `terminal` (路線の停車駅と
+  同じ 0 始まり)、`stationEntity`、`tag` (バニラの港ではモジュールのマス `1000 * coordI + coordJ`。modules.script.lua)、
+  `position` (車両が止まる所。ホームの最初の vehicle edge を `transport.calcPosition` で。本体が経由点の位置を出すのと
+  同じ)、`cargoLoad` / `cargoUnload` / `passengersLoad` / `passengersUnload`、`cargoTransferSpeeds` (それぞれ `length`
+  と `loadSpeedModifier`)、`carriers` (`getCarriers(group, station, terminal)`)、`transportModes` (有効なものの名前。
+  バニラの大型船着場は SHIP と SMALL_SHIP、小型船着場は SMALL_SHIP だけ)、`capacity`。読めない項目は出しません (nil)。
+  桟橋の terminal は vehicle node から作られるので、`position` は出ないことがあります (未確認)。
+- `lines` は自社の路線を返します: 停車駅 (駅グループ、駅とホーム、0 始まり、`loadMode`: 0 available、1 満載
+  (どれか)、2 満載 (全部))、車両、乗り物の種類、`customFilters`、`loads` (どこかの停車駅で積む貨物)、`vehicleCargo`
+  (路線の車両が積める貨物)。
 - `line create --stops A,B,...` は駅グループを順に、id (駅の entity ならそのグループ) か名前で取ります (完全一致を
   先に、なければ一意な部分一致。複数に当たれば候補付きでエラー。カンマを含む名前は id で)。ホームは自動で割り当て
   ます。名前の既定は本体の `makeLineName` (gui) か「Line N」(cmd)。
@@ -531,6 +541,22 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   `autoLoadConfig` が積み荷も振り直します (customFilters の路線を除く)。並べ替えだけならホームは変わりません。
   経由点 (waypoint) は消えます。gui でレシピの報告が届かないときは、停車駅が頼んだ並びになり、かつ前と変わったことで
   完了とみなすので、`--cargo` だけの変更や並びが同じ変更は 60 秒で時間切れになります。
+- `--terminals S:T,...` (create と update) は、全停車駅のホームを順に指定します: `駅:ホーム`、または駅 0 のホームの
+  番号だけ。`stations` の `platforms` と同じ 0 始まり。全部の停車駅に指定するか、どれにもしないかです: 1 つでもホームの
+  無い停車駅があると、本体の `autoAssignTerminals` が全停車駅をエンジンの割り当てで置き換える (変更を許して) ので、
+  ほかの指定が残らないためです。停車駅より短い・長い指定は断ります。全部に指定すれば、割り当てを頼みません。
+  `--stops` なしの update は、その路線の今の停車駅のホームを変えます (経由点は残る)。送る前に: 駅とホームが実在する
+  こと (エンジンに聞く前に見る)、その乗り物の種類が読めること、指定したホームに共通の乗り物の種類があること、車両の
+  いる路線の update なら、それが路線の種類 (本体の `getLineCarriers` と同じく最初の停車駅のホームの種類) に含まれる
+  こと。送る側の Lua の状態でもう一度確認し (gui では本体の `line_util` が読む前に)、組み立てた停車駅が指定のとおりかも
+  見ます。確認は乗り物の種類 (carrier) までです: SHIP の船と小型船着場 (SMALL_SHIP) の組は、どちらも WATER なので通ります
+  (`stations` の `transportModes` で見る)。update では停車駅の `alternativeTerminals` は残ります (本体の主ホームの変更と
+  同じ)。`--terminals` が無ければ何も変わりません (今までどおりエンジンが割り当てる)。
+- `--load-mode MODE[,...]` は `Line.Stop.loadMode` を設定します: `available` (0、`LOAD_IF_AVAILABLE`)、`any` (1、
+  `FULL_LOAD_ANY`)、`all` (2、`FULL_LOAD_ALL`)。本体の路線の窓にある 3 つです。全停車駅に 1 つか、停車駅ごとに 1 つ。
+  `LEGACY_UNLOAD_ONLY` は断ります (本体の窓に無い)。`--stops` なしの update は、今の停車駅に設定します。読み直した
+  ホームか loadMode が頼んだものと違えば `ok` は false です。gui でレシピの報告が届かないときは、ホームか loadMode
+  だけを変える update は `--cargo` だけのときと同じく時間切れになります。
 - `line delete <line>` は、先に車両を売り (`--sell-vehicles` のときだけ)、売却が成功してから `makeLineDestroyCmd`
   を送ります。
 - `--cargo <id か名前>` は、その貨物だけを、その貨物を出す (出荷の在庫がある) 停車駅で積む設定にします。本体と
@@ -556,7 +582,10 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   `StopConfig.new(stop.stopConfig)` での写し、エンジンが他の乗り物のホームを割り当てたとき、`makeLineCreateCmd` の
   コールバックの路線の entity、車両のいる路線の削除 (MOD は本体の順、売ってから消す、を守る)、町の entity が `--near`
   用の bounding volume を持つか (持たなければ産業か駅を使う)、使う駅と路線の system が GUI 状態で使えるか、報告のキーに
-  書けるか (書けなければログに「line report not written」)。
+  書けるか (書けなければログに「line report not written」)。`--terminals` / `--load-mode` と `platforms` では:
+  `getCarriers` に駅とホームを渡すとそのホームの種類が返るか (本体の `getLineCarriers` はそう使う)、`loadMode` に数を
+  入れて効くか (本体の貨物の窓はそうする)、`vehicleEdges` / `TRANSPORT_NETWORK` / `calcPosition` が GUI 状態で読めるか、
+  種類の違うホームをエンジンがどう扱うか (送る前に断るので、試したことはない)。
 
 ### 接続 (`connect`)
 

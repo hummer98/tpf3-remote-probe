@@ -1054,9 +1054,68 @@ local function stopToken(v, i)
 	return s
 end
 
--- args: action, via, line, stops (a list), name, cargo, sellVehicles. Returns { action, via, line, stops, name,
--- cargo, sellVehicles } or nil and why. A line needs two stops: the base makes a one-stop line only on the way to
--- the second click, and nothing runs on it.
+-- a whole number >= 0 (or digits): an index as the engine counts it (0-based), else nil
+local function indexArg(v)
+	if type(v) == "string" and v:match("^%s*%d+%s*$") then v = tonumber(v) end
+	if type(v) ~= "number" or v ~= v or v < 0 or v ~= math.floor(v) or v > 1e6 then return nil end
+	return v
+end
+
+-- the waiting modes of a stop (Line.Stop.loadMode), by the numbers the base's cargo filter window sets
+-- (cargofilter_window.tl: initialSelected = loadMode + 1, setStopField("loadMode", index - 1)) in the order of the
+-- LoadMode enum (engine.d.tl). LEGACY_UNLOAD_ONLY (3) is left out: the base window does not offer it, so what the
+-- engine does with it on a new stop is unknown.
+M.LOAD_MODES = { available = 0, any = 1, all = 2,
+	load_if_available = 0, full_load_any = 1, full_load_all = 2 }
+M.LOAD_MODE_NAMES = { [0] = "available", [1] = "any", [2] = "all" }
+
+-- one load mode as given: a name above (any case) or 0..2. Returns the number, or nil and why.
+local function loadModeArg(v, what)
+	if type(v) == "number" and M.LOAD_MODE_NAMES[v] then return v end
+	if type(v) == "string" then
+		local n = M.LOAD_MODES[v:match("^%s*(.-)%s*$"):lower()]
+		if n then return n end
+		if v:match("^%s*%d+%s*$") and M.LOAD_MODE_NAMES[tonumber(v)] then return tonumber(v) end
+	end
+	return nil, what .. " must be available, any or all (or 0, 1, 2: LOAD_IF_AVAILABLE, FULL_LOAD_ANY, " ..
+		"FULL_LOAD_ALL), got " .. (type(v) == "string" and string.format("%q", v) or "a " .. type(v))
+end
+
+-- one stop's platform as given: { station, terminal } (0-based, as the lines command shows them), a terminal
+-- number (station 0) or "station:terminal". Returns { station, terminal } or nil and why.
+local function terminalArg(v, i)
+	local st, te
+	if type(v) == "table" then
+		st, te = v.station == nil and 0 or indexArg(v.station), indexArg(v.terminal)
+	elseif type(v) == "string" and v:find(":", 1, true) then
+		local a, b = v:match("^%s*(%d+)%s*:%s*(%d+)%s*$")
+		st, te = indexArg(a), indexArg(b)
+	else
+		st, te = 0, indexArg(v)
+	end
+	if st == nil or te == nil then
+		return nil, string.format("terminal %d must be a terminal number or station:terminal (whole numbers >= 0, " ..
+			"0-based as the lines and stations commands show them)", i)
+	end
+	return { station = st, terminal = te }
+end
+
+-- a list as Lua holds one: keys 1..n and nothing else
+local function isList(t)
+	if type(t) ~= "table" then return false end
+	local n = #t
+	for k in pairs(t) do
+		if type(k) ~= "number" or k < 1 or k > n or k % 1 ~= 0 then return false end
+	end
+	return true
+end
+
+-- args: action, via, line, stops (a list), name, cargo, sellVehicles, terminals (one per stop), loadModes (one per
+-- stop, or one for every stop). Returns { action, via, line, stops, name, cargo, sellVehicles, terminals,
+-- loadModes (a list) or loadModeAll (a number) } or nil and why. A line needs two stops: the base makes a one-stop
+-- line only on the way to the second click, and nothing runs on it.
+-- terminals go for every stop or for none: when one stop has no platform the base's autoAssignTerminals takes the
+-- engine's assignment for every stop (allowing changes), so the platforms given to the others would not hold.
 function M.lineArgs(args)
 	args = type(args) == "table" and args or {}
 	if not M.LINE_ACTIONS[args.action] then return nil, "action must be create, update or delete" end
@@ -1093,23 +1152,64 @@ function M.lineArgs(args)
 			out.stops[i] = t
 		end
 	end
+	if args.terminals ~= nil then
+		if not isList(args.terminals) or #args.terminals == 0 then
+			return nil, "terminals must be a list, one per stop"
+		end
+		if #args.terminals > M.MAX_LINE_STOPS then return nil, "more than " .. M.MAX_LINE_STOPS .. " terminals" end
+		out.terminals = {}
+		for i = 1, #args.terminals do
+			local t, err = terminalArg(args.terminals[i], i)
+			if not t then return nil, err end
+			out.terminals[i] = t
+		end
+		if out.stops and #out.terminals ~= #out.stops then
+			return nil, string.format("give a terminal for every stop (%d stops, %d terminals): when one stop has " ..
+				"none, the base assigns every stop's platform anew (autoAssignTerminals), so some would not hold",
+				#out.stops, #out.terminals)
+		end
+	end
+	if args.loadModes ~= nil then
+		if type(args.loadModes) == "table" then
+			if not isList(args.loadModes) or #args.loadModes == 0 then
+				return nil, "loadModes must be one mode, or a list with one per stop"
+			end
+			if #args.loadModes > M.MAX_LINE_STOPS then return nil, "more than " .. M.MAX_LINE_STOPS .. " load modes" end
+			out.loadModes = {}
+			for i = 1, #args.loadModes do
+				local m, err = loadModeArg(args.loadModes[i], "load mode " .. i)
+				if not m then return nil, err end
+				out.loadModes[i] = m
+			end
+			if out.stops and #out.loadModes ~= #out.stops then
+				return nil, string.format("give one load mode for every stop, or one for all (%d stops, %d load modes)",
+					#out.stops, #out.loadModes)
+			end
+		else
+			local m, err = loadModeArg(args.loadModes, "the load mode")
+			if not m then return nil, err end
+			out.loadModeAll = m
+		end
+	end
+	local perStop = out.terminals or out.loadModes or out.loadModeAll
 	if out.action == "create" then
 		if out.line ~= nil then return nil, "create makes a new line: no line" end
 		if not out.stops then return nil, "give the stops" end
 	else
 		if out.line == nil then return nil, "give the line (the lines command lists them)" end
-		if out.action == "update" and not (out.stops or out.name or out.cargo) then
-			return nil, "give stops, name or cargo to change"
+		if out.action == "update" and not (out.stops or out.name or out.cargo or perStop) then
+			return nil, "give stops, name, cargo, terminals or load modes to change"
 		end
-		if out.action == "delete" and (out.stops or out.name or out.cargo) then
-			return nil, "delete takes no stops, name or cargo"
+		if out.action == "delete" and (out.stops or out.name or out.cargo or perStop) then
+			return nil, "delete takes no stops, name, cargo, terminals or load modes"
 		end
 	end
 	return out
 end
 
 -- the line requests (gui way) the guiUpdate script hands the speed control: { { id, kind = "create" | "update",
--- line, name, cargo, stops = { { stationGroup } } } }, plain values only; malformed ones are left out
+-- line, name, cargo, stops = { { stationGroup } }, terminals = { { station, terminal } }, loadModes = { n },
+-- carriers = { n } } }, plain values only; malformed ones are left out
 M.LINE_REQUEST_KINDS = { create = true, update = true }
 function M.lineRequests(list)
 	local out = {}
@@ -1129,9 +1229,37 @@ function M.lineRequests(list)
 					if #stops == 0 then good = false end
 				end
 			end
+			-- terminals and loadModes: one per stop, whole numbers; a request with a malformed one is left out
+			-- whole (sent without them, the engine would pick the platforms the caller did not want)
+			local terminals, loadModes, carriers
+			if good and r.terminals ~= nil then
+				terminals = {}
+				if not isList(r.terminals) then good = false end
+				for _, t in ipairs(good and r.terminals or {}) do
+					local st, te = type(t) == "table" and indexArg(t.station), type(t) == "table" and indexArg(t.terminal)
+					if st and te then terminals[#terminals + 1] = { station = st, terminal = te } else good = false end
+				end
+				if #terminals == 0 or (stops and #terminals ~= #stops) then good = false end
+			end
+			if good and r.loadModes ~= nil then
+				loadModes = {}
+				if not isList(r.loadModes) then good = false end
+				for _, m in ipairs(good and r.loadModes or {}) do
+					if M.LOAD_MODE_NAMES[m] then loadModes[#loadModes + 1] = m else good = false end
+				end
+				if #loadModes == 0 or (stops and #loadModes ~= #stops) then good = false end
+			end
+			if good and r.carriers ~= nil then
+				carriers = {}
+				if not isList(r.carriers) then good = false end
+				for _, c in ipairs(good and r.carriers or {}) do
+					if indexArg(c) then carriers[#carriers + 1] = indexArg(c) else good = false end
+				end
+			end
 			if good and (r.kind == "create" or tonumber(r.line)) then
 				out[#out + 1] = { id = tonumber(r.id), kind = r.kind, line = tonumber(r.line), stops = stops,
-					name = type(r.name) == "string" and r.name or nil, cargo = tonumber(r.cargo) }
+					name = type(r.name) == "string" and r.name or nil, cargo = tonumber(r.cargo), terminals = terminals,
+					loadModes = loadModes, carriers = carriers }
 			end
 		end
 	end
