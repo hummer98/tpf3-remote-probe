@@ -653,6 +653,7 @@ function M.new(ctx)
 	end
 
 	L.handlers = handlers
+	L.posOf = posOf -- (industryWorkers: the nearest town)
 	return L
 end
 

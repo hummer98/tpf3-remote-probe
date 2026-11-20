@@ -157,6 +157,7 @@ A game started by hand from Steam skips this: run `keep-log` before starting it.
 python3 tools/tf3ctl.py log --grep remote_probe --tail 40   # the game's stdout.txt
 python3 tools/tf3ctl.py keep-log [--list]                   # copy stdout.txt to crash_dump/logs now; list the copies
 python3 tools/tf3ctl.py entities --kind town --grep ems     # ids and names: town, line, vehicle, station, industry
+python3 tools/tf3ctl.py industry-workers [--entity 51]      # read only: capacity, sims headed there, last visitors (workers script), productivity, nearest town
 python3 tools/tf3ctl.py window --town Emsworth --focus      # open its window and move the camera (--close-all)
 python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # the screen with UI, from Steam's recording
 python3 tools/tf3ctl.py tool music [--close]                # base windows that open as a tool: music, calendar, notifications

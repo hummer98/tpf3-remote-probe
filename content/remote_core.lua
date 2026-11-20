@@ -16,7 +16,8 @@ M.LOG = "[remote_probe] "
 M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = true, load = true, save = true, poll = true,
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
-	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true }
+	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
+	industryWorkers = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -1054,6 +1055,87 @@ function M.radiusArg(v)
 	local n = tonumber(v)
 	if n == nil or n ~= n or n <= 0 or n > 100000 then return nil, "radius must be a number of metres, above 0 and up to 100000" end
 	return n
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- industryWorkers: who works at an industry (read only)
+
+-- the base's game script that counts workers arriving by lines (industries/industry_workers.script.tl)
+M.WORKERS_SCRIPT = "::/industries/industry_workers.gs"
+-- the share of the capacity that must have arrived for the productivity boost (industry_productivity_util.tl)
+M.WORKERS_BOOST_FRACTION = 0.5
+
+-- args: entity (one industry) or nothing (all). Returns { entity } or nil and why.
+function M.industryWorkersArgs(args)
+	args = type(args) == "table" and args or {}
+	if args.entity == nil then return {} end
+	local e = tonumber(args.entity)
+	if e == nil or e ~= math.floor(e) or e < 0 or e > M.MAX_ENTITY_ID then
+		return nil, "entity must be an industry's id (the entities --kind industry command lists them)"
+	end
+	return { entity = e }
+end
+
+-- one industry's entry of the workers script's state, read as industry_productivity_util.getIndustryWorkersState
+-- does: state_native:findPath({ "industriesState", entity }):asTable(). A plain table (state) is walked instead.
+-- Returns the entry (a table), false when the state has none for it (nobody arrived yet: the base reads that as
+-- no visitors), or nil and why.
+function M.workersEntry(stateNative, plainState, entity)
+	if stateNative ~= nil then
+		local ok, v = pcall(function() return stateNative:findPath({ "industriesState", entity }) end)
+		if not ok then return nil, "state_native:findPath failed: " .. tostring(v) end
+		if v == nil then return false end
+		local ok2, t = pcall(function() return v:asTable() end)
+		if not ok2 or type(t) ~= "table" then return nil, "the industry's entry did not read as a table" end
+		return t
+	end
+	if type(plainState) == "table" then
+		local all = plainState.industriesState
+		local t = type(all) == "table" and all[entity] or nil
+		if t == nil then return false end
+		if type(t) ~= "table" then return nil, "the industry's entry is no table" end
+		return t
+	end
+	return nil, "the game script has no state"
+end
+
+-- from an entry: the number of last visitors and the newest arrival's game time (nil when none)
+function M.visitorsOf(entry)
+	if not entry then return 0, nil end
+	local list = entry.lastVisitors
+	local n, newest = M.size(list), nil
+	for i = 1, n do
+		local t = tonumber(M.field(M.at(list, i), "time"))
+		if t and (newest == nil or t > newest) then newest = t end
+	end
+	return n, newest
+end
+
+-- a town's population from its { residential, commercial, industrial } capacities, as the town HUD shows it
+-- (town_hud_react_util.tl: residential, or the larger of the others when it has none). idx: 1-based indices.
+function M.townPopulation(caps, idx)
+	if caps == nil then return nil end
+	idx = idx or { residential = 1, commercial = 2, industrial = 3 }
+	local r = tonumber(M.at(caps, idx.residential))
+	if r == nil then return nil end
+	if r <= 0 then
+		r = math.max(tonumber(M.at(caps, idx.industrial)) or 0, tonumber(M.at(caps, idx.commercial)) or 0)
+	end
+	return r
+end
+
+-- the nearest of candidates { { id, name, position = { x, y } } } to pos, with its distance (m, rounded), or nil
+function M.nearest(pos, candidates)
+	if not pos then return nil end
+	local best, bestD
+	for _, c in ipairs(candidates or {}) do
+		if c.position then
+			local d = math.sqrt((c.position.x - pos.x) ^ 2 + (c.position.y - pos.y) ^ 2)
+			if bestD == nil or d < bestD then best, bestD = c, d end
+		end
+	end
+	if not best then return nil end
+	return best, math.floor(bestD + 0.5)
 end
 
 ---------------------------------------------------------------------------------------------------------------------

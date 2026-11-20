@@ -121,7 +121,7 @@ function M.install(g, opts)
 			return inds[e] and {} or nil
 		elseif kind == "TERRAIN" then
 			return e == 1 and { waterLevel = opts.waterLevel or 0 } or nil
-		elseif kind == "GAME_SCRIPT" then
+		elseif kind == "GAME_SCRIPT" and e == 777 then
 			-- the engine hands out a copy of the state: a change to it reaches nothing
 			return (e == 777 and not opts.noScript) and { state = copy(t.state) } or nil
 		elseif kind == "BOUNDING_VOLUME" and (cons[e] or tbs[e] or inds[e]) then
@@ -166,7 +166,9 @@ function M.install(g, opts)
 		getNodeTrackSegments = function(n) nodeOnly(n); return segsAt(n, false) end,
 		getNodeStreetSegments = function(n) nodeOnly(n); return segsAt(n, true) end,
 	}
+	local otherScs = sys.streetConnectorSystem
 	sys.streetConnectorSystem = {
+		getConstructionEntityForSubconstruction = otherScs and otherScs.getConstructionEntityForSubconstruction,
 		getConstructionEntityForEdge = function(e)
 			for c, x in pairs(cons) do for _, f in ipairs(x.frozenEdges or {}) do if f == e then return c end end end
 			return -1
@@ -185,7 +187,9 @@ function M.install(g, opts)
 			end
 		end
 	end }
+	local otherScripts = sys.gameScriptSystem -- the fake game's (the base's workers script)
 	sys.gameScriptSystem = { getEntityForGameScript = function(name)
+		if name == "::/industries/industry_workers.gs" and otherScripts then return otherScripts.getEntityForGameScript(name) end
 		t.askedScript = name
 		if opts.noScript then return -1 end
 		return 777

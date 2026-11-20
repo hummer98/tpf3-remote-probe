@@ -4213,5 +4213,118 @@ test("build-tool --close while the menu's queue is pending drops the rest", func
 	fake.guiSave.hummer_remote_probe = nil
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- industryWorkers: an industry's workers, as the base's window and its workers script count them
+local function workersGame(extra)
+	local o = { saves = SAVES, entities = { TOWN = { 11, 12 } }, names = { [11] = "Emsworth", [12] = "Havant" },
+		positions = { [11] = { 0, 0 }, [12] = { 5000, 0 } },
+		townCapacities = { [11] = { 140, 20, 30 }, [12] = { 0, 15, 40 } },
+		industries = {
+			[51] = { name = "Coal mine", construction = 5100, capacity = 12, workers = 5, productivity = 1.8, pos = { 300, 0 } },
+			[52] = { name = "Farm", capacity = 8, workers = 0, productivity = 1, pos = { 4800, 0 } },
+			[53] = { name = "Oil well" }, -- no capacity, no stock list, no position
+		},
+		workersState = { industriesState = { [51] = { lastVisitors = {
+			{ entity = { entity = 9001 }, time = 4000 }, { entity = { entity = 9002 }, time = 6500 } } } } } }
+	for k, v in pairs(extra or {}) do o[k] = v end
+	local g = newGame(o)
+	frames(g, 2)
+	return g
+end
+
+test("industryWorkers: capacity, destination sims, last visitors, productivity and the nearest town", function()
+	local g = workersGame()
+	send(g, 1201, "industryWorkers", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 1201)
+	eq(a.ok, true); eq(a.total, 3); eq(#a.industries, 3)
+	eq(a.workersScript.ok, true); eq(a.workersScript.name, "::/industries/industry_workers.gs")
+	local by = {}
+	for _, e in ipairs(a.industries) do by[e.name] = e end
+	local m = by["Coal mine"]
+	eq(m.id, 51); eq(m.construction, 5100); eq(m.capacity, 12); eq(m.boostAt, 6); eq(m.workers, 5)
+	eq(m.lastVisitors, 2); eq(m.lastVisitTime, 6500); eq(m.productivity, 1.8)
+	eq(m.town.id, 11); eq(m.town.name, "Emsworth"); eq(m.town.distance, 300); eq(m.town.population, 140)
+	local f = by["Farm"]
+	eq(f.lastVisitors, 0, "no entry in the state: nobody arrived, as the base reads it"); eq(f.lastVisitTime, nil)
+	eq(f.workers, 0); eq(f.construction, nil)
+	eq(f.town.id, 12); eq(f.town.population, 40, "no residents: the larger of the other two, as the town HUD")
+	local o = by["Oil well"]
+	eq(o.capacity, nil); eq(o.productivity, nil); eq(o.town, nil, "no position: no town"); eq(o.workers, 0)
+	eq(#g.commands, 0, "read only: no command sent")
+end)
+
+test("industryWorkers: one industry, an unknown id, a bad id, no industries", function()
+	local g = workersGame()
+	send(g, 1210, "industryWorkers", "{ entity = 52 }")
+	frames(g, FIRST)
+	local a = final(g, 1210)
+	eq(a.ok, true); eq(#a.industries, 1); eq(a.industries[1].id, 52); eq(a.total, 3)
+	send(g, 1211, "industryWorkers", "{ entity = 999 }")
+	frames(g, 20)
+	a = final(g, 1211)
+	eq(a.ok, false); truthy(a.error:find("no industry", 1, true), a.error)
+	send(g, 1212, "industryWorkers", '{ entity = "x" }')
+	frames(g, 20)
+	a = final(g, 1212)
+	eq(a.ok, false); truthy(a.error:find("entity must be", 1, true), a.error)
+	local g2 = newGame({ saves = SAVES })
+	frames(g2, 2)
+	send(g2, 1213, "industryWorkers", "{  }")
+	frames(g2, FIRST)
+	a = final(g2, 1213)
+	eq(a.ok, true); eq(a.total, 0); eq(#a.industries, 0)
+	truthy(answerText(g2, 1213):find('"industries":[]', 1, true), "an empty list, not {}")
+end)
+
+test("industryWorkers: without the workers script or its state, the rest still answers", function()
+	for _, case in ipairs({ { "none", "is not running" }, { "nostate", "no state" } }) do
+		local g = workersGame({ workersScript = case[1] })
+		send(g, 1220, "industryWorkers", "{ entity = 51 }")
+		frames(g, FIRST)
+		local a = final(g, 1220)
+		eq(a.ok, true, case[1]); eq(a.workersScript.ok, false)
+		truthy(a.workersScript.error:find(case[2], 1, true), a.workersScript.error)
+		eq(a.industries[1].lastVisitors, nil); eq(a.industries[1].workers, 5); eq(a.industries[1].capacity, 12)
+	end
+	-- an entry that does not read as a table: that industry carries why, the answer stays ok
+	local g = workersGame({ workersState = { industriesState = { [51] = 7 } } })
+	send(g, 1221, "industryWorkers", "{ entity = 51 }")
+	frames(g, FIRST)
+	local a = final(g, 1221)
+	eq(a.ok, true); eq(a.industries[1].lastVisitors, nil); truthy(a.industries[1].lastVisitorsError)
+	-- the destination lookup failing (an engine error) leaves workers out instead of failing the command
+	local g3 = workersGame()
+	local sps = api.engine.system.simPersonSystem
+	api.engine.system.simPersonSystem = { getSimPersonsForDestination = function() error("boom") end }
+	local ok, err = pcall(function()
+		send(g3, 1222, "industryWorkers", "{ entity = 51 }")
+		frames(g3, FIRST)
+	end)
+	api.engine.system.simPersonSystem = sps
+	assert(ok, err)
+	a = final(g3, 1222)
+	eq(a.ok, true); eq(a.industries[1].workers, nil); eq(a.industries[1].lastVisitors, 2)
+end)
+
+test("core: industryWorkers helpers", function()
+	eq(next(core.industryWorkersArgs(nil)), nil); eq(core.industryWorkersArgs({ entity = "52" }).entity, 52)
+	for _, bad in ipairs({ -1, 1.5, "x", 2 ^ 40 }) do truthy(not core.industryWorkersArgs({ entity = bad }), tostring(bad)) end
+	eq(core.workersEntry(nil, { industriesState = { [5] = { lastVisitors = {} } } }, 5).lastVisitors[1], nil)
+	eq(core.workersEntry(nil, { industriesState = {} }, 5), false)
+	eq(core.workersEntry(nil, {}, 5), false)
+	local e, why = core.workersEntry(nil, nil, 5)
+	eq(e, nil); truthy(why)
+	e, why = core.workersEntry({ findPath = function() error("assert") end }, nil, 5)
+	eq(e, nil); truthy(why:find("findPath", 1, true))
+	eq(core.visitorsOf(false), 0); eq(core.visitorsOf({}), 0)
+	eq(select(2, core.visitorsOf({ lastVisitors = { { time = 3 }, { time = 9 }, {} } })), 9)
+	eq(core.townPopulation(nil), nil); eq(core.townPopulation({}), nil)
+	eq(core.townPopulation({ 5, 1, 2 }), 5); eq(core.townPopulation({ 0, 7, 2 }), 7)
+	eq(core.nearest(nil, { { position = { x = 0, y = 0 } } }), nil); eq(core.nearest({ x = 0, y = 0 }, {}), nil)
+	local t, d = core.nearest({ x = 0, y = 0 }, { { id = 1 }, { id = 2, position = { x = 3, y = 4 } } })
+	eq(t.id, 2); eq(d, 5)
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)

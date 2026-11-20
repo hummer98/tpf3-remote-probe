@@ -33,6 +33,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py money --set 10000000 | --add -5000   # the balance, as the sandbox money editor (a journal entry)
   tf3ctl.py stations [--name cent] [--near 11 --radius 800]   # station groups: id, platforms, carriers, distance
   tf3ctl.py lines [--name probe]            # lines: stops (platforms), vehicles, cargo loaded and carried
+  tf3ctl.py industry-workers [--entity 51]  # industries: capacity, sims headed there, last visitors (boost), town
   tf3ctl.py line create --stops Central,Harbour [--name "[probe] A"] [--cargo grain] [--via gui|cmd]
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
   tf3ctl.py connect --from 5123 --to Harbour [--build]   # a track between two free ends (needs Track Connector)
@@ -1451,6 +1452,10 @@ def cmd_connect(ns):
     return send("connect", args, timeout=ns.timeout + CONNECT_GRACE_SEC, on_progress=progress)
 
 
+def industry_workers_args(ns):
+    return {} if ns.entity is None else {"entity": ns.entity}
+
+
 def stations_args(ns):
     args = {}
     if ns.name:
@@ -2029,6 +2034,9 @@ def make_parser():
     sg.add_argument("--name", help="a part of the name, any case")
     sg.add_argument("--near", type=int, help="only those within --radius of this entity (a town, industry, ...)")
     sg.add_argument("--radius", type=float, help="metres around --near (default 1000)")
+    iw = sub.add_parser("industry-workers", help="industries (read only): capacity, sims with it as destination, "
+                                                  "last visitors of the base's workers script, productivity, nearest town")
+    iw.add_argument("--entity", type=int, help="one industry's id (entities --kind industry); none: all")
     ls = sub.add_parser("lines", help="the company's lines: stops and platforms, vehicles, cargo")
     ls.add_argument("--name", help="a part of the name, any case")
     ln = sub.add_parser("line", help="create, change or remove a line (the line manager's way by default)")
@@ -2213,6 +2221,8 @@ def main(argv=None):
             res = send("vehicles", args)
         elif ns.cmd == "stations":
             res = send("stations", stations_args(ns))
+        elif ns.cmd == "industry-workers":
+            res = send("industryWorkers", industry_workers_args(ns))
         elif ns.cmd == "lines":
             res = send("lines", {"name": ns.name} if ns.name else {})
         elif ns.cmd == "line":

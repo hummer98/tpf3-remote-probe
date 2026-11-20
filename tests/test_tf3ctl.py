@@ -600,6 +600,22 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("between", res["error"])
 
+    def test_9x_industry_workers(self):
+        code, res = self.ctl("industry-workers")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["total"], 1)
+        m = res["industries"][0]
+        self.assertEqual((m["id"], m["name"], m["construction"], m["capacity"], m["workers"], m["lastVisitors"]),
+                         (51, "Coal mine", 5100, 12, 5, 1))
+        self.assertEqual((m["town"]["id"], m["town"]["population"], m["town"]["distance"]), (11, 140, 300))
+        self.assertTrue(res["workersScript"]["ok"], res)
+        code, res = self.ctl("industry-workers", "--entity", "51")
+        self.assertEqual(code, 0, res)
+        self.assertEqual([e["id"] for e in res["industries"]], [51])
+        code, res = self.ctl("industry-workers", "--entity", "12345")
+        self.assertEqual(code, 1, res)
+        self.assertIn("no industry", res["error"])
+
     def test_9w_vehicles_buy_list_sell(self):
         code, res = self.ctl("depots")
         self.assertEqual(code, 0, res)
@@ -1042,6 +1058,9 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(tf3ctl.money_args(ns(set=5, add=None)), {"set": 5})
         self.assertEqual(tf3ctl.money_args(ns(set=None, add=-3)), {"add": -3})
         self.assertFalse({"depots", "vehicles"} & tf3ctl.CHANGES_GAME)
+        self.assertNotIn("industryWorkers", tf3ctl.CHANGES_GAME)
+        self.assertEqual(tf3ctl.industry_workers_args(ns(entity=None)), {})
+        self.assertEqual(tf3ctl.industry_workers_args(ns(entity=51)), {"entity": 51})
 
     def test_line_args(self):
         def parse(*argv):

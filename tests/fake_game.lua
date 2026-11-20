@@ -100,6 +100,24 @@ function M.new(dir, opts)
 	-- terminals = n, passenger, carriers = { "ROAD" }, pos = { x, y }, owner } } } }; opts.lines = { [line] = { name,
 	-- stops = { { stationGroup, station, terminal } } } }; opts.positions = { [entity] = { x, y } } (towns,
 	-- industries); opts.cargoTypes = { [id] = { name, label } }. g.lines holds what the engine has now.
+	-- industries (industryWorkers): opts.industries = { [entity] = { name, construction, capacity, workers (sims
+	-- with it as destination), productivity, pos = { x, y } } }; opts.workersState = the base's workers script's
+	-- state ({ industriesState = { [entity] = { lastVisitors = { { entity = {...}, time } } } } }), handed out as a
+	-- native table (findPath / asTable) as the engine does; opts.workersScript = "none" (not running) or "nostate";
+	-- opts.townCapacities = { [town] = { residential, commercial, industrial } }
+	local industries = opts.industries or {}
+	local WORKERS_ENTITY = 888
+	local function native(t)
+		return { findPath = function(_, path)
+			local v = t
+			for _, k in ipairs(path) do
+				if type(v) ~= "table" then return nil end
+				v = v[k]
+			end
+			if type(v) == "table" then return native(v) end
+			return v
+		end, asTable = function() return copy(t) end }
+	end
 	local groups = opts.stationGroups or {}
 	local stationOf, groupOfStation = {}, {}
 	for gid, grp in pairs(groups) do
@@ -351,7 +369,7 @@ function M.new(dir, opts)
 				getCalendarDate = function(t) return dateOf(t) end,
 				getPlayer = function() return 99 end,
 				getEntityName = function(e)
-					return (opts.names or {})[e] or (depots[e] and depots[e].name) or (g.lines[e] and g.lines[e].name)
+					return (opts.names or {})[e] or (industries[e] and industries[e].name) or (depots[e] and depots[e].name) or (g.lines[e] and g.lines[e].name)
 						or (groups[e] and groups[e].name)
 				end,
 				station = { isStationOfType = function(st, cargo)
@@ -398,6 +416,12 @@ function M.new(dir, opts)
 					table.sort(ids)
 					return ids
 				end
+				if kind == "INDUSTRY" and opts.industries then
+					local ids = {}
+					for e in pairs(industries) do ids[#ids + 1] = e end
+					table.sort(ids)
+					return ids
+				end
 				if kind == "STATION_GROUP" and opts.stationGroups then
 					local ids = {}
 					for e in pairs(groups) do ids[#ids + 1] = e end
@@ -406,7 +430,22 @@ function M.new(dir, opts)
 				end
 				return (opts.entities or {})[kind] or {}
 			end,
-			system = { lineSystem = {
+			system = {
+				streetConnectorSystem = { getConstructionEntityForSubconstruction = function(e)
+					return industries[e] and industries[e].construction or -1
+				end },
+				gameScriptSystem = { getEntityForGameScript = function(name)
+					if name ~= "::/industries/industry_workers.gs" or opts.workersScript == "none" then return -1 end
+					return WORKERS_ENTITY
+				end },
+				simPersonSystem = { getSimPersonsForDestination = function(e)
+					if not industries[e] then error("ASSERT: no person capacity for " .. tostring(e)) end
+					local ids = {}
+					for i = 1, industries[e].workers or 0 do ids[i] = e * 1000 + i end
+					return ids
+				end },
+				townBuildingSystem = { getTown2personCapacitiesMap = function() return copy(opts.townCapacities or {}) end },
+				lineSystem = {
 					getLinesForPlayer = function()
 						local ids = copy((opts.entities or {}).LINE or {})
 						for e in pairs(g.lines) do ids[#ids + 1] = e end
@@ -452,10 +491,25 @@ function M.new(dir, opts)
 					for e, c in pairs(g.fleet) do if c.depot == d and c.line == -1 then out[#out + 1] = e end end
 					return out
 				end, getLineVehicles = lineVehicleIds } },
-			entityExists = function(e) return g.lines[e] ~= nil or g.fleet[e] ~= nil or groups[e] ~= nil end,
+			entityExists = function(e)
+				return g.lines[e] ~= nil or g.fleet[e] ~= nil or groups[e] ~= nil or industries[e] ~= nil
+					or (e == WORKERS_ENTITY and opts.workersScript ~= "none")
+			end,
 			getComponent = function(e, kind)
 				inGame("getComponent")
 				if kind == "GAME_TIME" then return { gameTime = g.gameTime } end
+				if kind == "GAME_SCRIPT" and e == WORKERS_ENTITY then
+					if opts.workersScript == "nostate" then return {} end
+					return { state_native = native(copy(opts.workersState or {})) }
+				end
+				if kind == "PERSON_CAPACITY" then
+					local i = industries[e]
+					return i and i.capacity and { type = 3, capacity = i.capacity } or nil
+				end
+				if kind == "STOCK_LIST" then
+					local i = industries[e]
+					return i and i.productivity and { modifiers = { productivity = i.productivity } } or nil
+				end
 				if kind == "TRANSPORT_VEHICLE" then
 					local c = g.fleet[e]
 					return c and { transportVehicleConfig = copy(c), line = c.line, depot = c.depot,
@@ -487,7 +541,7 @@ function M.new(dir, opts)
 					return o and { player = o } or nil
 				end
 				if kind == "BOUNDING_VOLUME" then
-					local p = (stationOf[e] and stationOf[e].pos) or (opts.positions or {})[e]
+					local p = (stationOf[e] and stationOf[e].pos) or (industries[e] and industries[e].pos) or (opts.positions or {})[e]
 					if not p then return nil end
 					return { bbox = { min = { x = p[1] - 5, y = p[2] - 5, z = 0 }, max = { x = p[1] + 5, y = p[2] + 5, z = 10 } } }
 				end
@@ -510,7 +564,8 @@ function M.new(dir, opts)
 		type = {
 			enum = { Carrier = { ROAD = 0, RAIL = 1, TRAM = 2, AIR = 3, WATER = 4, OTHER = 5 },
 				TransportMode = { PERSON = 0, CARGO = 1, CAR = 2, BUS = 3, TRUCK = 4, TRAM = 5, ELECTRIC_TRAM = 6, TRAIN = 7,
-					ELECTRIC_TRAIN = 8, AIRCRAFT = 9, SHIP = 10, SMALL_AIRCRAFT = 11, SMALL_SHIP = 12, HELICOPTER = 13 } },
+					ELECTRIC_TRAIN = 8, AIRCRAFT = 9, SHIP = 10, SMALL_AIRCRAFT = 11, SMALL_SHIP = 12, HELICOPTER = 13 },
+				LandUseType = { RESIDENTIAL = 0, COMMERCIAL = 1, INDUSTRIAL = 2 } },
 			JournalEntry = { new = function() return { amount = 0, time = 0, category = { type = -1 } } end,
 				Type = { OTHER = 7 } },
 			TransportVehicleConfig = { new = function(src)
@@ -534,7 +589,8 @@ function M.new(dir, opts)
 			Vec5f = { new = function(x, y, z, w, q) return { x = x, y = y, z = z, w = w, q = q } end },
 			ComponentType = { VEHICLE_DEPOT = "VEHICLE_DEPOT", GAME_TIME = "GAME_TIME", GAME_SPEED = "GAME_SPEED", TOWN = "TOWN", TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE",
 				STATION_GROUP = "STATION_GROUP", INDUSTRY = "INDUSTRY", NAME = "NAME", STATION = "STATION", LINE = "LINE",
-				PLAYER_OWNED = "PLAYER_OWNED", BOUNDING_VOLUME = "BOUNDING_VOLUME" },
+				PLAYER_OWNED = "PLAYER_OWNED", BOUNDING_VOLUME = "BOUNDING_VOLUME", GAME_SCRIPT = "GAME_SCRIPT",
+				PERSON_CAPACITY = "PERSON_CAPACITY", STOCK_LIST = "STOCK_LIST" },
 			SavegameId = { new = function() return {} end },
 			StartGameParams = { new = function() return {} end },
 			BaseConfig = { Locations = { new = function() return { town = {}, industry = {} } end } },
@@ -934,6 +990,9 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 	local g = M.new(dir, { saves = saves, maxSpeed = 40, menu = arg[3] == "menu",
 		entities = { TOWN = { 11, 12 }, LINE = { 21 } }, names = { [11] = "Emsworth", [12] = "Emsworth Bay", [21] = "Bus 1" },
 		positions = { [11] = { 0, 0 } },
+		industries = { [51] = { name = "Coal mine", construction = 5100, capacity = 12, workers = 5, productivity = 1, pos = { 300, 0 } } },
+		workersState = { industriesState = { [51] = { lastVisitors = { { entity = { entity = 9001 }, time = 4000 } } } } },
+		townCapacities = { [11] = { 140, 20, 30 } },
 		stationGroups = {
 			[41] = { name = "Central", stations = { { id = 411, terminals = 2, passenger = true, pos = { 100, 0 } } } },
 			[42] = { name = "Harbour", owner = 99, stations = { { id = 421, terminals = 1, passenger = true, pos = { 900, 0 } } } },

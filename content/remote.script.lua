@@ -1029,6 +1029,82 @@ local connect = (ug_require or require)(MOD .. "::/remote_connect.lua").new({ co
 	appTime = appTime, try = try, say = say, mod = MOD })
 for k, fn in pairs(connect.handlers) do handlers[k] = fn end
 
+-- args: entity (one industry; none: all). Read only. Per industry: its capacity (PERSON_CAPACITY), the sims that
+-- have it as their destination (what the base window shows as n/capacity, entity_window_util.tl
+-- WorkplacesProgressBarWidget), the last visitors the base's workers script counts for the productivity boost
+-- (industry_productivity_util.getVisitors), the productivity (STOCK_LIST), and the nearest town with its
+-- population. Whatever cannot be read is left out, with the reason where it is the workers script.
+-- lastVisitors is the count the boost goes by (isIndustryWorkersBoosted: #getVisitors); the base window's list
+-- also drops sims that are gone (entityChanged0), so it may show fewer. Towns' positions: their bounding volume,
+-- as stations --near reads one (not checked in game for towns).
+function handlers.industryWorkers(c)
+	local args, err = core.industryWorkersArgs(c.args)
+	if not args then return fail(c.id, err) end
+	local CT = api.type.ComponentType
+	local function comp(e, kind) return try(function() return api.engine.getComponent(e, CT[kind]) end) end
+	local all = entitiesOf("industry")
+	local list = all
+	if args.entity then
+		-- only ids the engine lists as industries reach a component lookup (an unknown id may assert)
+		list = {}
+		for _, e in ipairs(all) do if e.id == args.entity then list[1] = e end end
+		if #list == 0 then return fail(c.id, "entity " .. args.entity .. " is no industry (entities --kind industry lists them)") end
+	end
+	-- the workers script, once
+	local script = { name = core.WORKERS_SCRIPT }
+	local stateNative, plainState
+	local se = tonumber(try(function() return api.engine.system.gameScriptSystem.getEntityForGameScript(core.WORKERS_SCRIPT) end))
+	if se == nil or se < 0 then
+		script.error = "the game script " .. core.WORKERS_SCRIPT .. " is not running"
+	else
+		local gs = comp(se, "GAME_SCRIPT")
+		if gs == nil then
+			script.error = "the game script's entity " .. se .. " has no GAME_SCRIPT component"
+		else
+			stateNative, plainState = core.field(gs, "state_native"), core.field(gs, "state")
+			if stateNative == nil and type(plainState) ~= "table" then script.error = "the game script has no state yet" end
+		end
+	end
+	script.ok = script.error == nil
+	-- towns: position and population, once
+	local LU = try(function() return api.type.enum.LandUseType end)
+	local function luIdx(k, d) local v = tonumber(LU and core.field(LU, k)) return v and v + 1 or d end
+	local idx = { residential = luIdx("RESIDENTIAL", 1), commercial = luIdx("COMMERCIAL", 2), industrial = luIdx("INDUSTRIAL", 3) }
+	local capsMap = try(function() return api.engine.system.townBuildingSystem.getTown2personCapacitiesMap() end)
+	local towns = {}
+	for _, t in ipairs(entitiesOf("town")) do
+		t.position = lines.posOf(t.id)
+		towns[#towns + 1] = t
+	end
+	local out = {}
+	for _, ind in ipairs(list) do
+		local e = { id = ind.id, name = ind.name, construction = ind.construction }
+		local pc = comp(ind.id, "PERSON_CAPACITY")
+		e.capacity = tonumber(pc and core.field(pc, "capacity"))
+		if e.capacity then e.boostAt = e.capacity * core.WORKERS_BOOST_FRACTION end
+		local dest = try(function() return api.engine.system.simPersonSystem.getSimPersonsForDestination(ind.id) end)
+		if dest ~= nil then e.workers = core.size(dest) end
+		if script.ok then
+			local entry, why = core.workersEntry(stateNative, plainState, ind.id)
+			if entry == nil then
+				e.lastVisitorsError = why
+			else
+				e.lastVisitors, e.lastVisitTime = core.visitorsOf(entry)
+			end
+		end
+		local sl = comp(ind.id, "STOCK_LIST")
+		e.productivity = tonumber(core.field(core.field(sl, "modifiers"), "productivity"))
+		local pos = lines.posOf(ind.id)
+		local town, dist = core.nearest(pos, towns)
+		if town then
+			e.town = { id = town.id, name = town.name, distance = dist,
+				population = core.townPopulation(capsMap ~= nil and core.field(capsMap, town.id) or nil, idx) }
+		end
+		out[#out + 1] = e
+	end
+	answer(c.id, { ok = true, total = #all, industries = core.array(out), workersScript = script })
+end
+
 ---------------------------------------------------------------------------------------------------------------------
 
 local function init()
