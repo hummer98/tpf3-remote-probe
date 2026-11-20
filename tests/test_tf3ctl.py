@@ -746,6 +746,22 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 1, res)
         self.assertIn("no industry", res["error"])
 
+    def test_9wb_vehicles_state(self):
+        code, res = self.ctl("vehicles")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(set(res), {"ok", "total", "vehicles", "id"}, "the plain answer as before")
+        self.assertTrue(res["vehicles"], "test_9w left a vehicle")
+        e = res["vehicles"][0]["entity"]
+        self.assertNotIn("state", res["vehicles"][0])
+        code, res = self.ctl("vehicles", "--entity", "%d,77777" % e, "--state", "--since", "0")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["total"], res["missing"], res["since"]), (1, [77777], 0))
+        self.assertIn("gameTime", res)
+        st = res["vehicles"][0]["state"]
+        self.assertEqual((st["runningCostPerYear"], st["balanceSince"], st["cargo"]), (1234.5, 0, []))
+        code, res = self.ctl("vehicles", "--entity", "77777", "--state")
+        self.assertEqual((code, res["total"], res["vehicles"], res["missing"]), (0, 0, [], [77777]))
+
     def test_9w_vehicles_buy_list_sell(self):
         code, res = self.ctl("depots")
         self.assertEqual(code, 0, res)
@@ -766,6 +782,19 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual((res["via"], res["sold"], res["spent"]), ("gui", True, -27000))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             tf3ctl.main(["buy", "--model", "bus_1900"])  # no depot: the probe cannot pick one as the store does
+
+    def test_9u_models(self):
+        code, res = self.ctl("models", "--grep", "bus")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["total"], 2)
+        m = res["models"][0]
+        self.assertEqual((m["id"], m["fileName"], m["price"]), (101, "vehicle/bus/bus_1900.mdl", 30000))
+        self.assertEqual((m["compartments"], m["capacities"], m["totalCapacity"]),
+                         ([{"loadConfigs": []}, {"loadConfigs": []}], [], 0))
+        code, res = self.ctl("models", "--grep", "zeppelin")
+        self.assertEqual((code, res["total"], res["models"]), (0, 0, []))
+        code, res = self.ctl("models", "--limit", "1")
+        self.assertEqual((code, res["total"], len(res["models"])), (0, 3, 1))
 
     def test_9v_money(self):
         code, res = self.ctl("money", "--set", "2000000")
@@ -1197,6 +1226,28 @@ class QuitLaunchTest(unittest.TestCase):
                          {"entity": 51, "grep": "Mine", "allParams": True})
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.industry_stocks_args(ns(entity=None, grep="", all_params=False))
+
+    def test_vehicles_and_models_args(self):
+        parse = tf3ctl.make_parser().parse_args
+        # a plain vehicles call sends what it always sent
+        self.assertEqual(tf3ctl.vehicles_args(parse(["vehicles"])), {"limit": 200})
+        self.assertEqual(tf3ctl.vehicles_args(parse(["vehicles", "--line", "21"])), {"limit": 200, "line": 21})
+        self.assertEqual(tf3ctl.vehicles_args(parse(["vehicles", "--entity", "601, 602", "--state", "--since", "120000"])),
+                         {"limit": 200, "entities": [601, 602], "state": True, "since": 120000})
+        for bad in (["--entity", "x"], ["--entity", ","], ["--entity", "-3"], ["--since", "5"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.vehicles_args(parse(["vehicles"] + bad))
+        got = mod_reads(tf3ctl.command_text(9, "vehicles", {"limit": 200, "entities": [601], "state": True, "since": 5.5}))
+        self.assertEqual(got["args"], {"limit": 200, "entities": [601], "state": True, "since": 5.5})
+        self.assertEqual(tf3ctl.models_args(parse(["models"])), {"limit": 200})
+        self.assertEqual(tf3ctl.models_args(parse(["models", "--grep", "Trillium", "--carrier", "water", "--limit", "3"])),
+                         {"limit": 3, "grep": "Trillium", "carrier": "WATER"})
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.models_args(parse(["models", "--grep", ""]))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse(["models", "--carrier", "boat"])
+        # read only: no "who changed the game" entry, no warning about another owner
+        self.assertFalse({"models", "vehicles"} & tf3ctl.CHANGES_GAME)
 
     def test_line_args(self):
         def parse(*argv):

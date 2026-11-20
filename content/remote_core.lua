@@ -17,7 +17,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
-	industryWorkers = true, industryStocks = true }
+	industryWorkers = true, industryStocks = true, models = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -888,6 +888,117 @@ end
 function M.spent(before, after)
 	if type(before) ~= "number" or type(after) ~= "number" then return nil end
 	return before - after
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- models and vehicles --state (read only): the numbers a vehicle rebalance is measured by (ships, 2026-11-21:
+-- price and running costs as the store reads them, speed, capacity per cargo type, loadSpeed; and, of a running
+-- vehicle, what the engine holds about its stop, so a poll every few seconds can time how long it stays in port)
+
+M.MODELS_LIMIT = 200
+M.MODELS_MAX = 1000 -- details per answer at most: each reads a model's metadata and walks its cargo sets
+M.MAX_VEHICLE_ENTITIES = 50
+
+-- args: grep (a part of the file name or the shown name, any case; digits also match the id), carrier (ROAD, RAIL,
+-- TRAM, AIR, WATER; any case), limit. Returns them or nil and why.
+function M.modelsArgs(args)
+	args = type(args) == "table" and args or {}
+	local out = { limit = M.MODELS_LIMIT }
+	if args.grep ~= nil then
+		if type(args.grep) == "number" then args.grep = string.format("%d", args.grep) end
+		if type(args.grep) ~= "string" or args.grep == "" then return nil, "grep must be a part of the name" end
+		out.grep = args.grep:lower()
+	end
+	if args.carrier ~= nil then
+		if type(args.carrier) ~= "string" or args.carrier == "" then return nil, "carrier must be a name (ROAD, RAIL, TRAM, AIR, WATER)" end
+		out.carrier = args.carrier:upper()
+	end
+	if args.limit ~= nil then
+		local n = tonumber(args.limit)
+		if n == nil or n ~= math.floor(n) or n < 1 or n > M.MODELS_MAX then
+			return nil, "limit must be a whole number from 1 to " .. M.MODELS_MAX
+		end
+		out.limit = n
+	end
+	return out
+end
+
+-- the vehicles command: line and limit as before (a limit that is no number is the default, as it always was),
+-- and the new ones: entities (only these vehicles; one that is gone is listed under missing, not an error, so a
+-- poll can see a ship sold or replaced), state (what the engine holds about the vehicle's stop and its money),
+-- since (a game time: the vehicle's balance from then, with state). With line and entities both, a vehicle of
+-- the company on another line is left out (neither listed nor missing). Returns them or nil and why.
+function M.vehicleListArgs(args)
+	args = type(args) == "table" and args or {}
+	local out = { limit = tonumber(args.limit) or 200 }
+	if args.line ~= nil then
+		out.line = tonumber(args.line)
+		if out.line == nil then return nil, "line must be an entity id" end
+	end
+	if args.entities ~= nil then
+		if type(args.entities) ~= "table" then return nil, "entities must be a list of entity ids" end
+		local list, seen = {}, {}
+		for _, e in ipairs(args.entities) do
+			local n = entityArg(e)
+			if n == nil then return nil, "entities must be a list of entity ids (whole numbers >= 0)" end
+			if not seen[n] then seen[n] = true; list[#list + 1] = n end -- one answer per vehicle
+		end
+		if #list == 0 then return nil, "entities must name at least one vehicle" end
+		if #list > M.MAX_VEHICLE_ENTITIES then return nil, "at most " .. M.MAX_VEHICLE_ENTITIES .. " entities at once" end
+		out.entities = list
+	end
+	if args.state ~= nil and type(args.state) ~= "boolean" then return nil, "state must be true or false" end
+	out.state = args.state == true
+	if args.since ~= nil then
+		local n = tonumber(args.since)
+		if n == nil or n < 0 then return nil, "since must be a game time (a number >= 0)" end
+		if not out.state then return nil, "since goes with state" end
+		out.since = math.floor(n) -- calculateBalance takes an integer game time
+	end
+	return out
+end
+
+-- the capacity per cargo type as the vehicle store adds it up (vehicle_store_util.tl getVehicleCargoCapacities):
+-- in each compartment the largest capacity a load config gives each cargo type (a compartment carries one of its
+-- configs at a time), summed over the compartments; the total is the sum of each compartment's largest.
+-- compartments: { { { capacity = n, cargoTypes = { id, ... } }, ... }, ... }. Returns { [id] = n }, total.
+function M.storeCapacities(compartments)
+	local per, total = {}, 0
+	for _, comp in ipairs(compartments or {}) do
+		local max = {}
+		for _, lc in ipairs(comp or {}) do
+			local cap = tonumber(lc.capacity) or 0
+			for _, id in ipairs(lc.cargoTypes or {}) do max[id] = math.max(max[id] or 0, cap) end
+		end
+		local biggest = 0
+		for id, cap in pairs(max) do
+			per[id] = (per[id] or 0) + cap
+			biggest = math.max(biggest, cap)
+		end
+		total = total + biggest
+	end
+	return per, total
+end
+
+-- the cargo ids of a cargo name map ({ [id] = name }), in order. Engine vectors per cargo type are read by these
+-- (vector[id + 1], as the base reads loadSpeedModifiers and config.capacities, cargo_util.tl), never walked: an
+-- id the engine does not know is its assertion.
+function M.cargoIds(names)
+	local ids = {}
+	for id in pairs(names or {}) do if type(id) == "number" then ids[#ids + 1] = id end end
+	table.sort(ids)
+	return ids
+end
+
+-- the name of an engine enum value: names is the list to try, enum the table of values (api.type.enum.X).
+-- Unknown: the value as text, so a new value shows up instead of vanishing.
+function M.enumName(enum, names, v)
+	if v == nil then return nil end
+	for _, n in ipairs(names) do
+		local ok, x = pcall(function() return enum[n] end)
+		if ok and x ~= nil and x == v then return n end
+	end
+	return tostring(v)
 end
 
 -- money: args set (the balance to have) or add (to the balance). The amount is a whole number within what a

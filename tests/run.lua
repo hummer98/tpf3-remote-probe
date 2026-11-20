@@ -4467,5 +4467,301 @@ test("core: industryWorkers helpers", function()
 	eq(t.id, 2); eq(d, 5)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- models and vehicles --state (read only): the ship rebalance's measures
+
+test("core: modelsArgs and vehicleListArgs; every bad value refused with a reason", function()
+	local a = core.modelsArgs(nil)
+	eq(a.limit, 200); eq(a.grep, nil); eq(a.carrier, nil)
+	a = core.modelsArgs({ grep = "Ship", carrier = "water", limit = 5 })
+	eq(a.grep, "ship"); eq(a.carrier, "WATER"); eq(a.limit, 5)
+	eq(core.modelsArgs({ grep = 701 }).grep, "701")
+	eq(core.modelsArgs({ limit = core.MODELS_MAX }).limit, 1000)
+	for _, bad in ipairs({ { grep = "" }, { grep = {} }, { carrier = "" }, { carrier = 4 }, { limit = 0 }, { limit = 1.5 },
+		{ limit = "x" }, { limit = 1001 } }) do
+		local ok, err = core.modelsArgs(bad)
+		eq(ok, nil); truthy(type(err) == "string")
+	end
+	local v = core.vehicleListArgs(nil)
+	eq(v.limit, 200); eq(v.state, false); eq(v.entities, nil); eq(v.line, nil)
+	eq(core.vehicleListArgs({ limit = "lots" }).limit, 200, "a limit that is no number is the default, as before")
+	v = core.vehicleListArgs({ line = "21", entities = { 601, "602" }, state = true, since = 100 })
+	eq(v.line, 21); eq(v.entities[2], 602); eq(v.state, true); eq(v.since, 100)
+	v = core.vehicleListArgs({ entities = { 601, 601, 602 }, state = true, since = 5.7 })
+	eq(#v.entities, 2, "a vehicle named twice is answered once"); eq(v.since, 5, "calculateBalance takes an integer")
+	for _, bad in ipairs({
+		{ { line = "x" }, "line must be an entity id" },
+		{ { entities = 601 }, "entities must be a list" },
+		{ { entities = {} }, "at least one" },
+		{ { entities = { -1 } }, "entities must be a list" },
+		{ { entities = { 1.5 } }, "entities must be a list" },
+		{ { state = "yes" }, "state must be true or false" },
+		{ { since = 5 }, "since goes with state" },
+		{ { since = -1, state = true }, "since must be" },
+	}) do
+		local ok, err = core.vehicleListArgs(bad[1])
+		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err))
+	end
+	local many = {}
+	for i = 1, core.MAX_VEHICLE_ENTITIES + 1 do many[i] = i end
+	truthy(select(2, core.vehicleListArgs({ entities = many })):find("at most"))
+end)
+
+test("core: storeCapacities sums as the store; cargoIds and enumName", function()
+	-- one compartment that carries BULK 120 or GOODS 40 (a cargo in both configs counts once, the larger), and one
+	-- of passengers
+	local per, total = core.storeCapacities({ { { capacity = 120, cargoTypes = { 1, 2 } }, { capacity = 40, cargoTypes = { 3, 2 } } },
+		{ { capacity = 20, cargoTypes = { 0 } } } })
+	eq(per[1], 120); eq(per[2], 120); eq(per[3], 40); eq(per[0], 20); eq(total, 140)
+	per, total = core.storeCapacities({ {}, { { capacity = 5, cargoTypes = {} } } })
+	eq(next(per), nil, "empty compartments: nothing"); eq(total, 0)
+	per, total = core.storeCapacities(nil)
+	eq(next(per), nil); eq(total, 0)
+	local ids = core.cargoIds({ [3] = "C", [0] = "P", [1] = "A", x = "no" })
+	eq(table.concat(ids, ","), "0,1,3"); eq(#core.cargoIds(nil), 0)
+	local E = { A = 1, B = 2 }
+	eq(core.enumName(E, { "A", "B" }, 2), "B"); eq(core.enumName(E, { "A", "B" }, 9), "9"); eq(core.enumName(E, { "A" }, nil), nil)
+	eq(core.enumName(setmetatable({}, { __index = function() error("no") end }), { "A" }, 1), "1", "a raising enum is no crash")
+end)
+
+-- cargo types with classes, ships with the base's metadata shapes, and the edge cases
+local SHIP_CARGO = { [0] = { name = "PASSENGERS", label = "Passengers", classes = { "PASSENGERS" } },
+	[1] = { name = "COAL", label = "Coal", classes = { "BULK" } }, [2] = { name = "GRAIN", label = "Grain", classes = { "BULK" } },
+	[3] = { name = "GOODS", label = "Goods", classes = { "GOODS" } }, [4] = { name = "FISH", label = "Fish", classes = {} } }
+local function loadConfig(cap, classes, types)
+	return { cargoEntry = { capacity = cap, cargoTypeSet = { cargoClassesIncluded = classes or {}, cargoClassesExcluded = {},
+		cargoTypesIncluded = types or {}, cargoTypesExcluded = {} } } }
+end
+local SHIP_MODELS = {
+	[701] = { name = "vehicle/ship/votrans_universal.mdl", price = 2400000, vehicle = true, meta = {
+		maintenance = { runningCosts = 400000, lifespan = 36525 },
+		description = { name = "Votrans Universal" }, availability = { yearFrom = 1935, yearTo = 1990 },
+		waterVehicle = { topSpeed = 9.1667, weightEmpty = 900, weightMaxPayload = 3000, availPower = 1000000 },
+		transportVehicle = { carrier = 4, transportModes = { 12 }, loadSpeed = 20, compartments = {
+			{ loadConfigs = { loadConfig(120, { "BULK" }), loadConfig(40, { "FLATBED", "GOODS" }) } } } } } },
+	[702] = { name = "vehicle/ship/ps_trillium.mdl", price = 3000000, priceScale = 2, vehicle = true, meta = {
+		maintenance = { runningCosts = 250000, runningCostScale = 3, lifespan = 36525 },
+		description = { name = "PS Trillium" },
+		waterVehicle = { topSpeed = 9.7222 },
+		transportVehicle = { carrier = 4, transportModes = { 10 }, loadSpeed = 15, arrivalDelay = 2, departureDelay = 3,
+			compartments = { { loadConfigs = { loadConfig(50, { "PASSENGERS" }) } } } } } },
+	-- a ship whose compartments are empty, and one with a price the base's formula left negative
+	[703] = { name = "vehicle/ship/empty_hull.mdl", price = -1, vehicle = true, meta = {
+		waterVehicle = { topSpeed = 5 },
+		transportVehicle = { carrier = 4, transportModes = { 12, 99 }, loadSpeed = 10, compartments = {} } } },
+	[704] = { name = "vehicle/ship/fish_boat.mdl", price = 100000, vehicle = true, meta = {
+		waterVehicle = { topSpeed = 8 },
+		transportVehicle = { carrier = 4, transportModes = { 12 }, loadSpeed = 10, compartments = {
+			{ loadConfigs = { loadConfig(10, {}, { "FISH" }) } }, { loadConfigs = {} } } } } },
+	[101] = { name = "vehicle/bus/bus_1900.mdl", price = 30000, vehicle = true, meta = {
+		landVehicle = { topSpeed = 10 }, transportVehicle = { carrier = 0, transportModes = { 3 }, loadSpeed = 4,
+			compartments = { { loadConfigs = { loadConfig(30, { "PASSENGERS" }) } } } } } },
+	[201] = { name = "vehicle/ship/no_metadata.mdl", noMetadata = true },
+	[200] = { name = "building/ship_house.mdl", price = 1 },
+}
+
+local function modelsGame(extra)
+	local opts = { models = SHIP_MODELS, cargoTypes = SHIP_CARGO }
+	for k, v in pairs(extra or {}) do opts[k] = v end
+	local g = vehicleGame(opts)
+	return g
+end
+
+test("models: the store's price and running costs, speed, loadSpeed and capacity per cargo type, read only", function()
+	local g = modelsGame()
+	local balance = g.balance
+	send(g, 701, "models", '{ grep = "ship" }')
+	frames(g, FIRST)
+	local a = final(g, 701)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.total, 4, "the four ships with transportVehicle; not the model without metadata nor the building")
+	local names = {}
+	for _, m in ipairs(a.models) do names[#names + 1] = m.fileName end
+	eq(table.concat(names, ","), "vehicle/ship/empty_hull.mdl,vehicle/ship/fish_boat.mdl,vehicle/ship/ps_trillium.mdl," ..
+		"vehicle/ship/votrans_universal.mdl", "sorted by file name")
+	local v = a.models[4]
+	eq(v.id, 701); eq(v.name, "Votrans Universal"); eq(v.price, 2400000); eq(v.priceScale, nil)
+	eq(v.runningCosts, 400000); eq(v.runningCostScale, nil); eq(v.lifespan, 36525)
+	eq(v.carrier, "WATER"); eq(v.transportModes[1], "SMALL_SHIP"); eq(v.loadSpeed, 20)
+	eq(v.topSpeed, 9.1667); eq(v.topSpeedKmh, 33); eq(v.yearFrom, 1935); eq(v.yearTo, 1990)
+	eq(v.water.weightMaxPayload, 3000); eq(v.water.type, nil); eq(v.water.small, true, "SMALL_SHIP")
+	eq(#v.compartments, 1); eq(#v.compartments[1].loadConfigs, 2)
+	eq(v.compartments[1].loadConfigs[2].capacity, 40); eq(v.compartments[1].loadConfigs[2].cargoClassesIncluded[2], "GOODS")
+	-- per cargo type as the store: BULK 120 (coal, grain), GOODS 40; total 120 (one compartment)
+	eq(#v.capacities, 3); eq(v.capacities[1].cargo, "COAL"); eq(v.capacities[1].capacity, 120)
+	eq(v.capacities[3].cargoType, 3); eq(v.capacities[3].capacity, 40); eq(v.totalCapacity, 120)
+	local t = a.models[3]
+	eq(t.priceScale, 2); eq(t.runningCostScale, 3); eq(t.water.small, false); eq(t.transportModes[1], "SHIP")
+	eq(t.arrivalDelay, 2); eq(t.departureDelay, 3); eq(t.capacities[1].cargo, "PASSENGERS"); eq(t.topSpeedKmh, 35)
+	local e = a.models[1]
+	eq(#e.compartments, 0); eq(#e.capacities, 0); eq(e.totalCapacity, 0); eq(e.runningCosts, nil, "no maintenance: nil")
+	eq(e.transportModes[2], "99", "an unknown mode shows as its value"); truthy(e.notes and e.notes[1]:find("negative"))
+	local raw = answerText(g, 701)
+	truthy(raw:find('"compartments":[]', 1, true), "an empty list reads as []")
+	local f = a.models[2]
+	eq(#f.compartments, 2); eq(#f.compartments[2].loadConfigs, 0); eq(f.capacities[1].cargo, "FISH"); eq(f.totalCapacity, 10)
+	eq(g.balance, balance, "nothing bought")
+	eq(#g.commands, 0, "no engine command sent")
+end)
+
+test("models: grep by shown name and id, carrier, limit; nothing matched is an empty list", function()
+	local g = modelsGame()
+	send(g, 710, "models", '{ grep = "trillium" }')
+	frames(g, FIRST)
+	eq(final(g, 710).models[1].id, 702)
+	send(g, 711, "models", '{ grep = "votrans universal" }')
+	frames(g, 20)
+	eq(final(g, 711).models[1].id, 701, "the shown name")
+	-- the models are walked once per load: one added later (none is, in a game) does not show up
+	g.models[705] = { name = "vehicle/ship/trillium_late.mdl", price = 1, vehicle = true }
+	send(g, 718, "models", '{ grep = "trillium" }')
+	frames(g, 20)
+	eq(final(g, 718).total, 1, "the index from the first call")
+	send(g, 712, "models", '{ grep = "704" }')
+	frames(g, 20)
+	eq(final(g, 712).models[1].fileName, "vehicle/ship/fish_boat.mdl", "digits: the id")
+	send(g, 713, "models", '{ carrier = "road" }')
+	frames(g, 20)
+	local a = final(g, 713)
+	eq(a.total, 1); eq(a.models[1].id, 101); eq(a.models[1].topSpeed, 10, "a land vehicle's speed")
+	send(g, 714, "models", '{ carrier = "water", limit = 2 }')
+	frames(g, 20)
+	a = final(g, 714)
+	eq(a.total, 4); eq(#a.models, 2, "details only up to the limit")
+	send(g, 715, "models", '{ grep = "zeppelin" }')
+	frames(g, 20)
+	a = final(g, 715)
+	eq(a.ok, true); eq(a.total, 0)
+	truthy(answerText(g, 715):find('"models":[]', 1, true), "nothing matched: []")
+	send(g, 716, "models", '{ limit = 0 }')
+	frames(g, 20)
+	truthy(final(g, 716).error:find("limit must be"))
+	g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 717, "models", "{  }")
+	frames(g, FIRST)
+	truthy(final(g, 717).error:find("needs a running game"))
+end)
+
+-- a ship on line 21 (Central -> Harbour), in port at Harbour (stop index 1), doors opened at game time 120000
+local function shipFleet()
+	local f = fleetOf(701, 5, 21)
+	f.capacities = { 0, 120, 120, 40, 0 }
+	f.live = { speed = 0, runningCost = 401000.5, maintenance = 0.9, loaded = { [1] = 60 }, fields = {
+		state = 2, loadState = 3, userStopped = false, sellOnArrival = false, noPath = false, autoDeparture = true,
+		doorsOpen = true, doorsTime = 120000, daysAtTerminal = 1, daysInDepot = 0, stopIndex = 1,
+		arrivalStationTerminal = { station = 0, terminal = 0 }, arrivalStationTerminalLocked = true,
+		lineStopDepartures = { 90000, 60000 }, lastLineStopDeparture = 90000, sectionTimes = { 28.5, 30 },
+		visitedStops = { 0, 1 }, timeUntilNextScheduledDeparture = 0, timeUntilCloseDoors = 4.5, timeUntilDeparture = 6,
+		timeUntilNextLoad = { 0, 0.5, 0, 0, 0 }, timeUntilNextUnload = { 0, 0, 0, 0, 0 },
+		loadSpeedModifiers = { {}, { vehicleOverlength = 0, stockCompatibility = 1, vehicleCompatibility = 0.5,
+			vehicleIncompatibility = 0 }, {}, { vehicleOverlength = 0.25 }, {} } } }
+	return f
+end
+
+local OLD_VEHICLE_KEYS = "depot,depreciatedValue,entity,line,name,parts"
+
+local function keysOf(t)
+	local ks = {}
+	for k in pairs(t) do ks[#ks + 1] = k end
+	table.sort(ks)
+	return table.concat(ks, ",")
+end
+
+test("vehicles --state: the engine's stop fields, cargo on board, running cost and balance, read only", function()
+	local g = modelsGame({ fleet = { [601] = shipFleet(), [602] = fleetOf(101, 6) },
+		lines = { [21] = { name = "Ships", stops = { { stationGroup = 41 }, { stationGroup = 42 } } } },
+		stationGroups = { [41] = { name = "Central", stations = { { id = 411, terminals = 1 } } },
+			[42] = { name = "Harbour", stations = { { id = 421, terminals = 1 } } } },
+		vehicleBalances = { [601] = { { 1000, 500 }, { 125000, -300 }, { 129000, -200 } } } })
+	g.gameTime = 130000
+	local balance = g.balance
+	send(g, 720, "vehicles", "{ state = true, since = 125000, entities = { 601 } }")
+	frames(g, FIRST)
+	local a = final(g, 720)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.gameTime, 130000); eq(a.since, 125000); eq(a.total, 1); eq(#a.missing, 0)
+	local v = a.vehicles[1]
+	eq(v.entity, 601); eq(v.parts[1].modelId, 701, "the old fields are still there")
+	local s = v.state
+	eq(s.state, "AT_TERMINAL"); eq(s.loadState, "Loading"); eq(s.doorsOpen, true); eq(s.doorsTime, 120000)
+	eq(s.sinceDoors, 10000); eq(s.stopIndex, 1); eq(s.stop.stationGroup, 42); eq(s.stop.name, "Harbour")
+	eq(s.arrivalStationTerminal.terminal, 0); eq(s.arrivalStationTerminalLocked, true)
+	eq(s.lineStopDepartures[1], 90000); eq(s.lineStopDepartures[2], 60000); eq(s.lastLineStopDeparture, 90000)
+	eq(s.sectionTimes[1], 28.5); eq(s.visitedStops[2], 1)
+	eq(s.timeUntilCloseDoors, 4.5); eq(s.timeUntilDeparture, 6); eq(s.timeUntilNextScheduledDeparture, 0)
+	eq(#s.timeUntilNextLoad, 1); eq(s.timeUntilNextLoad[1].cargo, "COAL"); eq(s.timeUntilNextLoad[1].seconds, 0.5)
+	eq(#s.timeUntilNextUnload, 0)
+	eq(#s.loadSpeedModifiers, 3, "the cargo types it has room for"); eq(s.loadSpeedModifiers[1].cargo, "COAL")
+	eq(s.loadSpeedModifiers[1].vehicleCompatibility, 0.5); eq(s.loadSpeedModifiers[1].totalPenalty, 1)
+	eq(s.loadSpeedModifiers[3].cargo, "GOODS"); eq(s.loadSpeedModifiers[3].vehicleOverlength, 0.25)
+	eq(s.loadSpeedModifiers[3].totalPenalty, 1.25)
+	eq(#s.cargo, 3, "the cargo types it has room for"); eq(s.cargo[1].cargo, "COAL"); eq(s.cargo[1].capacity, 120)
+	eq(s.cargo[1].count, 60); eq(s.cargo[3].cargo, "GOODS"); eq(s.cargo[3].count, 0)
+	eq(s.runningCostPerYear, 401000.5); eq(s.maintenanceState, 0.9); eq(s.speed, 0)
+	eq(s.balanceSince, -500); eq(s.balanceLastYear, 0, "the whole journal of the fake falls in the last year")
+	eq(s.autoDeparture, true); eq(s.userStopped, false)
+	eq(g.balance, balance); eq(#g.commands, 0, "no engine command sent")
+	eq(g.outOfRange, nil, "no engine vector read past its end")
+end)
+
+test("vehicles --state: en route, short vectors are not read past their end, modifiers only at a terminal", function()
+	local f = shipFleet()
+	f.live.fields.state, f.live.fields.loadState, f.live.fields.doorsOpen = 1, 0, false
+	f.live.fields.timeUntilNextLoad, f.live.fields.timeUntilNextUnload = { 0, 3 }, {}
+	f.capacities = { 0, 120 }
+	local g = modelsGame({ fleet = { [601] = f } })
+	send(g, 725, "vehicles", "{ state = true, entities = { 601 } }")
+	frames(g, FIRST)
+	local s = final(g, 725).vehicles[1].state
+	eq(s.state, "EN_ROUTE"); eq(s.loadState, "None"); eq(s.doorsOpen, false)
+	eq(#s.loadSpeedModifiers, 0, "not at a terminal: not read"); eq(#s.timeUntilNextLoad, 1); eq(s.timeUntilNextLoad[1].seconds, 3)
+	eq(#s.cargo, 1); eq(s.cargo[1].cargo, "COAL")
+	eq(g.outOfRange, nil, "no engine vector read past its end")
+end)
+
+test("vehicles --state without entities: at most MAX_VEHICLE_ENTITIES per answer; total counts them all", function()
+	local fleet = {}
+	for i = 1, core.MAX_VEHICLE_ENTITIES + 3 do fleet[700 + i] = fleetOf(101, i) end
+	local g = modelsGame({ fleet = fleet })
+	send(g, 726, "vehicles", "{ state = true }")
+	frames(g, FIRST)
+	local a = final(g, 726)
+	eq(a.total, core.MAX_VEHICLE_ENTITIES + 3); eq(#a.vehicles, core.MAX_VEHICLE_ENTITIES)
+	send(g, 727, "vehicles", "{  }")
+	frames(g, 20)
+	eq(#final(g, 727).vehicles, core.MAX_VEHICLE_ENTITIES + 3, "without state the limit is as before (200)")
+end)
+
+test("vehicles: without the new args the answer keeps its old shape; gone and foreign vehicles are missing", function()
+	local g = modelsGame({ fleet = { [601] = shipFleet(), [602] = fleetOf(101, 6) }, names = { [601] = "Ship 1", [602] = "Bus 2" } })
+	send(g, 730, "vehicles", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 730)
+	eq(keysOf(a), "id,ok,total,vehicles", "no new top-level keys")
+	for _, v in ipairs(a.vehicles) do eq(keysOf(v), OLD_VEHICLE_KEYS, "no new keys per vehicle") end
+	eq(keysOf(a.vehicles[1].parts[1]), "fileName,maintenanceState,modelId,partPrice,purchaseTime")
+	-- a vehicle that is gone (sold, replaced) and one that is not ours: listed under missing, not an error
+	send(g, 731, "vehicles", "{ state = true, entities = { 602, 999 } }")
+	frames(g, 20)
+	a = final(g, 731)
+	eq(a.ok, true); eq(a.total, 1); eq(a.missing[1], 999); eq(a.vehicles[1].entity, 602)
+	local s = a.vehicles[1].state
+	eq(s.state, nil, "no state fields in the fake: nil, not an error"); eq(s.stop, nil); eq(#s.lineStopDepartures, 0)
+	eq(#s.cargo, 0, "no capacities: no cargo"); eq(s.runningCostPerYear, 1234.5)
+	g.fleet[602] = nil
+	send(g, 732, "vehicles", "{ state = true, entities = { 602 } }")
+	frames(g, 20)
+	a = final(g, 732)
+	eq(a.ok, true); eq(a.total, 0); eq(a.missing[1], 602)
+	truthy(answerText(g, 732):find('"vehicles":[]', 1, true))
+	send(g, 733, "vehicles", "{ since = 5 }")
+	frames(g, 20)
+	truthy(final(g, 733).error:find("since goes with state"))
+	send(g, 734, "vehicles", '{ line = "x" }')
+	frames(g, 20)
+	truthy(final(g, 734).error:find("line must be an entity id"), "the old refusal as it was")
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)

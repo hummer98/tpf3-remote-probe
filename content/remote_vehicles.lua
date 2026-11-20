@@ -34,6 +34,8 @@ local CARRIERS = { "ROAD", "RAIL", "TRAM", "AIR", "WATER", "OTHER" }
 local MODE_KINDS = { { "BUS", "road" }, { "TRUCK", "road" }, { "CAR", "road" }, { "TRAM", "tram" },
 	{ "ELECTRIC_TRAM", "tram" }, { "TRAIN", "rail" }, { "ELECTRIC_TRAIN", "rail" }, { "SHIP", "water" },
 	{ "SMALL_SHIP", "water" }, { "AIRCRAFT", "air" }, { "SMALL_AIRCRAFT", "air" }, { "HELICOPTER", "air" } }
+local MODE_NAMES = { "PERSON", "CARGO" }
+for _, mk in ipairs(MODE_KINDS) do MODE_NAMES[#MODE_NAMES + 1] = mk[1] end
 local MOVED_WARNING = "game time moved during the command: the balance difference may include fares and running " ..
 	"costs; pause the game for exact prices"
 local CMD_NOTE = "via cmd: purchaseTime sent as 0 (the store's way stamps it); autoLoadConfig set as the store does, since the engine dies on a size mismatch"
@@ -608,21 +610,319 @@ function M.new(ctx)
 		answer(c.id, { ok = true, depots = core.array(out) })
 	end
 
-	-- args: line (only its vehicles), limit
+	-- the cargo types as getAll lists them: id -> file name. Engine lookups by cargo id stay within these (an id
+	-- the engine does not know is its assertion, as for stocks).
+	local function cargoNames()
+		local names = {}
+		pcall(function()
+			-- true: the hidden cargo types too, as the other commands list them
+			for id, name in pairs(api.res.cargoTypeRep.getAll(true)) do names[tonumber(id)] = tostring(name) end
+		end)
+		return names
+	end
+
+	local VEHICLE_STATES = { "IN_DEPOT", "EN_ROUTE", "AT_TERMINAL", "GOING_TO_DEPOT" }
+	local LOAD_STATES = { "None", "Arrived", "Unloading", "Loading", "WaitForScheduledDeparture", "Departing" }
+	local MODIFIER_KEYS = { "vehicleOverlength", "stockCompatibility", "vehicleCompatibility", "vehicleIncompatibility" }
+
+	local function numbers(v)
+		local out = {}
+		for _, x in ipairs(core.toList(v)) do out[#out + 1] = tonumber(x) end
+		return core.array(out)
+	end
+
+	-- a per-cargo vector (cargo id + 1) as { cargoType, cargo, <key> = value }, for the cargo types getAll lists;
+	-- keep(v, id) picks the entries (default: a number other than 0)
+	local function perCargo(vector, key, names, keep)
+		keep = keep or function(v) return type(v) == "number" and v ~= 0 end
+		local out = {}
+		if vector == nil then return core.array(out) end
+		-- only within the vector's length: past its end may be the engine's assertion, which pcall does not stop
+		local n = core.size(vector)
+		for _, id in ipairs(core.cargoIds(names)) do
+			local v = id + 1 <= n and core.at(vector, id + 1) or nil
+			if keep(v, id) then out[#out + 1] = { cargoType = id, cargo = names[id], [key] = v } end
+		end
+		return core.array(out)
+	end
+
+	-- the stop a vehicle on a line is at or heads to: stopIndex is 0-based (makeVehicleSetLineCmd takes the stop
+	-- the same way), so stops[stopIndex + 1]. Unverified in game which of the two it is while en route.
+	local function stopOf(line, stopIndex)
+		if not line or line < 0 or not stopIndex then return nil end
+		local lc = try(function() return api.engine.getComponent(line, CT().LINE) end)
+		local s = lc and core.at(core.field(lc, "stops"), stopIndex + 1)
+		if s == nil then return nil end
+		local sg = tonumber(core.field(s, "stationGroup"))
+		local name = sg and try(function() return api.engine.util.getEntityName(sg) end)
+		return { stationGroup = sg, name = type(name) == "string" and name or nil,
+			station = tonumber(core.field(s, "station")), terminal = tonumber(core.field(s, "terminal")) }
+	end
+
+	-- what the engine holds about a running vehicle's stop and money (engine.d.tl TransportVehicle), each read on
+	-- its own: one that fails or is not there is left out (nil), not the vehicle. Times: game time as GAME_TIME
+	-- gives it (doorsTime, lineStopDepartures, lastLineStopDeparture); the timeUntil* fields are as the engine
+	-- counts them down (seconds: unverified). since: a game time for balanceSince.
+	local function vehicleState(e, now, since, names)
+		local tv = vehicleComponent(e)
+		if not tv then return nil end
+		local function get(k) return try(function() return tv[k] end) end
+		local function bool(k)
+			local v = get(k)
+			if type(v) == "boolean" then return v end -- false stays false (an and/or would make it nil)
+			return nil
+		end
+		local function num(k) return tonumber(get(k)) end
+		local stateEnum = try(function() return api.type.enum.TransportVehicleState end)
+		local loadEnum = try(function() return api.type.TransportVehicle.LoadState end)
+		local line, stopIndex = tonumber(core.field(tv, "line")), num("stopIndex")
+		local ast = get("arrivalStationTerminal")
+		local doorsTime = num("doorsTime")
+		local st = { state = stateEnum and core.enumName(stateEnum, VEHICLE_STATES, get("state")) or nil,
+			loadState = loadEnum and core.enumName(loadEnum, LOAD_STATES, get("loadState")) or nil,
+			userStopped = bool("userStopped"), sellOnArrival = bool("sellOnArrival"), noPath = bool("noPath"),
+			autoDeparture = bool("autoDeparture"), doorsOpen = bool("doorsOpen"), doorsTime = doorsTime,
+			sinceDoors = (now and doorsTime) and now - doorsTime or nil,
+			daysAtTerminal = num("daysAtTerminal"), daysInDepot = num("daysInDepot"),
+			stopIndex = stopIndex, stop = stopOf(line, stopIndex),
+			arrivalStationTerminal = ast and { station = tonumber(core.field(ast, "station")),
+				terminal = tonumber(core.field(ast, "terminal")) } or nil,
+			arrivalStationTerminalLocked = bool("arrivalStationTerminalLocked"),
+			lineStopDepartures = numbers(get("lineStopDepartures")), lastLineStopDeparture = num("lastLineStopDeparture"),
+			sectionTimes = numbers(get("sectionTimes")), visitedStops = numbers(get("visitedStops")),
+			timeUntilNextScheduledDeparture = num("timeUntilNextScheduledDeparture"),
+			timeUntilCloseDoors = num("timeUntilCloseDoors"), timeUntilDeparture = num("timeUntilDeparture"),
+			timeUntilNextLoad = perCargo(get("timeUntilNextLoad"), "seconds", names),
+			timeUntilNextUnload = perCargo(get("timeUntilNextUnload"), "seconds", names),
+			speed = tonumber(try(function() return api.engine.util.vehicle.getSpeed(e) end)),
+			maintenanceState = tonumber(try(function() return api.engine.util.vehicle.getVehicleMaintenanceState(e) end)),
+			-- per year, as the vehicle window shows it (entity_window_util.tl, rounded there)
+			runningCostPerYear = tonumber(try(function() return api.engine.util.vehicle.getRunningCost(e) end)) }
+		-- what it carries now, per cargo type it has room for (cargo_util.tl getCargoTypeInfoForVehicle)
+		local capacities = try(function() return tv.config.capacities end)
+		local cargo, room = {}, {}
+		for _, x in ipairs(perCargo(capacities, "capacity", names, function(v) return (tonumber(v) or 0) > 0 end)) do
+			x.capacity = tonumber(x.capacity)
+			x.count = tonumber(try(function()
+				return api.engine.system.simEntityAtVehicleSystem.getVehicleSimEntitiesCountForCargoType(e, x.cargoType)
+			end))
+			room[x.cargoType] = true
+			cargo[#cargo + 1] = x
+		end
+		st.cargo = core.array(cargo)
+		-- the load speed modifiers the engine has for those cargo types at the terminal: read only while at one, as
+		-- the vehicle window's tooltip does (cargo_util.tl getCargoTypeInfoForVehicle)
+		local mods = {}
+		local modVector = st.state == "AT_TERMINAL" and get("loadSpeedModifiers") or nil
+		for _, x in ipairs(perCargo(modVector, "m", names, function(v, id) return v ~= nil and room[id] end)) do
+			local m = x.m
+			local entry = { cargoType = x.cargoType, cargo = x.cargo,
+				totalPenalty = tonumber(try(function() return m:getTotalPenalty() end)) }
+			for _, k in ipairs(MODIFIER_KEYS) do entry[k] = tonumber(core.field(m, k)) end
+			mods[#mods + 1] = entry
+		end
+		st.loadSpeedModifiers = core.array(mods)
+		-- income minus running costs as the statistics' vehicle table sums them (statistic_vehicles.tl: the last
+		-- year), and from since when asked
+		if now then
+			local year = tonumber(try(function() return api.util.getDefaultYearDuration() end))
+			if year then
+				st.balanceLastYear = tonumber(try(function()
+					return api.engine.util.finance.calculateBalance({ e }, math.max(now - year, 0), now, true)
+				end))
+			end
+			if since then
+				st.balanceSince = tonumber(try(function()
+					return api.engine.util.finance.calculateBalance({ e }, since, now, true)
+				end))
+			end
+		end
+		return st
+	end
+
+	-- args: line (only its vehicles), limit; entities (only these; gone ones under missing), state (add the
+	-- engine's stop and money fields under state, and the game time), since (with state: balanceSince). Without
+	-- the new args the answer is as it always was.
 	function handlers.vehicles(c)
-		local line = c.args.line ~= nil and tonumber(c.args.line) or nil
-		if c.args.line ~= nil and line == nil then return fail(c.id, "line must be an entity id") end
-		local ids = core.toList(api.engine.getEntitiesWithComponent(CT().TRANSPORT_VEHICLE, { requireOwnedByPlayer = player() }))
-		local limit = tonumber(c.args.limit) or 200
+		local a, err = core.vehicleListArgs(c.args)
+		if not a then return fail(c.id, err) end
+		local ids, missing
+		if a.entities then
+			-- only the ones asked for, and only the company's (as the list): another company's is missing too
+			local own = ownVehicles()
+			ids, missing = {}, {}
+			for _, e in ipairs(a.entities) do
+				if own[e] then ids[#ids + 1] = e else missing[#missing + 1] = e end
+			end
+		else
+			ids = core.toList(api.engine.getEntitiesWithComponent(CT().TRANSPORT_VEHICLE, { requireOwnedByPlayer = player() }))
+		end
+		local now = a.state and gameTime() or nil
+		-- the state reads a dozen engine calls per vehicle (two balances among them): without entities, at most
+		-- MAX_VEHICLE_ENTITIES of them, so a poll over the whole fleet does not hold up the frame
+		local limit = a.limit
+		if a.state and not a.entities then limit = math.min(limit, core.MAX_VEHICLE_ENTITIES) end
+		local names = a.state and cargoNames() or nil
 		local out, total = {}, 0
 		for _, e in ipairs(ids) do
 			local info = vehicleInfo(e)
-			if info and (line == nil or info.line == line) then
+			if info and (a.line == nil or info.line == a.line) then
 				total = total + 1
-				if #out < limit then out[#out + 1] = info end
+				if #out < limit then
+					if a.state then info.state = vehicleState(e, now, a.since, names) end
+					out[#out + 1] = info
+				end
+			elseif not info and missing then
+				missing[#missing + 1] = e
 			end
 		end
-		answer(c.id, { ok = true, total = total, vehicles = core.array(out) })
+		local res = { ok = true, total = total, vehicles = core.array(out) }
+		if missing then res.missing = core.array(missing) end
+		if a.state then res.gameTime, res.since = now, a.since end
+		answer(c.id, res)
+	end
+
+	local VEHICLE_KINDS = { "landVehicle", "airVehicle", "waterVehicle" } -- the store's order (getTopSpeed)
+	local CARGO_SET_KEYS = { "cargoClassesIncluded", "cargoClassesExcluded", "cargoTypesIncluded", "cargoTypesExcluded" }
+
+	local function strings(v)
+		local out = {}
+		for _, x in ipairs(core.toList(v)) do out[#out + 1] = tostring(x) end
+		return core.array(out)
+	end
+
+	local function modeNames(list)
+		local enum = enumOf("TransportMode")
+		local out = {}
+		for _, v in ipairs(core.toList(list)) do
+			out[#out + 1] = enum and core.enumName(enum, MODE_NAMES, v) or tostring(v)
+		end
+		return core.array(out)
+	end
+
+	-- a vehicle model as the store reads it (vehicle_store_util.tl makeSingleVehicle / collectVehicleData):
+	-- metadata.cost.price and metadata.maintenance.runningCosts (the base fills in a -1 from its formula at load,
+	-- model_metadata_util.addCostMetadata, and scales both by the difficulty after, post_run_util), the top speed
+	-- of the land, air or water part (m/s), loadSpeed, and the capacity per cargo type summed as the store does.
+	-- Each piece on its own: what is not there is nil.
+	local function modelDetails(id, names)
+		local md = try(function() return api.res.modelRep.get(id).metadata end)
+		local function sub(k) return md and try(function() return md[k] end) or nil end
+		local cost, mt, tv, desc, avail = sub("cost"), sub("maintenance"), sub("transportVehicle"), sub("description"), sub("availability")
+		local name = desc and core.field(desc, "name")
+		local m = { id = id, fileName = modelName(id), name = type(name) == "string" and name or nil,
+			price = cost and tonumber(core.field(cost, "price")) or nil,
+			priceScale = cost and tonumber(core.field(cost, "priceScale")) or nil,
+			runningCosts = mt and tonumber(core.field(mt, "runningCosts")) or nil,
+			runningCostScale = mt and tonumber(core.field(mt, "runningCostScale")) or nil,
+			lifespan = mt and tonumber(core.field(mt, "lifespan")) or nil,
+			yearFrom = avail and tonumber(core.field(avail, "yearFrom")) or nil,
+			yearTo = avail and tonumber(core.field(avail, "yearTo")) or nil }
+		if tv then
+			m.carrier = carrierName(core.field(tv, "carrier"))
+			m.transportModes = modeNames(core.field(tv, "transportModes"))
+			m.loadSpeed = tonumber(core.field(tv, "loadSpeed"))
+			m.arrivalDelay = tonumber(core.field(tv, "arrivalDelay"))
+			m.departureDelay = tonumber(core.field(tv, "departureDelay"))
+		end
+		for _, k in ipairs(VEHICLE_KINDS) do
+			local v = sub(k)
+			if v and m.topSpeed == nil then m.topSpeed = tonumber(core.field(v, "topSpeed")) end
+		end
+		if m.topSpeed then m.topSpeedKmh = math.floor(m.topSpeed * 36 + 0.5) / 10 end
+		local wv = sub("waterVehicle")
+		if wv then
+			-- type: the .mdl's waterVehicle.type ("SMALL") is turned into transportModes at load
+			-- (model_metadata_util.lua) and is not in the engine's record (type.d.tl), so it is nil in game, and
+			-- small says it instead: SMALL_SHIP in transportModes
+			local t = core.field(wv, "type")
+			m.water = { type = t ~= nil and tostring(t) or nil, topSpeed = tonumber(core.field(wv, "topSpeed")),
+				weightEmpty = tonumber(core.field(wv, "weightEmpty")),
+				weightMaxPayload = tonumber(core.field(wv, "weightMaxPayload")),
+				availPower = tonumber(core.field(wv, "availPower")) }
+			for _, mode in ipairs(m.transportModes or {}) do
+				if mode == "SMALL_SHIP" then m.water.small = true elseif mode == "SHIP" then m.water.small = false end
+			end
+		end
+		-- compartments as they are, and the capacity per cargo type the store makes of them
+		local comps, forStore = {}, {}
+		for _, comp in ipairs(core.toList(tv and core.field(tv, "compartments"))) do
+			local lcs, store = {}, {}
+			for _, lc in ipairs(core.toList(core.field(comp, "loadConfigs"))) do
+				local entry = core.field(lc, "cargoEntry")
+				local set = entry and core.field(entry, "cargoTypeSet")
+				local o = { capacity = entry and tonumber(core.field(entry, "capacity")) or nil }
+				for _, k in ipairs(CARGO_SET_KEYS) do o[k] = strings(set and core.field(set, k)) end
+				local ids = {}
+				if set then
+					pcall(function()
+						api.res.cargoTypeRep.forEachCargoType(set, function(cid) ids[#ids + 1] = tonumber(cid) end)
+					end)
+				end
+				lcs[#lcs + 1] = o
+				store[#store + 1] = { capacity = o.capacity, cargoTypes = ids }
+			end
+			comps[#comps + 1] = { loadConfigs = core.array(lcs) }
+			forStore[#forStore + 1] = store
+		end
+		m.compartments = core.array(comps)
+		local per, total = core.storeCapacities(forStore)
+		local caps = {}
+		for cid, n in pairs(per) do caps[#caps + 1] = { cargoType = cid, cargo = names[cid], capacity = n } end
+		table.sort(caps, function(x, y) return x.cargoType < y.cargoType end)
+		m.capacities, m.totalCapacity = core.array(caps), total
+		if m.price and m.price < 0 then
+			m.notes = core.array({ "cost.price is negative: the base's formula did not fill it in (the store shows it as is)" })
+		end
+		return m
+	end
+
+	-- args: grep (a part of the file or shown name, any case; digits: the id too), carrier, limit. Read only: the
+	-- vehicle models (metadata.transportVehicle), sorted by file name; details for the first limit of them.
+	-- Every model's metadata is looked at once (there are thousands), as the base's post_run_util walks them.
+	-- the vehicle models with what the filters need, walked once per load of this script: models do not change
+	-- within a game, and a walk looks at thousands of them in one frame
+	local function vehicleModelIndex()
+		if V.modelIndex then return V.modelIndex end
+		local all = try(function() return api.res.modelRep.getAll() end)
+		if not all then error("api.res.modelRep.getAll failed", 0) end
+		local started, list = appTime(), {}
+		local ok = pcall(function()
+			for id, fileName in pairs(all) do
+				local md = try(function() return api.res.modelRep.get(id).metadata end)
+				local tv = md and try(function() return md.transportVehicle end)
+				if tv then
+					local shown = try(function() return md.description.name end)
+					list[#list + 1] = { id = id, fileName = tostring(fileName), carrier = carrierName(core.field(tv, "carrier")),
+						shown = type(shown) == "string" and shown:lower() or nil }
+				end
+			end
+		end)
+		if not ok then error("could not walk api.res.modelRep.getAll()", 0) end
+		table.sort(list, function(x, y) return x.fileName < y.fileName end)
+		local took = (tonumber(appTime()) or started) - (tonumber(started) or 0)
+		if took > 0.5 then say(string.format("models: walking the models took %.1f s (once per load)", took), 1) end
+		V.modelIndex = list
+		return list
+	end
+
+	function handlers.models(c)
+		local a, err = core.modelsArgs(c.args)
+		if not a then return fail(c.id, err) end
+		local index = vehicleModelIndex()
+		local digits = a.grep and a.grep:match("^%d+$") and tonumber(a.grep)
+		local hits = {}
+		for _, m in ipairs(index) do
+			local keep = a.carrier == nil or m.carrier == a.carrier
+			if keep and a.grep then
+				keep = m.id == digits or m.fileName:lower():find(a.grep, 1, true) ~= nil
+					or (m.shown ~= nil and m.shown:find(a.grep, 1, true) ~= nil)
+			end
+			if keep then hits[#hits + 1] = m end
+		end
+		local names, out = cargoNames(), {}
+		for i = 1, math.min(#hits, a.limit) do out[#out + 1] = modelDetails(hits[i].id, names) end
+		answer(c.id, { ok = true, total = #hits, models = core.array(out) })
 	end
 
 	-- args: set (the balance to have) or add. As the sandbox money editor (game_bar.tl MoneyDisplay): a journal

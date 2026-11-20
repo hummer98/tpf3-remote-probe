@@ -27,6 +27,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py tool music [--close]            # a base window that opens as a tool (music, calendar)
   tf3ctl.py depots [--grep bus]             # depot entities to buy at
   tf3ctl.py vehicles [--line 21]            # the company's vehicles: models, purchaseTime, value
+  tf3ctl.py vehicles --entity 601,602 --state [--since 120000]   # + state, stop, door/departure times, cargo, costs
+  tf3ctl.py models [--grep trillium] [--carrier water]   # vehicle models: store price, running costs, speed, capacity
   tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
   tf3ctl.py duplicate --vehicle 601 | replace --vehicle 601 --model bus_1920 | sell --vehicle 601
             # each answers with via, balance before/after, spent, the model's store price, parts' purchaseTime
@@ -1481,6 +1483,40 @@ def industry_workers_args(ns):
     return {} if ns.entity is None else {"entity": ns.entity}
 
 
+def vehicles_args(ns):
+    """The vehicles command's args: line and limit as always; --entity (ids, comma-separated), --state and --since
+    only when given, so a plain call sends what it always sent."""
+    args = {"limit": ns.limit}
+    if ns.line is not None:
+        args["line"] = ns.line
+    if ns.entity is not None:
+        try:
+            ids = [int(x) for x in ns.entity.split(",") if x.strip()]
+        except ValueError:
+            raise ToolError("--entity takes vehicle ids, comma-separated")
+        if not ids or any(i < 0 for i in ids):
+            raise ToolError("--entity takes vehicle ids, comma-separated")
+        args["entities"] = ids
+    if ns.since is not None and not ns.state:
+        raise ToolError("--since goes with --state")
+    if ns.state:
+        args["state"] = True
+    if ns.since is not None:
+        args["since"] = ns.since
+    return args
+
+
+def models_args(ns):
+    args = {"limit": ns.limit}
+    if ns.grep is not None:
+        if not ns.grep:
+            raise ToolError("--grep needs a part of the name")
+        args["grep"] = ns.grep
+    if ns.carrier:
+        args["carrier"] = ns.carrier
+    return args
+
+
 def industry_stocks_args(ns):
     args = industry_workers_args(ns)
     if ns.grep is not None:
@@ -2065,6 +2101,17 @@ def make_parser():
     vl = sub.add_parser("vehicles", help="the company's vehicles: parts, purchaseTime, line, depreciated value")
     vl.add_argument("--line", type=int)
     vl.add_argument("--limit", type=int, default=200)
+    vl.add_argument("--entity", help="only these vehicles (ids, comma-separated); gone ones are listed under missing")
+    vl.add_argument("--state", action="store_true", help="add what the engine holds about each vehicle's stop "
+                    "(state, loadState, doorsTime, lineStopDepartures, timeUntil*, load speed modifiers), the cargo "
+                    "on board, its running cost per year and balance; and the game time")
+    vl.add_argument("--since", type=int, help="with --state: each vehicle's balance (income less costs) from this "
+                    "game time (the gameTime of an earlier answer)")
+    mdl = sub.add_parser("models", help="vehicle models (read only): the store's price and running costs, priceScale, "
+                                        "speed, capacity per cargo type, loadSpeed, compartments, waterVehicle")
+    mdl.add_argument("--grep", help="a part of the file name or the shown name, any case (digits: the id too)")
+    mdl.add_argument("--carrier", type=str.upper, choices=["ROAD", "RAIL", "TRAM", "AIR", "WATER"], help="any case")
+    mdl.add_argument("--limit", type=int, default=200, help="details for this many, 1-1000 (total counts them all)")
     sg = sub.add_parser("stations", help="the company's (and nobody's) station groups: id, stations, platforms, "
                                          "carriers, position")
     sg.add_argument("--name", help="a part of the name, any case")
@@ -2256,10 +2303,9 @@ def main(argv=None):
         elif ns.cmd == "depots":
             res = send("depots", {"grep": ns.grep} if ns.grep else {})
         elif ns.cmd == "vehicles":
-            args = {"limit": ns.limit}
-            if ns.line is not None:
-                args["line"] = ns.line
-            res = send("vehicles", args)
+            res = send("vehicles", vehicles_args(ns))
+        elif ns.cmd == "models":
+            res = send("models", models_args(ns))
         elif ns.cmd == "stations":
             res = send("stations", stations_args(ns))
         elif ns.cmd == "industry-workers":

@@ -205,6 +205,8 @@ resName は実在する必要があります (`api.res.constructionRep`)。そ�
 ```
 python3 tools/tf3ctl.py depots [--grep bus]
 python3 tools/tf3ctl.py vehicles [--line 21]
+python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
+python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
 python3 tools/tf3ctl.py replace --vehicle 601 --model bus_1920
@@ -469,6 +471,30 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
 - gui の `replace` と `sell` は本体がコールバックを取らないので、毎フレーム車両を見ます。replace は、部品が送った
   ものと同じになったか、前と変わったら完了です (`matchesSent` でどちらか分かる)。新しい部品が前と同じときは、推測せず
   `ok: false, uncertain: true` を返します。
+- `models` (読むだけ) は車両のモデル (`metadata.transportVehicle` のあるもの) をファイル名の順に並べます。
+  `--grep` (ファイル名か表示名の一部、大文字・小文字は問わない。数字なら id も) と `--carrier` で絞ります。モデルごとに、
+  車両の店と同じく読んだ `price` / `priceScale` (`metadata.cost`) と `runningCosts` / `runningCostScale` / `lifespan`
+  (`metadata.maintenance`。-1 は読み込みのときに本体の式で埋まり (`model_metadata_util.addCostMetadata`)、そのあと
+  難易度の倍率が掛かる (`post_run_util`))、`topSpeed` (m/s。店と同じく陸・空・水の部分から) と `topSpeedKmh`、
+  `loadSpeed`、`arrivalDelay` / `departureDelay`、`carrier`、`transportModes` (SHIP / SMALL_SHIP など)、`yearFrom` /
+  `yearTo`、`water` (waterVehicle: 速さ・重さ・出力と、`small` = `transportModes` に SMALL_SHIP があるか。.mdl の
+  `waterVehicle.type = "SMALL"` は読み込みのときにこれになり、`type` そのものはエンジンの記録に無いので空)、`compartments` (load config ごとの
+  積載量と貨物の組)、店と同じ数え方 (区画ごとに、その config の最大) の `capacities` (貨物の種類ごと) と
+  `totalCapacity`。`total` は当たった数の全部で、中身は先頭の `--limit` 件 (200、最大 1000) だけです。モデルは MOD の
+  スクリプトの読み込みごとに1度だけなめます (0.5 秒を超えたらログに1行)。
+- `vehicles --state` は、車両ごとにエンジンが持つ停留所の値を足します: `state` (IN_DEPOT・EN_ROUTE・AT_TERMINAL・
+  GOING_TO_DEPOT)、`loadState` (Arrived・Unloading・Loading・WaitForScheduledDeparture・Departing)、`doorsOpen` /
+  `doorsTime` (扉が開いた・閉じたゲーム時刻) と `sinceDoors`、`stopIndex` と `stop` (路線の停車駅 `stops[stopIndex + 1]`)、
+  `lineStopDepartures` (停車駅ごとの最後の出発)、`sectionTimes`、`timeUntilCloseDoors` / `timeUntilDeparture` /
+  `timeUntilNextLoad` / `timeUntilNextUnload`、`loadSpeedModifiers` (積める貨物の種類ごと、`totalPenalty` 付き)、`cargo`
+  (積載量と積んでいる数)、`speed`、`runningCostPerYear` (`getRunningCost`、車両の窓と同じ)、`balanceLastYear` (統計の
+  車両の表と同じ)、`--since T` のとき `balanceSince`。返事には `gameTime` も付きます。`--entity` は id (カンマ区切り、
+  50 まで) で、消えた車両と自社のものでない車両は `missing` に入り、`--line` と違う路線の車両は
+  省きます。`--entity` が無いときの `--state` は 50 台まで (`total` は全部の数) です。エンジンが出さない項目は省きます。これらを
+  付けなければ返事は前と同じです。港にいた時間は、数秒ごとに読んで出します: AT_TERMINAL の間に
+  `stopIndex` と `doorsTime` (扉が開いた時刻) を控え、出たあとの `lastLineStopDeparture` (と `lineStopDepartures` の
+  その停車駅の値。JSON の配列の 0 から数えて `stopIndex` 番目) を出発の時刻にします。ゲーム時刻と timeUntil* の単位は
+  ゲームで未確認です。
 - `depots` は自社の車庫だけです (路線管理と同じ `requireOwnedByPlayer`)。位置は返しません (読む API が見つからな
   かった)。種類 (road / tram / rail / water / air) は transport modes から決めます。`carrier` はある試験で 49 件すべて
   OTHER だった (本体も transport modes を見る) ので、`carrier` / `carrierRaw` は参考です。メンテナンス用の建物も出ます

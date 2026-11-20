@@ -212,6 +212,8 @@ within the 1.5 s gap, or just before the clear, is overwritten (or overwrites th
 ```
 python3 tools/tf3ctl.py depots [--grep bus]
 python3 tools/tf3ctl.py vehicles [--line 21]
+python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
+python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
 python3 tools/tf3ctl.py replace --vehicle 601 --model bus_1920
@@ -493,6 +495,33 @@ mod's code, and was checked against no running copy of it.
 - `replace` and `sell` via gui get no callback from the base, so the mod watches the vehicle each frame. A replace
   is done when the parts match what was sent or differ from before (`matchesSent` tells which). When the new parts
   equal the old ones, it answers `ok: false, uncertain: true` rather than guess.
+- `models` (read only) lists vehicle models (those with `metadata.transportVehicle`), sorted by file name,
+  matched by `--grep` (a part of the file name or the shown name, any case; digits also match the id) and
+  `--carrier`. Per model: `price` / `priceScale` (`metadata.cost`) and `runningCosts` / `runningCostScale` /
+  `lifespan` (`metadata.maintenance`) as the vehicle store reads them (the base fills in a -1 from its formula at
+  load, `model_metadata_util.addCostMetadata`, then scales them by the difficulty, `post_run_util`), `topSpeed`
+  (m/s, of the land, air or water part as the store) and `topSpeedKmh`, `loadSpeed`, `arrivalDelay` /
+  `departureDelay`, `carrier`, `transportModes` (SHIP / SMALL_SHIP ...), `yearFrom` / `yearTo`, `water` (the
+  waterVehicle: speed, weights, power, and `small` = SMALL_SHIP in `transportModes`, which is what the .mdl's
+  `waterVehicle.type = "SMALL"` becomes at load; `type` itself is not in the engine's record and stays empty), `compartments` (each load config's capacity and
+  cargo set) and `capacities` (per cargo type) / `totalCapacity` summed as the store does (per compartment the
+  largest of its configs). `total` counts every match; details only for the first `--limit` (200, at most 1000). The
+  models are walked once per load of the mod's script (a log line when that takes over 0.5 s).
+- `vehicles --state` adds, per vehicle, what the engine holds about its stop: `state` (IN_DEPOT, EN_ROUTE,
+  AT_TERMINAL, GOING_TO_DEPOT), `loadState` (Arrived, Unloading, Loading, WaitForScheduledDeparture, Departing),
+  `doorsOpen` / `doorsTime` (game time the doors opened or closed) and `sinceDoors`, `stopIndex` and `stop` (the
+  line's stop, `stops[stopIndex + 1]`), `lineStopDepartures` (last departure per stop), `sectionTimes`,
+  `timeUntilCloseDoors` / `timeUntilDeparture` / `timeUntilNextLoad` / `timeUntilNextUnload`, `loadSpeedModifiers`
+  (per cargo type it has room for, with `totalPenalty`), `cargo` (capacity and count on board), `speed`,
+  `runningCostPerYear` (`getRunningCost`, as the vehicle window), `balanceLastYear` (as the statistics' vehicle
+  table) and, with `--since T`, `balanceSince`; the answer also has `gameTime`. `--entity` takes ids
+  (comma-separated, at most 50); a vehicle that is gone or not the company's is listed under `missing`, one on
+  another line than `--line` is left out. Without `--entity`, `--state` answers at most 50 vehicles (`total`
+  counts all). Fields the
+  engine does not give are left out. Without these options the answer is as before. To time a stay in port, poll
+  every few seconds: while AT_TERMINAL note `stopIndex` and `doorsTime` (the doors opened); once it has left, the
+  departure is `lastLineStopDeparture`, and also the entry for that stop in `lineStopDepartures` (the JSON list's
+  element `stopIndex`, counting from 0). Units of the game time and of the timeUntil* fields are not checked in game.
 - `depots` lists the company's depots only (`requireOwnedByPlayer`, as the line manager). No position (no API to
   read it was found). The kind (road / tram / rail / water / air) comes from the transport modes; `carrier` was
   OTHER for all 49 depots in a test (the base also goes by transport modes), so `carrier` / `carrierRaw` are for

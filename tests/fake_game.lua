@@ -188,6 +188,13 @@ function M.new(dir, opts)
 		return out
 	end
 	g.groups, g.cargoTypes = groups, cargoTypes
+	-- the running state of a vehicle (fleet[e].live = { speed, runningCost, maintenance, loaded = { [cargo] = n },
+	-- fields = { ... } }); one that is gone is the engine's assertion
+	local function liveOf(e)
+		local c = g.fleet[e]
+		if not c then error("ASSERT: no transport vehicle " .. tostring(e)) end
+		return c.live or {}
+	end
 	local function configPrice(config)
 		local sum = 0
 		for _, p in ipairs(config.vehicles) do sum = sum + models[p.part.modelId].price end
@@ -364,7 +371,8 @@ function M.new(dir, opts)
 		end,
 	}
 	_G.api = {
-		util = { getApplicationTime = function() return g.time end },
+		util = { getApplicationTime = function() return g.time end,
+			getDefaultYearDuration = function() return 365 * DAY_TICKS end },
 		-- opts.modhub: an info-only backend and mod.io's publishing one, as the base menu sees them;
 		-- g.modhubBusy / g.modhubNoRestricted change what the publishing one says, from frame to frame
 		modhub = opts.modhub and {
@@ -406,10 +414,25 @@ function M.new(dir, opts)
 					return out
 				end } or nil,
 				-- opts.infiniteMoney: nil, as the engine gives for infinite money
-				finance = { getPlayersBalance = function() if opts.infiniteMoney then return nil end return g.balance end },
+				finance = { getPlayersBalance = function() if opts.infiniteMoney then return nil end return g.balance end,
+					-- opts.vehicleBalances = { [entity] = { { time, amount } } }: the journal of a vehicle
+					calculateBalance = function(list, from, to, maintenanceIncomeOnly)
+						g.balanceAsked = { list = copy(list), from = from, to = to, only = maintenanceIncomeOnly }
+						local sum = 0
+						for _, e in ipairs(list) do
+							for _, j in ipairs((opts.vehicleBalances or {})[e] or {}) do
+								if j[1] >= from and j[1] <= to then sum = sum + j[2] end
+							end
+						end
+						return sum
+					end },
 				vehicle = {
 					getDepreciatedValue = function(e) return g.fleet[e] and math.floor(configPrice(g.fleet[e]) * 0.9) or 0 end,
 					getPartPrice = function(p) return models[p.part.modelId].price end,
+					-- a vehicle that is gone: the engine's assertion (the probe reads only vehicles it listed)
+					getSpeed = function(e) return liveOf(e).speed or 0 end,
+					getRunningCost = function(e) return liveOf(e).runningCost or 1234.5 end,
+					getVehicleMaintenanceState = function(e) return liveOf(e).maintenance or 1 end,
 					findBestLineAndDepotForVehicle = function(e)
 						return { g.fleet[e] and g.fleet[e].line or -1, opts.bestDepot or 301 }
 					end,
@@ -503,6 +526,10 @@ function M.new(dir, opts)
 					getCarriers = function(gid) return { groupCarriers(gid), {} } end,
 					getStationGroup = function(st) return groupOfStation[st] or -1 end,
 				},
+				simEntityAtVehicleSystem = { getVehicleSimEntitiesCountForCargoType = function(e, cargo)
+					if not cargoTypes[cargo] then error("ASSERT: no cargo type " .. tostring(cargo)) end
+					return (liveOf(e).loaded or {})[cargo] or 0
+				end },
 				transportVehicleSystem = { getDepotVehicles = function(d)
 					local out = {}
 					for e, c in pairs(g.fleet) do if c.depot == d and c.line == -1 then out[#out + 1] = e end end
@@ -545,8 +572,38 @@ function M.new(dir, opts)
 				end
 				if kind == "TRANSPORT_VEHICLE" then
 					local c = g.fleet[e]
-					return c and { transportVehicleConfig = copy(c), line = c.line, depot = c.depot,
-						config = { capacities = copy(c.capacities or {}) } } or nil
+					if not c then return nil end
+					local tv = { transportVehicleConfig = copy(c), line = c.line, depot = c.depot,
+						config = { capacities = copy(c.capacities or {}) } }
+					-- c.live: the running vehicle's fields as engine.d.tl names them (state, loadState, doorsTime,
+					-- lineStopDepartures, loadSpeedModifiers = { [cargo + 1] = { ... } }, ...), copied in as they are
+					for k, v in pairs(c.live and c.live.fields or {}) do
+						if k == "loadSpeedModifiers" then
+							local mods = {}
+							for i, m in pairs(v) do
+								local mm = copy(m)
+								mods[i] = setmetatable(mm, { __index = { getTotalPenalty = function(self)
+									return (self.vehicleOverlength or 0) + (self.vehicleIncompatibility or 0) + 1
+								end } })
+							end
+							tv[k] = mods
+						else
+							tv[k] = copy(v)
+						end
+					end
+					-- an engine vector read past its end: noted (the engine may assert; core.at's pcall would hide a
+					-- Lua error here)
+					for k, v in pairs(tv) do
+						if type(v) == "table" and (k:match("^timeUntilNext") or k == "loadSpeedModifiers") then
+							setmetatable(v, { __index = function(_, i)
+								if type(i) == "number" then g.outOfRange = (g.outOfRange or "") .. k .. "[" .. i .. "] " end
+							end })
+						end
+					end
+					setmetatable(tv.config.capacities, { __index = function(_, i)
+						if type(i) == "number" then g.outOfRange = (g.outOfRange or "") .. "capacities[" .. i .. "] " end
+					end })
+					return tv
 				end
 				if kind == "STATION_GROUP" then
 					local grp = groups[e]
@@ -599,7 +656,10 @@ function M.new(dir, opts)
 				TransportMode = { PERSON = 0, CARGO = 1, CAR = 2, BUS = 3, TRUCK = 4, TRAM = 5, ELECTRIC_TRAM = 6, TRAIN = 7,
 					ELECTRIC_TRAIN = 8, AIRCRAFT = 9, SHIP = 10, SMALL_AIRCRAFT = 11, SMALL_SHIP = 12, HELICOPTER = 13 },
 				LandUseType = { RESIDENTIAL = 0, COMMERCIAL = 1, INDUSTRIAL = 2 },
+				TransportVehicleState = { IN_DEPOT = 0, EN_ROUTE = 1, AT_TERMINAL = 2, GOING_TO_DEPOT = 3 },
 				StockListType = { InputStock = 0, OutputStock = 1, StorageStock = 2 } },
+			TransportVehicle = { LoadState = { None = 0, Arrived = 1, Unloading = 2, Loading = 3,
+				WaitForScheduledDeparture = 4, Departing = 5 } },
 			JournalEntry = { new = function() return { amount = 0, time = 0, category = { type = -1 } } end,
 				Type = { OTHER = 7 } },
 			TransportVehicleConfig = { new = function(src)
@@ -692,6 +752,24 @@ function M.new(dir, opts)
 				return cargoTypes[id] and { name = cargoTypes[id].label } or nil
 			end,
 			getPassengerCargoTypeId = function() return 0 end,
+			-- as the engine: a cargo type is in the set by name (cargoTypesIncluded) or by one of its classes
+			-- (cargoTypes[id].classes), and not when excluded either way
+			forEachCargoType = function(set, cb)
+				local function has(list, x) for _, y in ipairs(list or {}) do if y == x then return true end end return false end
+				local ids = {}
+				for id in pairs(cargoTypes) do ids[#ids + 1] = id end
+				table.sort(ids)
+				for _, id in ipairs(ids) do
+					local ct, inClass, outClass = cargoTypes[id], false, false
+					for _, cl in ipairs(ct.classes or {}) do
+						inClass = inClass or has(set.cargoClassesIncluded, cl)
+						outClass = outClass or has(set.cargoClassesExcluded, cl)
+					end
+					if (inClass or has(set.cargoTypesIncluded, ct.name)) and not outClass and not has(set.cargoTypesExcluded, ct.name) then
+						cb(id)
+					end
+				end
+			end,
 		}, modelRep = {
 			getAll = function()
 				local out = {}
@@ -702,8 +780,13 @@ function M.new(dir, opts)
 			get = function(id)
 				local m = models[id]
 				if not m then return nil end
-				return { metadata = { cost = { price = m.price, priceScale = m.priceScale },
-					transportVehicle = m.vehicle and { compartments = { {}, {} } } or nil } }
+				-- m.noMetadata: a model without metadata; m.meta: more of it (maintenance, waterVehicle,
+				-- transportVehicle with compartments, description, ...), as the engine holds it after load
+				if m.noMetadata then return {} end
+				local md = { cost = { price = m.price, priceScale = m.priceScale },
+					transportVehicle = m.vehicle and { compartments = { {}, {} } } or nil }
+				for k, v in pairs(m.meta or {}) do md[k] = copy(v) end
+				return { metadata = md }
 			end,
 		} },
 		gui = {
