@@ -448,7 +448,7 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
             remove(answer_files(folder, cid))
 
 
-def wait_new_hello(folder, cid, after_stamp, timeout):
+def wait_new_hello(folder, cid, after_stamp, timeout, why_slow=None):
     """After a load's ack: the new game's hello, or the load's error answer. A game that closes or crashes
     meanwhile ends the wait at once (2026-11-15: a crashed newgame kept the tool waiting 10 minutes)."""
     deadline = time.time() + timeout
@@ -471,6 +471,8 @@ def wait_new_hello(folder, cid, after_stamp, timeout):
             if got is not None:
                 return got
         time.sleep(0.25)
+    if why_slow:
+        raise ToolError(f"the game did not come back from the load in {timeout:g} s: {why_slow}")
     raise ToolError(f"the game did not come back from the load in {timeout:g} s (it may have dropped to the main "
                     "menu: look at the log)")
 
@@ -678,6 +680,20 @@ def load_args(ns):
     return args
 
 
+# --wait-for-start: the loading screen holds at the base "Start Game" button until someone clicks it. Neither the
+# game script nor guiUpdate runs there, so the mod reads no command files, not even quit (2026-11-20: a load with it
+# stalled at the button and only quit --kill got out). Nothing here clicks it: the tool sends no clicks or keys.
+WAIT_FOR_START_NOTE = "waiting for a person to press Start Game; the mod takes no commands until then"
+# the answer comes only after the new game's hello, so after the click: it says what happened, not what is happening
+WAIT_FOR_START_DONE = ("loaded with --wait-for-start: the loading screen waited for a person to press Start Game, "
+                       "and the mod took no commands until then")
+WAIT_FOR_START_HELP = ("keep the base game's 'Start Game' button: the loading screen stops there until a person "
+                       "clicks it, and the mod takes no commands meanwhile (not even quit). Use it only with "
+                       "someone at the game")
+WAIT_FOR_START_SLOW = ("most likely the loading screen is waiting at the Start Game button (--wait-for-start), "
+                       "which only a person can press; the mod takes no commands, not even quit, until then")
+
+
 def replace_game(cmd, args, answer_only, timeout):
     """load / newgame: the mod acks, the next frame ends its game, and the new game's mod writes a new hello."""
     folder = exchange_dir()
@@ -688,9 +704,15 @@ def replace_game(cmd, args, answer_only, timeout):
     try:
         if not ack.get("ok"):
             return ack
+        held = bool(args.get("waitForStart"))
         print("loading ..." if cmd == "load" else "starting a new game ...", file=sys.stderr)
-        after = wait_new_hello(folder, ack["id"], before, timeout)
-        return after if after.get("ok") is False else {"ok": True, "plan": ack, "hello": after}
+        if held:
+            print("note: " + WAIT_FOR_START_NOTE, file=sys.stderr)
+        after = wait_new_hello(folder, ack["id"], before, timeout, WAIT_FOR_START_SLOW if held else None)
+        res = after if after.get("ok") is False else {"ok": True, "plan": ack, "hello": after}
+        if held and res.get("ok"):  # a failed loadGame never reached the button
+            res = dict(res, note=WAIT_FOR_START_DONE)
+        return res
     finally:
         if ack.get("id") is not None:
             remove(answer_files(folder, ack["id"]))
@@ -1250,6 +1272,8 @@ def cmd_start(ns, restart):
         res = replace_game(plan[0], plan[1], False, ns.timeout)
         out[plan[0]] = res
         out["ok"] = bool(res.get("ok"))
+        if res.get("note"):
+            out["note"] = res["note"]
     return out
 
 
@@ -1910,7 +1934,7 @@ def make_parser():
     l.add_argument("--set-mods")
     l.add_argument("--param", action="append", default=[])
     l.add_argument("--dry-run", action="store_true")
-    l.add_argument("--wait-for-start", action="store_true", help="keep the base game's 'Start Game' button")
+    l.add_argument("--wait-for-start", action="store_true", help=WAIT_FOR_START_HELP)
     l.add_argument("--timeout", type=float, default=600)
     ng = sub.add_parser("newgame", help="start a new game (app.startGame); the running game's mods by default")
     ng.add_argument("--climate", help="temperate (default), dry, subarctic, tropical, or a resource name")
@@ -1978,7 +2002,7 @@ def make_parser():
         st.add_argument("--remove", action="append", default=[])
         st.add_argument("--set-mods")
         st.add_argument("--param", action="append", default=[])
-        st.add_argument("--wait-for-start", action="store_true")
+        st.add_argument("--wait-for-start", action="store_true", help="with --load: " + WAIT_FOR_START_HELP)
         st.add_argument("--climate")
         st.add_argument("--generator")
         st.add_argument("--size")

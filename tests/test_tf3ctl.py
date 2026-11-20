@@ -357,6 +357,99 @@ def log_line(t, text, day="2026-11-15"):
     return "[%s %sZ - MESSAGE  - Main Thread      - Main           ]  %s" % (day, t, text)
 
 
+class WaitForStartTest(unittest.TestCase):
+    """--wait-for-start holds the loading screen at the base Start Game button, where the mod reads no commands:
+    the answer and a timed-out wait have to say so (2026-11-20: a load stalled there and only quit --kill got out)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.sent = []
+
+        def send(cmd, args, timeout=None, final_tag=None, folder=None):
+            self.sent.append((cmd, dict(args), final_tag))
+            return {"ok": True, "id": 7, "loading": True}
+        patches = [unittest.mock.patch.object(tf3ctl, "exchange_dir", lambda: self.dir),
+                   unittest.mock.patch.object(tf3ctl, "current_stamp", lambda folder: "1_1"),
+                   unittest.mock.patch.object(tf3ctl, "send", send)]
+        for pt in patches:
+            pt.start()
+            self.addCleanup(pt.stop)
+
+    def replace(self, args, hello=None, timeout=30):
+        err = io.StringIO()
+        waited = {}
+
+        def wait(folder, cid, after, t, why_slow=None):
+            waited["why_slow"] = why_slow
+            if hello is None:
+                raise tf3ctl.ToolError("the game did not come back from the load in 0 s: " + str(why_slow))
+            return hello
+        with unittest.mock.patch.object(tf3ctl, "wait_new_hello", wait), contextlib.redirect_stderr(err):
+            res = tf3ctl.replace_game("load", args, False, timeout)
+        return res, err.getvalue(), waited
+
+    def test_the_answer_carries_a_note(self):
+        res, err, waited = self.replace({"save": "s", "waitForStart": True}, hello={"stamp": "2_2"})
+        self.assertIs(res["ok"], True)
+        self.assertEqual(res["note"], tf3ctl.WAIT_FOR_START_DONE, "the answer comes after the click: past tense")
+        self.assertIn("Start Game", res["note"])
+        self.assertIn("no commands", res["note"])
+        self.assertIn("note: " + tf3ctl.WAIT_FOR_START_NOTE, err, "shown while it waits, not only at the end")
+        self.assertIn("Start Game", waited["why_slow"])
+        self.assertEqual(self.sent[0][1]["waitForStart"], True)
+
+    def test_no_note_without_it(self):
+        res, err, waited = self.replace({"save": "s"}, hello={"stamp": "2_2"})
+        self.assertNotIn("note", res)
+        self.assertNotIn("note:", err)
+        self.assertIsNone(waited["why_slow"])
+
+    def test_an_error_answer_stays_as_it_was(self):
+        # a failed loadGame never reached the button: no note that says it waited there
+        res, err, _ = self.replace({"save": "s", "waitForStart": True}, hello={"ok": False, "error": "loadGame: x"})
+        self.assertEqual(res, {"ok": False, "error": "loadGame: x"})
+        self.assertIn("note: " + tf3ctl.WAIT_FOR_START_NOTE, err, "the warning while waiting is still shown")
+
+    def test_dry_run_sends_no_note(self):
+        res = tf3ctl.replace_game("load", {"save": "s", "waitForStart": True, "dryRun": True}, True, 30)
+        self.assertNotIn("note", res)
+
+    def test_a_timed_out_wait_names_the_button(self):
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            tf3ctl.wait_new_hello(self.dir, 9, "1_1", timeout=0.3, why_slow=tf3ctl.WAIT_FOR_START_SLOW)
+        self.assertIn("Start Game", str(cm.exception))
+        self.assertIn("not even quit", str(cm.exception))
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            tf3ctl.wait_new_hello(self.dir, 9, "1_1", timeout=0.3)
+        self.assertIn("dropped to the main menu", str(cm.exception), "the old reason without the option")
+        self.assertNotIn("Start Game", str(cm.exception))
+
+    def test_launch_load_passes_it_and_lifts_the_note(self):
+        ns = tf3ctl.argparse.Namespace(load="s", new=False, add=[], remove=[], set_mods=None, param=[],
+                                       wait_for_start=True, lang=None, timeout=30, launch_timeout=30)
+        self.assertEqual(tf3ctl.start_args(ns), ("load", {"save": "s", "waitForStart": True}))
+        with unittest.mock.patch.object(tf3ctl, "game_pids", lambda: []), \
+                unittest.mock.patch.object(tf3ctl, "launch_game", lambda t: {"ok": True, "menu": True}), \
+                unittest.mock.patch.object(tf3ctl, "wait_new_hello", lambda *a, **k: {"stamp": "2_2"}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            out = tf3ctl.cmd_start(ns, restart=False)
+        self.assertIs(out["ok"], True)
+        self.assertEqual(out["note"], tf3ctl.WAIT_FOR_START_DONE, "at the top, not only inside load")
+        self.assertEqual(out["load"]["note"], tf3ctl.WAIT_FOR_START_DONE)
+
+    def test_help_says_it_needs_a_person(self):
+        for name in ("load", "launch", "restart"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+                tf3ctl.make_parser().parse_args([name, "--help"])
+            text = out.getvalue()
+            self.assertIn("--wait-for-start", text, name)
+            flat = " ".join(text.split())
+            self.assertIn("not even quit", flat, name)
+            self.assertIn("a person", flat, name)
+
+
 class GameStateTest(unittest.TestCase):
     def test_states_from_the_log(self):
         L = log_line
@@ -552,6 +645,14 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 0, res)
         self.assertNotEqual(res["hello"]["stamp"], before)
         self.assertEqual(res["hello"]["modParams"]["example_mod"]["treePollution"], 3)
+        code, res = self.ctl("status")
+        self.assertEqual(code, 0, "the loaded game answers")
+        self.assertNotIn("note", res)
+        # the fake game does not hold at the button, so the load comes back; the answer still says what it means
+        code, res = self.ctl("load", "probe", "--wait-for-start", "--timeout", "30")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["note"], tf3ctl.WAIT_FOR_START_DONE)
+        self.assertIn("no commands", res["note"])
         code, res = self.ctl("status")
         self.assertEqual(code, 0, "the loaded game answers")
 

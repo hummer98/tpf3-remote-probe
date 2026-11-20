@@ -342,7 +342,10 @@ languages get English. The name, summary, description and cover in the game's mo
 - **`quit --kill` and `restart` SIGKILL a game that does not quit**, losing unsaved progress (`restart --no-kill`
   gives up instead). Neither kills a game another `--owner` changed in the last 10 minutes without `--force`.
 - **Loading discards unsaved progress**, and a load starts without waiting for the "Start Game" button (the base
-  loading page waits for it; `--wait-for-start` keeps that).
+  loading page waits for it; `--wait-for-start` keeps that). With `--wait-for-start` the loading screen stops at
+  the button until a person clicks it, and meanwhile the mod takes no commands, not even `quit` (the tool never
+  clicks it). Use it only with someone at the game. The tool says so on stderr while it waits, the answer
+  after the click carries a `note`, and a load that times out names the button as the likely cause.
 - `line delete` refuses a line with vehicles unless `--sell-vehicles` is given. It skips the base checks for
   missions and protected entities (it is meant for test saves).
 - `money` books an "other" journal entry, which shows in the finance tables and charts.
