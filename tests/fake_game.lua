@@ -105,7 +105,19 @@ function M.new(dir, opts)
 	-- state ({ industriesState = { [entity] = { lastVisitors = { { entity = {...}, time } } } } }), handed out as a
 	-- native table (findPath / asTable) as the engine does; opts.workersScript = "none" (not running) or "nostate";
 	-- opts.townCapacities = { [town] = { residential, commercial, industrial } }
+	-- industryStocks: industries[e].stocks = { { type, cargoType, capacity, count, mixedTypes, cargoTypes = { ids },
+	-- classes = { "#any" }, consumeFrequency } }, .rules = { { input = { { n per stock } }, output = { [cargo] = n },
+	-- booster, boostFactor } }; opts.constructionComps = { [construction] = { fileName, params } } (params handed
+	-- out as params_native, asTable, as the engine does; noNative = true: only the params record)
 	local industries = opts.industries or {}
+	local constructionComps = opts.constructionComps or {}
+	-- a stock id the industry's list does not have: the engine's assertion (past pcall in the game)
+	local function stockOf(e, stockId)
+		local i = industries[e]
+		local st = i and i.stocks and i.stocks[stockId + 1]
+		if not st then error("ASSERT: no stock " .. tostring(stockId) .. " at " .. tostring(e)) end
+		return st
+	end
 	local WORKERS_ENTITY = 888
 	local function native(t)
 		return { findPath = function(_, path)
@@ -372,6 +384,10 @@ function M.new(dir, opts)
 					return (opts.names or {})[e] or (industries[e] and industries[e].name) or (depots[e] and depots[e].name) or (g.lines[e] and g.lines[e].name)
 						or (groups[e] and groups[e].name)
 				end,
+				stock = { getStockCargoTypes = function(e, stockId)
+					local st = stockOf(e, stockId)
+					return copy(st.cargoTypes or (st.cargoType and st.cargoType >= 0 and { st.cargoType }) or {})
+				end },
 				station = { isStationOfType = function(st, cargo)
 					return stationOf[st] ~= nil and (stationOf[st].passenger == true) == (cargo == false)
 				end },
@@ -438,6 +454,7 @@ function M.new(dir, opts)
 					if name ~= "::/industries/industry_workers.gs" or opts.workersScript == "none" then return -1 end
 					return WORKERS_ENTITY
 				end },
+				simEntityAtStockSystem = { getStockCount = function(e, stockId) return stockOf(e, stockId).count or 0 end },
 				simPersonSystem = { getSimPersonsForDestination = function(e)
 					if not (industries[e] and industries[e].capacity) then error("ASSERT: no person capacity for " .. tostring(e)) end
 					local ids = {}
@@ -508,7 +525,23 @@ function M.new(dir, opts)
 				end
 				if kind == "STOCK_LIST" then
 					local i = industries[e]
-					return i and i.productivity and { modifiers = { productivity = i.productivity } } or nil
+					if not (i and (i.productivity or i.stocks)) then return nil end
+					local stocks, datas = {}, {}
+					for k, st in ipairs(i.stocks or {}) do
+						stocks[k] = { type = st.type or 0, cargoType = st.cargoType or -1, capacity = st.capacity or 0,
+							mixedTypes = st.mixedTypes == true, tag = k, loadSpeedModifier = 1,
+							cargoTypes = { cargoClassesIncluded = copy(st.classes or {}) } }
+						datas[k] = { consumeFrequency = st.consumeFrequency or 0 }
+					end
+					return { modifiers = { productivity = i.productivity }, stocks = stocks, stockDatas = datas,
+						rules = copy(i.rules or {}), thrownAwayCargo = i.thrownAwayCargo or 0 }
+				end
+				if kind == "CONSTRUCTION" then
+					local cc = constructionComps[e]
+					if not cc then return nil end
+					local params = copy(cc.params or {})
+					return { fileName = cc.fileName, params = params,
+						params_native = (not cc.noNative) and cc.params and native(copy(cc.params)) or nil }
 				end
 				if kind == "TRANSPORT_VEHICLE" then
 					local c = g.fleet[e]
@@ -565,7 +598,8 @@ function M.new(dir, opts)
 			enum = { Carrier = { ROAD = 0, RAIL = 1, TRAM = 2, AIR = 3, WATER = 4, OTHER = 5 },
 				TransportMode = { PERSON = 0, CARGO = 1, CAR = 2, BUS = 3, TRUCK = 4, TRAM = 5, ELECTRIC_TRAM = 6, TRAIN = 7,
 					ELECTRIC_TRAIN = 8, AIRCRAFT = 9, SHIP = 10, SMALL_AIRCRAFT = 11, SMALL_SHIP = 12, HELICOPTER = 13 },
-				LandUseType = { RESIDENTIAL = 0, COMMERCIAL = 1, INDUSTRIAL = 2 } },
+				LandUseType = { RESIDENTIAL = 0, COMMERCIAL = 1, INDUSTRIAL = 2 },
+				StockListType = { InputStock = 0, OutputStock = 1, StorageStock = 2 } },
 			JournalEntry = { new = function() return { amount = 0, time = 0, category = { type = -1 } } end,
 				Type = { OTHER = 7 } },
 			TransportVehicleConfig = { new = function(src)
@@ -590,7 +624,7 @@ function M.new(dir, opts)
 			ComponentType = { VEHICLE_DEPOT = "VEHICLE_DEPOT", GAME_TIME = "GAME_TIME", GAME_SPEED = "GAME_SPEED", TOWN = "TOWN", TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE",
 				STATION_GROUP = "STATION_GROUP", INDUSTRY = "INDUSTRY", NAME = "NAME", STATION = "STATION", LINE = "LINE",
 				PLAYER_OWNED = "PLAYER_OWNED", BOUNDING_VOLUME = "BOUNDING_VOLUME", GAME_SCRIPT = "GAME_SCRIPT",
-				PERSON_CAPACITY = "PERSON_CAPACITY", STOCK_LIST = "STOCK_LIST" },
+				PERSON_CAPACITY = "PERSON_CAPACITY", STOCK_LIST = "STOCK_LIST", CONSTRUCTION = "CONSTRUCTION" },
 			SavegameId = { new = function() return {} end },
 			StartGameParams = { new = function() return {} end },
 			BaseConfig = { Locations = { new = function() return { town = {}, industry = {} } end } },
@@ -653,7 +687,10 @@ function M.new(dir, opts)
 				for id, c in pairs(cargoTypes) do out[id] = c.name end
 				return out
 			end,
-			get = function(id) return cargoTypes[id] and { name = cargoTypes[id].label } or nil end,
+			get = function(id)
+				if not cargoTypes[id] then error("ASSERT: no cargo type " .. tostring(id)) end
+				return cargoTypes[id] and { name = cargoTypes[id].label } or nil
+			end,
 			getPassengerCargoTypeId = function() return 0 end,
 		}, modelRep = {
 			getAll = function()
@@ -990,7 +1027,11 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 	local g = M.new(dir, { saves = saves, maxSpeed = 40, menu = arg[3] == "menu",
 		entities = { TOWN = { 11, 12 }, LINE = { 21 } }, names = { [11] = "Emsworth", [12] = "Emsworth Bay", [21] = "Bus 1" },
 		positions = { [11] = { 0, 0 } },
-		industries = { [51] = { name = "Coal mine", construction = 5100, capacity = 12, workers = 5, productivity = 1, pos = { 300, 0 } } },
+		industries = { [51] = { name = "Coal mine", construction = 5100, capacity = 12, workers = 5, productivity = 1, pos = { 300, 0 },
+			stocks = { { type = 1, cargoType = 1, capacity = 400, count = 37 } },
+			rules = { { input = { { 0 } }, output = { [1] = 2 }, capacity = 100 } } } },
+		constructionComps = { [5100] = { fileName = "industry/coal_mine.con",
+			params = { hummer_aom_upg_pollution = "", hummer_aom_upg_boost = 2, year = 1900 } } },
 		workersState = { industriesState = { [51] = { lastVisitors = { { entity = { entity = 9001 }, time = 4000 } } } } },
 		townCapacities = { [11] = { 140, 20, 30 } },
 		stationGroups = {

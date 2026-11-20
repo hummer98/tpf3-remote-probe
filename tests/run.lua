@@ -4308,6 +4308,146 @@ test("industryWorkers: without the workers script or its state, the rest still a
 	eq(a.ok, true); eq(a.industries[1].workers, nil); eq(a.industries[1].lastVisitors, 2)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- industryStocks: an industry's stocks, rules and its construction's params
+local function stocksGame(extra)
+	local o = { saves = SAVES,
+		industries = {
+			[51] = { name = "Coal mine", construction = 5100, productivity = 1.5, thrownAwayCargo = 3,
+				stocks = { { type = 1, cargoType = 1, capacity = 400, count = 37 },
+					{ type = 0, cargoType = -1, mixedTypes = true, cargoTypes = { 1, 2 }, classes = { "#any" }, capacity = 50,
+						count = 4, consumeFrequency = 0.5 } },
+				rules = { { input = { { 0, 0 } }, output = { [1] = 2 }, capacity = 100 },
+					{ input = { { 0, 1 } }, output = {}, booster = true, boostFactor = 0.25 } } },
+			[52] = { name = "Farm", construction = 5200, stocks = {} }, -- an empty stock list
+			[53] = { name = "Oil well" }, -- no stock list, no construction
+			[54] = { name = "Farm 2", construction = 5400, productivity = 1 }, -- a construction without params
+		},
+		constructionComps = {
+			[5100] = { fileName = "industry/coal_mine.con", params = { hummer_aom_upg_pollution = "", hummer_aom_upg_boost = 2,
+				hummer_aom_upg_group = { 1, 2 }, industrialCapacity = 3, year = 1900, seed = 7, modules = { [5] = "x" } } },
+			[5200] = { fileName = "industry/farm.con", params = { seed = 1 }, noNative = true },
+			[5400] = { fileName = "industry/farm.con" },
+		} }
+	for k, v in pairs(extra or {}) do o[k] = v end
+	local g = newGame(o)
+	frames(g, 2)
+	return g
+end
+
+test("industryStocks: stocks with cargo and counts, rules, modifiers and the AoM params", function()
+	local g = stocksGame()
+	send(g, 1301, "industryStocks", "{  }")
+	frames(g, FIRST)
+	local a = final(g, 1301)
+	eq(a.ok, true); eq(a.total, 4); eq(#a.industries, 4)
+	local by = {}
+	for _, e in ipairs(a.industries) do by[e.name] = e end
+	local m = by["Coal mine"]
+	eq(m.id, 51); eq(m.construction, 5100); eq(m.fileName, "industry/coal_mine.con")
+	eq(m.productivity, 1.5); eq(m.thrownAwayCargo, 3)
+	eq(#m.stocks, 2)
+	local s1, s2 = m.stocks[1], m.stocks[2]
+	eq(s1.index, 1); eq(s1.stockId, 0); eq(s1.type, 1); eq(s1.typeName, "OutputStock"); eq(s1.cargoType, 1)
+	eq(s1.cargo.fileName, "COAL"); eq(s1.cargo.name, "Coal"); eq(s1.capacity, 400); eq(s1.count, 37)
+	eq(s1.stockCargoTypes[1].cargoType, 1); eq(s1.mixedTypes, false)
+	eq(s2.typeName, "InputStock"); eq(s2.cargoType, -1); eq(s2.cargo, nil, "-1: no cargo type, no lookup")
+	eq(s2.mixedTypes, true); eq(#s2.stockCargoTypes, 2); eq(s2.stockCargoTypes[2].cargo.name, "Grain"); eq(s2.cargoClasses[1], "#any")
+	eq(s2.count, 4); eq(s2.consumeFrequency, 0.5)
+	eq(#m.rules, 2)
+	eq(m.rules[1].output[1].cargoType, 1); eq(m.rules[1].output[1].amount, 2); eq(m.rules[1].output[1].cargo.fileName, "COAL")
+	eq(m.rules[2].booster, true); eq(m.rules[2].boostFactor, 0.25); eq(m.rules[2].input[1][2], 1)
+	eq(m.aomParams.hummer_aom_upg_pollution, "", "an empty string stays an empty string")
+	eq(m.aomParams.hummer_aom_upg_boost, 2); eq(m.aomParams.hummer_aom_upg_group[2], 2)
+	eq(m.params.industrialCapacity, 3); eq(m.params.year, 1900); eq(m.params.seed, nil, "not asked for")
+	eq(m.allParams, nil, "only with allParams")
+	local txt = answerText(g, 1301)
+	truthy(txt:find('"hummer_aom_upg_pollution":""', 1, true), "the empty string is in the JSON")
+	truthy(txt:find('"output":[]', 1, true), "a rule without outputs: an empty list")
+	local f = by["Farm"]
+	eq(#f.stocks, 0); truthy(txt:find('"stocks":[]', 1, true), "no stocks: an empty list")
+	truthy(txt:find('"aomParams":{}', 1, true), "no AoM keys: an empty object, not []")
+	eq(f.fileName, "industry/farm.con"); eq(next(f.aomParams), nil, "no AoM keys"); eq(f.params.seed, nil)
+	local o = by["Oil well"]
+	eq(o.stocks, nil); truthy(o.stockListError); eq(o.fileName, nil); eq(o.aomParams, nil)
+	local f2 = by["Farm 2"]
+	eq(f2.fileName, "industry/farm.con"); eq(next(f2.aomParams), nil); eq(#f2.stocks, 0)
+	eq(#g.commands, 0, "read only: no command sent")
+end)
+
+test("industryStocks: one industry, grep, allParams, an unknown id, a bad id, no industries", function()
+	local g = stocksGame()
+	send(g, 1310, "industryStocks", "{ entity = 51, allParams = true }")
+	frames(g, FIRST)
+	local a = final(g, 1310)
+	eq(a.ok, true); eq(#a.industries, 1); eq(a.industries[1].id, 51)
+	eq(a.industries[1].allParams.seed, 7); eq(a.industries[1].allParams.modules["5"] or a.industries[1].allParams.modules[5], "x")
+	eq(a.industries[1].allParams.hummer_aom_upg_pollution, "")
+	send(g, 1311, "industryStocks", '{ grep = "FARM" }')
+	frames(g, 20)
+	a = final(g, 1311)
+	eq(a.ok, true); eq(#a.industries, 2); eq(a.total, 4)
+	send(g, 1312, "industryStocks", '{ grep = "nothing" }')
+	frames(g, 20)
+	a = final(g, 1312)
+	eq(a.ok, true); eq(#a.industries, 0)
+	send(g, 1313, "industryStocks", '{ entity = 51, grep = "farm" }')
+	frames(g, 20)
+	a = final(g, 1313)
+	eq(a.ok, true); eq(#a.industries, 0, "a known id the grep leaves out: no error")
+	send(g, 1314, "industryStocks", "{ entity = 999 }")
+	frames(g, 20)
+	a = final(g, 1314)
+	eq(a.ok, false); truthy(a.error:find("no industry", 1, true), a.error)
+	send(g, 1315, "industryStocks", '{ entity = "x" }')
+	frames(g, 20)
+	a = final(g, 1315)
+	eq(a.ok, false); truthy(a.error:find("entity must be", 1, true), a.error)
+	local g2 = newGame({ saves = SAVES })
+	frames(g2, 2)
+	send(g2, 1316, "industryStocks", "{  }")
+	frames(g2, FIRST)
+	a = final(g2, 1316)
+	eq(a.ok, true); eq(a.total, 0); eq(#a.industries, 0)
+	truthy(answerText(g2, 1316):find('"industries":[]', 1, true), "an empty list, not {}")
+end)
+
+test("industryStocks: a construction the engine does not give, a failing count", function()
+	local g = stocksGame({ constructionComps = {} })
+	local sys = api.engine.system.simEntityAtStockSystem
+	api.engine.system.simEntityAtStockSystem = { getStockCount = function() error("boom") end }
+	local ok, err = pcall(function()
+		send(g, 1320, "industryStocks", "{ entity = 51 }")
+		frames(g, FIRST)
+	end)
+	api.engine.system.simEntityAtStockSystem = sys
+	assert(ok, err)
+	local a = final(g, 1320)
+	eq(a.ok, true); local m = a.industries[1]
+	truthy(m.constructionError); eq(m.fileName, nil); eq(m.aomParams, nil)
+	eq(#m.stocks, 2); eq(m.stocks[1].count, nil); eq(m.stocks[1].capacity, 400)
+end)
+
+test("core: industryStocks helpers", function()
+	local a = core.industryStocksArgs(nil)
+	eq(a.entity, nil); eq(a.grep, nil); eq(a.allParams, false)
+	a = core.industryStocksArgs({ entity = "52", grep = "Mine", allParams = true })
+	eq(a.entity, 52); eq(a.grep, "mine"); eq(a.allParams, true)
+	for _, bad in ipairs({ { entity = -1 }, { grep = "" }, { grep = 5 }, { allParams = "yes" } }) do
+		truthy(not core.industryStocksArgs(bad))
+	end
+	local p = core.pickParams({ hummer_aom_upg_a = "", hummer_aom_upg_b = { x = 1 }, upgrade = 0, other = 1, [3] = "n" })
+	eq(p.prefixed.hummer_aom_upg_a, ""); eq(p.prefixed.hummer_aom_upg_b.x, 1); eq(p.other.upgrade, 0); eq(p.other.other, nil)
+	eq(next(core.pickParams(nil).prefixed), nil); eq(next(core.pickParams("x").other), nil)
+	local cyc = {}; cyc.self = cyc
+	local pc = core.pickParams({ hummer_aom_upg_c = cyc })
+	truthy(core.json(pc), "a cycle does not loop")
+	local r = core.ruleOf({ input = { { 1, 0 } }, output = { [7] = 3, [2] = 1 }, booster = "x" })
+	eq(r.booster, nil); eq(r.output[1].cargoType, 2); eq(r.output[2].cargoType, 7); eq(r.input[1][1], 1)
+	r = core.ruleOf(nil)
+	eq(#r.input, 0); eq(#r.output, 0)
+end)
+
 test("core: industryWorkers helpers", function()
 	eq(next(core.industryWorkersArgs(nil)), nil); eq(core.industryWorkersArgs({ entity = "52" }).entity, 52)
 	for _, bad in ipairs({ -1, 1.5, "x", 2 ^ 40 }) do truthy(not core.industryWorkersArgs({ entity = bad }), tostring(bad)) end

@@ -114,7 +114,9 @@ function M.install(g, opts)
 			return edges[e] and edgeComp(e) or nil
 		elseif kind == "CONSTRUCTION" then
 			local c = cons[e]
-			return c and { stations = copy(c.stations or {}), frozenEdges = copy(c.frozenEdges or {}), depots = copy(c.depots or {}) } or nil
+			-- not one of Track Connector's: the fake game's (an industry's construction, industryStocks)
+			if not c then return baseComp(e, kind) end
+			return { stations = copy(c.stations or {}), frozenEdges = copy(c.frozenEdges or {}), depots = copy(c.depots or {}) }
 		elseif kind == "TOWN_BUILDING" then
 			return tbs[e] and {} or nil
 		elseif kind == "INDUSTRY" or kind == "SUBCONSTRUCTION" then

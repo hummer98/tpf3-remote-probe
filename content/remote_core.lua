@@ -17,7 +17,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
-	industryWorkers = true }
+	industryWorkers = true, industryStocks = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -1136,6 +1136,70 @@ function M.nearest(pos, candidates)
 	end
 	if not best then return nil end
 	return best, math.floor(bestD + 0.5)
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- industryStocks: an industry's stocks, rules and its construction's params (read only), for checking what mods
+-- that rebuild industries (Age of Mobility's upgrades) leave in them across loads and rebuilds
+
+-- the params shown without --all-params: every key with this prefix (AoM's upgrades), and these
+M.STOCKS_PARAM_PREFIX = "hummer_aom_upg_"
+M.STOCKS_PARAM_KEYS = { "industrialCapacity", "upgrade", "year" }
+
+-- args: entity (one industry), grep (a part of the name, any case), allParams (every param). Returns them or nil
+-- and why.
+function M.industryStocksArgs(args)
+	args = type(args) == "table" and args or {}
+	local out, err = M.industryWorkersArgs({ entity = args.entity })
+	if not out then return nil, err end
+	if args.grep ~= nil then
+		if type(args.grep) ~= "string" or args.grep == "" then return nil, "grep must be a part of the name" end
+		out.grep = args.grep:lower()
+	end
+	if args.allParams ~= nil and type(args.allParams) ~= "boolean" then return nil, "allParams must be true or false" end
+	out.allParams = args.allParams == true
+	return out
+end
+
+-- from a construction's params (a plain table): { prefixed = { key = value }, other = { key = value } }, values as
+-- plain tables. A key that is there with "" keeps "": the JSON tells it apart from a key that is not there.
+function M.pickParams(params, prefix, keys)
+	local out = { prefixed = {}, other = {} }
+	if type(params) ~= "table" then return out end
+	prefix = prefix or M.STOCKS_PARAM_PREFIX
+	for k, v in pairs(params) do
+		if type(k) == "string" and k:sub(1, #prefix) == prefix then out.prefixed[k] = M.plain(v) end
+	end
+	for _, k in ipairs(keys or M.STOCKS_PARAM_KEYS) do
+		if params[k] ~= nil then out.other[k] = M.plain(params[k]) end
+	end
+	return out
+end
+
+-- a stock list rule as plain data: input as one list per input set (amount per stock, 1-based like the stocks),
+-- output as a list of { cargoType, amount } (a map keyed by cargo ids would read as a JSON list when they run 1..n)
+function M.ruleOf(rule, cargoName)
+	local r = { booster = M.field(rule, "booster"), boostFactor = tonumber(M.field(rule, "boostFactor")),
+		capacity = tonumber(M.field(rule, "capacity")), consumptionFactor = tonumber(M.field(rule, "consumptionFactor")),
+		priority = tonumber(M.field(rule, "priority")), slot = tonumber(M.field(rule, "slot")) }
+	if type(r.booster) ~= "boolean" then r.booster = nil end
+	r.input = {}
+	for _, set in ipairs(M.toList(M.field(rule, "input"))) do
+		local amounts = {}
+		for _, n in ipairs(M.toList(set)) do amounts[#amounts + 1] = tonumber(n) or 0 end
+		r.input[#r.input + 1] = M.array(amounts)
+	end
+	M.array(r.input)
+	r.output = {}
+	local outMap = M.field(rule, "output")
+	pcall(function()
+		for id, n in pairs(outMap) do
+			r.output[#r.output + 1] = { cargoType = tonumber(id), amount = tonumber(n), cargo = cargoName and cargoName(tonumber(id)) or nil }
+		end
+	end)
+	table.sort(r.output, function(a, b) return (a.cargoType or -1) < (b.cargoType or -1) end)
+	M.array(r.output)
+	return r
 end
 
 ---------------------------------------------------------------------------------------------------------------------

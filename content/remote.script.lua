@@ -1111,6 +1111,127 @@ function handlers.industryWorkers(c)
 	answer(c.id, { ok = true, total = #all, industries = core.array(out), workersScript = script })
 end
 
+-- args: entity (one industry; none: all), grep (a part of the name), allParams. Read only. Per industry: its
+-- construction's fileName and params (the hummer_aom_upg_ keys and a few others; all with allParams), and its stock
+-- list as the base's industry window reads it (industry_util.tl): each stock's cargo type, capacity and the count
+-- waiting there (simEntityAtStockSystem.getStockCount, asked only for the stocks the list has), the rules (inputs,
+-- outputs, booster and boostFactor) and the modifiers. Whatever cannot be read is left out. Params deeper than
+-- core.plain goes (5 levels) come back as strings; a table keyed 1..n reads as a JSON list.
+function handlers.industryStocks(c)
+	local args, err = core.industryStocksArgs(c.args)
+	if not args then return fail(c.id, err) end
+	local CT = api.type.ComponentType
+	local function comp(e, kind) return try(function() return api.engine.getComponent(e, CT[kind]) end) end
+	local all = entitiesOf("industry")
+	local list = {}
+	for _, e in ipairs(all) do
+		-- only ids the engine lists as industries reach a component lookup (an unknown id may assert)
+		if (args.entity == nil or e.id == args.entity) and (args.grep == nil or e.name:lower():find(args.grep, 1, true)) then
+			list[#list + 1] = e
+		end
+	end
+	if args.entity and #list == 0 then
+		local known = false
+		for _, e in ipairs(all) do if e.id == args.entity then known = true end end
+		if not known then return fail(c.id, "entity " .. args.entity .. " is no industry (entities --kind industry lists them)") end
+	end
+	-- cargo types: resource names from getAll (get is asked only for ids it lists: an unknown id may assert)
+	local cargoFiles = {}
+	pcall(function()
+		for id, name in pairs(api.res.cargoTypeRep.getAll(true)) do cargoFiles[tonumber(id)] = tostring(name) end
+	end)
+	local labels = {}
+	local function cargo(id)
+		if id == nil or cargoFiles[id] == nil then return nil end
+		if labels[id] == nil then
+			local l = try(function() return api.res.cargoTypeRep.get(id).name end)
+			labels[id] = type(l) == "string" and l or false
+		end
+		return { fileName = cargoFiles[id], name = labels[id] or nil }
+	end
+	local SLT = try(function() return api.type.enum.StockListType end)
+	local typeNames = {}
+	for _, k in ipairs({ "InputStock", "OutputStock", "StorageStock" }) do
+		local v = tonumber(SLT and core.field(SLT, k))
+		if v then typeNames[v] = k end
+	end
+	local out = {}
+	for _, ind in ipairs(list) do
+		local e = { id = ind.id, name = ind.name, construction = ind.construction }
+		-- the construction: only one the engine gave for this industry
+		if ind.construction then
+			local cc = comp(ind.construction, "CONSTRUCTION")
+			if cc == nil then
+				e.constructionError = "no CONSTRUCTION component"
+			else
+				local fn = core.field(cc, "fileName")
+				e.fileName = fn ~= nil and tostring(fn) or nil
+				-- params_native as AoM's upgrades read them (world.lua M.params); the params record only without it
+				local params
+				local pn = core.field(cc, "params_native")
+				if pn ~= nil then
+					local ok, t = pcall(function() return pn:asTable() end)
+					if ok and type(t) == "table" then params = t end
+				end
+				if params == nil then
+					local p = core.plain(core.field(cc, "params"))
+					if type(p) == "table" then params = p end
+				end
+				if params == nil then
+					e.paramsError = "the params did not read as a table"
+				else
+					local picked = core.pickParams(params)
+					e.aomParams, e.params = picked.prefixed, picked.other
+					if args.allParams then e.allParams = core.plain(params) end
+				end
+			end
+		end
+		-- the stock list: the industry's own, as the base's window reads it (getComponent(entity, STOCK_LIST))
+		local sl = comp(ind.id, "STOCK_LIST")
+		if sl == nil then
+			e.stockListError = "no STOCK_LIST component"
+		else
+			e.productivity = tonumber(core.field(core.field(sl, "modifiers"), "productivity"))
+			e.thrownAwayCargo = tonumber(core.field(sl, "thrownAwayCargo"))
+			local datas = core.field(sl, "stockDatas")
+			local stocks = {}
+			local stockList = core.toList(core.field(sl, "stocks"))
+			for i, st in ipairs(stockList) do
+				local t = tonumber(core.field(st, "type"))
+				local s = { index = i, stockId = i - 1, type = t, typeName = t and typeNames[t] or nil,
+					cargoType = tonumber(core.field(st, "cargoType")), capacity = tonumber(core.field(st, "capacity")),
+					mixedTypes = core.field(st, "mixedTypes"), tag = tonumber(core.field(st, "tag")),
+					loadSpeedModifier = tonumber(core.field(st, "loadSpeedModifier")),
+					consumeFrequency = tonumber(core.field(core.at(datas, i), "consumeFrequency")) }
+				if type(s.mixedTypes) ~= "boolean" then s.mixedTypes = nil end
+				s.cargo = cargo(s.cargoType)
+				-- the cargo types the stock takes, as the base's cargo_util.tl asks for each stock (cargoType is -1
+				-- for a mixed one; the debug panel then shows its cargo classes)
+				local ids = {}
+				for _, id in ipairs(core.toList(try(function() return api.engine.util.stock.getStockCargoTypes(ind.id, i - 1) end))) do
+					local n = tonumber(id)
+					if n then ids[#ids + 1] = { cargoType = n, cargo = cargo(n) } end
+				end
+				s.stockCargoTypes = core.array(ids)
+				local classes = {}
+				for _, cl in ipairs(core.toList(core.field(core.field(st, "cargoTypes"), "cargoClassesIncluded"))) do
+					classes[#classes + 1] = tostring(cl)
+				end
+				if #classes > 0 then s.cargoClasses = classes end
+				-- the count: only for a stock the list has (stock ids are 0-based, as the base asks)
+				s.count = tonumber(try(function() return api.engine.system.simEntityAtStockSystem.getStockCount(ind.id, i - 1) end))
+				stocks[#stocks + 1] = s
+			end
+			e.stocks = core.array(stocks)
+			local rules = {}
+			for _, r in ipairs(core.toList(core.field(sl, "rules"))) do rules[#rules + 1] = core.ruleOf(r, cargo) end
+			e.rules = core.array(rules)
+		end
+		out[#out + 1] = e
+	end
+	answer(c.id, { ok = true, total = #all, industries = core.array(out) })
+end
+
 ---------------------------------------------------------------------------------------------------------------------
 
 local function init()

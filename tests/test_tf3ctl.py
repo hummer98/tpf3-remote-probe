@@ -616,6 +616,35 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 1, res)
         self.assertIn("no industry", res["error"])
 
+    def test_9x_industry_stocks(self):
+        code, res = self.ctl("industry-stocks")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["total"], 1)
+        m = res["industries"][0]
+        self.assertEqual((m["id"], m["construction"], m.get("fileName")), (51, 5100, "industry/coal_mine.con"), m)
+        st = m["stocks"][0]
+        self.assertEqual((st["stockId"], st["cargoType"], st["cargo"]["fileName"], st["capacity"], st["count"]),
+                         (0, 1, "COAL", 400, 37))
+        self.assertEqual(m["aomParams"], {"hummer_aom_upg_pollution": "", "hummer_aom_upg_boost": 2})
+        self.assertEqual(m["params"], {"year": 1900})
+        self.assertNotIn("allParams", m)
+        self.assertEqual(m["rules"][0]["output"], [{"cargoType": 1, "amount": 2, "cargo": {"fileName": "COAL", "name": "Coal"}}])
+        code, res = self.ctl("industry-stocks", "--entity", "51", "--all-params")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["industries"][0]["allParams"]["year"], 1900)
+        code, res = self.ctl("industry-stocks", "--grep", "farm")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["industries"], [])
+        code, res = self.ctl("industry-stocks", "--grep", "coal")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["industries"][0]["stocks"][0]["stockCargoTypes"][0]["cargoType"], 1)
+        code, res = self.ctl("industry-stocks", "--grep", "farm")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["industries"], [])
+        code, res = self.ctl("industry-stocks", "--entity", "12345")
+        self.assertEqual(code, 1, res)
+        self.assertIn("no industry", res["error"])
+
     def test_9w_vehicles_buy_list_sell(self):
         code, res = self.ctl("depots")
         self.assertEqual(code, 0, res)
@@ -1061,6 +1090,12 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertNotIn("industryWorkers", tf3ctl.CHANGES_GAME)
         self.assertEqual(tf3ctl.industry_workers_args(ns(entity=None)), {})
         self.assertEqual(tf3ctl.industry_workers_args(ns(entity=51)), {"entity": 51})
+        self.assertNotIn("industryStocks", tf3ctl.CHANGES_GAME)
+        self.assertEqual(tf3ctl.industry_stocks_args(ns(entity=None, grep=None, all_params=False)), {})
+        self.assertEqual(tf3ctl.industry_stocks_args(ns(entity=51, grep="Mine", all_params=True)),
+                         {"entity": 51, "grep": "Mine", "allParams": True})
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.industry_stocks_args(ns(entity=None, grep="", all_params=False))
 
     def test_line_args(self):
         def parse(*argv):
