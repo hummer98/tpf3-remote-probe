@@ -4250,7 +4250,8 @@ test("industryWorkers: capacity, destination sims, last visitors, productivity a
 	eq(f.workers, 0); eq(f.construction, nil)
 	eq(f.town.id, 12); eq(f.town.population, 40, "no residents: the larger of the other two, as the town HUD")
 	local o = by["Oil well"]
-	eq(o.capacity, nil); eq(o.productivity, nil); eq(o.town, nil, "no position: no town"); eq(o.workers, 0)
+	eq(o.capacity, nil); eq(o.productivity, nil); eq(o.town, nil, "no position: no town")
+	eq(o.workers, nil, "no capacity: the destination lookup is not made (the base makes it only with one)")
 	eq(#g.commands, 0, "read only: no command sent")
 end)
 

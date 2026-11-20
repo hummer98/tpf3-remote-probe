@@ -439,7 +439,7 @@ function M.new(dir, opts)
 					return WORKERS_ENTITY
 				end },
 				simPersonSystem = { getSimPersonsForDestination = function(e)
-					if not industries[e] then error("ASSERT: no person capacity for " .. tostring(e)) end
+					if not (industries[e] and industries[e].capacity) then error("ASSERT: no person capacity for " .. tostring(e)) end
 					local ids = {}
 					for i = 1, industries[e].workers or 0 do ids[i] = e * 1000 + i end
 					return ids

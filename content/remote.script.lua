@@ -1061,7 +1061,9 @@ function handlers.industryWorkers(c)
 		if gs == nil then
 			script.error = "the game script's entity " .. se .. " has no GAME_SCRIPT component"
 		else
-			stateNative, plainState = core.field(gs, "state_native"), core.field(gs, "state")
+			-- state_native as the base GUI reads it; the plain copy only without it
+			stateNative = core.field(gs, "state_native")
+			if stateNative == nil then plainState = core.field(gs, "state") end
 			if stateNative == nil and type(plainState) ~= "table" then script.error = "the game script has no state yet" end
 		end
 	end
@@ -1082,8 +1084,12 @@ function handlers.industryWorkers(c)
 		local pc = comp(ind.id, "PERSON_CAPACITY")
 		e.capacity = tonumber(pc and core.field(pc, "capacity"))
 		if e.capacity then e.boostAt = e.capacity * core.WORKERS_BOOST_FRACTION end
-		local dest = try(function() return api.engine.system.simPersonSystem.getSimPersonsForDestination(ind.id) end)
-		if dest ~= nil then e.workers = core.size(dest) end
+		-- only with a capacity, as the base asks (statistic_industries.tl, entity_window_util.tl): what the engine
+		-- does for an entity without one is unknown, and an assertion is past pcall
+		if pc ~= nil then
+			local dest = try(function() return api.engine.system.simPersonSystem.getSimPersonsForDestination(ind.id) end)
+			if dest ~= nil then e.workers = core.size(dest) end
+		end
 		if script.ok then
 			local entry, why = core.workersEntry(stateNative, plainState, ind.id)
 			if entry == nil then
