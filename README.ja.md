@@ -157,6 +157,7 @@ python3 tools/tf3ctl.py entities --kind town --grep ems     # ID と名前: town
 python3 tools/tf3ctl.py industry-workers [--entity 51]      # 読むだけ: 定員・そこを行き先にする住民の数・直近の到着 (workers のスクリプト)・生産性・最寄りの町
 python3 tools/tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # 読むだけ: 在庫の口 (貨物・上限・量)・rules (ブースター)・生産性・construction の .con と params (hummer_aom_upg_*。--all-params は --entity と一緒に)
 python3 tools/tf3ctl.py window --town Emsworth --focus      # そのウィンドウを開き、カメラを寄せる (--close-all)
+python3 tools/tf3ctl.py window --line "Bus 1" --manager    # その路線を路線管理で開く (路線の窓の「路線管理」ボタンと同じ)
 python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # UI 込みの画面 (Steam の録画から)
 python3 tools/tf3ctl.py tool music [--close]                # ツールとして開く本体のウィンドウ: music・calendar・notifications
 python3 tools/tf3ctl.py event example_window.show --param '{"page": 2}'   # 任意の react イベントを送る
@@ -438,6 +439,9 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   ゲームが MOD ごとに C++ で持つ) に書き、速度ボタンのレシピが `react.enqueueJoin` で読みます。両者で共有した Lua の表
   は、レシピに届きませんでした (別の Lua 状態のため)。前のゲームの依頼はロードのときに捨てるので、ロード直後に送った
   依頼は時間切れになることがあります。
+  `--manager` を付けると (路線を `--line 名前` か `--entity ID` で。自社の路線だけ)、代わりに
+  `openVehicleManager` を `{openWithLineEntity = 路線}` で送ります。路線の窓の「路線管理」ボタンと統計の路線の行と
+  同じ道で、管理の窓が次のステップでその路線を選びます。ゲーム内ではまだ確認していません。
 - **`event`** は、react のイベント名と、引数として平らな値だけの JSON オブジェクトを取ります。`event` と `tool` の
   返事は「依頼を書いた」までで、ウィンドウが開いたかは `frame` かログで見ます。
 - **`tool`** は、本体のボタンと同じく、モジュールのツールをゲームのツールスタックに積みます

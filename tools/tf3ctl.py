@@ -23,6 +23,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py restart --lang de --load "probe"          # this start in German; quit / the next start put profile.lua back
   tf3ctl.py restore-profile                 # put profile.lua back from tf3ctl's backup now (the game not running)
   tf3ctl.py event example_window.show --param '{"welcome": true}'   # a react event (fired by the speed control)
+  tf3ctl.py window --line "Bus 1" --manager  # that line in the line manager (its Manage Line button), not its window
   tf3ctl.py rename "Chesham" --entity 48064   # a station (its group), line, vehicle or depot, as the base's windows do
   tf3ctl.py tool music [--close]            # a base window that opens as a tool (music, calendar)
   tf3ctl.py depots [--grep bus]             # depot entities to buy at
@@ -2058,6 +2059,8 @@ def make_parser():
     wg.add_argument("--entity", type=int)
     wg.add_argument("--close-all", action="store_true")
     wi.add_argument("--focus", action="store_true", help="also move the camera to it")
+    wi.add_argument("--manager", action="store_true", help="with --line or --entity (a line): open the line manager "
+                    "with that line selected, as the line window's Manage Line button does, instead of its window")
     ca = sub.add_parser("camera", help="read the camera, or move it (answers the values read back)")
     ca.add_argument("--set", metavar="X,Y[,DIST[,ANGLE[,PITCH]]]", help="the numbers left out stay as they are")
     ca.add_argument("--entity", type=int, help="focus on this entity")
@@ -2310,6 +2313,10 @@ def main(argv=None):
             else:
                 kind = next(k for k in ("town", "line", "vehicle", "station", "industry") if getattr(ns, k))
                 args = {"kind": kind, "name": getattr(ns, kind)}
+            if ns.manager:
+                if ns.close_all or (ns.line is None and ns.entity is None):
+                    raise ToolError("--manager opens a line: give --line NAME or --entity ID with it")
+                args["manager"] = True
             if ns.focus:
                 args["focus"] = True
             res = send("window", args)

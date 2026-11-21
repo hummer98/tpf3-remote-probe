@@ -862,6 +862,24 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no match", res["error"])
 
+    def test_9x_window_manager(self):
+        code, res = self.ctl("window", "--line", "Bus 1", "--manager")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["entity"], res["name"], res["manager"]), (21, "Bus 1", True))
+        code, res = self.ctl("window", "--entity", "21", "--manager")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["manager"], True)
+        code, res = self.ctl("window", "--entity", "11", "--manager")
+        self.assertEqual(code, 1, "a town's id is not a line")
+        self.assertIn("not one of the company's lines", res["error"])
+        code, res = self.ctl("window", "--line", "nope", "--manager")
+        self.assertEqual(code, 1)
+        self.assertIn("no match", res["error"])
+        code, res = self.ctl("window", "--town", "Emsworth", "--manager")
+        self.assertEqual(code, 2, "refused before anything is sent")
+        code, res = self.ctl("window", "--close-all", "--manager")
+        self.assertEqual(code, 2)
+
     def test_9x_camera(self):
         code, res = self.ctl("camera")
         self.assertEqual(code, 0, res)

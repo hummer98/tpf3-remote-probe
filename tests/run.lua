@@ -1208,6 +1208,54 @@ test("window: by name or id, publishes the request, focuses the camera on demand
 	eq(g.closedAll, 1)
 end)
 
+test("window --manager: a line by name or id goes to the line manager, never its own window", function()
+	local ent = { TOWN = { 11 }, LINE = { 21, 22 }, TRANSPORT_VEHICLE = { 31 } }
+	local names = { [11] = "Emsworth", [21] = "Bus 1", [22] = "Bus 10", [31] = "Bus 1 #1" }
+	local g = newGame({ saves = SAVES, entities = ent, names = names })
+	frames(g, 2)
+	send(g, 196, "window", '{ kind = "line", name = "bus 1", manager = true }')
+	frames(g, FIRST)
+	local a = answerText(g, 196) or ""
+	truthy(a:find('"entity":21') and a:find('"manager":true') and a:find('"name":"Bus 1"'), "exact name wins: " .. a)
+	local open = fake.guiSave.hummer_remote_probe.open
+	eq(open.manager, 21); eq(open.entity, nil, "not the line's own window too")
+	local seq = open.seq
+	send(g, 197, "window", '{ entity = 22, manager = true, focus = true }')
+	frames(g, 20)
+	open = fake.guiSave.hummer_remote_probe.open
+	eq(open.manager, 22); truthy(open.seq > seq, "a new request number"); eq(g.focused, 22)
+	truthy((answerText(g, 197) or ""):find('"name":"Bus 10"'), answerText(g, 197))
+	seq = open.seq
+	-- a vehicle's id, an id that is nobody's, another kind, a name that fits two lines, no line at all: refused,
+	-- and nothing is published for the speed control to open
+	send(g, 198, "window", '{ entity = 31, manager = true }'); frames(g, 20)
+	send(g, 199, "window", '{ entity = 999, manager = true }'); frames(g, 20)
+	send(g, 200, "window", '{ kind = "town", name = "Emsworth", manager = true }'); frames(g, 20)
+	send(g, 201, "window", '{ kind = "line", name = "bus", manager = true }'); frames(g, 20)
+	send(g, 202, "window", '{ kind = "line", name = "tram", manager = true }'); frames(g, 20)
+	truthy((answerText(g, 198, "error") or ""):find("not one of the company's lines"), answerText(g, 198, "error"))
+	truthy((answerText(g, 199, "error") or ""):find("not one of the company's lines"), answerText(g, 199, "error"))
+	truthy((answerText(g, 200, "error") or ""):find("manager opens a line"), answerText(g, 200, "error"))
+	truthy((answerText(g, 201, "error") or ""):find("2 matches"), answerText(g, 201, "error"))
+	truthy((answerText(g, 202, "error") or ""):find("no match"), answerText(g, 202, "error"))
+	eq(fake.guiSave.hummer_remote_probe.open.seq, seq, "no request published for a refused one")
+	-- without manager the same line opens its own window, as before
+	send(g, 203, "window", '{ kind = "line", name = "bus 1" }')
+	frames(g, 20)
+	open = fake.guiSave.hummer_remote_probe.open
+	eq(open.entity, 21); eq(open.manager, nil)
+	truthy(not (answerText(g, 203) or ""):find("manager", 1, true), answerText(g, 203))
+end)
+
+test("uiRequest: manager is a line id (a whole positive number) or left out", function()
+	eq(core.uiRequest({ open = { seq = 1, manager = 21 } }).open.manager, 21)
+	eq(core.uiRequest({ open = { seq = 1, manager = "21" } }).open.manager, 21)
+	for _, bad in ipairs({ "x", -1, 0, 1.5, math.huge, 0 / 0, {}, false }) do
+		eq(core.uiRequest({ open = { seq = 1, manager = bad } }).open.manager, nil, "manager " .. tostring(bad))
+	end
+	eq(core.uiRequest({ open = { seq = 1 } }).open.manager, nil)
+end)
+
 test("core loads where _G is not a plain table (TF3 GUI Lua) and still shares a table", function()
 	for _, weird in ipairs({ "nil", "userdata", "locked" }) do
 		local chunk = assert(loadfile(root .. "/content/remote_core.lua"))
@@ -1833,6 +1881,25 @@ test("speed control: fires a requested event and pushes or pops a tool on the ga
 	eq(#pushed, 2, "each request once")
 	publish(nil)
 	package.preload["/gui/music_player/music_player.tl"] = nil
+end)
+
+test("speed control: a manager request fires openVehicleManager with the line, once", function()
+	newGame({ saves = SAVES })
+	local exports = loadSpeedScript()
+	publish({ label = "", open = { seq = 1, manager = 5 } })
+	frame(exports.SpeedControl, {})
+	eq(#R.events, 0, "the request left in the save is not opened")
+	publish({ label = "", open = { seq = 2, manager = 21 } })
+	frame(exports.SpeedControl, {})
+	eq(#R.events, 1)
+	eq(R.events[1].name, "openVehicleManager"); eq(R.events[1].param.openWithLineEntity, 21)
+	frame(exports.SpeedControl, {})
+	eq(#R.events, 1, "opened once")
+	publish({ label = "", open = { seq = 3, manager = 22, entity = 9 } })
+	frame(exports.SpeedControl, {})
+	eq(#R.events, 3, "both, if a request ever held both")
+	eq(R.events[2].name, "selectEntity"); eq(R.events[3].param.openWithLineEntity, 22)
+	publish(nil)
 end)
 
 test("speed control: a tool it cannot open is logged once, and nothing breaks", function()

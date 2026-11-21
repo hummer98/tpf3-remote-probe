@@ -607,6 +607,9 @@ function M.uiRequest(d)
 	local out = { label = tostring(d.label or ""), tip = tostring(d.tip or ""), buttons = d.buttons ~= false }
 	if type(d.open) == "table" and tonumber(d.open.seq) then
 		out.open = { seq = tonumber(d.open.seq), entity = tonumber(d.open.entity) }
+		-- manager: a line to open in the line manager (an entity id, so a whole positive number or nothing)
+		local m = tonumber(d.open.manager)
+		if m and m > 0 and m < 2 ^ 53 and m == math.floor(m) then out.open.manager = m end
 		local ev = d.open.event
 		if type(ev) == "table" and type(ev.name) == "string" and ev.name ~= "" then
 			out.open.event = { name = ev.name, param = ev.param }

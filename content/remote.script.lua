@@ -467,14 +467,19 @@ function handlers.entities(c)
 	answer(c.id, { ok = true, kind = kind, total = #list, entities = out })
 end
 
--- args: kind + name, or entity (id); focus (camera); closeAll. The window itself is opened by the speed control
--- (gui/remote_speed.script.lua) with react.fireEvent(nil, "selectEntity", ...), as the base statistics and
--- line windows do: events need a react context, which this script does not have.
+-- args: kind + name, or entity (id); focus (camera); closeAll; manager (a line, opened in the line manager
+-- instead of its own window). The window itself is opened by the speed control (gui/remote_speed.script.lua) with
+-- react.fireEvent(nil, "selectEntity", ...), as the base statistics and line windows do, or "openVehicleManager"
+-- as their "Manage Line" buttons do: events need a react context, which this script does not have.
 function handlers.window(c)
 	if c.args.closeAll then
 		local okC, errC = pcall(function() api.gui.closeAllWindows() end)
 		if not okC then return fail(c.id, "closeAllWindows: " .. tostring(errC)) end
 		return answer(c.id, { ok = true, closedAll = true })
+	end
+	local manager = c.args.manager == true
+	if manager and c.args.kind ~= nil and c.args.kind ~= "line" then
+		return fail(c.id, "manager opens a line: give kind line and name, or the line's entity")
 	end
 	local entity, name = tonumber(c.args.entity), nil
 	if not entity then
@@ -483,15 +488,28 @@ function handlers.window(c)
 		local hit, err = core.matchEntity(entitiesOf(kind), c.args.name)
 		if not hit then return fail(c.id, err) end
 		entity, name = hit.id, hit.name
+	elseif manager then
+		-- the base offers "Manage Line" on the company's own lines only; another id would open the manager with
+		-- nothing selected (or the base's step would fail on it), which looks like success on the screen
+		for _, e in ipairs(entitiesOf("line")) do
+			if e.id == entity then name = e.name end
+		end
+		if name == nil then return fail(c.id, "entity " .. tostring(entity) .. " is not one of the company's lines (tf3ctl lines)") end
 	end
 	G.uiSeq = (G.uiSeq or (os.time and os.time() or 0) * 1000) + 1
-	publishUi({ open = { seq = G.uiSeq, entity = entity } })
+	if manager then
+		publishUi({ open = { seq = G.uiSeq, manager = entity } })
+	else
+		publishUi({ open = { seq = G.uiSeq, entity = entity } })
+	end
 	if c.args.focus then
 		local okF, errF = pcall(function() api.gui.camera.focusEntity(entity) end)
 		if not okF then say("focusEntity: " .. tostring(errF)) end
 	end
 	answer(c.id, { ok = true, entity = entity, name = name, seq = G.uiSeq, focused = c.args.focus == true,
-		note = "the speed control opens it within about a second; it needs the speed label setting on" })
+		manager = manager or nil,
+		note = "the speed control opens it within about a second; it needs the speed label setting on"
+			.. (manager and " (whether the manager selected the line shows only on the screen)" or "") })
 end
 
 -- args: name (react event), param. Fired by the speed control (a react context), like the window command:

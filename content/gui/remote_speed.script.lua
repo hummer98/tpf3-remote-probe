@@ -67,6 +67,14 @@ local function perform(open, gameCtx, warnedRef)
 		local ok, err = pcall(react.fireEvent, nil, "selectEntity", { entity = open.entity, stack = false })
 		if not ok then warnOnce(warnedRef, "selectEntity " .. tostring(err), "selectEntity failed: " .. tostring(err)) end
 	end
+	if open.manager then
+		-- as the line window's "Manage Line" button (entity_window/line/line.tl) and the statistics' line rows: the
+		-- manager's entry point (main/game.tl) pushes its tool with the line, which the tool selects on its next step.
+		-- An integer where the Lua has them: the GUI save data may hand the id back as a float
+		local line = math.tointeger and math.tointeger(open.manager) or open.manager
+		local ok, err = pcall(react.fireEvent, nil, "openVehicleManager", { openWithLineEntity = line })
+		if not ok then warnOnce(warnedRef, "openVehicleManager " .. tostring(err), "openVehicleManager failed: " .. tostring(err)) end
+	end
 	if open.event then
 		local ok, err = pcall(react.fireEvent, nil, open.event.name, open.event.param)
 		local msg = "event " .. open.event.name .. " failed: " .. tostring(err)

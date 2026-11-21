@@ -160,6 +160,7 @@ python3 tools/tf3ctl.py entities --kind town --grep ems     # ids and names: tow
 python3 tools/tf3ctl.py industry-workers [--entity 51]      # read only: capacity, sims headed there, last visitors (workers script), productivity, nearest town
 python3 tools/tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # read only: stocks (cargo, capacity, count), rules (boost), productivity, the construction's .con and params (hummer_aom_upg_*; --all-params: best with --entity)
 python3 tools/tf3ctl.py window --town Emsworth --focus      # open its window and move the camera (--close-all)
+python3 tools/tf3ctl.py window --line "Bus 1" --manager    # that line in the line manager, as its Manage Line button
 python3 tools/tf3ctl.py frame --out shot.png [--crop 1150x170+2690+1450]   # the screen with UI, from Steam's recording
 python3 tools/tf3ctl.py tool music [--close]                # base windows that open as a tool: music, calendar, notifications
 python3 tools/tf3ctl.py event example_window.show --param '{"page": 2}'   # fire any react event
@@ -461,6 +462,9 @@ mod's code, and was checked against no running copy of it.
   `react.enqueueJoin`. A plain Lua table shared between the two never reached the recipe (they are separate Lua
   states). Requests left from the previous game are dropped on load, so a request sent right after a load may time
   out.
+  With `--manager` (a line by `--line NAME` or `--entity ID`, the company's own only) it fires
+  `openVehicleManager` with `{openWithLineEntity = line}` instead, as the line window's "Manage Line" button and the
+  statistics' line rows do; the manager selects the line on its next step. Not checked in game yet.
 - **`event`** takes a react event name and, as its parameter, a JSON object of plain values. Its answer and `tool`'s only say
   that the request was written; whether a window opened shows in `frame` or the log.
 - **`tool`** pushes the module's tool on the game's tool stack as the base buttons do
