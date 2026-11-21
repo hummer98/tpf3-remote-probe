@@ -29,6 +29,9 @@ os.environ.pop("TF3CTL_OTHER_BACKUPS", None)
 # launch / restart / quit write and remove the launch record: never the real $XDG_RUNTIME_DIR here
 RUNTIME_DIR = tempfile.mkdtemp()
 os.environ["XDG_RUNTIME_DIR"] = RUNTIME_DIR
+# modhub publish writes its mark under $XDG_STATE_HOME/tf3ctl: never the real one here
+STATE_DIR = tempfile.mkdtemp()
+os.environ["XDG_STATE_HOME"] = STATE_DIR
 os.environ.pop("TF3CTL_OWNER", None)
 
 
@@ -36,6 +39,7 @@ os.environ.pop("TF3CTL_OWNER", None)
 def tearDownModule():
     shutil.rmtree(NO_PROFILE_DIR, ignore_errors=True)
     shutil.rmtree(RUNTIME_DIR, ignore_errors=True)
+    shutil.rmtree(STATE_DIR, ignore_errors=True)
 
 
 # what the mod makes of a command file: remote_core.readCommand over loadUserdata's table, as JSON
@@ -1304,12 +1308,12 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(tf3ctl.modhub_validate_args(parse(["modhub", "validate", "a_1", "--timeout", "60",
                                                             "--messages", "5"])),
                          {"folder": "a_1", "timeout": 60, "messages": 5})
-        # no upload of any kind: no such subcommand, and nothing in the mod's command list
-        for bad in (["modhub"], ["modhub", "validate"], ["modhub", "publish", "a_1"], ["modhub", "upload", "a_1"]):
+        # the only upload is modhub publish (its own tests below): no other subcommand, no other command name
+        for bad in (["modhub"], ["modhub", "validate"], ["modhub", "publish"], ["modhub", "upload", "a_1"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit, msg=bad):
                 parse(bad)
-        for name in ("modhubPublish", "publish"):
-            self.assertIn("unknown command", mod_reads(tf3ctl.command_text(9, name, {}))["error"])
+        self.assertIn("unknown command", mod_reads(tf3ctl.command_text(9, "publish", {}))["error"])
+        self.assertNotIn("error", mod_reads(tf3ctl.command_text(9, "modhubPublish", {})))
         got = mod_reads(tf3ctl.command_text(9, "modhubValidate", {"folder": "a_1", "timeout": 60}))
         self.assertEqual((got["cmd"], got["args"]), ("modhubValidate", {"folder": "a_1", "timeout": 60}))
         self.assertNotIn("error", mod_reads(tf3ctl.command_text(9, "modhubStatus", {})))
@@ -2458,6 +2462,286 @@ class ModhubEndToEndTest(unittest.TestCase):
         code, res = self.ctl("modhub", "validate", "example_mod_1")
         self.assertEqual(code, 1)
         self.assertIn("only these staging folders", res["error"])
+
+
+FU = "hummer_force_unload_default_1"
+
+
+def make_staging(root, name=FU, cover=(1920, 1080), fileid=None):
+    """A staging mod as stage.py leaves it: mod.json and _metadata/0.png (only the PNG header matters here)."""
+    meta = os.path.join(root, "staging_area", name, "_metadata")
+    os.makedirs(meta, exist_ok=True)
+    with open(os.path.join(root, "staging_area", name, "mod.json"), "w") as f:
+        f.write("{}")
+    if cover is not None:
+        with open(os.path.join(meta, "0.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + cover[0].to_bytes(4, "big")
+                    + cover[1].to_bytes(4, "big") + b"\x08\x06\x00\x00\x00" + b"\x00" * 64)
+    if fileid is not None:
+        with open(os.path.join(meta, "mod.io_fileid.txt"), "w") as f:
+            f.write(fileid)
+    return meta
+
+
+class ModhubPublishTest(unittest.TestCase):
+    """modhub publish without a game: what the tool refuses on its own, the mark, and the order of its commands."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.dir = os.path.join(self.root, "recordings")
+        os.makedirs(self.dir)
+        self.saved = os.environ.get("TF3_REMOTE_DIR")
+        os.environ["TF3_REMOTE_DIR"] = self.dir
+        self.meta = make_staging(self.root)
+        self.sent = []
+        self.answers = []
+        self.real_send = tf3ctl.send
+        self.mark_at_send = []
+
+        def fake_send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
+            self.sent.append((cmd, dict(args or {}), timeout))
+            self.mark_at_send.append(tf3ctl.read_pending())
+            a = self.answers.pop(0)
+            if callable(a):
+                return a()
+            return a
+        tf3ctl.send = fake_send
+        self.saved_wait = tf3ctl.FILEID_WAIT_SEC
+        tf3ctl.FILEID_WAIT_SEC = 0.5
+
+    def tearDown(self):
+        tf3ctl.send = self.real_send
+        tf3ctl.FILEID_WAIT_SEC = self.saved_wait
+        if self.saved is None:
+            os.environ.pop("TF3_REMOTE_DIR", None)
+        else:
+            os.environ["TF3_REMOTE_DIR"] = self.saved
+        with contextlib.suppress(OSError):
+            os.remove(tf3ctl.pending_path())
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def run_publish(self, *extra, folder=FU):
+        ns = tf3ctl.make_parser().parse_args(["modhub", "publish", folder] + list(extra))
+        with contextlib.redirect_stderr(io.StringIO()):
+            return tf3ctl.cmd_modhub(ns)
+
+    FULL = ("--public", "yes", "--changelog", "First release.", "--first-upload")
+
+    def refused(self, msg, *extra, folder=FU):
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            self.run_publish(*extra, folder=folder)
+        self.assertIn(msg, str(cm.exception))
+        self.assertEqual(self.sent, [], "nothing sent")
+        self.assertIsNone(tf3ctl.read_pending(), "no mark")
+
+    def test_mark_lives_under_xdg_state_home(self):
+        self.assertEqual(tf3ctl.pending_path(), os.path.join(STATE_DIR, "tf3ctl", "publish_pending.json"))
+        self.assertEqual(tf3ctl.staging_dir(), os.path.join(self.root, "staging_area"))
+        self.assertIn("modhubPublish", tf3ctl.CHANGES_GAME)
+
+    def test_refuses_folders_outside_the_list_and_missing_flags(self):
+        make_staging(self.root, "hummer_industry_pollution_display_1")
+        self.refused("only these staging folders", *self.FULL, folder="hummer_industry_pollution_display_1")
+        self.refused("only these staging folders", *self.FULL, folder="example_mod_1")
+        self.refused("--first-upload", "--public", "yes", "--changelog", "x")
+        self.refused("--public yes or --public no", "--changelog", "x", "--first-upload")
+        self.refused("--public yes or --public no", "--public", "true", "--changelog", "x", "--first-upload")
+        self.refused("--changelog", "--public", "yes", "--first-upload")
+        self.refused("--changelog", "--public", "yes", "--changelog", "  ", "--first-upload")
+        self.refused("--first-upload", "--public", "yes", "--changelog", "x", "--dry-run")
+
+    def test_refuses_a_fileid_a_missing_or_bad_cover_and_a_mark(self):
+        with open(os.path.join(self.meta, "mod.io_fileid.txt"), "w") as f:
+            f.write("6536959")
+        self.refused("mod.io_fileid.txt", *self.FULL)
+        self.refused("mod.io_fileid.txt", *(self.FULL + ("--dry-run",)))
+        os.remove(os.path.join(self.meta, "mod.io_fileid.txt"))
+        os.remove(os.path.join(self.meta, "0.png"))
+        self.refused("no _metadata/0.png", *self.FULL)
+        with open(os.path.join(self.meta, "0.png"), "wb") as f:
+            f.write(b"JFIF not a png at all, long enough....")
+        self.refused("not a PNG", *self.FULL)
+        make_staging(self.root, cover=(320, 200))
+        self.refused("smaller than", *self.FULL)
+        shutil.rmtree(os.path.join(self.root, "staging_area", FU))
+        self.refused("no staging mod", *self.FULL)
+        make_staging(self.root)
+        tf3ctl.write_pending({"folder": FU, "at": 1})
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            self.run_publish(*self.FULL)
+        self.assertIn("publish mark", str(cm.exception))
+        self.assertEqual(self.sent, [])
+        # an unreadable mark still counts
+        with open(tf3ctl.pending_path(), "w") as f:
+            f.write("{half")
+        with self.assertRaises(tf3ctl.ToolError):
+            self.run_publish(*(self.FULL + ("--dry-run",)))
+        self.assertEqual(self.sent, [])
+
+    def test_dry_run_sends_one_dry_run_and_writes_no_mark(self):
+        self.answers = [{"ok": True, "dryRun": True, "wouldPublish": True}]
+        res = self.run_publish(*(self.FULL + ("--dry-run", "--timeout", "120")))
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(self.sent), 1)
+        cmd, args, timeout = self.sent[0]
+        self.assertEqual(cmd, "modhubPublish")
+        self.assertEqual(args, {"folder": FU, "public": True, "firstUpload": True, "changelog": "First release.",
+                                "timeout": 120, "dryRun": True})
+        self.assertEqual(timeout, 150)
+        self.assertEqual(res["local"]["cover"], {"width": 1920, "height": 1080, "bytes": os.path.getsize(
+            os.path.join(self.meta, "0.png"))})
+        self.assertIsNone(tf3ctl.read_pending())
+        # the mod reads it as it was meant
+        got = mod_reads(tf3ctl.command_text(9, "modhubPublish", args))
+        self.assertEqual(got["args"], args)
+
+    def test_a_refused_dry_run_before_the_upload_leaves_no_mark(self):
+        self.answers = [{"ok": False, "error": "nobody is logged in", "publishCalled": False}]
+        res = self.run_publish(*self.FULL)
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["preflight"])
+        self.assertEqual(len(self.sent), 1)
+        self.assertIsNone(tf3ctl.read_pending())
+
+    def success(self, write="7000001"):
+        def answer():
+            if write:
+                with open(os.path.join(self.meta, "mod.io_fileid.txt"), "w") as f:
+                    f.write(write + "\n")
+            return {"ok": True, "publishCalled": True, "modId": "7000001", "result": {"success": True}}
+        return answer
+
+    def test_upload_writes_the_mark_before_sending_and_clears_it_on_the_fileid(self):
+        self.answers = [{"ok": True, "dryRun": True, "wouldPublish": True, "validation": {"text": "ok"}}, self.success()]
+        res = self.run_publish(*self.FULL)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual([a.get("dryRun") for _, a, _ in self.sent], [True, False])
+        self.assertIsNone(self.mark_at_send[0], "no mark for the dry run")
+        mark = self.mark_at_send[1]
+        self.assertEqual((mark["folder"], mark["public"], mark["firstUpload"]), (FU, True, True))
+        self.assertIn("at", mark)
+        self.assertEqual(res["fileid"], "7000001")
+        self.assertTrue(res["pendingCleared"])
+        self.assertIsNone(tf3ctl.read_pending())
+
+    def test_a_failure_keeps_the_mark_and_the_games_words(self):
+        self.answers = [{"ok": True, "dryRun": True},
+                        {"ok": False, "publishCalled": True, "outcome": "failed",
+                         "error": "Upload Failed: Name taken (code 21012)", "result": {"success": False}}]
+        res = self.run_publish(*self.FULL)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["error"], "Upload Failed: Name taken (code 21012)")
+        self.assertTrue(res["pendingKept"])
+        self.assertEqual(tf3ctl.read_pending()["folder"], FU)
+        # and the next one is refused until a person clears it
+        with self.assertRaises(tf3ctl.ToolError):
+            self.run_publish(*self.FULL)
+        self.assertEqual(len(self.sent), 2)
+        ns = tf3ctl.make_parser().parse_args(["modhub", "publish-clear"])
+        out = tf3ctl.cmd_modhub(ns)
+        self.assertEqual(out["cleared"]["folder"], FU)
+        self.assertIsNone(tf3ctl.read_pending())
+        out = tf3ctl.cmd_modhub(ns)
+        self.assertIsNone(out["cleared"])
+
+    def test_a_refusal_after_the_mark_keeps_it(self):
+        self.answers = [{"ok": True, "dryRun": True},
+                        {"ok": False, "publishCalled": False, "error": "mod.io is busy; nothing was uploaded"}]
+        res = self.run_publish(*self.FULL)
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["pendingKept"])
+        self.assertIn("publish-clear", res["note"])
+        self.assertIsNotNone(tf3ctl.read_pending())
+
+    def test_no_answer_in_time_keeps_the_mark(self):
+        def lost():
+            raise tf3ctl.ToolError("no answer in 930 s")
+        self.answers = [{"ok": True, "dryRun": True}, lost]
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            self.run_publish(*self.FULL)
+        self.assertIn("publish mark stays", str(cm.exception))
+        self.assertIsNotNone(tf3ctl.read_pending())
+        # the mod's own timeout answer: outcome unknown, the mark stays
+        os.remove(tf3ctl.pending_path())
+        self.answers = [{"ok": True, "dryRun": True},
+                        {"ok": False, "publishCalled": True, "outcome": "unknown", "error": "timed out"}]
+        res = self.run_publish(*self.FULL)
+        self.assertTrue(res["pendingKept"])
+        self.assertIsNotNone(tf3ctl.read_pending())
+
+    def test_a_success_without_the_fileid_or_with_another_id_keeps_the_mark(self):
+        self.answers = [{"ok": True, "dryRun": True}, self.success(write=None)]
+        res = self.run_publish(*self.FULL)
+        self.assertFalse(res["ok"])
+        self.assertIn("did not appear", res["error"])
+        self.assertIsNotNone(tf3ctl.read_pending())
+        os.remove(tf3ctl.pending_path())
+        self.answers = [{"ok": True, "dryRun": True}, self.success(write="7999999")]
+        res = self.run_publish(*self.FULL)
+        self.assertFalse(res["ok"])
+        self.assertIn("says 7999999", res["error"])
+        self.assertIsNotNone(tf3ctl.read_pending())
+
+
+class ModhubPublishEndToEndTest(unittest.TestCase):
+    """modhub publish through real files, against the fake game in its main menu: the dry run, the upload, the
+    fileid the fake game writes, and the refusal of a second one."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp()
+        cls.dir = os.path.join(cls.root, "recordings")
+        cls.meta = make_staging(cls.root)
+        cls.game = subprocess.Popen(["luajit", os.path.join(ROOT, "tests", "fake_game.lua"), cls.root, "60", "menu",
+                                     "modhub"], stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 10
+        while not glob.glob(os.path.join(cls.dir, "remote_probe__cmd_*.lua")):
+            if time.time() > deadline:
+                raise RuntimeError("the fake game did not start")
+            time.sleep(0.05)
+        os.environ["TF3_REMOTE_DIR"] = cls.dir
+        os.environ["TF3_ASSUME_RUNNING"] = "1"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.game.kill()
+        cls.game.wait()
+        cls.game.stderr.close()
+        os.environ.pop("TF3_REMOTE_DIR", None)
+        os.environ.pop("TF3_ASSUME_RUNNING", None)
+        with contextlib.suppress(OSError):
+            os.remove(tf3ctl.pending_path())
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def ctl(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = tf3ctl.main(list(argv))
+        return code, json.loads(out.getvalue()) if out.getvalue() else None
+
+    def test_dry_run_then_the_upload_then_no_second_one(self):
+        full = ("modhub", "publish", FU, "--public", "yes", "--changelog", "First release.", "--first-upload",
+                "--timeout", "60")
+        code, res = self.ctl(*(full + ("--dry-run",)))
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["wouldPublish"])
+        self.assertFalse(res["publishCalled"])
+        self.assertEqual(res["settings"], {"setPublic": True, "updateMetadata": True, "changeLog": "First release.",
+                                           "isSavegame": False, "issuesConfirmed": False})
+        self.assertEqual(res["validation"]["levelConsole"], "Warning")
+        self.assertIsNone(tf3ctl.read_pending())
+        self.assertFalse(os.path.exists(os.path.join(self.meta, "mod.io_fileid.txt")))
+        code, res = self.ctl(*full)
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["publishCalled"])
+        self.assertEqual(res["modId"], "7000001")
+        self.assertEqual(res["fileid"], "7000001")
+        self.assertTrue(res["pendingCleared"])
+        self.assertTrue(res["cleanedUp"])
+        self.assertIsNone(tf3ctl.read_pending())
+        # the fileid is there now: the tool refuses on its own (exit 2), before the mod sees anything
+        code, res = self.ctl(*full)
+        self.assertEqual(code, 2)
 
 
 class ModFilesTest(unittest.TestCase):

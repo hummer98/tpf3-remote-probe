@@ -109,16 +109,24 @@ end
 --   default Ready), validateUpdates (update() calls a validation takes, default 5), result = { messages = { {
 --   level, file, message, consoleOnly } }, criticalPc, criticalConsole, levelPc, levelConsole } } },
 --   prefix (put before the folder in ModId.value, e.g. "StagingArea,"), noSource (getBackendIdForSource fails),
---   newReturnsNil.
+--   newReturnsNil, logo (false: the local details have no cover, logoImage ""), publish = { frames (frames in
+--   Publishing before HasResult, default 5; they pass whether update() is called or not, as the sync), success
+--   (default true), modId (mod.io id it gets, default "7000001"), error = { code, debugMessage,
+--   localizedMessage } (on failure), partialErrors = { { step, error = {...} } }, hangs (stays in Publishing),
+--   raises (publish raises) }, fileidDir (a folder: on success, as the game is taken to, the fake writes
+--   <fileidDir>/<folder>/_metadata/mod.io_fileid.txt with the mod.io id; the real game's moment is not known).
 -- g.modhubBusy / g.modhubNoRestricted / g.modhubUploading / g.modhubNotInitialized / g.modhubLoggedOut change
 -- what the publishing backend says, from frame to frame. g.helpersMade, g.helperUpdates, g.validateCalls,
--- g.abortValidations count the calls; g.forbidden lists every call of a method that uploads or changes a staging
--- mod (publish, abortPublish, setRemoteModId, ...), which this probe must never make.
+-- g.abortValidations count the calls; g.publishCalls ({ value, settings = <plain copy>, state }),
+-- g.abortPublishes ({ value, state }) and g.settingsMade record the upload; g.forbidden lists every call of a
+-- method that changes a staging mod (setRemoteModId, ...), which this probe must never make, and every misuse of
+-- the upload (publish when not Ready, abortPublish when not HasResult, a field PublishSettings does not have).
 function M.installModhub(g, spec)
 	local LogLevel = enum({ "Critical", "Error", "Warning", "Message", "Verbose" }, "LogLevel")
 	local State = enum({ "Sync", "Ready", "Publishing", "HasResult" }, "State")
 	api.type.enum.LogLevel = LogLevel
 	g.helpersMade, g.helperUpdates, g.validateCalls, g.abortValidations, g.forbidden = 0, 0, {}, 0, {}
+	g.publishCalls, g.abortPublishes, g.settingsMade = {}, {}, 0
 	local privileged = spec.privileged ~= false
 	api.util.hasPrivilegedApis = function() return privileged end
 	local staging = spec.staging or {}
@@ -168,15 +176,59 @@ function M.installModhub(g, spec)
 	local function details(d)
 		if d == nil then return nil end
 		return object({ found = d.found ~= false, author = "someone", modInfo = object({ visible = d.visible == true,
-			title = d.title, modId = modId(d.modId), releaseInfo = object({ version = d.version }, nil, "ModReleaseInfo") },
-			nil, "ModInfo") }, nil, "ModDetailsData")
+			title = d.title, modId = modId(d.modId), logoImage = d.logoImage,
+			releaseInfo = object({ version = d.version }, nil, "ModReleaseInfo") }, nil, "ModInfo") }, nil, "ModDetailsData")
 	end
-	local forbiddenNames = { "publish", "abortPublish", "setRemoteModId", "setModDetails", "refreshMod",
+	local function errorCode(e)
+		e = e or {}
+		return object({ code = e.code or 0, debugMessage = e.debugMessage or "", localizedMessage = e.localizedMessage or "",
+			fields = {} }, nil, "ModHubErrorCode")
+	end
+	local function makePublishResult(p, id)
+		local partial = {}
+		for _, pe in ipairs(p.partialErrors or {}) do
+			partial[#partial + 1] = object({ step = pe.step, error = errorCode(pe.error) }, nil, "PartialUploadError")
+		end
+		local success = p.success ~= false
+		return object({}, {
+			isSuccess = function() return success end,
+			getData = function()
+				if not success then error("assertion: getData of a failed result") end
+				return object({ modId = modId(id), partialErrors = vector(partial) }, nil, "UploadModData")
+			end,
+			getError = function()
+				if success then error("assertion: getError of a successful result") end
+				return errorCode(p.error)
+			end,
+		}, "AsyncResult")
+	end
+	-- PublishSettings: its fields can be set, as the engine's; a field it does not have is an error
+	local SETTINGS = { changeLog = "", updateMetadata = false, setPublic = false, isSavegame = false,
+		issuesConfirmed = false, additionalMetadata = false }
+	local function publishSettings()
+		g.settingsMade = g.settingsMade + 1
+		local v = {}
+		for k, x in pairs(SETTINGS) do v[k] = x end
+		v.additionalMetadata = nil
+		local u = newproxy(true)
+		local mt = getmetatable(u)
+		mt.__index = function(_, k)
+			if k == "_plain" then local c = {}; for kk, x in pairs(v) do c[kk] = x end; return c end
+			if SETTINGS[k] == nil then error("PublishSettings has no field " .. tostring(k)) end
+			return v[k]
+		end
+		mt.__newindex = function(_, k, x)
+			if SETTINGS[k] == nil then table.insert(g.forbidden, "PublishSettings." .. tostring(k)); error("no field " .. tostring(k)) end
+			v[k] = x
+		end
+		return u
+	end
+	local forbiddenNames = { "setRemoteModId", "setModDetails", "refreshMod",
 		"addLogoImage", "removeLogoImage", "addGalleryImages", "removeGalleryImage", "moveGalleryImage",
 		"setPostPublishFn", "openFolder" }
 	api.type.modhub = {
 		StagingModData = { State = State },
-		PublishSettings = { new = function() table.insert(g.forbidden, "PublishSettings.new"); return {} end },
+		PublishSettings = { new = function() return publishSettings() end },
 		ModPublishHelper = { new = function(backend)
 			if not privileged then error("API can only be used by privileged (non-moddable) scripts") end
 			if spec.newReturnsNil then return nil end
@@ -193,6 +245,19 @@ function M.installModhub(g, spec)
 					if m.state == "Sync" and not m.e.staysInSync then
 						m.syncLeft = m.syncLeft - 1
 						if m.syncLeft <= 0 then m.state = m.e.state or "Ready" end
+					end
+					local p = m.e.publish or {}
+					if m.state == "Publishing" and not p.hangs and m.publishLeft then
+						m.publishLeft = m.publishLeft - 1
+						if m.publishLeft <= 0 then
+							local id = p.modId or "7000001"
+							m.state, m.publishResult = "HasResult", makePublishResult(p, id)
+							if p.success ~= false and spec.fileidDir then
+								local f = io.open(spec.fileidDir .. "/" .. m.e.folder .. "/_metadata/mod.io_fileid.txt", "w")
+								if f then f:write(id); f:close() end
+							end
+							m.resultId = p.success ~= false and id or nil
+						end
 					end
 				end
 			end
@@ -213,7 +278,9 @@ function M.installModhub(g, spec)
 					local m = mod(id)
 					return object({ state = State[m.state], modhubId = modId(m.e.modhubId),
 						modhubDetails = m.state ~= "Sync" and details(m.e.details) or nil,
-						localModhubDetails = details({ title = m.e.title, visible = false }) }, nil, "StagingModData")
+						localModhubDetails = details({ title = m.e.title, visible = false,
+							logoImage = m.e.logo == false and "" or "_metadata/0.png" }),
+						publishResult = m.state == "HasResult" and m.publishResult or nil }, nil, "StagingModData")
 				end,
 				-- polls the validations (the type: has to be called regularly while one runs)
 				update = function()
@@ -239,6 +306,25 @@ function M.installModhub(g, spec)
 				abortValidation = function(_, id)
 					g.abortValidations = g.abortValidations + 1
 					mod(id).validating = false
+				end,
+				publish = function(_, id, settings)
+					local m = mod(id)
+					local ok, plain = pcall(function() return settings._plain end)
+					g.publishCalls[#g.publishCalls + 1] = { value = id.value, settings = ok and plain or nil, state = m.state }
+					if m.state ~= "Ready" then table.insert(g.forbidden, "publish while " .. m.state) end
+					local p = m.e.publish or {}
+					if p.raises then error("publish failed in C++") end
+					m.state, m.publishLeft = "Publishing", p.frames or 5
+					return object({}, nil, "AsyncResult")
+				end,
+				abortPublish = function(_, id)
+					local m = mod(id)
+					g.abortPublishes[#g.abortPublishes + 1] = { value = id.value, state = m.state }
+					if m.state ~= "HasResult" then table.insert(g.forbidden, "abortPublish while " .. m.state) end
+					-- a success leaves the mod with its mod.io id (a guess: what the page then shows is not seen)
+					if m.resultId then m.e.modhubId = m.resultId end
+					m.state, m.publishResult = "Ready", nil
+					return object({}, nil, "UniquePendingRequestId")
 				end,
 				getValidationData = function(_, id)
 					local m = mod(id)
@@ -1471,7 +1557,9 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		{ saveName = "other", path = dir .. "/save/other.sav", timestamp = 1, size = 10, mods = {} },
 	}
 	-- modhub (4th argument): My Mods with one staging mod validate takes and one it refuses
-	local modhub = arg[4] == "modhub" and { staging = {
+	-- (the force unload one uploads as mod.io mod 7000001 and leaves its fileid under <dir>/staging_area, where
+	-- tf3ctl looks next to the exchange folder)
+	local modhub = arg[4] == "modhub" and { fileidDir = dir .. "/staging_area", staging = {
 		{ folder = "hummer_force_unload_default_1", title = "Force Unload by Default", validateUpdates = 20,
 			result = { messages = { { level = "Warning", file = "content/x.lua", message = "a warning" } },
 				levelPc = "Warning", levelConsole = "Warning" } },

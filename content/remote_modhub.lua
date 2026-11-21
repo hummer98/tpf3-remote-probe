@@ -1,16 +1,21 @@
--- My Mods from the main menu for the remote probe (modhubStatus, modhubValidate): the base's MOD hub > My Mods
--- page lists the staging area (<user data>/staging_area/<folder>) and validates and uploads its mods through one
--- C++ object, api.type.modhub.ModPublishHelper (mod_manager_page.tl makes it, mod_manager_react_util.tl calls its
--- methods; no event is fired). This file makes its own one and uses only the reading part of it: the staging
--- mods with their state and what mod.io holds of them, and validate, as the page's Re-Validate button.
+-- My Mods from the main menu for the remote probe (modhubStatus, modhubValidate, modhubPublish): the base's MOD hub >
+-- My Mods page lists the staging area (<user data>/staging_area/<folder>) and validates and uploads its mods
+-- through one C++ object, api.type.modhub.ModPublishHelper (mod_manager_page.tl makes it,
+-- mod_manager_react_util.tl calls its methods; no event is fired). This file makes its own one: it reads the
+-- staging mods with their state and what mod.io holds of them, validates as the page's Re-Validate button, and
+-- uploads one new mod as the page's Upload button (ModUploadForm).
 --
--- Publishing is not here, and nothing calls publish, abortPublish, setRemoteModId, refreshMod or any setter:
--- an upload can make a second mod page or a public mod, neither undone from the game, so it waits for a person.
+-- The upload is the only thing here that writes to mod.io, and it is kept to one place in this file (between the
+-- "publish path" markers; tests/run.lua checks that no other code names publish, abortPublish or PublishSettings).
+-- Nothing calls setRemoteModId, refreshMod or any setter. An upload can make a second mod page or a public mod,
+-- neither undone from the game, so publish takes one allowed folder, a first upload only (the mod has no mod.io
+-- id), a visibility given every time, a validation without issues, and one upload per launch. tools/tf3ctl.py
+-- adds the checks Lua cannot make (no io here): no _metadata/mod.io_fileid.txt, a cover image, and its own mark
+-- on disk written before it sends the command.
 --
 -- Only in the main menu (startup.lua). ModPublishHelper.new is marked "privileged api, not available to mods"
--- (type/modhub.d.tl); the menu probe was seen reading the equally marked api.modhub functions (one launch,
--- 2026-11-21), so it is expected to work there, but making the helper was never tried in game. When it fails,
--- the error is answered as the game gave it, and validate stops there.
+-- (type/modhub.d.tl); it was made there in game (2026-11-22) and validate worked. The upload itself was never
+-- tried in game.
 --
 -- Making the helper syncs every staging mod with mod.io (StagingModData.state is Sync meanwhile): read requests
 -- to mod.io, no writes. The base page makes another helper of its own when a person opens My Mods; the two are
@@ -24,7 +29,7 @@ M.FRESH_SEC = 5 -- s without seeing validating: a result that was there before i
 function M.new(ctx)
 	local core, answer, fail, appTime, try, say = ctx.core, ctx.answer, ctx.fail, ctx.appTime, ctx.try, ctx.say
 	local PROGRESS_SEC = ctx.progressSec or 15
-	local H = { frames = 0 } -- helper, helperError, job
+	local H = { frames = 0 } -- helper, helperError, job, published (the upload of this launch)
 	local handlers = {}
 
 	local function stateName(s)
@@ -146,6 +151,33 @@ function M.new(ctx)
 		return out, res
 	end
 
+	local function errorCode(e)
+		if e == nil then return nil end
+		return { code = num(core.field(e, "code")), debugMessage = str(core.field(e, "debugMessage")),
+			localizedMessage = str(core.field(e, "localizedMessage")) }
+	end
+
+	-- StagingModData.publishResult once the state is HasResult, read as the base page does (ModUploadForm,
+	-- mod_manager_react_util.tl 1421-1446): isSuccess; then the data (the mod.io id, partialErrors) on success,
+	-- the error on failure. Each read on its own, so one that raises leaves the others.
+	local function publishResult(d)
+		local res = core.field(d, "publishResult")
+		if res == nil then return nil end
+		local out = { success = bool(try(function() return res:isSuccess() end)) }
+		if out.success == true then
+			local data = try(function() return res:getData() end)
+			out.modId = str(core.field(core.field(data, "modId"), "value"))
+			local partial = {}
+			for _, pe in ipairs(core.toList(core.field(data, "partialErrors"))) do
+				partial[#partial + 1] = { step = str(core.field(pe, "step")), error = errorCode(core.field(pe, "error")) }
+			end
+			out.partialErrors = core.array(partial)
+		elseif out.success == false then
+			out.error = errorCode(try(function() return res:getError() end))
+		end
+		return out
+	end
+
 	-- the staging mods: their ids from the staging backend, matched to the helper by that id (as the base page
 	-- passes modInfo.modId of its My Mods tab)
 	local function stagingIds(b)
@@ -178,6 +210,9 @@ function M.new(ctx)
 			e.upload = (not e.modhubId.valid) and "new" or (e.hasModhubDetails and "update" or "remoteMissing")
 		end
 		e.validation = validation(h, id, limit)
+		if e.state == "HasResult" then e.publishResult = publishResult(d) end
+		local logo = core.field(core.field(core.field(d, "localModhubDetails"), "modInfo"), "logoImage")
+		if type(logo) == "string" then e.hasLogo = logo ~= "" end
 		return e
 	end
 
@@ -215,6 +250,9 @@ function M.new(ctx)
 				stagingFrom = b.stagingFrom, infoOnly = b.infoOnly, morePublish = b.morePublish },
 			modio = r, notReady = notReady, seconds = appTime() - job.started, timedOut = timedOut }
 		if H.helper then out.anyStagingMods = bool(try(function() return H.helper:hasAnyStagingMods() end)) end
+		if H.published then
+			out.publishedThisLaunch = { id = H.published.id, folder = H.published.folder, outcome = H.published.outcome }
+		end
 		local ids, err = stagingIds(b)
 		out.stagingError = err
 		local mods = {}
@@ -384,6 +422,278 @@ function M.new(ctx)
 	end
 
 	---------------------------------------------------------------------------------------------------------------
+	-- publish: one new mod to mod.io, as the page's Upload button (ModUploadForm, mod_manager_react_util.tl
+	-- 1806-1881). The phases: ready (mod.io), sync (the mod leaves Sync), check (new mod, logged in, cover; a busy
+	-- mod.io is waited for), validating (a fresh validation, as the page validates before it enables the button,
+	-- 1478-1481), check again, then the dry run's answer, or publish and its wait (publishing) up to HasResult.
+
+	-- the settings as the page builds them for a mod of the My Mods tab (no params.publishSettings there): new(),
+	-- then setPublic = (modhubDetails ~= nil and modhubDetails.modInfo.visible), false for a new mod, which the
+	-- "Set Public" check box changes (1466-1471, 1591-1596); updateMetadata = true (1470; the box is disabled for
+	-- a new mod, 1598-1603); changeLog from the text field (1605-1609); at the button isSavegame =
+	-- params.disableValidator, nil on My Mods (5734-5743), and issuesConfirmed = false when no "Proceed Anyway"
+	-- was asked (1822-1826, 1868). additionalMetadata is only for savegames: not set.
+	local function plannedSettings(args)
+		return { setPublic = args.public, updateMetadata = true, changeLog = args.changelog, isSavegame = false,
+			issuesConfirmed = false }
+	end
+
+	local function publishPayload(job)
+		return { folder = job.args.folder, value = job.value, phase = job.phase, seconds = appTime() - job.started,
+			dryRun = job.args.dryRun, publishCalled = job.publishCalled == true, settings = plannedSettings(job.args),
+			checks = job.checks, validation = job.result }
+	end
+
+	local function endPublish(job, out, err)
+		if job.publishCalled and H.published then H.published.outcome = err and (out.outcome or "failed") or "success" end
+		return endJob(job, out, err)
+	end
+
+	local function publishProgress(job)
+		if appTime() < job.nextProgress then return end
+		job.nextProgress = appTime() + PROGRESS_SEC
+		job.progressN = job.progressN + 1
+		local out = { ok = true, running = true, folder = job.args.folder, phase = job.phase,
+			seconds = appTime() - job.started, publishCalled = job.publishCalled == true }
+		if job.mid then
+			local d = try(function() return H.helper:getStagingModData(job.mid) end)
+			out.state = stateName(core.field(d, "state"))
+			local v = job.phase == "validating" and validation(H.helper, job.mid, nil) or nil
+			out.progress, out.task = v and v.progress, v and v.task
+		end
+		local r = readiness(job.b.publish)
+		out.modio = r.management
+		answer(job.id, out, "p" .. job.progressN)
+	end
+
+	-- what must hold just before publish (and for the dry run): the mod is Ready and new to mod.io, mod.io lets
+	-- this user upload, and the cover is there. Returns the checks and the refusal (nil: it may go); a refusal for
+	-- a login also names the user action the page would ask for (doRequiredUserAction, 3268-3280).
+	local function publishChecks(job)
+		local r, notReady = readiness(job.b.publish)
+		local d = try(function() return H.helper:getStagingModData(job.mid) end)
+		local mid = core.field(d, "modhubId")
+		local c = { state = stateName(core.field(d, "state")), loggedIn = r.loggedIn, allowModUpload = r.allowModUpload,
+			initialized = r.initialized, busy = r.management and r.management.busy,
+			uploading = r.management and r.management.uploading,
+			modhubIdValid = bool(try(function() return mid:isValid() end)), modhubIdValue = str(core.field(mid, "value")),
+			hasModhubDetails = core.field(d, "modhubDetails") ~= nil }
+		local logo = core.field(core.field(core.field(d, "localModhubDetails"), "modInfo"), "logoImage")
+		c.logoImage = type(logo) == "string" and (logo ~= "" and "set" or "empty") or "unreadable"
+		if d == nil then return c, "getStagingModData cannot be read" end
+		if c.state ~= "Ready" then return c, "the staging mod is " .. tostring(c.state) .. ", not Ready" end
+		if c.modhubIdValid ~= false then
+			return c, c.modhubIdValid and ("the staging mod already has a mod.io id (" .. tostring(c.modhubIdValue)
+				.. "): publish makes only a new mod, not an update") or "the staging mod's mod.io id cannot be read"
+		end
+		if c.hasModhubDetails then return c, "mod.io has details for this staging mod: it is not new" end
+		-- mod.io busy (e.g. syncing the other staging mods) passes: waited for, not refused
+		if notReady then return c, notReady, nil, true end
+		if r.initialized ~= true then return c, "mod.io is not initialized" end
+		if r.allowModUpload ~= true then return c, "mod.io does not allow mod uploads here (allowModUpload)" end
+		if not r.loggedIn then return c, "nobody is logged in to mod.io: log in on My Mods first", "login" end
+		if c.logoImage == "empty" then return c, "no valid cover image found (_metadata/0.png): the page says the same" end
+		return c, nil
+	end
+
+	-- BEGIN publish path: the only code that uploads (and the page's clean-up after a result). tests/run.lua
+	-- allows publish, abortPublish and PublishSettings between these two markers and nowhere else.
+	local function sendPublish(job)
+		local ok, err = pcall(function()
+			local p = plannedSettings(job.args)
+			local s = api.type.modhub.PublishSettings.new()
+			s.setPublic = p.setPublic
+			s.updateMetadata = p.updateMetadata
+			s.changeLog = p.changeLog
+			s.isSavegame = p.isSavegame
+			s.issuesConfirmed = p.issuesConfirmed
+			H.helper:publish(job.mid, s)
+		end)
+		return ok, err
+	end
+
+	-- after the result, as the page does: on a failure at once (1422-1424), on a success when the person presses
+	-- Ok (1873-1877). Only in HasResult: the page never calls it while Publishing, and in the middle of an upload
+	-- it is not known what is left on mod.io.
+	local function cleanUpPublish(job)
+		local d = try(function() return H.helper:getStagingModData(job.mid) end)
+		if stateName(core.field(d, "state")) ~= "HasResult" then return false, "not in HasResult" end
+		local ok, err = pcall(function() H.helper:abortPublish(job.mid) end)
+		return ok, not ok and tostring(err) or nil
+	end
+	-- END publish path
+
+	local function stepPublish(job)
+		local t = appTime() - job.started
+		if job.phase == "publishing" then
+			local d = try(function() return H.helper:getStagingModData(job.mid) end)
+			local s = stateName(core.field(d, "state"))
+			if s == "HasResult" then
+				local out = publishPayload(job)
+				out.state = s
+				out.result = publishResult(d)
+				local ok, cerr = cleanUpPublish(job)
+				out.cleanedUp, out.cleanUpError = ok, cerr
+				local d2 = try(function() return H.helper:getStagingModData(job.mid) end)
+				local mid = core.field(d2, "modhubId")
+				out.stateAfter = stateName(core.field(d2, "state"))
+				out.modhubIdAfter = { valid = bool(try(function() return mid:isValid() end)), value = str(core.field(mid, "value")) }
+				local res = out.result or {}
+				out.modId = res.modId
+				if res.success == true then
+					local partial = res.partialErrors or {}
+					if #partial > 0 then
+						out.outcome = "partial"
+						return endPublish(job, out, "uploaded as mod.io mod " .. tostring(res.modId) .. ", with "
+							.. #partial .. " partial errors (the page's \"Upload Failed\" list)")
+					end
+					say("published staging mod " .. job.args.folder .. " as mod.io mod " .. tostring(res.modId)
+						.. " for command " .. job.id)
+					return endPublish(job, out)
+				end
+				local e = res.error or {}
+				out.outcome = "failed"
+				say("publishing staging mod " .. job.args.folder .. " failed: " .. tostring(e.debugMessage or e.code))
+				return endPublish(job, out, "Upload Failed: " .. tostring(e.localizedMessage or e.debugMessage or "no message")
+					.. " (code " .. tostring(e.code) .. ")")
+			end
+			if t > job.args.timeout then
+				-- no abortPublish: the page never calls it in the middle of an upload; the game may still finish it
+				local out = publishPayload(job)
+				out.state, out.outcome = s, "unknown"
+				return endPublish(job, out, "timed out after " .. job.args.timeout .. " s while the upload was " ..
+					tostring(s) .. ": the outcome is not known; it was not aborted, and the game may still finish it")
+			end
+			return publishProgress(job)
+		end
+		-- before publish: the time limit ends it, nothing sent
+		if t > job.args.timeout then
+			if job.phase == "validating" then pcall(function() H.helper:abortValidation(job.mid) end) end
+			return endPublish(job, publishPayload(job), "timed out after " .. job.args.timeout .. " s (" .. job.phase
+				.. (job.waitingFor and (": " .. job.waitingFor) or "") .. "); nothing was uploaded")
+		end
+		publishProgress(job)
+		if job.phase == "ready" then
+			local _, notReady = readiness(job.b.publish)
+			if notReady then
+				if t < M.READY_SEC then return end
+				return endPublish(job, publishPayload(job), notReady .. " after " .. M.READY_SEC .. " s; nothing was uploaded")
+			end
+			local h, herr = helper(job.b.publish)
+			if not h then return endPublish(job, publishPayload(job), "ModPublishHelper.new failed: " .. tostring(herr)) end
+			local id, ferr = findId(job.b, job.args.folder)
+			if not id then return endPublish(job, publishPayload(job), ferr) end
+			job.mid, job.value = id, str(core.field(id, "value"))
+			job.phase, job.syncSince = "sync", appTime()
+		end
+		if job.phase == "sync" then
+			local known = try(function() return H.helper:hasStagingMod(job.mid) end)
+			local d = known and try(function() return H.helper:getStagingModData(job.mid) end) or nil
+			local s = known and stateName(core.field(d, "state")) or "Sync"
+			if s == "Sync" or s == nil then
+				if appTime() - job.syncSince < M.SYNC_SEC then return end
+				return endPublish(job, publishPayload(job), "the staging mod is still " .. (known and tostring(s or "unreadable")
+					or "unknown to the publish helper") .. " after " .. M.SYNC_SEC .. " s (its sync with mod.io); nothing was uploaded")
+			end
+			job.phase = "check"
+		end
+		if job.phase == "check" then
+			-- before the validation, and again after it (it takes a while: mod.io may have turned busy, or the
+			-- person logged out)
+			local checks, why, action, transient = publishChecks(job)
+			job.checks = checks
+			if transient then job.waitingFor = why; return end
+			job.waitingFor = nil
+			if why then
+				local out = publishPayload(job)
+				out.requiredUserAction = action
+				return endPublish(job, out, why .. "; nothing was uploaded")
+			end
+			if not job.result then
+				local _, before = validation(H.helper, job.mid, nil)
+				job.before = before
+				local ok, err = pcall(function() H.helper:validate(job.mid) end)
+				if not ok then return endPublish(job, publishPayload(job), "validate failed: " .. tostring(err)) end
+				job.phase, job.validateSince = "validating", appTime()
+				return
+			end
+			if job.args.dryRun then
+				job.phase = "dryRun"
+				local out = publishPayload(job)
+				out.wouldPublish = true
+				return endPublish(job, out)
+			end
+			if H.published then
+				return endPublish(job, publishPayload(job), "an upload was already sent in this launch (command "
+					.. H.published.id .. "); nothing was uploaded")
+			end
+			-- once per launch, whatever publish does: set before the call, so even one that raises counts
+			H.published = { id = job.id, folder = job.args.folder, mid = job.mid, outcome = "publishing" }
+			job.publishCalled = true
+			local ok, err = sendPublish(job)
+			if not ok then
+				local out = publishPayload(job)
+				out.outcome = "failed"
+				return endPublish(job, out, "publish raised: " .. tostring(err) .. " (whether anything reached mod.io is not known)")
+			end
+			say("publishing staging mod " .. job.args.folder .. " (new mod, public " .. tostring(job.args.public)
+				.. ") for command " .. job.id)
+			job.phase = "publishing"
+			job.nextProgress = appTime() -- a progress answer at once: the tool sees that publish was called
+			return publishProgress(job)
+		end
+		if job.phase == "validating" then
+			local v, res = validation(H.helper, job.mid, nil)
+			if v and v.validating then job.sawValidating = true end
+			local done = v and not v.validating and res ~= nil
+				and (job.sawValidating or job.before == nil or appTime() - job.validateSince >= M.FRESH_SEC)
+			if not done then return end
+			job.result = core.validationSummary(readResult(res), job.args.messages)
+			if not job.sawValidating and job.before ~= nil then
+				job.result.note = "validating was never seen true: this may be the result from before"
+			end
+			local block = core.publishValidationBlock(job.result)
+			if block then return endPublish(job, publishPayload(job), block .. "; nothing was uploaded") end
+			job.phase = "check"
+		end
+	end
+
+	function handlers.modhubPublish(c)
+		local args, err = core.modhubPublishArgs(c.args)
+		if not args then return fail(c.id, err) end
+		if H.job then return fail(c.id, busyError()) end
+		if H.published and not args.dryRun then
+			return fail(c.id, "an upload was already sent in this launch (command " .. H.published.id
+				.. "): one per launch; nothing was uploaded")
+		end
+		if H.helperError then return fail(c.id, "ModPublishHelper.new failed: " .. H.helperError) end
+		local b, berr = backends()
+		if not b then return fail(c.id, berr) end
+		H.job = { id = c.id, cmd = c.cmd, args = args, b = b, started = appTime(), phase = "ready",
+			nextProgress = appTime() + PROGRESS_SEC, progressN = 0 }
+		stepPublish(H.job)
+	end
+
+	-- why a load, new game or quit must wait: an upload of this launch that has no result yet (a quit in the
+	-- middle of it leaves mod.io in a state nobody knows). nil when nothing holds them.
+	function H.blocks()
+		local p = H.published
+		if not p or not H.helper then return nil end
+		local job = H.job
+		local s
+		if job and job.cmd == "modhubPublish" and job.phase == "publishing" then
+			s = "Publishing"
+		else
+			local known = try(function() return H.helper:hasStagingMod(p.mid) end)
+			local d = known and try(function() return H.helper:getStagingModData(p.mid) end) or nil
+			s = stateName(core.field(d, "state"))
+			if s ~= "Publishing" then return nil end
+		end
+		return "the upload of staging mod " .. p.folder .. " (command " .. p.id .. ") is still " .. s
+			.. ": refused until it has a result (modhub status shows it)"
+	end
+
+	---------------------------------------------------------------------------------------------------------------
 
 	-- every frame in the main menu: the helper's update (the page calls it every frame it is open; the type says
 	-- it must be called while a validation runs), then the job. An error ends the job, not the probe's frame.
@@ -398,18 +708,24 @@ function M.new(ctx)
 		end
 		local job = H.job
 		if not job then return end
-		local ok, err = pcall(job.cmd == "modhubStatus" and stepStatus or stepValidate, job)
+		local step = job.cmd == "modhubStatus" and stepStatus or (job.cmd == "modhubPublish" and stepPublish or stepValidate)
+		local ok, err = pcall(step, job)
 		if not ok and H.job == job then
 			H.job = nil
 			fail(job.id, err)
 		end
 	end
 
-	-- a load, new game or quit ends the menu: a running validation is aborted and its command answered
+	-- a load, new game or quit ends the menu: a running validation is aborted and its command answered. An upload
+	-- is not cancelled here: H.blocks holds those commands back while one runs.
 	function H.cancel(reason)
 		local job = H.job
 		if not job then return end
 		if job.phase == "validating" then pcall(function() H.helper:abortValidation(job.mid) end) end
+		if job.cmd == "modhubPublish" then
+			return endPublish(job, publishPayload(job), "cancelled by " .. reason .. (job.publishCalled
+				and "; the upload was not aborted, its outcome is not known" or "; nothing was uploaded"))
+		end
 		endJob(job, payload(job), "cancelled by " .. reason)
 	end
 

@@ -5359,6 +5359,9 @@ end
 -- every test of this part ends with this: the helper's upload and change methods record each call
 local function noUploads(g)
 	eq(#(g.forbidden or {}), 0, "upload / change methods called: " .. table.concat(g.forbidden or {}, ", "))
+	eq(#(g.publishCalls or {}), 0, "publish called")
+	eq(#(g.abortPublishes or {}), 0, "abortPublish called")
+	eq(g.settingsMade or 0, 0, "PublishSettings made")
 end
 
 test("modhub core: folder names, status and validate args, the allowed folders", function()
@@ -5738,26 +5741,334 @@ test("modhub validate: --timeout covers the waits for mod.io too, with progress 
 	noUploads(g)
 end)
 
-test("no code path uploads: the probe's code calls none of the helper's publish or change methods", function()
-	-- comments name them (to say they are left out); code must not
-	local banned = { "[:.]publish%s*%(", "abortPublish", "PublishSettings", "setRemoteModId", "setModDetails",
-		"refreshMod", "LogoImage", "GalleryImage", "setPostPublishFn", "openFolder", "stageSavegame" }
+test("one code path uploads: publish, abortPublish and PublishSettings only between the publish path markers of remote_modhub.lua; no other write", function()
+	-- comments name them (to say what is left out); code must not, outside the one block
+	local onlyInBlock = { "[:.]publish%s*%(", "abortPublish", "PublishSettings" }
+	-- the helper's other change methods, and api.modhub's own writes (subscriptions, ratings, reports, logins,
+	-- the mode, savegame ids) and what opens a browser or a folder: nowhere
+	local banned = { "setRemoteModId", "setModDetails", "refreshMod", "LogoImage", "GalleryImage", "setPostPublishFn",
+		"openFolder", "stageSavegame", "subscribeModAsync", "unsubscribeModAsync", "forceUninstallModAsync",
+		"submitModRatingAsync", "submitModReportAsync", "setModManagementMode", "setModhubModIdForSavegame",
+		"logoutAsync", "authenticateUser", "requestEmailAuthCode", "restartModBackendAsync", "specialRefreshModAsync",
+		"refreshAsync", "openExternalModPage", "openModhubInstallFolder", "openTermsInBrowser",
+		"clearPendingSessionInvalidNotice", "getTermsOfUseAsync" }
 	local p = io.popen("find '" .. root .. "/content' -name '*.lua'")
-	local n = 0
+	local n, inBlockCount, blocks = 0, {}, 0
 	for path in p:lines() do
 		n = n + 1
-		local lineNo = 0
+		local lineNo, inBlock = 0, false
+		local isModhub = path:find("/remote_modhub%.lua$") ~= nil
 		for line in io.lines(path) do
 			lineNo = lineNo + 1
+			if isModhub and line:find("^%s*%-%- BEGIN publish path") then
+				truthy(not inBlock, "nested marker"); inBlock = true; blocks = blocks + 1
+			elseif isModhub and line:find("^%s*%-%- END publish path") then
+				truthy(inBlock, "END without BEGIN"); inBlock = false
+			end
 			local code = line:gsub("%-%-.*$", "")
 			for _, pat in ipairs(banned) do
 				truthy(not code:find(pat), path .. ":" .. lineNo .. " calls " .. pat .. ": " .. line)
 			end
+			for _, pat in ipairs(onlyInBlock) do
+				if code:find(pat) then
+					truthy(inBlock, path .. ":" .. lineNo .. " names " .. pat .. " outside the publish path: " .. line)
+					inBlockCount[pat] = (inBlockCount[pat] or 0) + 1
+				end
+			end
 		end
+		truthy(not inBlock, path .. ": the publish path is not closed")
 	end
 	p:close()
 	truthy(n >= 10, "read the content files (" .. n .. ")")
-	eq(core.COMMANDS.modhubPublish, nil); eq(core.COMMANDS.publish, nil)
+	eq(blocks, 1, "one publish path")
+	-- one publish call, one clean-up, one settings object
+	for _, pat in ipairs(onlyInBlock) do eq(inBlockCount[pat], 1, pat) end
+	eq(core.COMMANDS.modhubPublish, true); eq(core.COMMANDS.publish, nil)
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- modhub publish: one new mod, as the page's Upload button
+
+local FU = "hummer_force_unload_default_1"
+local CHANGELOG = "First release."
+local function fuStaging(extra)
+	local e = { folder = FU, title = "Force Unload by Default" }
+	for k, v in pairs(extra or {}) do e[k] = v end
+	-- with the published mods around it, as in the real staging area
+	return { e, STAGING[3], { folder = "example_mod_1", title = "Example" } }
+end
+local function publishCmd(extra)
+	local t = { string.format("folder = %q", FU), "public = true", "firstUpload = true",
+		string.format("changelog = %q", CHANGELOG) }
+	for _, x in ipairs(extra or {}) do t[#t + 1] = x end
+	return "{ " .. table.concat(t, ", ") .. " }"
+end
+
+test("modhub core: publish args (one folder, first upload only, the visibility given, a changelog) and the validation gate", function()
+	local a = core.modhubPublishArgs({ folder = FU, public = true, firstUpload = true, changelog = "x" })
+	eq(a.folder, FU); eq(a.public, true); eq(a.timeout, 900); eq(a.dryRun, false); eq(a.messages, 50)
+	eq(core.modhubPublishArgs({ folder = FU, public = false, firstUpload = true, changelog = "x", dryRun = true }).public, false)
+	-- publish's list is its own: folders validate takes are not taken by that alone
+	for _, f in ipairs({ "example_mod_1", "hummer_industry_pollution_display_1", "hummer_cursor_altitude_tooltip_1",
+		"road_tunnel_ramp_1", "hummer_force_unload_default" }) do
+		local ok, err = core.modhubPublishArgs({ folder = f, public = true, firstUpload = true, changelog = "x" })
+		eq(ok, nil, f); truthy(err:find("publish takes only these staging folders: " .. FU), err)
+	end
+	local function why(t) return select(2, core.modhubPublishArgs(t)) end
+	truthy(why({ folder = FU, public = true, changelog = "x" }):find("firstUpload"))
+	truthy(why({ folder = FU, public = true, firstUpload = "yes", changelog = "x" }):find("firstUpload"))
+	truthy(why({ folder = FU, firstUpload = true, changelog = "x" }):find("no default visibility"))
+	truthy(why({ folder = FU, public = "yes", firstUpload = true, changelog = "x" }):find("no default visibility"))
+	truthy(why({ folder = FU, public = true, firstUpload = true }):find("changelog"))
+	truthy(why({ folder = FU, public = true, firstUpload = true, changelog = "  \n" }):find("changelog"))
+	truthy(why({ folder = FU, public = true, firstUpload = true, changelog = string.rep("x", 5001) }):find("longer"))
+	truthy(why({ folder = FU, public = true, firstUpload = true, changelog = "x", timeout = 3601 }))
+	truthy(why({ folder = FU, public = true, firstUpload = true, changelog = "x", dryRun = "yes" }))
+	truthy(why({ folder = "../" .. FU, public = true, firstUpload = true, changelog = "x" }):find("plain folder"))
+	truthy(why(nil)); truthy(why({ folder = newproxy(true) }))
+	-- the gate: no critical issue, no Error / Critical level (the page's "Proceed Anyway" question)
+	local ok = { criticalPc = false, criticalConsole = false, levelPc = "Warning", levelConsole = "Message" }
+	eq(core.publishValidationBlock(ok), nil)
+	truthy(core.publishValidationBlock(nil))
+	truthy(core.publishValidationBlock({ criticalPc = true, levelPc = "Critical", levelConsole = "Message" }):find("critical PC"))
+	truthy(core.publishValidationBlock({ criticalPc = false, criticalConsole = true, levelPc = "Message", levelConsole = "Critical" }))
+	truthy(core.publishValidationBlock({ criticalPc = false, criticalConsole = false, levelPc = "Error", levelConsole = "Message" }):find("levelPc is Error"))
+	truthy(core.publishValidationBlock({ criticalPc = false, criticalConsole = false, levelPc = "Message", levelConsole = "Error" }):find("levelConsole"))
+	truthy(core.publishValidationBlock({ criticalPc = nil, levelPc = "Message", levelConsole = "Message" }):find("cannot be read"))
+	truthy(core.publishValidationBlock({ criticalPc = false, levelPc = nil, levelConsole = "Message" }):find("cannot be read"))
+end)
+
+test("modhub publish dry run: validates, checks the mod is new, answers every setting, and never calls publish", function()
+	local g = modhubGame({ staging = fuStaging() })
+	send(g, 1401, "modhubPublish", publishCmd({ "dryRun = true" }))
+	frames(g, FIRST + 60)
+	local a = final(g, 1401)
+	truthy(a, "answered")
+	eq(a.ok, true, a.error); eq(a.dryRun, true); eq(a.wouldPublish, true); eq(a.publishCalled, false)
+	eq(a.folder, FU); eq(a.phase, "dryRun")
+	eq(a.settings.setPublic, true); eq(a.settings.updateMetadata, true); eq(a.settings.changeLog, CHANGELOG)
+	eq(a.settings.isSavegame, false); eq(a.settings.issuesConfirmed, false)
+	eq(a.checks.state, "Ready"); eq(a.checks.modhubIdValid, false); eq(a.checks.hasModhubDetails, false)
+	eq(a.checks.loggedIn, true); eq(a.checks.allowModUpload, true); eq(a.checks.logoImage, "set")
+	eq(a.validation.text, "Validation: No Issues Found")
+	eq(#g.validateCalls, 1, "validated first, as the page does")
+	-- public = false goes through as false
+	send(g, 1402, "modhubPublish", "{ folder = \"" .. FU .. "\", public = false, firstUpload = true, changelog = \"x\", dryRun = true }")
+	frames(g, 60)
+	a = final(g, 1402)
+	eq(a.ok, true, a.error); eq(a.settings.setPublic, false)
+	noUploads(g)
+end)
+
+test("modhub publish waits while mod.io turns busy after the helper is made (the other mods' sync), then goes on", function()
+	local g = modhubGame({ staging = fuStaging({ syncFrames = 100 }) })
+	send(g, 1404, "modhubPublish", publishCmd({ "dryRun = true", "timeout = 60" }))
+	frames(g, FIRST + 10)
+	eq(g.helpersMade, 1, "made while mod.io was idle")
+	g.modhubBusy = true
+	frames(g, 300)
+	eq(final(g, 1404), nil, "waiting, not refused")
+	eq(#g.validateCalls, 0)
+	g.modhubBusy = false
+	frames(g, 60)
+	local a = final(g, 1404)
+	eq(a.ok, true, a and a.error); eq(a.wouldPublish, true); eq(#g.validateCalls, 1)
+	-- busy to the end: the time limit says what it waited for
+	g = modhubGame({ staging = fuStaging({ syncFrames = 100 }) })
+	send(g, 1405, "modhubPublish", publishCmd({ "timeout = 20" }))
+	frames(g, FIRST + 10)
+	g.modhubBusy = true
+	frames(g, 30 * 21)
+	a = final(g, 1405)
+	eq(a.ok, false); truthy(a.error:find("timed out after 20 s %(check: mod.io is busy"), a.error)
+	truthy(a.error:find("nothing was uploaded"), a.error)
+	noUploads(g)
+end)
+
+test("modhub publish refuses folders outside its list, and a missing firstUpload or visibility, before making anything", function()
+	local g = modhubGame({ staging = fuStaging() })
+	local cases = {
+		{ "{ folder = \"hummer_industry_pollution_display_1\", public = true, firstUpload = true, changelog = \"x\" }", "only these staging folders" },
+		{ "{ folder = \"example_mod_1\", public = true, firstUpload = true, changelog = \"x\", dryRun = true }", "only these staging folders" },
+		{ "{ folder = \"" .. FU .. "\", public = true, changelog = \"x\" }", "firstUpload" },
+		{ "{ folder = \"" .. FU .. "\", firstUpload = true, changelog = \"x\" }", "no default visibility" },
+	}
+	for i, c in ipairs(cases) do
+		send(g, 1405 + i, "modhubPublish", c[1])
+		frames(g, i == 1 and FIRST or 10)
+		local a = final(g, 1405 + i)
+		eq(a.ok, false, c[1]); truthy(a.error:find(c[2]), a.error)
+	end
+	eq(g.helpersMade, 0); eq(#g.validateCalls, 0)
+	noUploads(g)
+end)
+
+test("modhub publish refuses a mod with a mod.io id (an update, or one deleted on mod.io), no cover, or nobody logged in", function()
+	local cases = {
+		{ { modhubId = "7000009", details = { visible = true, modId = "7000009" } }, "already has a mod.io id %(7000009%)" },
+		{ { modhubId = "7000009" }, "already has a mod.io id" }, -- the page's "got deleted, a new mod will be created": not here
+		{ { logo = false }, "no valid cover image" },
+	}
+	for _, c in ipairs(cases) do
+		for _, dry in ipairs({ true, false }) do
+			local g = modhubGame({ staging = fuStaging(c[1]) })
+			send(g, 1411, "modhubPublish", publishCmd(dry and { "dryRun = true" } or nil))
+			frames(g, FIRST + 60)
+			local a = final(g, 1411)
+			eq(a.ok, false, c[2]); truthy(a.error:find(c[2]), a.error); truthy(a.error:find("nothing was uploaded"), a.error)
+			eq(a.publishCalled, false)
+			noUploads(g)
+		end
+	end
+	local g = modhubGame({ staging = fuStaging() })
+	g.modhubLoggedOut = true
+	send(g, 1412, "modhubPublish", publishCmd())
+	frames(g, FIRST + 60)
+	local a = final(g, 1412)
+	eq(a.ok, false); truthy(a.error:find("log in"), a.error); eq(a.requiredUserAction, "login")
+	eq(#g.validateCalls, 0, "stopped before validating")
+	noUploads(g)
+end)
+
+test("modhub publish refuses a validation with an Error or Critical level, PC or console", function()
+	for _, r in ipairs({
+		{ messages = { { level = "Critical", message = "x" } }, criticalPc = true, levelPc = "Critical", levelConsole = "Critical" },
+		{ messages = { { level = "Error", message = "x" } }, levelPc = "Error", levelConsole = "Error" },
+		{ messages = { { level = "Error", message = "x", consoleOnly = true } }, levelPc = "Message", levelConsole = "Error" },
+	}) do
+		local g = modhubGame({ staging = fuStaging({ result = r }) })
+		send(g, 1414, "modhubPublish", publishCmd())
+		frames(g, FIRST + 60)
+		local a = final(g, 1414)
+		eq(a.ok, false); truthy(a.error:find("nothing was uploaded"), a.error); eq(a.publishCalled, false)
+		truthy(a.validation and a.validation.text ~= "Validation: No Issues Found", "the validation is in the answer")
+		noUploads(g)
+	end
+end)
+
+test("modhub publish: the upload as the page's Upload button; progress, the mod.io id, the page's clean-up after the result; once per launch", function()
+	local g = modhubGame({ staging = fuStaging({ publish = { frames = 30 * 20, modId = "7123456" } }) })
+	send(g, 1416, "modhubPublish", publishCmd({ "timeout = 600" }))
+	frames(g, FIRST + 40)
+	eq(#g.publishCalls, 1, "publish called once")
+	local call = g.publishCalls[1]
+	eq(call.value, FU); eq(call.state, "Ready")
+	eq(call.settings.setPublic, true); eq(call.settings.updateMetadata, true); eq(call.settings.changeLog, CHANGELOG)
+	eq(call.settings.isSavegame, false); eq(call.settings.issuesConfirmed, false); eq(call.settings.additionalMetadata, nil)
+	eq(final(g, 1416), nil, "still publishing")
+	frames(g, 30 * 16)
+	local p, last = nil, nil
+	for i = 1, 5 do last = answerText(g, 1416, "p" .. i) or last end
+	truthy(last, "progress answers")
+	p = decode(last)
+	eq(p.running, true); eq(p.phase, "publishing"); eq(p.publishCalled, true); eq(p.state, "Publishing")
+	-- held: no quit, load or new game in the middle of an upload
+	send(g, 1417, "quit")
+	frames(g, 10)
+	local q = final(g, 1417)
+	eq(q.ok, false); truthy(q.error:find("still Publishing"), q.error); eq(g.quitCalled, nil)
+	frames(g, 30 * 6)
+	local a = final(g, 1416)
+	truthy(a, "answered")
+	eq(a.ok, true, a.error); eq(a.publishCalled, true); eq(a.modId, "7123456")
+	eq(a.result.success, true); eq(#a.result.partialErrors, 0)
+	eq(a.cleanedUp, true); eq(#g.abortPublishes, 1); eq(g.abortPublishes[1].state, "HasResult")
+	eq(a.stateAfter, "Ready"); eq(a.modhubIdAfter.valid, true); eq(a.modhubIdAfter.value, "7123456")
+	eq(#g.forbidden, 0, table.concat(g.forbidden, ", "))
+	-- a second one is refused, dry run or not
+	send(g, 1418, "modhubPublish", publishCmd())
+	frames(g, 10)
+	a = final(g, 1418)
+	eq(a.ok, false); truthy(a.error:find("already sent in this launch %(command 1416%)"), a.error)
+	send(g, 1419, "modhubPublish", publishCmd({ "dryRun = true" }))
+	frames(g, 60)
+	a = final(g, 1419)
+	eq(a.ok, false); truthy(a.error:find("already has a mod.io id %(7123456%)"), a.error)
+	eq(#g.publishCalls, 1)
+	send(g, 1420, "modhubStatus", '{ wait = 0 }')
+	frames(g, 10)
+	a = final(g, 1420)
+	eq(a.publishedThisLaunch.id, 1416); eq(a.publishedThisLaunch.outcome, "success")
+	-- once there is a result, quit goes
+	send(g, 1421, "quit")
+	frames(g, 10)
+	eq(final(g, 1421).ok, true)
+end)
+
+test("modhub publish: a failure comes back with the game's words; the page's clean-up after it; still once per launch", function()
+	local g = modhubGame({ staging = fuStaging({ publish = { success = false,
+		error = { code = 21012, debugMessage = "The mod name is already taken", localizedMessage = "Name taken" } } }) })
+	send(g, 1423, "modhubPublish", publishCmd())
+	frames(g, FIRST + 60)
+	local a = final(g, 1423)
+	eq(a.ok, false); eq(a.publishCalled, true); eq(a.outcome, "failed")
+	truthy(a.error:find("Upload Failed: Name taken (code 21012)", 1, true), a.error)
+	eq(a.result.success, false); eq(a.result.error.debugMessage, "The mod name is already taken"); eq(a.result.error.code, 21012)
+	eq(#g.abortPublishes, 1); eq(g.abortPublishes[1].state, "HasResult"); eq(#g.forbidden, 0, table.concat(g.forbidden, ", "))
+	send(g, 1424, "modhubPublish", publishCmd())
+	frames(g, 10)
+	a = final(g, 1424)
+	eq(a.ok, false); truthy(a.error:find("already sent in this launch"), a.error)
+	eq(#g.publishCalls, 1)
+	-- partial errors: uploaded, but not all of it
+	g = modhubGame({ staging = fuStaging({ publish = { partialErrors = { { step = "Gallery", error = { code = 5, localizedMessage = "image" } } } } }) })
+	send(g, 1425, "modhubPublish", publishCmd())
+	frames(g, FIRST + 60)
+	a = final(g, 1425)
+	eq(a.ok, false); eq(a.outcome, "partial"); eq(a.modId, "7000001"); truthy(a.error:find("1 partial errors"), a.error)
+	eq(a.result.partialErrors[1].step, "Gallery")
+	-- publish that raises: counts as the one of this launch
+	g = modhubGame({ staging = fuStaging({ publish = { raises = true } }) })
+	send(g, 1426, "modhubPublish", publishCmd())
+	frames(g, FIRST + 60)
+	a = final(g, 1426)
+	eq(a.ok, false); truthy(a.error:find("publish raised"), a.error); eq(a.publishCalled, true)
+	send(g, 1427, "modhubPublish", publishCmd())
+	frames(g, 10)
+	truthy(final(g, 1427).error:find("already sent"), "once per launch")
+	eq(#g.abortPublishes, 0, "no result: no clean-up")
+end)
+
+test("modhub publish past its timeout: outcome unknown, abortPublish never called, quit / load / newgame held while Publishing", function()
+	local g = modhubGame({ staging = fuStaging({ publish = { hangs = true } }) })
+	send(g, 1430, "modhubPublish", publishCmd({ "timeout = 20" }))
+	frames(g, FIRST + 30 * 22)
+	local a = final(g, 1430)
+	truthy(a, "answered")
+	eq(a.ok, false); eq(a.outcome, "unknown"); eq(a.publishCalled, true)
+	truthy(a.error:find("outcome is not known"), a.error); truthy(a.error:find("not aborted"), a.error)
+	eq(#g.publishCalls, 1); eq(#g.abortPublishes, 0, "never aborted")
+	for i, c in ipairs({ { "quit", nil }, { "load", '{ save = "probe" }' }, { "newgame", "{ }" } }) do
+		send(g, 1430 + i, c[1], c[2])
+		frames(g, 30)
+		local r = final(g, 1430 + i)
+		eq(r.ok, false, c[1]); truthy(r.error:find("still Publishing"), c[1] .. ": " .. r.error)
+	end
+	eq(g.quitCalled, nil); eq(g.loadCalled, nil)
+	send(g, 1435, "modhubStatus", '{ wait = 0, folder = "' .. FU .. '" }')
+	frames(g, 10)
+	a = final(g, 1435)
+	eq(a.publishedThisLaunch.outcome, "unknown"); eq(a.mods[1].state, "Publishing")
+	eq(#g.abortPublishes, 0)
+end)
+
+test("modhub publish: refused inside a save; quit while it validates cancels it with nothing uploaded", function()
+	local g = newGame({ saves = SAVES, modhub = { staging = fuStaging() } })
+	frames(g, 2)
+	send(g, 1437, "modhubPublish", publishCmd())
+	frames(g, FIRST)
+	local a = final(g, 1437)
+	eq(a.ok, false); truthy(a.error:find("works only in the main menu"), a.error)
+	eq(g.helpersMade, 0); noUploads(g)
+	g = modhubGame({ staging = fuStaging({ validateUpdates = 100000 }) })
+	send(g, 1438, "modhubPublish", publishCmd())
+	frames(g, FIRST + 30)
+	send(g, 1439, "quit")
+	frames(g, 10)
+	a = final(g, 1438)
+	eq(a.ok, false); truthy(a.error:find("cancelled by quit command 1439; nothing was uploaded"), a.error)
+	eq(final(g, 1439).ok, true); eq(g.abortValidations, 1)
+	noUploads(g)
 end)
 
 print(string.format("\n%d passed, %d failed", passes, failures))

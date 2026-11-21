@@ -18,7 +18,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
-	modhubValidate = true }
+	modhubValidate = true, modhubPublish = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -26,15 +26,16 @@ M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame =
 	-- modhubValidate changes no save and writes nothing to mod.io, but it runs the game's validator on a staging
 	-- mod for minutes, and starting one aborts a validation already running for that mod (the type's own words),
 	-- e.g. one a person started on the My Mods page: so others are warned. modhubStatus only reads.
-	modhubValidate = true }
+	-- modhubPublish uploads to mod.io (its dry run validates, as modhubValidate)
+	modhubValidate = true, modhubPublish = true }
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true,
-	modhubStatus = true, modhubValidate = true }
+	modhubStatus = true, modhubValidate = true, modhubPublish = true }
 -- what works only in the main menu: My Mods' publish helper is a privileged API (the base makes it in the menu's
 -- own privileged Lua state, main_menu.tl); inside a save the probe runs in the game's GUI state, which is not
 -- expected to have it, and the base has no My Mods page there either
-M.MENU_ONLY = { modhubStatus = true, modhubValidate = true }
+M.MENU_ONLY = { modhubStatus = true, modhubValidate = true, modhubPublish = true }
 
 ---------------------------------------------------------------------------------------------------------------------
 -- mod settings (mod.json params): each arrives as a 1-based index into these lists
@@ -1620,10 +1621,11 @@ function M.personSummary(persons)
 end
 
 ---------------------------------------------------------------------------------------------------------------------
--- modhub (remote_modhub.lua): the base's MOD hub > My Mods page, from the main menu. It reads the staging area and
--- re-validates one staging mod, as the page's Re-Validate button does. Nothing here uploads: publishing
--- (ModPublishHelper.publish) is left out on purpose and no command reaches it. A new mod page, or a mod made
--- public, is not undone from the game, so an upload waits for a person's go-ahead and is not part of this probe.
+-- modhub (remote_modhub.lua): the base's MOD hub > My Mods page, from the main menu. It reads the staging area,
+-- re-validates one staging mod, as the page's Re-Validate button does, and uploads one new mod as its Upload
+-- button does (modhubPublish). A new mod page, or a mod made public, is not undone from the game, so the upload is
+-- held in narrow bounds: one folder named here, a first upload only (no update of a mod already on mod.io), the
+-- visibility always given, one upload per launch; tools/tf3ctl.py adds its own checks and a mark on disk.
 
 -- the staging folders validate takes: the author's mods already published from that staging area, and the one
 -- prepared next. Validating reads the folder and makes the game ask mod.io for the mod's details; the list keeps
@@ -1635,6 +1637,13 @@ M.MODHUB_VALIDATE_FOLDERS = {
 	hummer_industry_pollution_display_1 = true,
 	hummer_force_unload_default_1 = true,
 }
+-- the staging folders publish takes: separate from validate's list, so a folder fit to validate is not fit to
+-- upload by that alone. One mod, the first to go up this way; another is added only once a person decided it.
+M.MODHUB_PUBLISH_FOLDERS = {
+	hummer_force_unload_default_1 = true,
+}
+M.MODHUB_PUBLISH_SEC = { default = 900, max = 3600 } -- s for the whole publish command (waits, validation, upload)
+M.MODHUB_CHANGELOG_MAX = 5000 -- characters; mod.io takes far more, a longer one here is a mistake
 M.MODHUB_STATUS_WAIT = { default = 30, max = 120 } -- s status waits for mod.io and the staging mods' sync
 M.MODHUB_VALIDATE_SEC = { default = 300, max = 1800 } -- s a validation may take before it is aborted
 M.MODHUB_MESSAGES = { default = 50, max = 500 } -- validator messages listed in an answer (all are counted)
@@ -1704,6 +1713,65 @@ function M.modhubValidateArgs(args)
 		end
 	end
 	return { folder = f, timeout = t, messages = n }
+end
+
+-- args: folder (required, from MODHUB_PUBLISH_FOLDERS), public (true / false, required: no default visibility),
+-- firstUpload (must be true: only a new mod is made, never an update), changelog (text, required), dryRun,
+-- timeout (s, the whole command), messages (validator messages listed)
+function M.modhubPublishArgs(args)
+	args = type(args) == "table" and args or {}
+	local f, err = M.stagingFolderArg(args.folder)
+	if not f then return nil, err end
+	if not M.MODHUB_PUBLISH_FOLDERS[f] then
+		local names = {}
+		for k in pairs(M.MODHUB_PUBLISH_FOLDERS) do names[#names + 1] = k end
+		table.sort(names)
+		return nil, "publish takes only these staging folders: " .. table.concat(names, ", ") .. " (not " .. f .. ")"
+	end
+	if args.firstUpload ~= true then
+		return nil, "publish makes only a new mod: give firstUpload = true (an update of a mod on mod.io is not offered)"
+	end
+	if type(args.public) ~= "boolean" then
+		return nil, "give public = true or false: there is no default visibility"
+	end
+	if type(args.changelog) ~= "string" or not args.changelog:find("%S") then
+		return nil, "give a changelog (text)"
+	end
+	if #args.changelog > M.MODHUB_CHANGELOG_MAX then
+		return nil, "the changelog is longer than " .. M.MODHUB_CHANGELOG_MAX .. " characters"
+	end
+	if args.dryRun ~= nil and type(args.dryRun) ~= "boolean" then return nil, "dryRun is true or false" end
+	local t
+	t, err = secondsArg(args.timeout, M.MODHUB_PUBLISH_SEC, "timeout", true)
+	if not t then return nil, err end
+	local n = M.MODHUB_MESSAGES.default
+	if args.messages ~= nil then
+		n = tonumber(args.messages)
+		if n == nil or n ~= math.floor(n) or n < 0 or n > M.MODHUB_MESSAGES.max then
+			return nil, "messages must be a whole number 0-" .. M.MODHUB_MESSAGES.max
+		end
+	end
+	return { folder = f, public = args.public, firstUpload = true, changelog = args.changelog,
+		dryRun = args.dryRun == true, timeout = t, messages = n }
+end
+
+-- whether a finished validation lets the upload go without a person. The base's Upload button needs a result
+-- without criticalPc (mod_manager_react_util.tl 1808-1809), and asks a person to "Proceed Anyway" when levelPc or
+-- levelConsole is Error or Critical (1819-1820, validationLevelIsFailed 20-22): that question is not answered here,
+-- so those are refused too. r: validationSummary's table (levels as names). Returns nil when it may go, else why.
+function M.publishValidationBlock(r)
+	if type(r) ~= "table" then return "no validation result" end
+	if r.criticalPc ~= false then return r.criticalPc == true and "the validation has critical PC issues"
+		or "the validation's criticalPc cannot be read" end
+	if r.criticalConsole == true then return "the validation has critical console issues" end
+	for _, k in ipairs({ "levelPc", "levelConsole" }) do
+		local lv = r[k]
+		if lv == "Error" or lv == "Critical" then
+			return "the validation's " .. k .. " is " .. lv .. ": the base page would ask a person to proceed anyway"
+		end
+		if type(lv) ~= "string" then return "the validation's " .. k .. " cannot be read" end
+	end
+	return nil
 end
 
 -- what the base's My Mods page says of a finished validation (mod_manager_react_util.tl, "Validation: ..."), with

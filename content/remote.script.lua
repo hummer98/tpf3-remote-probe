@@ -686,6 +686,8 @@ end
 
 -- answered first; the game quits on the next frame, once the answer is on disk
 function handlers.quit(c)
+	local held = modhub.blocks()
+	if held then return fail(c.id, "quit " .. held) end
 	cancelRun("quit command " .. c.id)
 	modhub.cancel("quit command " .. c.id)
 	answer(c.id, { ok = true, quitting = true, afterSave = G.saving == true })
@@ -814,7 +816,7 @@ function handlers.load(c)
 		local plan = { ok = true, save = c.args.save, mods = mods,
 			modParams = params or core.plain(core.field(info, "modParams")), dryRun = c.args.dryRun == true }
 		if c.args.dryRun then return answer(c.id, plan) end
-		local busy = waitingReplace()
+		local busy = waitingReplace() or (modhub.blocks() and ("load " .. modhub.blocks()))
 		if busy then return fail(c.id, busy) end
 		cancelRun("load command " .. c.id)
 		modhub.cancel("load command " .. c.id)
@@ -949,7 +951,7 @@ function handlers.newgame(c)
 		time = os.time and os.time() or 0 })
 	if not plan then return fail(c.id, err) end
 	if c.args.dryRun then return answer(c.id, { ok = true, dryRun = true, plan = plan }) end
-	local busy = waitingReplace()
+	local busy = waitingReplace() or (modhub.blocks() and ("newgame " .. modhub.blocks()))
 	if busy then return fail(c.id, busy) end
 	cancelRun("newgame command " .. c.id)
 	modhub.cancel("newgame command " .. c.id)
@@ -1050,7 +1052,7 @@ for k, fn in pairs(lines.handlers) do handlers[k] = fn end
 local connect = (ug_require or require)(MOD .. "::/remote_connect.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say, mod = MOD })
 for k, fn in pairs(connect.handlers) do handlers[k] = fn end
--- My Mods (remote_modhub.lua): the staging area and validate, in the main menu only; nothing uploads
+-- My Mods (remote_modhub.lua): the staging area, validate and the one upload, in the main menu only
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })
 for k, fn in pairs(modhub.handlers) do handlers[k] = fn end

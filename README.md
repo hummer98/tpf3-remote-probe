@@ -295,14 +295,18 @@ Without the mod, `connect` answers with an error saying so, and every other comm
 ```
 python3 tools/tf3ctl.py modhub status [--folder my_mod_1] [--wait 30]   # read only
 python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
+python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." --first-upload [--dry-run] [--timeout 900]
+python3 tools/tf3ctl.py modhub publish-clear
 ```
 
 The base's MOD hub > My Mods page lists the mods in `<user data>/staging_area/<folder>/` and validates and uploads
 them through one C++ object, `api.type.modhub.ModPublishHelper` (its buttons call its methods; no event is fired).
-In the main menu (a game launched by `launch` / `restart`, before a save is loaded) the probe makes its own one and
-uses only its reading part. **There is no upload**: `publish` and every method that changes a staging mod
-(`abortPublish`, `setRemoteModId`, `refreshMod`, the image setters, ...) are called nowhere, and the tests check that.
-Inside a save both commands are refused.
+In the main menu (a game launched by `launch` / `restart`, before a save is loaded) the probe makes its own one.
+`status` and `validate` use only its reading part; `publish` (below) is the one upload, held in narrow bounds. No
+other method that changes a staging mod (`setRemoteModId`, `refreshMod`, the image setters, ...) and none of
+`api.modhub`'s writes (subscribe, rate, report, log in or out, ...) are called anywhere, and the tests check that,
+along with `publish`, `abortPublish` and `PublishSettings` appearing only in the one marked block of
+`content/remote_modhub.lua`. Inside a save all three commands are refused.
 
 - `status` answers whether `ModPublishHelper.new` worked (or the game's error message as it is), `hasPrivilegedApis()`,
   the backends, mod.io's state (initialized, start-up check done, busy / uploading, logged in as true / false; no
@@ -323,9 +327,57 @@ Inside a save both commands are refused.
 - `validate` counts as changing the game (`--owner` warnings): it runs the validator for minutes and aborts a
   validation already running for that mod, e.g. one a person started on the My Mods page. Do not open My Mods while
   it runs: the page makes a helper of its own.
-- **Not checked in game.** In particular, `ModPublishHelper.new` is marked "privileged api, not available to mods";
-  the menu probe has read the equally marked `api.modhub` functions, but whether it may make the helper is what
-  `status` is there to find out.
+- `status` and `validate` worked in game (2026-11-22): the menu probe made `ModPublishHelper` although it is marked
+  "privileged api, not available to mods", a staging mod's id reads `StagingArea,<folder>`, and a new mod read
+  Ready with no valid `modhubId`. Other staging mods may stay in Sync for minutes; `status` waits for all of them,
+  also with `--folder`.
+
+#### Uploading one new mod (`modhub publish`)
+
+`publish FOLDER` uploads a staging mod to mod.io as the page's Upload button does, for a **first upload only**: a
+new mod page, never an update of a mod already on mod.io. A new mod page or a public mod cannot be undone from the
+game, so every one of these must hold, or nothing is sent:
+
+- The folder is in both lists of folders publish takes: `MODHUB_PUBLISH_FOLDERS` in `tools/tf3ctl.py` and in
+  `content/remote_core.lua` (separate from validate's list). Edit both for your own mod.
+- `--first-upload`, `--public yes|no` (no default) and a `--changelog` are given.
+- The tool itself sees no `_metadata/mod.io_fileid.txt` in the staging folder (the game writes it after an upload,
+  and it is what makes the next upload update the same mod.io page), and a `_metadata/0.png` that is a PNG of at
+  least 512x288 and at most 8 MB (mod.io's limits; the page refuses without it, "No valid cover image found").
+- No publish mark (below) is there.
+- In the game: the mod is Ready, its `modhubId` is not valid and mod.io holds no details for it (new); mod.io is
+  initialized, allows uploads and is neither busy nor uploading; someone is logged in (otherwise the answer names
+  `requiredUserAction: "login"` and stops: the page would show its login window); the local cover is set.
+- A fresh validation (run first, as the page does before it enables the button) has no critical issue and neither
+  `levelPc` nor `levelConsole` at Error or Critical: there the page asks a person to "Proceed Anyway", which this
+  does not answer.
+- One upload per launch of the game.
+
+`--dry-run` goes through all of the above, including the validation, and answers the settings it would send; it
+never calls `publish`. Without `--dry-run` the tool runs the same dry run first (a refusal there leaves nothing
+behind), then writes a **publish mark**, `$XDG_STATE_HOME/tf3ctl/publish_pending.json` (`~/.local/state/tf3ctl/`
+without it; folder, owner, time, visibility), and only then sends the upload. While a mark is there, every publish
+is refused. The mark goes only (1) when the upload succeeded and the fileid file appeared (within 60 s) holding the
+mod.io id the game answered, or (2) by `modhub publish-clear`, which a person runs after looking at the account's
+mods on mod.io. Any other end (a failure, a refusal after the mark, a timeout, a lost game) leaves it.
+
+The settings are built as the page builds them for a mod of the My Mods tab (`mod_manager_react_util.tl`): a new
+`PublishSettings` with `setPublic` from `--public` (the page's "Set Public" box, false by default for a new mod),
+`updateMetadata = true` (the page's default; its box is disabled for a new mod), `changeLog` from `--changelog`,
+`isSavegame = false` and `issuesConfirmed = false` (no "Proceed Anyway" was asked). The answer has them all.
+
+After `publish` the command answers its progress every 15 s and waits for HasResult up to `--timeout` (default 900
+s, the whole command). The result is answered as the game gives it: success with the mod.io id and any partial
+errors (the page's "Upload Failed" list), or the error's code, debug message and localized message. Then, as the
+page does (at once after a failure, at its Ok button after a success), the probe calls `abortPublish` to clear the
+result; it never calls it before HasResult. Past `--timeout` the upload is **not aborted** (the page never aborts
+one in progress, and what would be left on mod.io is unknown): the answer says the outcome is unknown, the mark
+stays, and `quit`, `load` and `newgame` are refused while the mod is still Publishing, so the game can finish it.
+`modhub status` then shows the result and `publishedThisLaunch`.
+
+- **Not checked in game.** Nothing has been uploaded this way yet. In particular: whether the game writes
+  `mod.io_fileid.txt` at the result or only at the page's Ok (`abortPublish`), what `modhubId` reads afterwards,
+  whether `setPublic = false` makes a hidden mod on mod.io, and how long an upload takes.
 
 ### Several clients at once
 
@@ -373,6 +425,7 @@ hand from Steam has no record.
 - `TF3_GAME_DIR`: the game's install folder, for the languages `--lang` may pick (default: `steamapps/common/Transport
   Fever 3` of the Steam that has the userdata).
 - `TF3CTL_OTHER_BACKUPS`: other tools' backups of `profile.lua` (files or folders), separated by `:` (see `--lang`).
+- `XDG_STATE_HOME`: where `modhub publish` keeps its mark (`tf3ctl/publish_pending.json`; default `~/.local/state`).
 
 ## Mod settings
 
@@ -446,8 +499,8 @@ Not checked yet:
 - Whether `app.quit` ends the game without a confirmation dialog.
 - `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
-- `modhub status` and `modhub validate`, entirely: whether the menu's Lua state may make `ModPublishHelper`, the form
-  of a staging mod's id (`ModId.value`: the folder, or `StagingArea,<folder>`), and how long a validation takes.
+- `modhub publish`, entirely (see "Uploading one new mod"). `modhub status` and `validate` were checked on
+  2026-11-22.
 
 ## Tests
 

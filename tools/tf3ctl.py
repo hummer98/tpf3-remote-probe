@@ -49,6 +49,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
+  tf3ctl.py modhub status [--folder F] | modhub validate F   # My Mods in the main menu (read; re-validate)
+  tf3ctl.py modhub publish F --public yes --changelog "..." --first-upload [--dry-run]   # one new mod to mod.io
+            # (one allowed folder; no fileid yet; a mark in $XDG_STATE_HOME/tf3ctl/ until the fileid appears)
+  tf3ctl.py modhub publish-clear             # remove that mark, after looking at mod.io
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is only shown (status:
 run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes; nothing
@@ -96,9 +100,9 @@ PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); lon
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
-                "modhubValidate"}  # window: what the player sees  # poll: only the mod's file reads
+                "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
-# aborts a validation a person may have started on the My Mods page. modhubStatus only reads.
+# aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -1655,8 +1659,225 @@ def modhub_validate_args(ns):
     return args
 
 
+# modhub publish: one new mod uploaded from My Mods' staging area, as the page's Upload button. The mod checks what
+# the game knows (the mod is new to mod.io, logged in, the validation); this side checks what only files show, as
+# Lua has no io: no _metadata/mod.io_fileid.txt (the file that makes the next upload update the same mod.io page;
+# with it, a "first upload" would make a second page), and a cover image (_metadata/0.png). Before it sends the
+# command it writes a mark (publish_pending.json): an upload that timed out, failed half-way or lost its game may
+# still have made a mod on mod.io, and a second one must not go until a person looked. The mark goes only when the
+# upload succeeded and the fileid file appeared with the same mod.io id, or by `modhub publish-clear`.
+
+MODHUB_PUBLISH_FOLDERS = ("hummer_force_unload_default_1",)  # the same list as the mod's (MODHUB_PUBLISH_FOLDERS)
+PENDING_NAME = "publish_pending.json"
+FILEID_NAME = "mod.io_fileid.txt"
+FILEID_WAIT_SEC = 60  # after a success, how long the game may take to write the fileid file
+COVER_MAX_BYTES = 8 * 1024 * 1024  # mod.io's limit for a logo (Add Mod)
+COVER_MIN_SIZE = (512, 288)  # mod.io's smallest logo
+
+
+def state_dir():
+    """$XDG_STATE_HOME/tf3ctl, or ~/.local/state/tf3ctl: kept across reboots, unlike the runtime folder."""
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "tf3ctl")
+
+
+def pending_path():
+    return os.path.join(state_dir(), PENDING_NAME)
+
+
+def read_pending():
+    """The publish mark, or None. A mark that cannot be read still counts: it is answered as unreadable."""
+    path = pending_path()
+    if not os.path.lexists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            got = json.load(f)
+        return got if isinstance(got, dict) else {"unreadable": "not a JSON object"}
+    except (OSError, ValueError) as e:
+        return {"unreadable": str(e)}
+
+
+def write_pending(record):
+    """Writes the mark through a temporary file and os.replace (0600, in a 0700 folder). A failure is a ToolError:
+    without the mark, nothing is sent."""
+    path = pending_path()
+    folder = os.path.dirname(path)
+    tmp = None
+    try:
+        os.makedirs(os.path.dirname(folder), exist_ok=True)
+        _own_private_dir(folder)
+        fd, tmp = tempfile.mkstemp(prefix=".publish-", suffix=".tmp", dir=folder)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    except OSError as e:
+        raise ToolError("could not write the publish mark %s (%s): nothing was sent" % (path, e))
+    finally:
+        if tmp:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+    return path
+
+
+def clear_pending():
+    """Removes the mark; returns what it said (None when there was none)."""
+    got = read_pending()
+    if got is None:
+        return None
+    os.remove(pending_path())
+    return got
+
+
+def staging_dir(folder=None):
+    """<user data>/staging_area: next to the exchange folder, as the game's stdout.txt is (stdout_log)."""
+    folder = folder or exchange_dir()
+    return os.path.join(os.path.dirname(folder.rstrip("/")), "staging_area")
+
+
+def png_size(path):
+    """(width, height) of a PNG file, None when it is not one."""
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def publish_local_checks(name, folder=None):
+    """What only the files show. Returns the checks; ToolError when one fails (nothing is sent then)."""
+    mod_dir = os.path.join(staging_dir(folder), name)
+    meta = os.path.join(mod_dir, "_metadata")
+    if not os.path.isfile(os.path.join(mod_dir, "mod.json")):
+        raise ToolError("no staging mod %s: %s has no mod.json" % (name, mod_dir))
+    fileid = os.path.join(meta, FILEID_NAME)
+    if os.path.lexists(fileid):
+        raise ToolError("%s has _metadata/%s: it was uploaded before, and publish makes only a new mod "
+                        "(an upload now would update or duplicate that mod.io page); nothing was sent" % (name, FILEID_NAME))
+    cover = os.path.join(meta, "0.png")
+    if not os.path.isfile(cover):
+        raise ToolError("%s has no _metadata/0.png: the page says \"No valid cover image found\"; nothing was sent" % name)
+    size = os.path.getsize(cover)
+    dims = png_size(cover)
+    if dims is None:
+        raise ToolError("%s: _metadata/0.png is not a PNG file; nothing was sent" % name)
+    if size > COVER_MAX_BYTES:
+        raise ToolError("%s: _metadata/0.png is %d bytes, more than mod.io's 8 MB; nothing was sent" % (name, size))
+    if dims[0] < COVER_MIN_SIZE[0] or dims[1] < COVER_MIN_SIZE[1]:
+        raise ToolError("%s: _metadata/0.png is %dx%d, smaller than mod.io's %dx%d; nothing was sent"
+                        % ((name,) + dims + COVER_MIN_SIZE))
+    return {"stagingFolder": name, "fileid": False, "cover": {"width": dims[0], "height": dims[1], "bytes": size}}
+
+
+def modhub_publish_args(ns):
+    """The mod's args for modhubPublish; ToolError for anything the mod would refuse too (said here, before a mark)."""
+    if ns.folder not in MODHUB_PUBLISH_FOLDERS:
+        raise ToolError("publish takes only these staging folders: %s (not %s)" % (", ".join(MODHUB_PUBLISH_FOLDERS),
+                                                                                    ns.folder))
+    if not ns.first_upload:
+        raise ToolError("publish makes only a new mod: give --first-upload (an update of a mod on mod.io is not offered)")
+    if ns.public not in ("yes", "no"):
+        raise ToolError("give --public yes or --public no: there is no default visibility")
+    if not ns.changelog or not ns.changelog.strip():
+        raise ToolError("give --changelog TEXT")
+    args = {"folder": ns.folder, "public": ns.public == "yes", "firstUpload": True, "changelog": ns.changelog}
+    if ns.timeout is not None:
+        args["timeout"] = ns.timeout
+    if ns.messages is not None:
+        args["messages"] = ns.messages
+    return args
+
+
+def wait_fileid(name, folder=None, wait=None):
+    """The mod.io id the game wrote into _metadata/mod.io_fileid.txt, waiting up to FILEID_WAIT_SEC; None if none."""
+    path = os.path.join(staging_dir(folder), name, "_metadata", FILEID_NAME)
+    deadline = time.time() + (FILEID_WAIT_SEC if wait is None else wait)
+    while True:
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read().strip()
+            if text:
+                return text
+        except OSError:
+            pass
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
+def cmd_modhub_publish(ns):
+    args = modhub_publish_args(ns)
+    folder = exchange_dir()
+    local = publish_local_checks(args["folder"], folder)
+    mark = read_pending()
+    if mark is not None:
+        raise ToolError("a publish mark is there (%s: %s): an earlier upload's outcome was not confirmed. Look at "
+                        "mod.io (the account's mods) first, then `modhub publish-clear`; nothing was sent"
+                        % (pending_path(), json.dumps(mark, sort_keys=True)))
+    timeout = args.get("timeout", 900) + MODHUB_GRACE_SEC
+
+    def progress(a):
+        print("... %s%s, %.0f s%s" % (a.get("phase") or "?", " (" + a["state"] + ")" if a.get("state") else "",
+                                     num(a.get("seconds")), ", publish called" if a.get("publishCalled") else ""),
+              file=sys.stderr)
+    # the dry run, and before a real upload the same run first: a refusal there leaves no mark behind
+    pre = send("modhubPublish", dict(args, dryRun=True), timeout=timeout, on_progress=progress, folder=folder)
+    pre["local"] = local
+    if ns.dry_run or not pre.get("ok"):
+        if not ns.dry_run:
+            pre["preflight"] = True
+            pre["note"] = "the dry run before the upload refused it: nothing was uploaded and no mark was written"
+        return pre
+    # again just before: the dry run took a while
+    local = publish_local_checks(args["folder"], folder)
+    if read_pending() is not None:
+        raise ToolError("a publish mark appeared meanwhile (%s); nothing was sent" % pending_path())
+    path = write_pending({"v": 1, "folder": args["folder"], "owner": OWNER, "public": args["public"],
+                          "firstUpload": True, "at": int(time.time()),
+                          "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    try:
+        res = send("modhubPublish", dict(args, dryRun=False), timeout=timeout, on_progress=progress, folder=folder)
+    except ToolError as e:
+        raise ToolError("%s; the outcome of the upload is not known, the publish mark stays (%s)" % (e, path))
+    res["local"] = local
+    res["preflight"] = {"ok": True, "validation": pre.get("validation")}
+    res["pendingMark"] = path
+    result = res.get("result") if isinstance(res.get("result"), dict) else {}
+    if result.get("success") is not True:
+        res["pendingKept"] = True
+        res["note"] = ("publish was not called: nothing was uploaded, but the mark stays (it goes only by "
+                       "`modhub publish-clear`)" if res.get("publishCalled") is False else
+                       "the upload did not succeed or its outcome is not known: the mark stays; look at mod.io before "
+                       "`modhub publish-clear`")
+        return res
+    got = wait_fileid(args["folder"], folder)
+    res["fileid"] = got
+    if got is None or got != res.get("modId"):
+        res["pendingKept"] = True
+        res["ok"] = False
+        res["error"] = ("mod.io took the mod (id %s), but %s %s: the mark stays; write it or look at mod.io before "
+                        "`modhub publish-clear`" % (res.get("modId"), FILEID_NAME,
+                                                    "did not appear in %d s" % FILEID_WAIT_SEC if got is None
+                                                    else "says %s" % got))
+        return res
+    clear_pending()
+    res["pendingCleared"] = True
+    return res
+
+
 def cmd_modhub(ns):
-    """My Mods in the main menu: status (read only) or validate (one staging mod). There is no upload."""
+    """My Mods in the main menu: status (read only), validate (one staging mod), publish (one new mod)."""
+    if ns.action == "publish":
+        return cmd_modhub_publish(ns)
+    if ns.action == "publish-clear":
+        mark = clear_pending()
+        out = {"ok": True, "cleared": mark, "path": pending_path()}
+        if mark is None:
+            out["note"] = "there was no publish mark"
+        return out
     if ns.action == "status":
         args = modhub_status_args(ns)
         wait = args.get("wait", 30)
@@ -2472,7 +2693,8 @@ def make_parser():
     cn.add_argument("--build", action="store_true", help="build it (default: only plan and check it)")
     cn.add_argument("--clear", action="store_true", help="with --build: knock down town buildings in the way")
     cn.add_argument("--timeout", type=float, default=120, help="seconds for the whole command (10-1800)")
-    mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate; no upload")
+    mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate, publish "
+                                       "(one new mod)")
     msub = mh.add_subparsers(dest="action", required=True)
     mst = msub.add_parser("status", help="read only: whether the publish helper can be made, mod.io's state, and "
                                          "each staging mod (state, mod.io id, mod.io details and visibility)")
@@ -2485,6 +2707,17 @@ def make_parser():
     mva.add_argument("--timeout", type=float, help="seconds before the validation is aborted (default 300, at "
                                                    "most 1800)")
     mva.add_argument("--messages", type=int, help="validator messages listed (0-500, default 50; all are counted)")
+    mpu = msub.add_parser("publish", help="upload one new mod to mod.io as My Mods' Upload button (only the folders "
+                                          "both this tool and the mod allow; a first upload only)")
+    mpu.add_argument("folder", help="the staging folder name")
+    mpu.add_argument("--public", help="yes or no (required: there is no default visibility)")
+    mpu.add_argument("--changelog", help="the changelog text (required)")
+    mpu.add_argument("--first-upload", action="store_true", help="required: publish makes only a new mod")
+    mpu.add_argument("--dry-run", action="store_true", help="check and validate, answer the settings; no upload")
+    mpu.add_argument("--timeout", type=float, help="seconds for the mod's whole command (default 900, at most 3600); "
+                                                   "past it the upload is not aborted and its outcome is unknown")
+    mpu.add_argument("--messages", type=int, help="validator messages listed (0-500, default 50)")
+    msub.add_parser("publish-clear", help="remove the publish mark (" + PENDING_NAME + ") after looking at mod.io")
     v = sub.add_parser("save")
     v.add_argument("name")
     sub.add_parser("state", help="where the game is (menu, loading, ...), from its log; needs no mod")

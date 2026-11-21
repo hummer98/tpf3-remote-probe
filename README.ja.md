@@ -280,13 +280,18 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
 ```
 python3 tools/tf3ctl.py modhub status [--folder my_mod_1] [--wait 30]   # 読むだけ
 python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
+python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." --first-upload [--dry-run] [--timeout 900]
+python3 tools/tf3ctl.py modhub publish-clear
 ```
 
 本体の「MODハブ > マイMOD」のページは、`<user data>/staging_area/<フォルダ>/` の MOD を一覧にし、C++ の物
 `api.type.modhub.ModPublishHelper` を通して検証とアップロードをします (ボタンはそのメソッドを直接呼び、イベントは
-送りません)。メインメニュー (`launch` / `restart` で起動し、セーブを読む前) で、probe は自分の分を1つ作り、読む側だけを
-使います。**アップロードはありません**。`publish` と、staging の MOD を変えるメソッド (`abortPublish`・`setRemoteModId`・
-`refreshMod`・絵の設定など) はどこからも呼ばず、テストでそれを確認しています。セーブの中では、どちらのコマンドも断ります。
+送りません)。メインメニュー (`launch` / `restart` で起動し、セーブを読む前) で、probe は自分の分を1つ作ります。
+`status` と `validate` は読む側だけを使い、`publish` (下) が唯一のアップロードで、狭い範囲に絞っています。staging の MOD を
+変えるほかのメソッド (`setRemoteModId`・`refreshMod`・絵の設定など) と、`api.modhub` の書き込み (サブスクライブ・評価・
+報告・ログインとログアウトなど) はどこからも呼ばず、テストでそれを確認しています。`publish`・`abortPublish`・
+`PublishSettings` が `content/remote_modhub.lua` の印の付いた1か所にしか無いことも、テストで確認しています。セーブの中では、
+3つのコマンドとも断ります。
 
 - `status` は、`ModPublishHelper.new` が作れたか (作れなければゲームのエラーの文をそのまま)、`hasPrivilegedApis()`、
   backend、mod.io の状態 (初期化・起動時の確認が済んだか・busy / uploading・ログインの有無を true / false で。名前は
@@ -306,9 +311,55 @@ python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
 - `validate` はゲームを変えるコマンドとして数えます (`--owner` の警告)。検証を数分動かし、その MOD で動いている検証
   (人がマイMOD のページで始めたものなど) を止めるためです。動いている間はマイMOD を開かないでください。ページは
   自分の helper を作ります。
-- **ゲーム内では未確認です。** とくに `ModPublishHelper.new` には「privileged api, not available to mods」の印があります。
-  メニューの probe は同じ印のある `api.modhub` の関数を読めていますが、helper を作れるかは、それを `status` で
-  確認するためのコマンドです。
+- `status` と `validate` はゲーム内で動きました (2026-11-22)。「privileged api, not available to mods」の印があっても
+  メニューの probe は `ModPublishHelper` を作れ、staging の MOD の id は `StagingArea,<フォルダ>` と読め、新規の MOD は
+  Ready で `modhubId` が無効でした。ほかの staging の MOD が数分 Sync のままのことがあり、`status` は `--folder` を
+  付けても全部を待ちます。
+
+#### 新しい MOD を1つ上げる (`modhub publish`)
+
+`publish FOLDER` は、ページの「アップロード」のボタンと同じく staging の MOD を mod.io に上げます。**最初のアップロード
+だけ**です。新しい MOD のページを作るだけで、mod.io にすでにある MOD の更新はしません。新しい MOD のページや公開に
+した MOD はゲームからは戻せないので、次のどれか1つでも外れると何も送りません。
+
+- フォルダが、publish の受け付ける2つの一覧の両方にある。`tools/tf3ctl.py` と `content/remote_core.lua` の
+  `MODHUB_PUBLISH_FOLDERS` (validate の一覧とは別)。自分の MOD に合わせて両方を直してください。
+- `--first-upload`・`--public yes|no` (既定値なし)・`--changelog` が付いている。
+- 道具が自分で見て、staging のフォルダに `_metadata/mod.io_fileid.txt` が無い (アップロードのあとゲームが書くファイルで、
+  次のアップロードが同じ mod.io のページの更新になるのはこれのため)。`_metadata/0.png` があり、PNG で、512x288 以上・
+  8 MB 以下 (mod.io の決まり。無いとページも断る「No valid cover image found」)。
+- 「送った」の印 (下) が無い。
+- ゲームの中で: MOD が Ready、`modhubId` が無効で mod.io に中身が無い (新規)。mod.io が初期化済みで、アップロードを
+  許し、busy でも uploading でもない。ログインしている (していなければ `requiredUserAction: "login"` を返して止まる。
+  ページならログインの窓を出す所)。手元のカバーの絵がある。
+- 新しく回した検証 (ページがボタンを押せるようにする前と同じく、先に回す) に critical が無く、`levelPc`・`levelConsole`
+  のどちらも Error・Critical でない。そのときページは人に「Proceed Anyway」を聞くが、ここでは答えない。
+- ゲームの1回の起動でアップロードは1回だけ。
+
+`--dry-run` は、検証を含めて上の全部を通し、送るはずの設定を返します。`publish` は呼びません。`--dry-run` が無いときも、
+道具はまず同じ dry-run を回し (そこで断られれば何も残らない)、それから **「送った」の印**
+`$XDG_STATE_HOME/tf3ctl/publish_pending.json` (無ければ `~/.local/state/tf3ctl/`。フォルダ・owner・時刻・公開か) を書き、
+そのあとでアップロードを送ります。印があるあいだは、どの publish も断ります。印が消えるのは、(1) アップロードが成功し、
+ゲームが返した mod.io の id と同じ中身の fileid のファイルが (60 秒以内に) できたとき、(2) 人が mod.io のアカウントの
+MOD を見てから `modhub publish-clear` を実行したとき、の2つだけです。ほかの終わり方 (失敗・印のあとでの拒否・時間切れ・
+ゲームが落ちた) では残ります。
+
+設定は、ページがマイMOD のタブの MOD に作るのと同じ形にしています (`mod_manager_react_util.tl`)。新しい
+`PublishSettings` に、`setPublic` は `--public` (ページの「Set Public」の欄。新規の MOD では初期値 false)、
+`updateMetadata = true` (ページの初期値。新規の MOD では欄は押せない)、`changeLog` は `--changelog`、
+`isSavegame = false`、`issuesConfirmed = false` (「Proceed Anyway」を聞いていない)。答えに全部入ります。
+
+`publish` を呼んだあとは、15 秒ごとに進み具合を返し、HasResult を最大 `--timeout` (既定 900 秒、コマンド全体) 待ちます。
+結果はゲームが返したとおりに返します。成功なら mod.io の id と部分的なエラー (ページの「Upload Failed」の一覧)、失敗なら
+エラーのコード・debug の文・訳の文。そのあと、ページと同じく (失敗ならすぐ、成功なら Ok のボタンで) `abortPublish` を
+呼んで結果を片付けます。HasResult の前には決して呼びません。`--timeout` を過ぎても**アップロードは止めません** (ページは
+途中のアップロードを止めず、mod.io に何が残るか分からないため)。答えは「結果は分からない」で、印は残り、MOD が
+Publishing のあいだは `quit`・`load`・`newgame` を断るので、ゲームが最後まで進められます。そのあとの結果と
+`publishedThisLaunch` は `modhub status` で見られます。
+
+- **ゲーム内では未確認です。** この形ではまだ何も上げていません。とくに、ゲームが `mod.io_fileid.txt` を結果の時点で
+  書くのか、ページの Ok (`abortPublish`) で書くのか、そのあと `modhubId` がどう読めるか、`setPublic = false` で mod.io
+  では非公開になるのか、アップロードにかかる時間は分かっていません。
 
 ### 複数のクライアント
 
@@ -348,6 +399,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - `TF3_GAME_DIR`: ゲームのインストール先。`--lang` で選べる言語を見るため (既定: userdata のある Steam の
   `steamapps/common/Transport Fever 3`)。
 - `TF3CTL_OTHER_BACKUPS`: 別の道具による `profile.lua` の控え (ファイルかフォルダ)。`:` で区切る (`--lang` を参照)。
+- `XDG_STATE_HOME`: `modhub publish` の印の置き場所 (`tf3ctl/publish_pending.json`。既定 `~/.local/state`)。
 
 ## MOD の設定
 
@@ -419,8 +471,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - `app.quit` が確認ダイアログなしでゲームを終えるか。
 - `connect` は全部。危ない順の一覧は「実装メモ」の「接続」。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
-- `modhub status` と `modhub validate` は全部 (ゲーム内では未確認): メニューの Lua の state で `ModPublishHelper` を作れるか、
-  staging の MOD の id の形 (`ModId.value` がフォルダ名か `StagingArea,<フォルダ>` か)、検証にかかる時間。
+- `modhub publish` は全部 (「新しい MOD を1つ上げる」を参照)。`modhub status` と `validate` は 2026-11-22 に確認済み。
 
 ## テスト
 
