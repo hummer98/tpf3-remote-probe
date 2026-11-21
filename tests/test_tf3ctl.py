@@ -2502,12 +2502,21 @@ class ModhubEndToEndTest(unittest.TestCase):
 FU = "hummer_force_unload_default_1"
 
 
-def make_staging(root, name=FU, cover=(1920, 1080), fileid=None):
-    """A staging mod as stage.py leaves it: mod.json and _metadata/0.png (only the PNG header matters here)."""
+MODINFO = {"name": "Force Unload / 積み下ろし強制", "summary": "Turns it on. / オンにする。",
+           "description": "[English] ...\n\n[日本語] ...", "authors": [{"name": "hummer", "role": "CREATOR"}],
+           "tags": ["Script Mod"]}
+
+
+def make_staging(root, name=FU, cover=(1920, 1080), fileid=None, modinfo=MODINFO):
+    """A staging mod as stage.py leaves it: mod.json, _metadata/modinfo.json and _metadata/0.png (only the PNG
+    header matters here)."""
     meta = os.path.join(root, "staging_area", name, "_metadata")
     os.makedirs(meta, exist_ok=True)
     with open(os.path.join(root, "staging_area", name, "mod.json"), "w") as f:
         f.write("{}")
+    if modinfo is not None:
+        with open(os.path.join(meta, "modinfo.json"), "w", encoding="utf-8") as f:
+            json.dump(modinfo, f, ensure_ascii=False)
     if cover is not None:
         with open(os.path.join(meta, "0.png"), "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + cover[0].to_bytes(4, "big")
@@ -2623,6 +2632,68 @@ class ModhubPublishTest(unittest.TestCase):
         with self.assertRaises(tf3ctl.ToolError):
             self.run_publish(*(self.FULL + ("--dry-run",)))
         self.assertEqual(self.sent, [])
+
+    def modinfo(self, **fields):
+        info = dict(MODINFO, **fields)
+        for key in [k for k, v in info.items() if v is None]:
+            del info[key]
+        with open(os.path.join(self.meta, "modinfo.json"), "w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False)
+
+    def test_mod_io_field_limits_are_checked_before_anything_is_sent(self):
+        # mod.io refused a 58-character name ("code 13009") after the upload began: say it before, in characters
+        for dry in ((), ("--dry-run",)):
+            self.modinfo(name="N" * 51)
+            self.refused("modinfo.json name is 51 characters, more than mod.io's 50", *(self.FULL + dry))
+        # Japanese counts as characters, not bytes: 50 characters of 3 UTF-8 bytes each go
+        self.modinfo(name="積" * 50)
+        self.answers = [{"ok": True, "dryRun": True}]
+        res = self.run_publish(*(self.FULL + ("--dry-run",)))
+        self.assertEqual(res["local"]["metadata"]["name"], {"length": 50, "max": 50})
+        self.sent = []
+        self.modinfo(name="Force Unload / " + "積" * 36)  # 51 characters
+        self.refused("name is 51 characters", *self.FULL)
+        self.modinfo(name="A" * 50, summary="s" * 251)
+        self.refused("modinfo.json summary is 251 characters, more than mod.io's 250", *self.FULL)
+        self.modinfo(summary="概" * 251, description="d" * 50001)
+        with self.assertRaises(tf3ctl.ToolError) as cm:  # every field over its limit is named
+            self.run_publish(*self.FULL)
+        self.assertIn("summary is 251 characters", str(cm.exception))
+        self.assertIn("description is 50001 characters, more than this tool's guard of 50000", str(cm.exception))
+        self.modinfo()
+        self.refused("--changelog is 50001 characters, more than this tool's guard of 50000",
+                     "--public", "yes", "--changelog", "c" * 50001, "--first-upload")
+        self.modinfo(summary=None)
+        self.refused("modinfo.json summary is missing, empty or not a string", *self.FULL)
+        self.modinfo(description="  ")
+        self.refused("modinfo.json description is missing, empty or not a string", *self.FULL)
+        self.modinfo(name=50)
+        self.refused("modinfo.json name is missing, empty or not a string", *self.FULL)
+        self.modinfo(tags="Script Mod")
+        self.refused("tags is not a list of strings", *self.FULL)
+        self.modinfo(tags=["Script Mod", 3])
+        self.refused("tags is not a list of strings", *self.FULL)
+        os.remove(os.path.join(self.meta, "modinfo.json"))
+        self.refused("cannot read _metadata/modinfo.json", *self.FULL)
+        with open(os.path.join(self.meta, "modinfo.json"), "w") as f:
+            f.write("[]")
+        self.refused("not a JSON object", *self.FULL)
+        self.assertEqual(self.history(), [])
+
+    def test_fields_at_their_limits_go_and_the_dry_run_answers_the_lengths(self):
+        self.modinfo(name="名" * 50, summary="s" * 250, description="d" * 50000, tags=["Script Mod", "Misc"])
+        self.answers = [{"ok": True, "dryRun": True}]
+        res = self.run_publish("--public", "no", "--changelog", "c" * 50000, "--first-upload", "--dry-run")
+        self.assertEqual(res["local"]["metadata"], {
+            "name": {"length": 50, "max": 50}, "summary": {"length": 250, "max": 250},
+            "description": {"length": 50000, "max": 50000}, "changelog": {"length": 50000, "max": 50000},
+            "tags": {"count": 2}})
+        self.assertEqual(len(self.sent), 1)
+        # tags are optional
+        self.modinfo(tags=None)
+        self.answers = [{"ok": True, "dryRun": True}]
+        res = self.run_publish(*(self.FULL + ("--dry-run",)))
+        self.assertEqual(res["local"]["metadata"]["tags"], {"count": 0})
 
     def test_dry_run_sends_one_dry_run_and_writes_no_mark(self):
         self.answers = [{"ok": True, "dryRun": True, "wouldPublish": True}]

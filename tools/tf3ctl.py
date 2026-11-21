@@ -1671,10 +1671,12 @@ def modhub_validate_args(ns):
 # modhub publish: one new mod uploaded from My Mods' staging area, as the page's Upload button. The mod checks what
 # the game knows (the mod is new to mod.io, logged in, the validation); this side checks what only files show, as
 # Lua has no io: no _metadata/mod.io_fileid.txt (the file that makes the next upload update the same mod.io page;
-# with it, a "first upload" would make a second page), and a cover image (_metadata/0.png). Before it sends the
-# command it writes a mark (publish_pending.json): an upload that timed out, failed half-way or lost its game may
-# still have made a mod on mod.io, and a second one must not go until a person looked. The mark goes only when the
-# upload succeeded and the fileid file appeared with the same mod.io id, or by `modhub publish-clear`.
+# with it, a "first upload" would make a second page), a cover image (_metadata/0.png), and the lengths of the
+# mod.io fields (_metadata/modinfo.json, --changelog: mod.io refuses a long name only after the upload began).
+# Before it sends the command it writes a mark (publish_pending.json): an upload that timed out, failed half-way
+# or lost its game may still have made a mod on mod.io, and a second one must not go until a person looked. The
+# mark goes only when the upload succeeded and the fileid file appeared with the same mod.io id, or by
+# `modhub publish-clear`.
 
 MODHUB_PUBLISH_FOLDERS = ("hummer_force_unload_default_1",)  # the same list as the mod's (MODHUB_PUBLISH_FOLDERS)
 PENDING_NAME = "publish_pending.json"
@@ -1682,6 +1684,14 @@ FILEID_NAME = "mod.io_fileid.txt"
 FILEID_WAIT_SEC = 60  # after a success, how long the game may take to write the fileid file
 COVER_MAX_BYTES = 8 * 1024 * 1024  # mod.io's limit for a logo (Add Mod)
 COVER_MIN_SIZE = (512, 288)  # mod.io's smallest logo
+# mod.io's field limits, in characters (Python len, code points: mod.io counts characters, not bytes; a staging name
+# of 37 characters and 59 UTF-8 bytes went up). The game sends modinfo.json's name as the mod.io name (its rename
+# field stops at 50 too) and its summary and description; changelog is --changelog. name 50 and summary 250 are in
+# mod.io's Add Mod documentation (and a 51+ name came back "code 13009"); description and changelog have no limit
+# written there, 50000 is the one mod.io writes for metadata_blob, kept as a guard against a runaway text.
+MODINFO_LIMITS = (("name", 50, "mod.io's"), ("summary", 250, "mod.io's"),
+                  ("description", 50000, "this tool's guard of"))
+CHANGELOG_MAX = 50000
 
 
 def state_dir():
@@ -1785,7 +1795,7 @@ def png_size(path):
     return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
 
 
-def publish_local_checks(name, folder=None):
+def publish_local_checks(name, folder=None, changelog=None):
     """What only the files show. Returns the checks; ToolError when one fails (nothing is sent then)."""
     mod_dir = os.path.join(staging_dir(folder), name)
     meta = os.path.join(mod_dir, "_metadata")
@@ -1807,7 +1817,39 @@ def publish_local_checks(name, folder=None):
     if dims[0] < COVER_MIN_SIZE[0] or dims[1] < COVER_MIN_SIZE[1]:
         raise ToolError("%s: _metadata/0.png is %dx%d, smaller than mod.io's %dx%d; nothing was sent"
                         % ((name,) + dims + COVER_MIN_SIZE))
-    return {"stagingFolder": name, "fileid": False, "cover": {"width": dims[0], "height": dims[1], "bytes": size}}
+    return {"stagingFolder": name, "fileid": False, "cover": {"width": dims[0], "height": dims[1], "bytes": size},
+            "metadata": publish_metadata_checks(name, meta, changelog)}
+
+
+def publish_metadata_checks(name, meta, changelog=None):
+    """Lengths of what goes into the mod.io fields against mod.io's limits. Returns them; ToolError naming every field
+    over its limit (or a field missing: the game needs a name, a summary and a description for a new mod)."""
+    path = os.path.join(meta, "modinfo.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            info = json.load(f)
+    except (OSError, ValueError) as e:
+        raise ToolError("%s: cannot read _metadata/modinfo.json (%s); nothing was sent" % (name, e))
+    if not isinstance(info, dict):
+        raise ToolError("%s: _metadata/modinfo.json is not a JSON object; nothing was sent" % name)
+    got, bad = {}, []
+    fields = [("modinfo.json " + key, info.get(key), limit, whose) for key, limit, whose in MODINFO_LIMITS]
+    if changelog is not None:
+        fields.append(("--changelog", changelog, CHANGELOG_MAX, "this tool's guard of"))
+    for label, value, limit, whose in fields:
+        if not isinstance(value, str) or not value.strip():
+            bad.append("%s is missing, empty or not a string" % label)
+            continue
+        got[label.split(" ")[-1].lstrip("-")] = {"length": len(value), "max": limit}
+        if len(value) > limit:
+            bad.append("%s is %d characters, more than %s %d" % (label, len(value), whose, limit))
+    tags = info.get("tags")
+    if tags is not None and not (isinstance(tags, list) and all(isinstance(t, str) for t in tags)):
+        bad.append("modinfo.json tags is not a list of strings")
+    got["tags"] = {"count": len(tags) if isinstance(tags, list) else 0}
+    if bad:
+        raise ToolError("%s: %s; nothing was sent" % (name, "; ".join(bad)))
+    return got
 
 
 def modhub_publish_args(ns):
@@ -1849,7 +1891,7 @@ def wait_fileid(name, folder=None, wait=None):
 def cmd_modhub_publish(ns):
     args = modhub_publish_args(ns)
     folder = exchange_dir()
-    local = publish_local_checks(args["folder"], folder)
+    local = publish_local_checks(args["folder"], folder, args["changelog"])
     mark = read_pending()
     if mark is not None:
         raise ToolError("a publish mark is there (%s: %s): an earlier upload's outcome was not confirmed. Look at "
@@ -1870,7 +1912,7 @@ def cmd_modhub_publish(ns):
             pre["note"] = "the dry run before the upload refused it: nothing was uploaded and no mark was written"
         return pre
     # again just before: the dry run took a while
-    local = publish_local_checks(args["folder"], folder)
+    local = publish_local_checks(args["folder"], folder, args["changelog"])
     if read_pending() is not None:
         raise ToolError("a publish mark appeared meanwhile (%s); nothing was sent" % pending_path())
     path = write_pending({"v": 1, "folder": args["folder"], "owner": OWNER, "public": args["public"],

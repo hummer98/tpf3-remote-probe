@@ -328,6 +328,10 @@ python3 tools/tf3ctl.py modhub publish-clear --yes
 - 道具が自分で見て、staging のフォルダに `_metadata/mod.io_fileid.txt` が無い (アップロードのあとゲームが書くファイルで、
   次のアップロードが同じ mod.io のページの更新になるのはこれのため)。`_metadata/0.png` があり、PNG で、512x288 以上・
   8 MB 以下 (mod.io の決まり。無いとページも断る「No valid cover image found」)。
+- `_metadata/modinfo.json` があり、項目が上限に収まる (バイトでなく文字数で数える)。`name` (mod.io の名前) は 50 以下、
+  `summary` は 250 以下 (mod.io の上限。長い名前は、mod.io がアップロードを始めてから断る「code 13009」)。`description` と
+  `--changelog` は 50000 以下 (道具の歯止め。mod.io は上限を書いていない)。name・summary・description が空でなく、`tags` は
+  あれば文字列のリスト。`--dry-run` は各項目の長さと上限を返す (`local.metadata`)。
 - 「送った」の印 (下) が無い。
 - ゲームの中で: MOD が Ready、`modhubId` が無効で mod.io に中身が無い (新規)。mod.io が初期化済みで、アップロードを
   許し、busy でも uploading でもない。ログインしている (していなければ `requiredUserAction: "login"` を返して止まる。

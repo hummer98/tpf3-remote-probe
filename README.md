@@ -344,6 +344,11 @@ game, so every one of these must hold, or nothing is sent:
 - The tool itself sees no `_metadata/mod.io_fileid.txt` in the staging folder (the game writes it after an upload,
   and it is what makes the next upload update the same mod.io page), and a `_metadata/0.png` that is a PNG of at
   least 512x288 and at most 8 MB (mod.io's limits; the page refuses without it, "No valid cover image found").
+- `_metadata/modinfo.json` is there and its fields fit, counted in characters (not bytes): `name` (the mod.io name)
+  at most 50 and `summary` at most 250 (mod.io's limits; mod.io refuses a longer name only after the upload began,
+  "code 13009"), `description` and `--changelog` at most 50000 (this tool's guard: mod.io writes no limit for them).
+  name, summary and description are not empty; `tags`, if given, is a list of strings. `--dry-run` answers each
+  length with its limit (`local.metadata`).
 - No publish mark (below) is there.
 - In the game: the mod is Ready, its `modhubId` is not valid and mod.io holds no details for it (new); mod.io is
   initialized, allows uploads and is neither busy nor uploading; someone is logged in (otherwise the answer names
