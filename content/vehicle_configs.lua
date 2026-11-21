@@ -97,10 +97,81 @@ function M.partsOf(list)
 	return out
 end
 
+-- Failure.Reason (api/type.d.tl, 40444) by name, and the base line manager's text for the ones it names
+-- (manager_window.tl, cannotAssignToLine). "Unkown" is the engine's own spelling.
+M.FAILURE_REASONS = { "Unkown", "NoPath", "NoElectric", "NoTram", "NoTramButTramTrack", "NoTramTrackButRail", "NoRail",
+	"NoRoad", "NoSmallAircraft", "NoSmallShip" }
+M.FAILURE_TEXTS = { NoElectric = "Missing electric tracks.", NoTram = "Missing tram tracks.",
+	NoTramButTramTrack = "Incompatible tracks.", NoTramTrackButRail = "Missing tram support on tracks.",
+	NoSmallAircraft = "No path for big airplanes.", NoSmallShip = "No path for big ships." }
+
+-- a Failure.Reason value by name; unknown: the value as text, so a new value shows up instead of vanishing
+function M.failureName(v)
+	if v == nil then return nil end
+	local okE, enum = pcall(function() return api.type.Failure.Reason end)
+	for _, n in ipairs(M.FAILURE_REASONS) do
+		local ok, x = pcall(function() return enum[n] end)
+		if okE and ok and x ~= nil and x == v then return n end
+	end
+	return tostring(v)
+end
+
+-- why the engine would not put vehicle e on line: the base line manager asks the same after a refused
+-- makeVehicleSetLineCmd (getFailedPathReason, fullLine true). { reason, message, position } or { reasonError }.
+function M.failedPathReason(e, line)
+	local ok, f = pcall(function() return api.engine.util.line.getFailedPathReason(e, line, true) end)
+	if not ok then return { reasonError = tostring(f) } end
+	if f == nil then return { reasonError = "getFailedPathReason gave nothing" } end
+	local out = {}
+	local okR, v = pcall(function() return f.reason end)
+	out.reason = okR and M.failureName(v) or nil
+	out.message = out.reason and M.FAILURE_TEXTS[out.reason] or nil
+	local okP, pos = pcall(function()
+		local p = f.pos
+		if p == nil then return nil end
+		local x, y, z = tonumber(p.x), tonumber(p.y), tonumber(p.z)
+		if not (x and y) then return nil end
+		return { x = x, y = y, z = z }
+	end)
+	if okP then out.position = pos end
+	return out
+end
+
+-- vehicle e onto line, as the base's HandleVehicleChanges sends it after a buy (makeVehicleSetLineCmd, first stop
+-- 0), but with a callback that keeps the engine's answer: the base's only logs it. report.setLine gets one entry
+-- per vehicle: { entity, line } at once, ok (true / false) when the answer is in, and on a refusal the reason.
+function M.sendToLine(report, e, line)
+	report.setLine = report.setLine or {}
+	local entry = { entity = e, line = line }
+	report.setLine[#report.setLine + 1] = entry
+	local ok, err = pcall(function()
+		api.cmd.sendCommand(api.cmd.makeVehicleSetLineCmd(e, line, 0), function(_, success)
+			if success == true then
+				entry.ok = true
+				return
+			end
+			entry.ok = false
+			local okF, f = pcall(M.failedPathReason, e, line)
+			if okF then
+				for k, v in pairs(f) do entry[k] = v end
+			else
+				entry.reasonError = tostring(f)
+			end
+		end)
+	end)
+	if not ok then
+		entry.ok = false
+		entry.sendError = tostring(err)
+	end
+end
+
 -- The gui way of one request (core.vehicleRequests): the base's HandleVehicleChanges, called as the vehicle store
 -- (buy, replace, sell) and the clone button (duplicate) call it. Main thread only (the recipe's join).
--- report: { sentParts, entities, failures } filled now and by the base's callbacks later; error when the request
+-- report: { sentParts, entities, failures, setLine } filled now and by the callbacks later; error when the request
 -- could not be sent at all (the module does not load, the vehicle is gone).
+-- A line: the base gets none (-1), and the vehicle goes onto it from onBuy here (sendToLine): the base sends it
+-- the same way, but its callback only logs a refusal (vehicle_react_util.tl), and a refused ship stayed in its
+-- depot with no word why (2026-11-22). The buy itself (purchaseTime, autoload) is still the base's.
 function M.performGui(req, r, report)
 	local ok, vru = pcall(req, M.VEHICLE_REACT_UTIL)
 	if not ok then error("could not load " .. M.VEHICLE_REACT_UTIL .. ": " .. tostring(vru), 0) end
@@ -109,7 +180,13 @@ function M.performGui(req, r, report)
 	end
 	report.entities, report.failures = report.entities or {}, report.failures or {}
 	local onBuy = function(results)
-		for _, x in ipairs(toList(results)) do report.entities[#report.entities + 1] = tonumber(toList(x)[1]) end
+		for _, x in ipairs(toList(results)) do
+			local e = tonumber(toList(x)[1])
+			report.entities[#report.entities + 1] = e
+			if e and r.line and r.line >= 0 and (r.kind == "buy" or r.kind == "duplicate") then
+				pcall(M.sendToLine, report, e, r.line)
+			end
+		end
 	end
 	local onFail = function(reason) report.failures[#report.failures + 1] = tostring(reason) end
 	local config, changes
@@ -126,9 +203,9 @@ function M.performGui(req, r, report)
 		changes = {}
 		for _ = 1, r.count or 1 do changes[#changes + 1] = { vehicleEntity = entity, config = config } end
 		vru.HandleVehicleChanges(changes, {},
-			function() return { r.line or -1, r.depot } end,
-			-- the first stop for the base's makeVehicleSetLineCmd: always 0 here (the line manager works it out by
-			-- its send scheme before it calls HandleVehicleChanges; the store gives none)
+			-- no line for the base: onBuy sends the vehicle (sendToLine), with stop 0 as the base would (the line
+			-- manager works its first stop out by its send scheme; the store gives none)
+			function() return { -1, r.depot } end,
 			function() return 0 end,
 			onBuy, onFail)
 	elseif r.kind == "replace" then

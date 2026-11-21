@@ -36,6 +36,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py money --set 10000000 | --add -5000   # the balance, as the sandbox money editor (a journal entry)
   tf3ctl.py stations [--name cent] [--near 11 --radius 800]   # station groups: id, platforms, carriers, distance
   tf3ctl.py lines [--name probe]            # lines: stops (platforms), vehicles, cargo loaded and carried
+  tf3ctl.py lines --problems [--line 23]    # + each stop's path problems, platform modes, the line's mode union
   tf3ctl.py industry-workers [--entity 51]  # industries: capacity, sims headed there, last visitors (boost), town
   tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # stocks, rules, construction params
   tf3ctl.py persons --vehicle 601 [--limit 50] [--every 5 --count 120]   # who is aboard: happiness, expected
@@ -625,6 +626,18 @@ def log_tail_from_anchor(path):
                 start = body.rfind(b"\n", 0, idx) + 1
                 return body[start:].decode("utf-8", "replace").splitlines()
         return data.decode("utf-8", "replace").splitlines()
+
+
+def lines_args(ns):
+    """The lines command's args: name, line and problems only when given."""
+    out = {}
+    if ns.name:
+        out["name"] = ns.name
+    if getattr(ns, "line", None) is not None:
+        out["line"] = ns.line
+    if getattr(ns, "problems", False):
+        out["problems"] = True
+    return out
 
 
 def log_state(lines):
@@ -2918,6 +2931,11 @@ def make_parser():
     ps.add_argument("--count", type=int, help="with --every: this many samples (default: until Ctrl-C)")
     ls = sub.add_parser("lines", help="the company's lines: stops and platforms, vehicles, cargo")
     ls.add_argument("--name", help="a part of the name, any case")
+    ls.add_argument("--line", type=int, help="this line only (its entity id)")
+    ls.add_argument("--problems", action="store_true",
+                    help="each line's problems as the line manager reads them (no path, incompatible or duplicate "
+                         "stop, where the path ends and the modes there), each platform's transport modes and the "
+                         "line's mode union (read only)")
     ln = sub.add_parser("line", help="create, change or remove a line (the line manager's way by default)")
     lsub = ln.add_subparsers(dest="action", required=True)
     for action, helptext in (("create", "a new line through the stops, platforms assigned by the engine or given"),
@@ -3151,7 +3169,7 @@ def main(argv=None):
                 return persons_every(ns)  # prints its own lines
             res = send("persons", persons_args(ns))
         elif ns.cmd == "lines":
-            res = send("lines", {"name": ns.name} if ns.name else {})
+            res = send("lines", lines_args(ns))
         elif ns.cmd == "line":
             res = send("line", line_args(ns), timeout=VEHICLE_TIMEOUT_SEC)  # the mod's own wait is 60 s
         elif ns.cmd == "connect":

@@ -223,6 +223,7 @@ python3 tools/tf3ctl.py sell --vehicle 601
 python3 tools/tf3ctl.py money --set 10000000 | --add -5000
 python3 tools/tf3ctl.py stations [--name cent] [--near 11 --radius 800]
 python3 tools/tf3ctl.py lines [--name probe]
+python3 tools/tf3ctl.py lines --problems [--line 23]   # path problems, platform modes, the line's mode union
 python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--cargo coal] [--via gui|cmd]
 python3 tools/tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C]
 python3 tools/tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 [--load-mode all,available]
@@ -721,6 +722,17 @@ mod's code, and was checked against no running copy of it.
   time, maintenance state, `partPrice`, line, depot, `depreciatedValue`), `notes`; `model` for buy and replace,
   `before` for replace and sell, `source` for duplicate, `vehicleIds` for buy and duplicate. With `--line`, the
   answer waits until the vehicle is on the line and reports `setLine`.
+- With `--line` via gui, the base store's `HandleVehicleChanges` buys as before (purchaseTime, autoload) but gets
+  no line; the mod then sends each new vehicle with the same `makeVehicleSetLineCmd(vehicle, line, 0)`, with its
+  own callback (the base's only logs a refusal, so a refused vehicle stayed in its depot and the answer timed out).
+  A refusal answers at once with `ok: false` and, per vehicle in `setLine`, `ok: false`, `reason` (the
+  `Failure.Reason` name from `getFailedPathReason(vehicle, line, true)`, as the line manager asks: `NoPath`,
+  `NoSmallShip`, `NoElectric`, ...), `message` (the line manager's text for it, when it has one, e.g. "No path for
+  big ships.") and `position` (where the path fails, when given). A vehicle with no answer yet stays
+  `pending: true` until the 60 s timeout. `--via cmd` is unchanged (a failure, no reason). Not checked in game.
+- Ships: a large ship (mode SHIP) needs a large pier at every stop; the engine may assign a small one (SMALL_SHIP
+  only) and refuse the ship (`NoSmallShip`). Make ship lines with `line create --terminals`, picking large piers
+  (`transportModes` with SHIP in `stations` platforms), and check them with `lines --problems`.
 - `buy` needs `--depot` (the store only picks a depot when opened from one); count 1-20; with `--line` the first
   stop is stop 0. `duplicate` copies the config with parts at `purchaseTime` 0 and maintenance 1, as the base
   clone does; depot and line default to `findBestLineAndDepotForVehicle`.
@@ -819,7 +831,16 @@ All unchecked in game. There is no command to build stations.
   (nil); `position` may well be missing at piers, whose terminals are made from a vehicle node (unverified).
 - `lines` lists the company's lines: stops (station group, station and terminal, 0-based, and `loadMode`: 0
   available, 1 full load any, 2 full load all), vehicles, carriers, `customFilters`, `loads` (cargo some stop
-  loads) and `vehicleCargo` (cargo the line's vehicles can carry).
+  loads) and `vehicleCargo` (cargo the line's vehicles can carry). `--line N` lists that line only (an error when
+  it is not the company's).
+- `lines --problems` (read only) adds `problems` per line, as the line manager reads them: `segments` (from
+  `getDetailedLineProblems`: per segment, per stop, `noPath`, `incompatibleStop`, `duplicateStop`, `empty`,
+  `noPathLocation` with `edgeIndex`, `node`, `nodePosition` and the mode sets `okModes` / `relaxedModes` /
+  `allowedModes` by name, `noPathToAlternative` / `noPathFromAlternative` as `terminal` and `location`, and
+  `problem` when the base would count the stop), `count` (stops with a problem), `transportModesUnion`
+  (`getLineTransportModesUnion`), and on each stop its platform's `transportModes`. A call that raises shows as
+  `readError` / `unionError`. Not checked in game: in particular how the segments map to the line's stops (the
+  base counts them in order) and what `node` holds.
 - `line create --stops A,B,...` takes station groups in order, by id (a station entity means its group) or name
   (exact match first, then a unique part; several matches are an error with the candidates; names with commas need
   the id). Platforms are assigned automatically. The default name is the base `makeLineName` (gui) or "Line N"

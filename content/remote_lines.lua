@@ -136,8 +136,9 @@ function M.new(ctx)
 	-- a terminal's transportModes ({ [TransportMode] = true }) by name, sorted: what tells a large pier (SHIP and
 	-- SMALL_SHIP) from a small one (SMALL_SHIP only; medium_pier / small_pier.module.lua), both WATER as carriers.
 	-- nil when it cannot be read.
-	local function modesOf(t)
-		local v = core.field(t, "transportModes")
+	-- a set of transport modes ({ [TransportMode] = true }, as the engine's maps) by name, sorted; nil when it
+	-- cannot be read
+	local function modeNames(v)
 		if v == nil then return nil end
 		local enum = try(function() return api.type.enum.TransportMode end)
 		local names = {}
@@ -154,6 +155,7 @@ function M.new(ctx)
 		table.sort(names)
 		return core.array(names)
 	end
+	local function modesOf(t) return modeNames(core.field(t, "transportModes")) end
 
 	-- every platform of a station group, for picking one (line create --terminals): station and terminal 0-based as
 	-- a line stop holds them, the terminal's tag (a vanilla harbour's module cell, 1000 * coordI + coordJ:
@@ -803,15 +805,88 @@ function M.new(ctx)
 		answer(c.id, { ok = true, stations = core.array(out), near = near, radius = radius, centre = centre })
 	end
 
-	-- args: name (substring, any case)
+	-- a PathProblemLocation (engine/util.d.tl) as plain values; nil when there is none
+	local function problemLocation(x)
+		if x == nil then return nil end
+		local p = core.field(x, "nodePosition")
+		local pos = nil
+		if p ~= nil then
+			local px, py, pz = tonumber(core.field(p, "x")), tonumber(core.field(p, "y")), tonumber(core.field(p, "z"))
+			if px and py then pos = { x = px, y = py, z = pz } end
+		end
+		local node = core.field(x, "node")
+		return { edgeIndex = tonumber(core.field(x, "edgeIndex")), node = tonumber(node) or (node ~= nil and tostring(node) or nil),
+			nodePosition = pos, okModes = modeNames(core.field(x, "okModes")),
+			relaxedModes = modeNames(core.field(x, "relaxedModes")), allowedModes = modeNames(core.field(x, "allowedModes")) }
+	end
+	-- noPathToAlternative / noPathFromAlternative: { flattenedTerminalIndex, optional location }
+	local function alternative(v)
+		if v == nil then return nil end
+		return { terminal = tonumber(core.at(v, 1)), location = problemLocation(core.at(v, 2)) }
+	end
+
+	-- what the line manager reads to mark a line's problems (line_manager_panel.tl, manager_window.tl):
+	-- getDetailedLineProblems (per segment, per stop) and getLineTransportModesUnion; and the transport modes of
+	-- each stop's platform, which tell a large pier from a small one. Read only; info.stops get transportModes.
+	local function lineProblems(e, info)
+		local out = { segments = core.array({}), count = 0 }
+		local okD, detailed = pcall(function() return api.engine.util.line.getDetailedLineProblems(e) end)
+		if not okD then
+			out.readError = "getDetailedLineProblems: " .. tostring(detailed)
+		else
+			for _, seg in ipairs(core.toList(detailed)) do
+				local stops = {}
+				for _, st in ipairs(core.toList(seg)) do
+					local x = { empty = flag(core.field(st, "empty")), noPath = flag(core.field(st, "noPath")),
+						duplicateStop = flag(core.field(st, "duplicateStop")), incompatibleStop = flag(core.field(st, "incompatibleStop")),
+						noPathLocation = problemLocation(core.field(st, "noPathLocation")),
+						noPathToAlternative = alternative(core.field(st, "noPathToAlternative")),
+						noPathFromAlternative = alternative(core.field(st, "noPathFromAlternative")) }
+					-- what the base counts as a problem of a stop (manager_window.tl)
+					x.problem = x.noPath == true or x.duplicateStop == true or x.incompatibleStop == true
+						or x.noPathToAlternative ~= nil or x.noPathFromAlternative ~= nil
+					if x.problem then out.count = out.count + 1 end
+					stops[#stops + 1] = x
+				end
+				out.segments[#out.segments + 1] = core.array(stops)
+			end
+		end
+		local okU, union = pcall(function() return api.engine.util.line.getLineTransportModesUnion(e) end)
+		if okU then
+			out.transportModesUnion = modeNames(union)
+		else
+			out.unionError = "getLineTransportModesUnion: " .. tostring(union)
+		end
+		for _, s in ipairs(info.stops) do
+			local sc = s.stationEntity and comp(s.stationEntity, "STATION")
+			local terminals = sc and core.field(sc, "terminals")
+			-- the index checked first: an engine vector read past its end may assert
+			if s.terminal and s.terminal >= 0 and s.terminal < core.size(terminals) then
+				s.transportModes = modesOf(core.at(terminals, s.terminal + 1))
+			end
+		end
+		return out
+	end
+
+	-- args: name (substring, any case), line (one line's id), problems (true: each line's problems too)
 	function handlers.lines(c)
 		local q = type(c.args.name) == "string" and c.args.name:lower() or nil
+		local only = c.args.line
+		if only ~= nil and (type(only) ~= "number" or only ~= math.floor(only)) then
+			return fail(c.id, "line must be an entity id")
+		end
 		local types = cargoTypes()
 		local out = {}
 		for _, e in ipairs(ownLines()) do
-			local info = lineInfo(e, types)
-			if info and (not q or info.name:lower():find(q, 1, true)) then out[#out + 1] = info end
+			if only == nil or e == only then
+				local info = lineInfo(e, types)
+				if info and (not q or info.name:lower():find(q, 1, true)) then
+					if c.args.problems == true then info.problems = lineProblems(e, info) end
+					out[#out + 1] = info
+				end
+			end
 		end
+		if only ~= nil and #out == 0 then return fail(c.id, "no line " .. tostring(only) .. " of the company") end
 		table.sort(out, function(x, y) return x.name < y.name end)
 		answer(c.id, { ok = true, lines = core.array(out) })
 	end

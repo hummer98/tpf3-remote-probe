@@ -185,6 +185,25 @@ function M.new(ctx)
 				job.entities[#job.entities + 1] = e
 			end
 		end
+		-- the engine's answer to each vehicle's send to the line (vehicle_configs.sendToLine): a refusal answers now,
+		-- with its reason, instead of waiting out the deadline for a vehicle that stays in its depot
+		for _, x in ipairs(type(r.setLine) == "table" and r.setLine or {}) do
+			local e = type(x) == "table" and tonumber(x.entity) or nil
+			if e and job.line and job.lineResult[e] == nil and (x.ok == true or x.ok == false) then
+				job.lineResult[e] = x.ok
+				if x.ok == false then
+					local why = { reason = x.reason and tostring(x.reason) or nil, message = x.message and tostring(x.message) or nil,
+						reasonError = x.reasonError and tostring(x.reasonError) or nil,
+						sendError = x.sendError and tostring(x.sendError) or nil }
+					if type(x.position) == "table" then
+						why.position = { x = tonumber(x.position.x), y = tonumber(x.position.y), z = tonumber(x.position.z) }
+					end
+					job.lineRefusal[e] = why
+					job.lineFailures[#job.lineFailures + 1] = string.format("the engine would not put vehicle %d on line %d: %s",
+						e, job.line, why.reason or why.sendError or why.reasonError or "no reason given")
+				end
+			end
+		end
 	end
 
 	local function ownVehicles()
@@ -254,7 +273,7 @@ function M.new(ctx)
 	local function newJob(c, kind, a, modelIds)
 		local job = { id = c.id, kind = kind, via = a.via, deadline = appTime() + ASYNC_TIMEOUT_SEC,
 			balanceBefore = balance(), gameTimeBefore = gameTime(), entities = {}, entitySet = {}, failures = {},
-			expected = a.count or 1, line = a.line, lineResult = {} }
+			expected = a.count or 1, line = a.line, lineResult = {}, lineRefusal = {}, lineFailures = {} }
 		job.storeParts = {}
 		for _, id in ipairs(modelIds or {}) do
 			local m = modelInfo(id)
@@ -313,7 +332,10 @@ function M.new(ctx)
 			out.setLine = core.array({})
 			for _, e in ipairs(job.entities) do
 				local r = job.lineResult[e]
-				out.setLine[#out.setLine + 1] = { entity = e, line = job.line, ok = r == true, pending = r == nil or nil }
+				local entry = { entity = e, line = job.line, ok = r == true, pending = r == nil or nil }
+				-- a refusal (gui): Failure.Reason by name, the base's text for it, where the path ends
+				for k, v in pairs((job.lineRefusal or {})[e] or {}) do entry[k] = v end
+				out.setLine[#out.setLine + 1] = entry
 			end
 		end
 		if #job.failures > 0 then out.failures = job.failures end
@@ -347,9 +369,13 @@ function M.new(ctx)
 		if job.settleAt then
 			if V.frames < job.settleAt then return false end
 			local out = payloadOf(job)
-			if #job.failures > 0 or out.ok == false then
+			-- line refusals apart from failures: done() counts failures as vehicles that did not come
+			local errors = {}
+			for _, f in ipairs(job.failures) do errors[#errors + 1] = f end
+			for _, f in ipairs(job.lineFailures or {}) do errors[#errors + 1] = f end
+			if #errors > 0 or out.ok == false then
 				out.ok = false
-				out.error = out.error or table.concat(job.failures, "; ")
+				out.error = out.error or table.concat(errors, "; ")
 			end
 			answer(job.id, out, (not out.ok) and "error" or nil)
 			return true

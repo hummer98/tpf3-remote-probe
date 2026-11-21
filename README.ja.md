@@ -216,6 +216,7 @@ python3 tools/tf3ctl.py sell --vehicle 601
 python3 tools/tf3ctl.py money --set 10000000 | --add -5000
 python3 tools/tf3ctl.py stations [--name cent] [--near 11 --radius 800]
 python3 tools/tf3ctl.py lines [--name probe]
+python3 tools/tf3ctl.py lines --problems [--line 23]   # 経路の問題、ホームの transportModes、路線の mode の和
 python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--cargo coal] [--via gui|cmd]
 python3 tools/tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C]
 python3 tools/tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 [--load-mode all,available]
@@ -679,6 +680,17 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   `vehicles` (読み直した部品・purchaseTime・maintenanceState・`partPrice`・路線・車庫・`depreciatedValue`)、`notes`。
   buy と replace は `model`、replace と sell は `before`、duplicate は `source`、buy と duplicate は `vehicleIds` も
   付きます。`--line` を付けると、車両が路線に載るまで待ち、`setLine` を返します。
+- gui で `--line` を付けたとき、買うのは今までどおり本体の店の `HandleVehicleChanges` (purchaseTime・autoload) です
+  が、路線は渡しません。買えた車両ごとに、MOD が同じ `makeVehicleSetLineCmd(vehicle, line, 0)` を自分のコールバック付き
+  で送ります (本体のコールバックは断られてもログに書くだけで、断られた車両は車庫に残り、返事は時間切れになっていた)。
+  断られたらすぐに `ok: false` で返し、`setLine` の車両ごとに `ok: false`、`reason` (路線の窓と同じく
+  `getFailedPathReason(vehicle, line, true)` で取った `Failure.Reason` の名前: `NoPath`・`NoSmallShip`・`NoElectric`
+  など)、`message` (路線の窓にその理由の文があれば。例「No path for big ships.」)、`position` (経路の切れる位置。
+  あれば) を付けます。答えがまだ来ない車両は、60 秒の時間切れまで `pending: true` のままです。`--via cmd` は変えて
+  いません (失敗だけで理由なし)。ゲーム内では未確認です。
+- 船: 大型船 (mode SHIP) は、どの停車駅でも大型船着場が要ります。エンジンが小型船着場 (SMALL_SHIP だけ) を割り当てると、
+  船は断られます (`NoSmallShip`)。船の路線は `line create --terminals` で大型船着場 (`stations` の `platforms` で
+  `transportModes` に SHIP があるもの) を指定して作り、`lines --problems` で見てください。
 - `buy` は `--depot` が必須です (店は車庫から開いたときだけ車庫を決める)。台数は 1-20。`--line` の先頭の停車駅は
   0 番。`duplicate` は本体の複製と同じく config を写し、部品を purchaseTime 0・maintenanceState 1 にします。車庫と
   路線の既定は `findBestLineAndDepotForVehicle`。
@@ -769,7 +781,14 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   桟橋の terminal は vehicle node から作られるので、`position` は出ないことがあります (未確認)。
 - `lines` は自社の路線を返します: 停車駅 (駅グループ、駅とホーム、0 始まり、`loadMode`: 0 available、1 満載
   (どれか)、2 満載 (全部))、車両、乗り物の種類、`customFilters`、`loads` (どこかの停車駅で積む貨物)、`vehicleCargo`
-  (路線の車両が積める貨物)。
+  (路線の車両が積める貨物)。`--line N` でその路線だけを返します (自社の路線でなければエラー)。
+- `lines --problems` (読むだけ) は、路線の窓と同じ読み方で、路線ごとに `problems` を足します: `segments`
+  (`getDetailedLineProblems` の区間ごと・停車駅ごとの `noPath`・`incompatibleStop`・`duplicateStop`・`empty`、
+  `noPathLocation` (`edgeIndex`・`node`・`nodePosition` と、名前にした `okModes` / `relaxedModes` / `allowedModes`)、
+  `noPathToAlternative` / `noPathFromAlternative` (`terminal` と `location`)、本体が問題に数える停車駅には `problem`)、
+  `count` (問題のある停車駅の数)、`transportModesUnion` (`getLineTransportModesUnion`)、各停車駅にはそのホームの
+  `transportModes`。呼び出しが失敗したら `readError` / `unionError` に出します。ゲーム内では未確認です。特に、区間と
+  路線の停車駅の対応 (本体は順に数える) と、`node` の中身。
 - `line create --stops A,B,...` は駅グループを順に、id (駅の entity ならそのグループ) か名前で取ります (完全一致を
   先に、なければ一意な部分一致。複数に当たれば候補付きでエラー。カンマを含む名前は id で)。ホームは自動で割り当て
   ます。名前の既定は本体の `makeLineName` (gui) か「Line N」(cmd)。

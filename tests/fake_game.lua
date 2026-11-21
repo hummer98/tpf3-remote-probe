@@ -599,7 +599,9 @@ function M.new(dir, opts)
 			g.balance = g.balance + cmd.entry.amount
 			return true
 		elseif cmd.kind == "setLine" then
-			if not g.fleet[cmd.vehicle] then return false end
+			-- opts.setLineRefused = { reason = "NoSmallShip", pos = { x, y, z } }: the engine refuses every vehicle,
+			-- which stays where it is (getFailedPathReason gives the reason)
+			if not g.fleet[cmd.vehicle] or opts.setLineRefused then return false end
 			g.fleet[cmd.vehicle].line = cmd.line
 			return true
 		elseif cmd.kind == "lineCreate" or cmd.kind == "lineUpdate" then
@@ -798,6 +800,55 @@ function M.new(dir, opts)
 						end
 						return sum
 					end },
+				-- opts.lineProblems = { [line] = { { stop state, ... } per segment } }, a stop state as the engine's
+				-- StopState with its mode sets as name lists (noPathLocation = { edgeIndex, node, nodePosition = { x, y,
+				-- z }, okModes, relaxedModes, allowedModes }); opts.lineModes = { [line] = { names } }. A line the engine
+				-- does not have: its assertion. getFailedPathReason: opts.setLineRefused (reason NoPath when not given);
+				-- opts.failedPathRaises: it raises
+				line = {
+					getFailedPathReason = function(v, l, full)
+						g.failedPathAsked = { v, l, full }
+						if opts.failedPathRaises then error("ASSERT: no failed path for " .. tostring(v)) end
+						local r = opts.setLineRefused or {}
+						local p = r.pos and object(copy(r.pos), nil, "Vec3f") or nil
+						return object({ reason = api.type.Failure.Reason[r.reason or "NoPath"], pos = p }, nil, "Failure")
+					end,
+					getDetailedLineProblems = function(l)
+						if not g.lines[l] then g.crashed = "ASSERT: no line " .. tostring(l); error(g.crashed) end
+						local function modes(list)
+							if list == nil then return nil end
+							local m = {}
+							for _, n in ipairs(list) do m[api.type.enum.TransportMode[n]] = true end
+							return m
+						end
+						local function loc(x)
+							if x == nil then return nil end
+							return object({ edgeIndex = x.edgeIndex, node = x.node,
+								nodePosition = x.nodePosition and object(copy(x.nodePosition), nil, "Vec3f") or nil,
+								okModes = modes(x.okModes), relaxedModes = modes(x.relaxedModes), allowedModes = modes(x.allowedModes) },
+								nil, "PathProblemLocation")
+						end
+						local segments = {}
+						for i, seg in ipairs((opts.lineProblems or {})[l] or {}) do
+							local stops = {}
+							for j, st in ipairs(seg) do
+								local f = { empty = st.empty == true, noPath = st.noPath == true, duplicateStop = st.duplicateStop == true,
+									incompatibleStop = st.incompatibleStop == true, noPathLocation = loc(st.noPathLocation) }
+								if st.noPathToAlternative then f.noPathToAlternative = { st.noPathToAlternative[1], loc(st.noPathToAlternative[2]) } end
+								if st.noPathFromAlternative then f.noPathFromAlternative = { st.noPathFromAlternative[1], loc(st.noPathFromAlternative[2]) } end
+								stops[j] = object(f, nil, "StopState")
+							end
+							segments[i] = vector(stops)
+						end
+						return vector(segments)
+					end,
+					getLineTransportModesUnion = function(l)
+						if not g.lines[l] then g.crashed = "ASSERT: no line " .. tostring(l); error(g.crashed) end
+						local m = {}
+						for _, n in ipairs((opts.lineModes or {})[l] or {}) do m[api.type.enum.TransportMode[n]] = true end
+						return m
+					end,
+				},
 				vehicle = {
 					getDepreciatedValue = function(e) return g.fleet[e] and math.floor(configPrice(g.fleet[e]) * 0.9) or 0 end,
 					getPartPrice = function(p) return models[p.part.modelId].price end,
@@ -1070,6 +1121,8 @@ function M.new(dir, opts)
 				StockListType = { InputStock = 0, OutputStock = 1, StorageStock = 2 } },
 			TransportVehicle = { LoadState = { None = 0, Arrived = 1, Unloading = 2, Loading = 3,
 				WaitForScheduledDeparture = 4, Departing = 5 } },
+			Failure = { Reason = enum({ "Unkown", "NoPath", "NoElectric", "NoTram", "NoTramButTramTrack", "NoTramTrackButRail",
+				"NoRail", "NoRoad", "NoSmallAircraft", "NoSmallShip" }, "Failure.Reason") },
 			JournalEntry = { new = function() return { amount = 0, time = 0, category = { type = -1 } } end,
 				Type = { OTHER = 7 } },
 			TransportVehicleConfig = { new = function(src)
@@ -1128,6 +1181,8 @@ function M.new(dir, opts)
 			end,
 			sendCommand = function(cmd, cb)
 				g.commands[#g.commands + 1] = cmd
+				-- opts.lostSetLine: a send to a line neither runs nor answers (the rest of the commands do)
+				if opts.lostSetLine and cmd.kind == "setLine" then return end
 				if opts.speedFails then
 					if cb then cb(nil, false) end
 					return

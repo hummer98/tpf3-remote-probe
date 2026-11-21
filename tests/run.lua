@@ -2203,7 +2203,7 @@ test("buy via gui: the base's HandleVehicleChanges stamps purchaseTime; balance,
 	eq(v.parts[1].purchaseTime, a.sentParts[1].purchaseTime, "the engine keeps what was sent")
 	eq(v.parts[1].modelId, 101); eq(v.parts[1].partPrice, 30000)
 	eq(v.depreciatedValue, 27000)
-	eq(v.line, 21, "the base sent it to the line")
+	eq(v.line, 21, "sent to the line (by the probe, after the base bought it)")
 	eq(g.fleet[v.entity].line, 21)
 end)
 
@@ -2511,6 +2511,111 @@ test("buy with a line: answers once the vehicle is on it (gui: the base's own se
 		eq(a.setLine[1].ok, true, via)
 		eq(a.setLine[1].entity, a.vehicles[1].entity)
 	end
+end)
+
+-- 2026-11-22: a ship bought with --line stayed in its shipyard, and the answer was a 60 s timeout with setLine
+-- pending: the base's own send to the line logs a refusal and nothing more. The gui way now gives the base no
+-- line and sends the vehicle itself, with a callback that asks getFailedPathReason.
+local function setLineCmds(g)
+	local out = {}
+	for _, c in ipairs(g.commands) do if c.kind == "setLine" then out[#out + 1] = c end end
+	return out
+end
+
+test("buy --line via gui: the probe's own send to the line, once per vehicle, first stop 0 (bus and train)", function()
+	for _, case in ipairs({ { model = "bus_1900", depot = 301 }, { model = "bus_1900", depot = 302, count = 2 } }) do
+		local g = vehicleGame({ callbackFrames = 5, depots = { [301] = { name = "Bus depot", modes = { "BUS" } },
+			[302] = { name = "Train depot", modes = { "TRAIN" } } } })
+		send(g, 470, "buy", string.format('{ model = %q, depot = %d, line = 21, count = %d }', case.model, case.depot, case.count or 1))
+		frames(g, FIRST)
+		local a, n = final(g, 470)
+		eq(n, 1)
+		eq(a.ok, true, tostring(a.error))
+		local cmds = setLineCmds(g)
+		eq(#cmds, case.count or 1, "one send per vehicle, none by the base")
+		for i, c in ipairs(cmds) do eq(c.line, 21); eq(c.stop, 0); eq(c.vehicle, a.vehicles[i].entity) end
+		for i, v in ipairs(a.vehicles) do
+			eq(v.line, 21); eq(a.setLine[i].ok, true); eq(a.setLine[i].reason, nil); eq(a.setLine[i].pending, nil)
+		end
+		eq(g.failedPathAsked, nil, "no reason asked for a vehicle that went")
+	end
+end)
+
+test("buy --line via gui refused (NoSmallShip): answered at once with the reason, the base's text and where", function()
+	local g = vehicleGame({ callbackFrames = 5, depots = { [303] = { name = "Shipyard", modes = { "SHIP" } } },
+		setLineRefused = { reason = "NoSmallShip", pos = { x = 10, y = 20, z = 3 } } })
+	send(g, 471, "buy", '{ model = "bus_1900", depot = 303, line = 23, count = 2 }')
+	frames(g, FIRST) -- under 3 s of the 60 s deadline
+	local a, n = final(g, 471)
+	eq(n, 1, "answered before the deadline")
+	eq(a.ok, false)
+	eq(tostring(a.error):find("no result in", 1, true), nil, tostring(a.error))
+	truthy(tostring(a.error):find("NoSmallShip", 1, true), tostring(a.error))
+	eq(#a.vehicles, 2, "both vehicles bought, though on no line"); eq(#a.vehicleIds, 2)
+	for i, v in ipairs(a.vehicles) do
+		eq(v.line, -1)
+		local s = a.setLine[i]
+		eq(s.entity, v.entity); eq(s.ok, false); eq(s.pending, nil)
+		eq(s.reason, "NoSmallShip"); eq(s.message, "No path for big ships.")
+		eq(s.position.x, 10); eq(s.position.y, 20); eq(s.position.z, 3)
+	end
+	eq(g.failedPathAsked[2], 23); eq(g.failedPathAsked[3], true, "fullLine, as the line manager asks")
+end)
+
+test("duplicate --line via gui refused: the reason comes back as for a buy; a reason not in the list as text", function()
+	local g = vehicleGame({ callbackFrames = 5, fleet = { [601] = fleetOf(101, 5) }, setLineRefused = { reason = "NoPath" } })
+	send(g, 472, "duplicate", '{ vehicle = 601, depot = 301, line = 21 }')
+	frames(g, FIRST)
+	local a = final(g, 472)
+	eq(a.ok, false)
+	eq(a.setLine[1].reason, "NoPath"); eq(a.setLine[1].message, nil, "the base has no text of its own for NoPath")
+	eq(a.setLine[1].position, nil)
+	-- an engine value not in Failure.Reason as the probe knows it
+	local vc = dofile(root .. "/content/vehicle_configs.lua")
+	eq(vc.failureName(api.type.Failure.Reason.NoSmallAircraft), "NoSmallAircraft")
+	eq(vc.failureName(newproxy(false)):find("userdata", 1, true) ~= nil, true)
+	eq(vc.failureName(nil), nil)
+end)
+
+test("buy --line via gui: getFailedPathReason raising, or the send itself raising, still answers once", function()
+	local g = vehicleGame({ callbackFrames = 5, setLineRefused = { reason = "NoRoad" }, failedPathRaises = true })
+	send(g, 473, "buy", '{ model = "bus_1900", depot = 301, line = 21 }')
+	frames(g, FIRST)
+	local a, n = final(g, 473)
+	eq(n, 1); eq(a.ok, false)
+	eq(a.setLine[1].ok, false); eq(a.setLine[1].reason, nil)
+	truthy(tostring(a.setLine[1].reasonError):find("no failed path", 1, true), tostring(a.setLine[1].reasonError))
+	-- the send raising (vehicle_configs.sendToLine on its own)
+	local vc = dofile(root .. "/content/vehicle_configs.lua")
+	local real = api.cmd.sendCommand
+	api.cmd.sendCommand = function() error("no command queue") end
+	local report = {}
+	local ok = pcall(vc.sendToLine, report, 5001, 21)
+	api.cmd.sendCommand = real
+	eq(ok, true)
+	eq(report.setLine[1].ok, false); truthy(report.setLine[1].sendError:find("no command queue", 1, true))
+end)
+
+test("buy --line via gui: no answer to the send ends in the timeout, setLine pending", function()
+	local g = vehicleGame({ lostSetLine = true })
+	send(g, 474, "buy", '{ model = "bus_1900", depot = 301, line = 21 }')
+	frames(g, 75, 1)
+	local a, n = final(g, 474)
+	eq(n, 1); eq(a.ok, false)
+	truthy(tostring(a.error):find("no result in 60 s", 1, true), tostring(a.error))
+	eq(a.setLine[1].pending, true); eq(a.setLine[1].ok, false); eq(a.setLine[1].reason, nil)
+	eq(#setLineCmds(g), 1)
+end)
+
+test("buy --line via cmd refused: as before (its own failure, no reason asked)", function()
+	local g = vehicleGame({ callbackFrames = 5, setLineRefused = { reason = "NoSmallShip" } })
+	send(g, 475, "buy", '{ model = "bus_1900", depot = 301, line = 21, via = "cmd" }')
+	frames(g, FIRST)
+	local a = final(g, 475)
+	eq(a.ok, false)
+	truthy(tostring(a.error):find("could not send vehicle", 1, true), tostring(a.error))
+	eq(a.setLine[1].ok, false); eq(a.setLine[1].reason, nil)
+	eq(g.failedPathAsked, nil)
 end)
 
 test("a result just before the deadline settles instead of timing out", function()
@@ -3603,6 +3708,65 @@ test("line via gui: the platforms are checked before the base's line_util reads 
 		terminals = { { station = 0, terminal = 2 }, { station = 0, terminal = 1 } }, loadModes = { 2, 0 } })
 	eq(ok, true, tostring(err)); eq(report.sentStops[1].terminal, 2)
 	eq(#sent(g, "lineCreate"), 1, "only the good one"); eq(g.crashed, nil)
+end)
+
+test("lines --problems: each stop's problems as the line manager reads them, platform modes, the mode union", function()
+	local g = portWorld({ lines = { [23] = { name = "Ship 1", stops = { { stationGroup = 47, station = 0, terminal = 2 },
+			{ stationGroup = 48, station = 0, terminal = 1 } } },
+		[24] = { name = "Ship 2", stops = { { stationGroup = 47, station = 0, terminal = 2 }, { stationGroup = 48, station = 0, terminal = 0 } } } },
+		lineProblems = { [23] = { { { noPath = true, noPathLocation = { edgeIndex = 4, node = 9001,
+			nodePosition = { x = 1, y = 2, z = 0 }, okModes = { "SMALL_SHIP" }, relaxedModes = {}, allowedModes = { "SHIP", "SMALL_SHIP" } } },
+			{ incompatibleStop = true } } } },
+		lineModes = { [23] = { "SMALL_SHIP", "SHIP" } } })
+	send(g, 765, "lines", "{ problems = true, line = 23 }")
+	frames(g, FIRST)
+	local a = final(g, 765)
+	eq(a.ok, true, tostring(a.error))
+	eq(#a.lines, 1); eq(a.lines[1].id, 23)
+	local p = a.lines[1].problems
+	eq(p.count, 2); eq(p.readError, nil)
+	eq(table.concat(p.transportModesUnion, ","), "SHIP,SMALL_SHIP")
+	local s1, s2 = p.segments[1][1], p.segments[1][2]
+	eq(s1.noPath, true); eq(s1.problem, true); eq(s1.incompatibleStop, false)
+	eq(s1.noPathLocation.edgeIndex, 4); eq(s1.noPathLocation.node, 9001); eq(s1.noPathLocation.nodePosition.y, 2)
+	eq(table.concat(s1.noPathLocation.okModes, ","), "SMALL_SHIP")
+	eq(#s1.noPathLocation.relaxedModes, 0)
+	eq(table.concat(s1.noPathLocation.allowedModes, ","), "SHIP,SMALL_SHIP")
+	eq(s2.incompatibleStop, true); eq(s2.noPathLocation, nil)
+	eq(table.concat(a.lines[1].stops[1].transportModes, ","), "SHIP,SMALL_SHIP", "a large pier")
+	eq(a.lines[1].stops[2].transportModes, nil, "none to read")
+	-- without --problems: as before, no problems and no modes
+	send(g, 766, "lines", "{  }")
+	frames(g, 10)
+	local b = final(g, 766)
+	eq(#b.lines, 2); eq(b.lines[1].problems, nil); eq(b.lines[1].stops[1].transportModes, nil)
+	-- a line without problems; a line that is not the company's; a bad id
+	send(g, 767, "lines", "{ problems = true, line = 24 }")
+	frames(g, 10)
+	local c = final(g, 767)
+	eq(c.lines[1].problems.count, 0); eq(#c.lines[1].problems.segments, 0); eq(#c.lines[1].problems.transportModesUnion, 0)
+	send(g, 768, "lines", "{ problems = true, line = 999 }")
+	frames(g, 10)
+	local d = final(g, 768)
+	eq(d.ok, false); truthy(tostring(d.error):find("no line 999", 1, true), tostring(d.error))
+	send(g, 769, "lines", '{ line = "x" }')
+	frames(g, 10)
+	eq(final(g, 769).ok, false)
+	eq(g.crashed, nil, "the engine was asked only for the company's lines")
+end)
+
+test("lines --problems: an engine call that raises is reported, the rest still read", function()
+	local g = portWorld({ lines = { [23] = { name = "Ship 1", stops = { { stationGroup = 47, station = 0, terminal = 2 },
+		{ stationGroup = 48, station = 0, terminal = 1 } } } } })
+	local real = api.engine.util.line.getDetailedLineProblems
+	api.engine.util.line.getDetailedLineProblems = function() error("unreadable") end
+	send(g, 770, "lines", "{ problems = true }")
+	frames(g, FIRST)
+	local a = final(g, 770)
+	api.engine.util.line.getDetailedLineProblems = real
+	eq(a.ok, true, tostring(a.error))
+	truthy(a.lines[1].problems.readError:find("unreadable", 1, true))
+	eq(table.concat(a.lines[1].stops[1].transportModes, ","), "SHIP,SMALL_SHIP")
 end)
 
 test("line update --terminals: a line with vehicles whose first stop's carriers cannot be read is refused", function()

@@ -1690,6 +1690,14 @@ class QuitLaunchTest(unittest.TestCase):
             self.assertIn(why, str(cm.exception))
         self.assertIn("line", tf3ctl.CHANGES_GAME)
         self.assertFalse({"stations", "lines"} & tf3ctl.CHANGES_GAME)
+        # lines --problems --line N: read only, args only when given
+        p = tf3ctl.make_parser()
+        self.assertEqual(tf3ctl.lines_args(p.parse_args(["lines"])), {})
+        self.assertEqual(tf3ctl.lines_args(p.parse_args(["lines", "--problems", "--line", "23", "--name", "Ship"])),
+                         {"name": "Ship", "line": 23, "problems": True})
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                p.parse_args(["lines", "--line", "x"])
         ns = tf3ctl.argparse.Namespace
         self.assertEqual(tf3ctl.stations_args(ns(name="cen", near=11, radius=500.0)),
                          {"name": "cen", "near": 11, "radius": 500.0})
