@@ -91,7 +91,10 @@ STALE_SEC = 3600  # answers nobody read (a killed tool) are removed after this
 PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); longer means it is not running
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
-                "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename"}  # window: what the player sees  # poll: only the mod's file reads
+                "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
+                "modhubValidate"}  # window: what the player sees  # poll: only the mod's file reads
+# modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
+# aborts a validation a person may have started on the My Mods page. modhubStatus only reads.
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -1530,6 +1533,43 @@ def cmd_connect(ns):
     return send("connect", args, timeout=ns.timeout + CONNECT_GRACE_SEC, on_progress=progress)
 
 
+MODHUB_GRACE_SEC = 30  # past the mod's own limits (wait / timeout), so its answer arrives before this gives up
+
+
+def modhub_status_args(ns):
+    args = {}
+    if ns.folder:
+        args["folder"] = ns.folder
+    if ns.wait is not None:
+        args["wait"] = ns.wait
+    return args
+
+
+def modhub_validate_args(ns):
+    args = {"folder": ns.folder}
+    if ns.timeout is not None:
+        args["timeout"] = ns.timeout
+    if ns.messages is not None:
+        args["messages"] = ns.messages
+    return args
+
+
+def cmd_modhub(ns):
+    """My Mods in the main menu: status (read only) or validate (one staging mod). There is no upload."""
+    if ns.action == "status":
+        args = modhub_status_args(ns)
+        wait = args.get("wait", 30)
+        return send("modhubStatus", args, timeout=wait + MODHUB_GRACE_SEC)
+    args = modhub_validate_args(ns)
+
+    def progress(a):
+        p = a.get("progress")
+        print("... %s%s%s, %.0f s" % (a.get("phase") or "?", "" if p is None else " %.0f%%" % (num(p) * 100),
+                                     " (" + a["task"] + ")" if a.get("task") else "", num(a.get("seconds"))),
+              file=sys.stderr)
+    return send("modhubValidate", args, timeout=args.get("timeout", 300) + MODHUB_GRACE_SEC, on_progress=progress)
+
+
 def industry_workers_args(ns):
     return {} if ns.entity is None else {"entity": ns.entity}
 
@@ -2331,6 +2371,19 @@ def make_parser():
     cn.add_argument("--build", action="store_true", help="build it (default: only plan and check it)")
     cn.add_argument("--clear", action="store_true", help="with --build: knock down town buildings in the way")
     cn.add_argument("--timeout", type=float, default=120, help="seconds for the whole command (10-1800)")
+    mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate; no upload")
+    msub = mh.add_subparsers(dest="action", required=True)
+    mst = msub.add_parser("status", help="read only: whether the publish helper can be made, mod.io's state, and "
+                                         "each staging mod (state, mod.io id, mod.io details and visibility)")
+    mst.add_argument("--folder", help="only this staging folder (its name, e.g. my_mod_1)")
+    mst.add_argument("--wait", type=float, help="seconds to wait for mod.io and the staging mods' sync (0-120, "
+                                                "default 30; 0: answer at once)")
+    mva = msub.add_parser("validate", help="validate one staging mod as My Mods' Re-Validate does (only the "
+                                           "folders the mod allows); answers PC and console results")
+    mva.add_argument("folder", help="the staging folder name (modhub status lists them)")
+    mva.add_argument("--timeout", type=float, help="seconds before the validation is aborted (default 300, at "
+                                                   "most 1800)")
+    mva.add_argument("--messages", type=int, help="validator messages listed (0-500, default 50; all are counted)")
     v = sub.add_parser("save")
     v.add_argument("name")
     sub.add_parser("state", help="where the game is (menu, loading, ...), from its log; needs no mod")
@@ -2491,6 +2544,8 @@ def main(argv=None):
             res = send("line", line_args(ns), timeout=VEHICLE_TIMEOUT_SEC)  # the mod's own wait is 60 s
         elif ns.cmd == "connect":
             res = cmd_connect(ns)
+        elif ns.cmd == "modhub":
+            res = cmd_modhub(ns)
     except GameNotReady as e:
         print("error: " + str(e), file=sys.stderr)
         out = {"ok": False, "error": str(e), "gameState": e.state}

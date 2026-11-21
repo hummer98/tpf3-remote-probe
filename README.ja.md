@@ -275,6 +275,40 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
   道路なので残ります (`--track` / `--template` で別の MOD の種類を使ったら、その MOD が要ります)。Track Connector の
   ゲームスクリプトの状態はセーブに残ります。
 
+### メインメニューからのマイMOD (`modhub`)
+
+```
+python3 tools/tf3ctl.py modhub status [--folder my_mod_1] [--wait 30]   # 読むだけ
+python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
+```
+
+本体の「MODハブ > マイMOD」のページは、`<user data>/staging_area/<フォルダ>/` の MOD を一覧にし、C++ の物
+`api.type.modhub.ModPublishHelper` を通して検証とアップロードをします (ボタンはそのメソッドを直接呼び、イベントは
+送りません)。メインメニュー (`launch` / `restart` で起動し、セーブを読む前) で、probe は自分の分を1つ作り、読む側だけを
+使います。**アップロードはありません**。`publish` と、staging の MOD を変えるメソッド (`abortPublish`・`setRemoteModId`・
+`refreshMod`・絵の設定など) はどこからも呼ばず、テストでそれを確認しています。セーブの中では、どちらのコマンドも断ります。
+
+- `status` は、`ModPublishHelper.new` が作れたか (作れなければゲームのエラーの文をそのまま)、`hasPrivilegedApis()`、
+  backend、mod.io の状態 (初期化・起動時の確認が済んだか・busy / uploading・ログインの有無を true / false で。名前は
+  返さない)、そして staging の MOD ごとに、フォルダ・id の value・題・`state` (Sync・Ready・Publishing・HasResult)・
+  `modhubId` (有効か・値。前に上げた mod.io の id)・`modhubDetails` (mod.io にある中身: found・`visible`・題・版) と、
+  ページが新規として上げるか、更新か、mod.io の MOD が消えたと警告するか (`upload`: new / update / remoteMissing) を
+  返します。mod.io の準備と、staging の MOD が Sync を抜けるのを最大 `--wait` 秒待ち、それから分かったことを返します
+  (`timedOut` に何を待っていたかが出ます)。
+- `validate FOLDER` は、ページの「再検証」のボタンと同じく helper の `validate` を呼び、終わるまで毎フレーム `update()` を
+  呼び、結果をページと同じ数え方で返します (`text`、Critical / Error / Warning の件数、先頭のメッセージ)。
+  `criticalPc`・`criticalConsole`・`levelPc`・`levelConsole` も返します。進み具合は 15 秒ごとに stderr へ。mod.io の準備を
+  最大 30 秒、MOD が Sync を抜けるのを最大 60 秒待ちます。Publishing か HasResult の MOD (アップロードが持っている) には
+  触りません。`--timeout` を過ぎると検証を止めます (`abortValidation`。ページを閉じたときと同じ)。受け付けるのは
+  `MODHUB_VALIDATE_FOLDERS` (content/remote_core.lua) にあるフォルダだけです。自分の MOD に合わせて直してください。
+- helper を作ると、ゲームは staging の MOD を mod.io と同期します。mod.io への読む要求で、書き込みはしません。
+- `validate` はゲームを変えるコマンドとして数えます (`--owner` の警告)。検証を数分動かし、その MOD で動いている検証
+  (人がマイMOD のページで始めたものなど) を止めるためです。動いている間はマイMOD を開かないでください。ページは
+  自分の helper を作ります。
+- **ゲーム内では未確認です。** とくに `ModPublishHelper.new` には「privileged api, not available to mods」の印があります。
+  メニューの probe は同じ印のある `api.modhub` の関数を読めていますが、helper を作れるかは、それを `status` で
+  確認するためのコマンドです。
+
 ### 複数のクライアント
 
 ツールは複数同時に動かせます (長い `run` と `status` など)。コマンドファイルは 1 つなので、ロックで順に書きます。
@@ -367,6 +401,8 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
 - `app.quit` が確認ダイアログなしでゲームを終えるか。
 - `connect` は全部。危ない順の一覧は「実装メモ」の「接続」。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
+- `modhub status` と `modhub validate` は全部 (ゲーム内では未確認): メニューの Lua の state で `ModPublishHelper` を作れるか、
+  staging の MOD の id の形 (`ModId.value` がフォルダ名か `StagingArea,<フォルダ>` か)、検証にかかる時間。
 
 ## テスト
 

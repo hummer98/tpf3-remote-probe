@@ -207,6 +207,7 @@ end
 
 local handlers = {}
 local finishRun
+local modhub -- remote_modhub.lua, made further down (load, newgame and quit, defined before it, cancel its job)
 
 -- (defined before stepLoad and stepStart, which call it: a local defined later is a nil global there,
 -- which raised on every load, 2026-11-15 22:10-22:14 JST)
@@ -686,6 +687,7 @@ end
 -- answered first; the game quits on the next frame, once the answer is on disk
 function handlers.quit(c)
 	cancelRun("quit command " .. c.id)
+	modhub.cancel("quit command " .. c.id)
 	answer(c.id, { ok = true, quitting = true, afterSave = G.saving == true })
 	G.pendingQuit = c.id
 end
@@ -815,6 +817,7 @@ function handlers.load(c)
 		local busy = waitingReplace()
 		if busy then return fail(c.id, busy) end
 		cancelRun("load command " .. c.id)
+		modhub.cancel("load command " .. c.id)
 		plan.loading = true
 		answer(c.id, plan, "ack")
 		-- load on the next frame, after the answer is on disk: the load ends this script's game
@@ -949,6 +952,7 @@ function handlers.newgame(c)
 	local busy = waitingReplace()
 	if busy then return fail(c.id, busy) end
 	cancelRun("newgame command " .. c.id)
+	modhub.cancel("newgame command " .. c.id)
 	answer(c.id, { ok = true, starting = true, plan = plan }, "ack")
 	-- start on the next frame, after the answer is on disk: starting ends this script's game
 	G.pendingStart = { id = c.id, plan = plan }
@@ -1046,6 +1050,10 @@ for k, fn in pairs(lines.handlers) do handlers[k] = fn end
 local connect = (ug_require or require)(MOD .. "::/remote_connect.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say, mod = MOD })
 for k, fn in pairs(connect.handlers) do handlers[k] = fn end
+-- My Mods (remote_modhub.lua): the staging area and validate, in the main menu only; nothing uploads
+modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = appTime, try = try, say = say })
+for k, fn in pairs(modhub.handlers) do handlers[k] = fn end
 
 -- args: entity (one industry; none: all). Read only. Per industry: its capacity (PERSON_CAPACITY), the sims that
 -- have it as their destination (what the base window shows as n/capacity, entity_window_util.tl
@@ -1319,7 +1327,11 @@ local function poll()
 	local owner = core.owner(c.args)
 	say("command " .. c.id .. ": " .. c.cmd .. (owner and (" from " .. owner) or ""), 2)
 	if G.menu and not core.MENU_COMMANDS[c.cmd] then
-		return fail(c.id, c.cmd .. " needs a running game; in the main menu: load, newgame, saves, info, status, quit")
+		return fail(c.id, c.cmd .. " needs a running game; in the main menu: load, newgame, saves, info, status, quit, modhub")
+	end
+	if not G.menu and core.MENU_ONLY[c.cmd] then
+		return fail(c.id, c.cmd .. " works only in the main menu (My Mods' publish helper is a privileged API, made in "
+			.. "the menu's Lua state); quit to the menu or use launch without a save")
 	end
 	local ok, err = pcall(handlers[c.cmd], c)
 	if not ok then fail(c.id, err) end
@@ -1364,7 +1376,7 @@ local function step()
 	if G.phase == "off" then return end
 	poll()
 	stepTasks()
-	if G.menu then return end -- no game to run, and no label to show
+	if G.menu then return modhub.step() end -- no game to run, and no label to show
 	vehicles.step()
 	lines.step()
 	connect.step()

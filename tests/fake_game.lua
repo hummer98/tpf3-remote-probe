@@ -1,8 +1,9 @@
 -- A stand-in for the parts of the game the remote probe touches, over a real folder, so the real
 -- content/remote.script.lua and tools/tf3ctl.py can talk through real files.
 --   require: local fake = dofile("tests/fake_game.lua"); local g = fake.new(dir, opts); g.step(dt)
---   command line: luajit tests/fake_game.lua <dir> <seconds> [menu]   (real time, for tests/test_tf3ctl.py;
---                 menu: starts in the main menu with startup.lua, as when launched with --script)
+--   command line: luajit tests/fake_game.lua <dir> <seconds> [menu [modhub]]   (real time, for tests/test_tf3ctl.py;
+--                 menu: starts in the main menu with startup.lua, as when launched with --script; modhub: with
+--                 My Mods' staging area, see installModhub)
 -- Like the game, saveUserdata never overwrites an existing file, and loading a missing file is an error.
 local here = (debug.getinfo(1, "S").source:match("^@(.*)/tests/[^/]*$")) or "."
 
@@ -68,6 +69,179 @@ local function dateOf(gameTime)
 	while days >= 365 do days, y = days - 365, y + 1 end
 	while days >= MONTH_DAYS[m] do days, m = days - MONTH_DAYS[m], m + 1 end
 	return { year = y, month = m, day = days + 1 }
+end
+
+-- userdata with fields and methods, as the engine's objects: a missing field reads nil, a write is an error
+local function object(fields, methods, name)
+	local u = newproxy(true)
+	local mt = getmetatable(u)
+	mt.__index = function(_, k)
+		if methods and methods[k] ~= nil then return methods[k] end
+		return fields[k]
+	end
+	mt.__newindex = function(_, k) error("cannot set " .. tostring(k) .. " on " .. (name or "userdata")) end
+	mt.__tostring = function() return name or "userdata" end
+	return u
+end
+
+-- an engine vector of these values (1-based, # works, no pairs)
+local function vector(list)
+	local u = newproxy(true)
+	local mt = getmetatable(u)
+	mt.__len = function() return #list end
+	mt.__index = function(_, i) return list[i] end
+	mt.__tostring = function() return "vector" end
+	return u
+end
+
+-- an enum: each name a distinct userdata, compared with ==, as the engine's
+local function enum(names, prefix)
+	local e = {}
+	for _, n in ipairs(names) do e[n] = object({}, nil, prefix .. "." .. n) end
+	return e
+end
+
+-- My Mods for tests: api.modhub with an info-only backend (1, also the "StagingArea" source's) and mod.io's
+-- publishing one (2), as the base menu sees them, plus api.type.modhub.ModPublishHelper.
+-- spec: privileged (default true; a helper made where it is not raises the game's own message),
+--   staging = { { folder, title, modhubId (mod.io id as text, nil: none), details = { visible, title, found } or
+--   nil (not on mod.io), syncFrames (frames in Sync after the helper is made, default 3), state (after the sync,
+--   default Ready), validateUpdates (update() calls a validation takes, default 5), result = { messages = { {
+--   level, file, message, consoleOnly } }, criticalPc, criticalConsole, levelPc, levelConsole } } },
+--   prefix (put before the folder in ModId.value, e.g. "StagingArea,"), noSource (getBackendIdForSource fails),
+--   newReturnsNil.
+-- g.modhubBusy / g.modhubNoRestricted / g.modhubUploading / g.modhubNotInitialized / g.modhubLoggedOut change
+-- what the publishing backend says, from frame to frame. g.helpersMade, g.helperUpdates, g.validateCalls,
+-- g.abortValidations count the calls; g.forbidden lists every call of a method that uploads or changes a staging
+-- mod (publish, abortPublish, setRemoteModId, ...), which this probe must never make.
+function M.installModhub(g, spec)
+	local LogLevel = enum({ "Critical", "Error", "Warning", "Message", "Verbose" }, "LogLevel")
+	local State = enum({ "Sync", "Ready", "Publishing", "HasResult" }, "State")
+	api.type.enum.LogLevel = LogLevel
+	g.helpersMade, g.helperUpdates, g.validateCalls, g.abortValidations, g.forbidden = 0, 0, {}, 0, {}
+	local privileged = spec.privileged ~= false
+	api.util.hasPrivilegedApis = function() return privileged end
+	local staging = spec.staging or {}
+	local function modId(v)
+		return object({ value = v }, { isValid = function() return v ~= nil and v ~= "" end,
+			clone = function() return modId(v) end }, "ModId")
+	end
+	local function valueOf(e) return (spec.prefix or "") .. e.folder end
+	local ids = {}
+	for _, e in ipairs(staging) do ids[#ids + 1] = modId(valueOf(e)) end
+	api.modhub = {
+		getBackendIDs = function() return { 1, 2 } end,
+		getCapabilities = function(b) return { isInfoOnly = b == 1, allowRestrictedMode = not g.modhubNoRestricted,
+			allowModUpload = b == 2 } end,
+		getModManagementState = function(b)
+			g.modhubAsked = (g.modhubAsked or 0) + 1
+			return { busy = b == 2 and g.modhubBusy == true, uploading = b == 2 and g.modhubUploading == true,
+				totalPending = g.modhubBusy and 3 or 0, progress = 0 }
+		end,
+		isInitialized = function() return not g.modhubNotInitialized end,
+		getUserInfo = function(b)
+			if g.modhubLoggedOut or b ~= 2 then return nil end
+			return object({ userName = "someone", displayName = "Someone" }, nil, "UserInfo")
+		end,
+		getBackendIdForSource = function(src)
+			if spec.noSource then error("no backend for source " .. tostring(src)) end
+			return src == "StagingArea" and 1 or nil
+		end,
+		getInstalledMods = function(b) return vector(b == 1 and ids or {}) end,
+		getModInfoForInstalledMod = function(b, id)
+			for _, e in ipairs(staging) do
+				if valueOf(e) == id.value then return object({ title = e.title, visible = e.listVisible ~= false, modId = id }, nil, "ModInfo") end
+			end
+		end,
+	}
+	local function makeResult(r)
+		if r == nil then return nil end
+		local msgs = {}
+		for _, m in ipairs(r.messages or {}) do
+			msgs[#msgs + 1] = object({ level = LogLevel[m.level or "Warning"], file = m.file, message = m.message,
+				context = m.context or "check", consoleOnly = m.consoleOnly == true }, nil, "ModValidatorMessage")
+		end
+		return object({ messages = vector(msgs), criticalPc = r.criticalPc == true, criticalConsole = r.criticalConsole == true,
+			levelPc = LogLevel[r.levelPc or "Message"], levelConsole = LogLevel[r.levelConsole or "Message"],
+			cookedPcPath = "", cookedConsolePath = "" }, nil, "ModValidatorResult")
+	end
+	local function details(d)
+		if d == nil then return nil end
+		return object({ found = d.found ~= false, author = "someone", modInfo = object({ visible = d.visible == true,
+			title = d.title, modId = modId(d.modId), releaseInfo = object({ version = d.version }, nil, "ModReleaseInfo") },
+			nil, "ModInfo") }, nil, "ModDetailsData")
+	end
+	local forbiddenNames = { "publish", "abortPublish", "setRemoteModId", "setModDetails", "refreshMod",
+		"addLogoImage", "removeLogoImage", "addGalleryImages", "removeGalleryImage", "moveGalleryImage",
+		"setPostPublishFn", "openFolder" }
+	api.type.modhub = {
+		StagingModData = { State = State },
+		PublishSettings = { new = function() table.insert(g.forbidden, "PublishSettings.new"); return {} end },
+		ModPublishHelper = { new = function(backend)
+			if not privileged then error("API can only be used by privileged (non-moddable) scripts") end
+			if spec.newReturnsNil then return nil end
+			g.helpersMade = g.helpersMade + 1
+			local mods = {}
+			for _, e in ipairs(staging) do
+				mods[valueOf(e)] = { e = e, state = "Sync", syncLeft = e.syncFrames or 3, validating = false, progress = 0 }
+			end
+			-- the sync with mod.io runs in C++, whether update() is called or not
+			g.modhubTick = function()
+				for _, m in pairs(mods) do
+					if m.state == "Sync" and not m.e.staysInSync then
+						m.syncLeft = m.syncLeft - 1
+						if m.syncLeft <= 0 then m.state = m.e.state or "Ready" end
+					end
+				end
+			end
+			local function mod(id)
+				local m = mods[id.value]
+				if not m then error("staging mod not found: " .. tostring(id.value)) end
+				return m
+			end
+			local methods = {
+				hasAnyStagingMods = function() return next(mods) ~= nil end,
+				hasStagingMod = function(_, id) return mods[id.value] ~= nil end,
+				getStagingModData = function(_, id)
+					local m = mod(id)
+					return object({ state = State[m.state], modhubId = modId(m.e.modhubId),
+						modhubDetails = m.state ~= "Sync" and details(m.e.details) or nil,
+						localModhubDetails = details({ title = m.e.title, visible = false }) }, nil, "StagingModData")
+				end,
+				-- polls the validations (the type: has to be called regularly while one runs)
+				update = function()
+					g.helperUpdates = g.helperUpdates + 1
+					for _, m in pairs(mods) do
+						if m.validating then
+							m.left = m.left - 1
+							m.progress = 1 - m.left / (m.e.validateUpdates or 5)
+							if m.left <= 0 and not m.e.validationHangs then
+								m.validating, m.result = false, makeResult(m.e.result or {})
+							end
+						end
+					end
+				end,
+				validate = function(_, id)
+					local m = mod(id)
+					g.validateCalls[#g.validateCalls + 1] = id.value
+					m.validating, m.left, m.progress = true, m.e.validateUpdates or 5, 0
+				end,
+				abortValidation = function(_, id)
+					g.abortValidations = g.abortValidations + 1
+					mod(id).validating = false
+				end,
+				getValidationData = function(_, id)
+					local m = mod(id)
+					return object({ validating = m.validating, progress = m.progress, task = m.validating and "Checking files" or "",
+						result = m.result }, nil, "ValidationData")
+				end,
+			}
+			for _, n in ipairs(forbiddenNames) do
+				methods[n] = function() table.insert(g.forbidden, n); error(n .. " must never be called by the probe") end
+			end
+			return object({}, methods, "ModPublishHelper")
+		end },
+	}
 end
 
 -- opts: saves = { { saveName, path, timestamp, size, mods = {...}, modParams = {...} } }, maxSpeed (CPU cap),
@@ -453,16 +627,7 @@ function M.new(dir, opts)
 	_G.api = {
 		util = { getApplicationTime = function() return g.time end,
 			getDefaultYearDuration = function() return 365 * DAY_TICKS end },
-		-- opts.modhub: an info-only backend and mod.io's publishing one, as the base menu sees them;
-		-- g.modhubBusy / g.modhubNoRestricted change what the publishing one says, from frame to frame
-		modhub = opts.modhub and {
-			getBackendIDs = function() return { 1, 2 } end,
-			getCapabilities = function(b) return { isInfoOnly = b == 1, allowRestrictedMode = not g.modhubNoRestricted } end,
-			getModManagementState = function(b)
-				g.modhubAsked = (g.modhubAsked or 0) + 1
-				return { busy = b == 2 and g.modhubBusy == true }
-			end,
-		} or nil,
+		-- opts.modhub: see installModhub (after this table)
 		engine = {
 			util = {
 				getWorld = function() inGame("getWorld"); return 1 end,
@@ -969,6 +1134,7 @@ function M.new(dir, opts)
 			getDefaultSavegameId = function() return "default" end,
 		} },
 	}
+	if opts.modhub then M.installModhub(g, opts.modhub == true and {} or opts.modhub) end
 
 	-- the base's vehicle_react_util.HandleVehicleChanges, as in 40444 (stamp, autoload, then the engine command);
 	-- opts.noGuiModule: it does not load. opts.vehicleUtil: vehicle_util.tl loads too (else the probe builds parts)
@@ -1181,6 +1347,7 @@ function M.new(dir, opts)
 
 	function g.step(dt)
 		dt = dt or 1 / 30
+		if g.modhubTick then g.modhubTick() end
 		g.time = g.time + dt
 		local eff = (g.frozen or g.saveCallback) and 0 or g.speedup
 		if opts.maxSpeed and opts.maxSpeed > 0 then eff = math.min(eff, opts.maxSpeed) end
@@ -1292,7 +1459,14 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			mods = { "example_mod", "hummer_remote_probe" }, modParams = { example_mod = { treePollution = 1 } } },
 		{ saveName = "other", path = dir .. "/save/other.sav", timestamp = 1, size = 10, mods = {} },
 	}
-	local g = M.new(dir, { saves = saves, maxSpeed = 40, menu = arg[3] == "menu",
+	-- modhub (4th argument): My Mods with one staging mod validate takes and one it refuses
+	local modhub = arg[4] == "modhub" and { staging = {
+		{ folder = "hummer_force_unload_default_1", title = "Force Unload by Default", validateUpdates = 20,
+			result = { messages = { { level = "Warning", file = "content/x.lua", message = "a warning" } },
+				levelPc = "Warning", levelConsole = "Warning" } },
+		{ folder = "example_mod_1", title = "Example" },
+	} } or nil
+	local g = M.new(dir, { saves = saves, maxSpeed = 40, menu = arg[3] == "menu", modhub = modhub,
 		entities = { TOWN = { 11, 12 }, LINE = { 21 } }, names = { [11] = "Emsworth", [12] = "Emsworth Bay", [21] = "Bus 1" },
 		positions = { [11] = { 0, 0 } },
 		industries = { [51] = { name = "Coal mine", construction = 5100, capacity = 12, workers = 5, productivity = 1, pos = { 300, 0 },

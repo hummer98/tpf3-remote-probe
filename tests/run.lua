@@ -5324,5 +5324,381 @@ test("core: persons helpers (args, CargoQualityData as userdata, summary)", func
 	eq(core.personSummary({ cyc }).unhappy, 1)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- modhub (My Mods in the main menu): status and validate; nothing uploads
+
+local STAGING = {
+	{ folder = "hummer_construction_altitude_tooltip_1", title = "Construction Altitude Tooltip", modhubId = "6400001",
+		details = { visible = true, title = "Construction Altitude Tooltip", modId = "6400001", version = "3" } },
+	{ folder = "hummer_cursor_altitude_tooltip_1", title = "Cursor Altitude Tooltip", modhubId = "6400002",
+		details = { visible = true, title = "Cursor Altitude Tooltip", modId = "6400002" } },
+	{ folder = "hummer_industry_pollution_display_1", title = "Industry Pollution Display", modhubId = "6500003",
+		details = { visible = true, title = "Industry Pollution Display", modId = "6500003" },
+		result = { messages = {
+			{ level = "Warning", file = "res/a.lua", message = "unused file" },
+			{ level = "Error", file = "res/b.dds", message = "texture too big for console", consoleOnly = true },
+			{ level = "Warning", file = "res/c.lua", message = "deprecated call" },
+		}, criticalPc = false, criticalConsole = false, levelPc = "Warning", levelConsole = "Error" } },
+	{ folder = "example_mod_1", title = "Example" },
+	{ folder = "hummer_proto_models_1" }, -- no title: nil reads as nothing
+}
+
+local function modhubGame(spec, opts)
+	opts = opts or {}
+	local ms = spec or {}
+	if ms.staging == nil then ms.staging = STAGING end
+	local g = newGame({ saves = SAVES, menu = opts.inGame ~= true, modhub = ms })
+	frames(g, 2)
+	return g
+end
+
+local function modOf(a, folder)
+	for _, m in ipairs(a.mods or {}) do if m.folder == folder then return m end end
+end
+
+-- every test of this part ends with this: the helper's upload and change methods record each call
+local function noUploads(g)
+	eq(#(g.forbidden or {}), 0, "upload / change methods called: " .. table.concat(g.forbidden or {}, ", "))
+end
+
+test("modhub core: folder names, status and validate args, the allowed folders", function()
+	eq(core.stagingFolder("StagingArea,hummer_x_1"), "hummer_x_1")
+	eq(core.stagingFolder("hummer_x_1"), "hummer_x_1")
+	eq(core.stagingFolder(""), nil); eq(core.stagingFolder(nil), nil); eq(core.stagingFolder(5), nil)
+	eq(core.stagingFolder(newproxy(true)), nil, "userdata is no folder")
+	eq(core.modhubStatusArgs(nil).wait, 30)
+	eq(core.modhubStatusArgs({ wait = 0 }).wait, 0)
+	eq(core.modhubStatusArgs({ folder = "a_1" }).folder, "a_1")
+	truthy(select(2, core.modhubStatusArgs({ wait = 121 })))
+	truthy(select(2, core.modhubStatusArgs({ wait = 0 / 0 })))
+	truthy(select(2, core.modhubStatusArgs({ folder = "../x" })):find("plain folder"))
+	truthy(select(2, core.modhubStatusArgs({ folder = "StagingArea,x" })):find("plain folder"))
+	truthy(select(2, core.modhubStatusArgs({ folder = newproxy(true) })))
+	local v = core.modhubValidateArgs({ folder = "hummer_industry_pollution_display_1" })
+	eq(v.timeout, 300); eq(v.messages, 50)
+	for _, f in ipairs({ "hummer_construction_altitude_tooltip_1", "hummer_cursor_altitude_tooltip_1",
+		"hummer_industry_pollution_display_1", "hummer_force_unload_default_1" }) do
+		truthy(core.modhubValidateArgs({ folder = f }), f)
+	end
+	for _, f in ipairs({ "example_mod_1", "hummer_proto_models_1", "road_tunnel_ramp_1", "hummer_force_unload_default" }) do
+		local ok, err = core.modhubValidateArgs({ folder = f })
+		eq(ok, nil, f); truthy(err:find("only these staging folders"), err)
+	end
+	truthy(select(2, core.modhubValidateArgs({})):find("give a staging folder"))
+	truthy(select(2, core.modhubValidateArgs(nil)))
+	truthy(select(2, core.modhubValidateArgs({ folder = "hummer_force_unload_default_1", timeout = 0 })))
+	truthy(select(2, core.modhubValidateArgs({ folder = "hummer_force_unload_default_1", timeout = 1801 })))
+	truthy(select(2, core.modhubValidateArgs({ folder = "hummer_force_unload_default_1", messages = 1.5 })))
+	eq(core.modhubValidateArgs({ folder = "hummer_force_unload_default_1", messages = 0 }).messages, 0)
+end)
+
+test("modhub core: validationSummary counts as the base page, lists the first messages, takes nil", function()
+	eq(core.validationSummary(nil), nil)
+	eq(core.validationSummary(newproxy(true)), nil)
+	local s = core.validationSummary({ messages = {} })
+	eq(s.text, "Validation: No Issues Found"); eq(s.messageCount, 0); eq(core.json(s.messages), "[]")
+	s = core.validationSummary({ messages = { { level = "Critical" }, { level = "Error", consoleOnly = true },
+		{ level = "Warning" }, { level = "Message" }, "junk" }, criticalPc = true, levelConsole = "Critical" }, 2)
+	eq(s.counts.critical, 1); eq(s.counts.error, 1); eq(s.counts.warning, 1); eq(s.counts.other, 2)
+	eq(s.counts.consoleOnly, 1); eq(s.messageCount, 5); eq(#s.messages, 2); eq(s.truncated, true)
+	eq(s.text, "Validation: 1 Critical Issues"); eq(s.criticalPc, true); eq(s.levelConsole, "Critical")
+	eq(core.validationSummary({ messages = { { level = "Error" }, { level = "Warning" } } }).text,
+		"Validation: 1 Errors, 1 Warnings")
+	eq(core.validationSummary({ messages = { { level = "Warning" } } }).text, "Validation: 1 Warnings")
+	local cyc = { level = "Error" }
+	cyc.self = cyc
+	eq(core.validationSummary({ messages = { cyc } }).counts.error, 1, "a cycle does not trip it")
+	eq(core.validationSummary({ messages = "x" }).messageCount, 0)
+end)
+
+test("modhub status in the main menu: the helper, mod.io's state and every staging mod, without names", function()
+	local g = modhubGame()
+	send(g, 1301, "modhubStatus", "{ }")
+	frames(g, FIRST)
+	local text = answerText(g, 1301)
+	truthy(text, answerText(g, 1301, "error"))
+	local a = decode(text)
+	eq(a.ok, true); eq(a.privileged, true); eq(a.helper, true); eq(g.helpersMade, 1)
+	eq(a.backends.publish, 2); eq(a.backends.staging, 1); eq(a.backends.stagingFrom, "getBackendIdForSource")
+	eq(a.modio.loggedIn, true); eq(a.modio.management.busy, false); eq(a.modio.allowModUpload, true)
+	eq(a.anyStagingMods, true); eq(#a.mods, 5)
+	local ipd = modOf(a, "hummer_industry_pollution_display_1")
+	eq(ipd.state, "Ready"); eq(ipd.modhubId.valid, true); eq(ipd.modhubId.value, "6500003")
+	eq(ipd.hasModhubDetails, true); eq(ipd.modhubDetails.visible, true); eq(ipd.upload, "update")
+	eq(ipd.validateAllowed, true); eq(ipd.title, "Industry Pollution Display")
+	eq(ipd.validation.hasResult, false)
+	local ex = modOf(a, "example_mod_1")
+	eq(ex.modhubId.valid, false); eq(ex.hasModhubDetails, false); eq(ex.upload, "new"); eq(ex.validateAllowed, false)
+	local proto = modOf(a, "hummer_proto_models_1")
+	eq(proto.title, nil); eq(proto.state, "Ready")
+	truthy(not text:find("someone", 1, true) and not text:find("Someone", 1, true), "no user or author names: " .. text)
+	eq(#g.validateCalls, 0, "status validates nothing")
+	-- the helper is made once per menu probe; update() runs every frame from then on
+	local updates = g.helperUpdates
+	truthy(updates > 0)
+	send(g, 1302, "modhubStatus", '{ folder = "example_mod_1", wait = 0 }')
+	frames(g, 10)
+	a = final(g, 1302)
+	eq(a.ok, true); eq(#a.mods, 1); eq(a.mods[1].folder, "example_mod_1"); eq(g.helpersMade, 1)
+	truthy(g.helperUpdates > updates)
+	send(g, 1303, "modhubStatus", '{ folder = "nope_1", wait = 0 }')
+	frames(g, 10)
+	a = final(g, 1303)
+	eq(a.ok, false); truthy(a.error:find("no staging mod in folder nope_1"), a.error)
+	noUploads(g)
+end)
+
+test("modhub status waits for the sync with mod.io, and says when it gave up waiting", function()
+	local staging = { { folder = "hummer_industry_pollution_display_1", modhubId = "6500003", syncFrames = 200,
+		details = { visible = false } } }
+	local g = modhubGame({ staging = staging })
+	send(g, 1305, "modhubStatus", '{ wait = 30 }')
+	frames(g, FIRST)
+	eq(final(g, 1305), nil, "still in Sync: no answer yet")
+	frames(g, 200)
+	local a = final(g, 1305)
+	eq(a.ok, true); eq(a.mods[1].state, "Ready"); eq(a.timedOut, nil); eq(a.mods[1].modhubDetails.visible, false)
+	staging[1].staysInSync = true
+	g = modhubGame({ staging = staging })
+	send(g, 1306, "modhubStatus", '{ wait = 2 }')
+	frames(g, FIRST + 90)
+	a = final(g, 1306)
+	eq(a.ok, true); eq(a.mods[1].state, "Sync"); eq(a.mods[1].upload, nil, "nothing to say while in Sync")
+	truthy((a.timedOut or ""):find("sync"), tostring(a.timedOut))
+	noUploads(g)
+end)
+
+test("modhub: the ids may carry the source (StagingArea,<folder>); the staging backend falls back to the info-only one", function()
+	local g = modhubGame({ prefix = "StagingArea,", noSource = true })
+	send(g, 1308, "modhubStatus", "{ }")
+	frames(g, FIRST)
+	local a = final(g, 1308)
+	eq(a.ok, true); eq(a.backends.staging, 1); eq(a.backends.stagingFrom, "infoOnly")
+	local ipd = modOf(a, "hummer_industry_pollution_display_1")
+	eq(ipd.value, "StagingArea,hummer_industry_pollution_display_1"); eq(ipd.state, "Ready")
+	send(g, 1309, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, 30)
+	a = final(g, 1309)
+	eq(a.ok, true, a.error); eq(g.validateCalls[1], "StagingArea,hummer_industry_pollution_display_1")
+	noUploads(g)
+end)
+
+test("modhub: where the helper cannot be made (privileged), the game's error comes back as it is; validate stops there", function()
+	local g = modhubGame({ privileged = false })
+	send(g, 1311, "modhubStatus", "{ }")
+	frames(g, FIRST)
+	local text = answerText(g, 1311, "error")
+	truthy(text, answerText(g, 1311))
+	local a = decode(text)
+	eq(a.ok, false); eq(a.helper, false); eq(a.privileged, false)
+	truthy(a.helperError:find("API can only be used by privileged (non-moddable) scripts", 1, true), a.helperError)
+	truthy(a.error:find("ModPublishHelper.new failed: ", 1, true), a.error)
+	eq(#a.mods, 5, "the staging list is still read")
+	eq(modOf(a, "hummer_industry_pollution_display_1").state, nil, "no helper: no state")
+	send(g, 1312, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, 10)
+	a = final(g, 1312)
+	eq(a.ok, false); truthy(a.error:find("API can only be used by privileged", 1, true), a.error)
+	eq(#g.validateCalls, 0); eq(g.helpersMade, 0)
+	local logged = 0
+	for _, l in ipairs(g.logs) do if l:find("^%[remote_probe%] ModPublishHelper.new failed") then logged = logged + 1 end end
+	eq(logged, 1, "tried and logged once, not on every command")
+	-- a helper that comes back as nothing is the same stop
+	g = modhubGame({ newReturnsNil = true })
+	send(g, 1313, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, FIRST)
+	a = final(g, 1313)
+	eq(a.ok, false); truthy(a.error:find("returned nothing"), a.error)
+	noUploads(g)
+end)
+
+test("modhub validate: the base's validate, polled with update(); the result as the page counts it, PC and console", function()
+	local g = modhubGame()
+	send(g, 1315, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1", messages = 2 }')
+	frames(g, FIRST)
+	local a = final(g, 1315)
+	truthy(a, "answered")
+	eq(a.ok, true, a.error); eq(a.folder, "hummer_industry_pollution_display_1"); eq(a.state, "Ready")
+	eq(#g.validateCalls, 1); eq(g.validateCalls[1], "hummer_industry_pollution_display_1")
+	local r = a.result
+	eq(r.criticalPc, false); eq(r.criticalConsole, false); eq(r.levelPc, "Warning"); eq(r.levelConsole, "Error")
+	eq(r.counts.warning, 2); eq(r.counts.error, 1); eq(r.counts.consoleOnly, 1); eq(r.messageCount, 3)
+	eq(#r.messages, 2); eq(r.truncated, true); eq(r.messages[1].file, "res/a.lua")
+	eq(r.text, "Validation: 1 Errors, 2 Warnings")
+	eq(a.note, nil)
+	-- status shows the last result's counts afterwards
+	send(g, 1316, "modhubStatus", '{ folder = "hummer_industry_pollution_display_1", wait = 0 }')
+	frames(g, 10)
+	local s = final(g, 1316)
+	eq(s.mods[1].validation.hasResult, true); eq(s.mods[1].validation.result.counts.error, 1)
+	eq(#s.mods[1].validation.result.messages, 0, "status lists no messages")
+	noUploads(g)
+end)
+
+test("modhub validate: progress while it runs; a validation past its timeout is aborted (a validation, never an upload)", function()
+	local staging = { { folder = "hummer_force_unload_default_1", title = "Force Unload", validateUpdates = 100000 } }
+	local g = modhubGame({ staging = staging })
+	send(g, 1318, "modhubValidate", '{ folder = "hummer_force_unload_default_1", timeout = 20 }')
+	frames(g, FIRST + 30 * 16)
+	local p = answerText(g, 1318, "p1")
+	truthy(p, "a progress answer")
+	local pa = decode(p)
+	eq(pa.running, true); eq(pa.phase, "validating"); eq(pa.task, "Checking files"); truthy(pa.progress >= 0)
+	eq(final(g, 1318), nil, "not done")
+	frames(g, 30 * 6)
+	local a = final(g, 1318)
+	eq(a.ok, false); truthy(a.error:find("timed out after 20 s"), a.error)
+	eq(g.abortValidations, 1)
+	noUploads(g)
+end)
+
+test("modhub validate refuses folders outside its list, before making anything", function()
+	local g = modhubGame()
+	for i, f in ipairs({ "example_mod_1", "hummer_proto_models_1", "../hummer_industry_pollution_display_1" }) do
+		send(g, 1320 + i, "modhubValidate", string.format("{ folder = %q }", f))
+		frames(g, i == 1 and FIRST or 10)
+		local a = final(g, 1320 + i)
+		eq(a.ok, false, f)
+		truthy(a.error:find("only these staging folders") or a.error:find("plain folder"), a.error)
+	end
+	eq(g.helpersMade, 0); eq(#g.validateCalls, 0)
+	-- an allowed folder that is not in the staging area
+	send(g, 1324, "modhubValidate", '{ folder = "hummer_force_unload_default_1" }')
+	frames(g, 10)
+	local a = final(g, 1324)
+	eq(a.ok, false); truthy(a.error:find("no staging mod in folder hummer_force_unload_default_1"), a.error)
+	truthy(a.error:find("example_mod_1", 1, true), "names what is there: " .. a.error)
+	eq(#g.validateCalls, 0)
+	noUploads(g)
+end)
+
+test("modhub commands are refused inside a save (no privileged API there); nothing is made", function()
+	local g = newGame({ saves = SAVES, modhub = { staging = STAGING } })
+	frames(g, 2)
+	send(g, 1326, "modhubStatus", "{ }")
+	frames(g, FIRST)
+	local a = final(g, 1326)
+	eq(a.ok, false); truthy(a.error:find("works only in the main menu"), a.error)
+	send(g, 1327, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, 10)
+	a = final(g, 1327)
+	eq(a.ok, false); truthy(a.error:find("works only in the main menu"), a.error)
+	eq(g.helpersMade, 0); eq(#g.validateCalls, 0)
+	noUploads(g)
+end)
+
+test("modhub validate waits while mod.io is busy or not ready, goes once it is, and gives up after 30 s", function()
+	local g = modhubGame()
+	g.modhubBusy = true
+	send(g, 1330, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, FIRST + 30 * 5)
+	eq(final(g, 1330), nil, "waiting")
+	eq(g.helpersMade, 0, "no helper while mod.io is busy")
+	g.modhubBusy = false
+	frames(g, 30)
+	local a = final(g, 1330)
+	eq(a.ok, true, a.error); eq(#g.validateCalls, 1)
+	for _, case in ipairs({ "modhubUploading", "modhubNotInitialized", "modhubNoRestricted" }) do
+		local h = modhubGame()
+		h[case] = true
+		send(h, 1331, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+		frames(h, FIRST + 30 * 31)
+		a = final(h, 1331)
+		eq(a.ok, false, case); truthy(a.error:find("after 30 s; try again later"), case .. ": " .. a.error)
+		eq(#h.validateCalls, 0, case); eq(h.helpersMade, 0, case)
+		noUploads(h)
+	end
+	-- status does not wait with wait = 0: it says why there is no helper yet
+	local h = modhubGame()
+	h.modhubBusy = true
+	send(h, 1332, "modhubStatus", '{ wait = 0 }')
+	frames(h, FIRST)
+	a = final(h, 1332)
+	eq(a.ok, false); eq(a.helper, false); truthy(a.notReady:find("busy"), a.notReady)
+	truthy(a.error:find("no helper yet"), a.error); eq(a.modio.management.busy, true)
+	eq(a.helperError, nil, "not a failure of the helper")
+	noUploads(h)
+end)
+
+test("modhub validate: a mod that an upload has (Publishing / HasResult), or that never leaves Sync, is not validated", function()
+	for _, st in ipairs({ "Publishing", "HasResult" }) do
+		local g = modhubGame({ staging = { { folder = "hummer_force_unload_default_1", state = st } } })
+		send(g, 1334, "modhubValidate", '{ folder = "hummer_force_unload_default_1" }')
+		frames(g, FIRST)
+		local a = final(g, 1334)
+		eq(a.ok, false, st); truthy(a.error:find(st .. ", not Ready"), a.error)
+		eq(#g.validateCalls, 0); noUploads(g)
+	end
+	local g = modhubGame({ staging = { { folder = "hummer_force_unload_default_1", staysInSync = true } } })
+	send(g, 1335, "modhubValidate", '{ folder = "hummer_force_unload_default_1" }')
+	frames(g, FIRST + 30 * 61)
+	local a = final(g, 1335)
+	eq(a.ok, false); truthy(a.error:find("still Sync after 60 s"), a.error)
+	eq(#g.validateCalls, 0); noUploads(g)
+end)
+
+test("modhub: one job at a time; quit aborts a running validation and answers it", function()
+	local g = modhubGame({ staging = { { folder = "hummer_force_unload_default_1", validateUpdates = 100000 } } })
+	send(g, 1337, "modhubValidate", '{ folder = "hummer_force_unload_default_1" }')
+	frames(g, FIRST)
+	send(g, 1338, "modhubStatus", '{ wait = 0 }')
+	frames(g, 10)
+	local a = final(g, 1338)
+	eq(a.ok, false); truthy(a.error:find("command 1337 %(modhubValidate%) is still running"), a.error)
+	send(g, 1339, "quit")
+	frames(g, 10)
+	a = final(g, 1337)
+	eq(a.ok, false); truthy(a.error:find("cancelled by quit command 1339"), a.error)
+	eq(g.abortValidations, 1)
+	noUploads(g)
+end)
+
+test("modhub without api.modhub (or an unreadable one) answers an error, not a crash", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 1341, "modhubStatus", "{ }")
+	frames(g, FIRST)
+	local a = final(g, 1341)
+	eq(a.ok, false); truthy(a.error:find("api.modhub cannot be read"), a.error)
+	send(g, 1342, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, 10)
+	a = final(g, 1342)
+	eq(a.ok, false); truthy(a.error:find("api.modhub cannot be read"), a.error)
+	-- api.modhub whose lists are userdata that raise on reading: the staging list is empty, not an error
+	g = modhubGame()
+	local locked = newproxy(true)
+	getmetatable(locked).__index = function() error("locked") end
+	getmetatable(locked).__len = function() error("locked") end
+	api.modhub.getInstalledMods = function() return locked end
+	send(g, 1343, "modhubStatus", '{ wait = 0 }')
+	frames(g, FIRST)
+	a = final(g, 1343)
+	eq(a.ok, true, a.error); eq(#a.mods, 0); eq(core.json(core.array({})), "[]")
+	truthy(answerText(g, 1343):find('"mods":[]', 1, true), "an empty list is []")
+	noUploads(g)
+end)
+
+test("no code path uploads: the probe's code calls none of the helper's publish or change methods", function()
+	-- comments name them (to say they are left out); code must not
+	local banned = { "[:.]publish%s*%(", "abortPublish", "PublishSettings", "setRemoteModId", "setModDetails",
+		"refreshMod", "LogoImage", "GalleryImage", "setPostPublishFn", "openFolder", "stageSavegame" }
+	local p = io.popen("find '" .. root .. "/content' -name '*.lua'")
+	local n = 0
+	for path in p:lines() do
+		n = n + 1
+		local lineNo = 0
+		for line in io.lines(path) do
+			lineNo = lineNo + 1
+			local code = line:gsub("%-%-.*$", "")
+			for _, pat in ipairs(banned) do
+				truthy(not code:find(pat), path .. ":" .. lineNo .. " calls " .. pat .. ": " .. line)
+			end
+		end
+	end
+	p:close()
+	truthy(n >= 10, "read the content files (" .. n .. ")")
+	eq(core.COMMANDS.modhubPublish, nil); eq(core.COMMANDS.publish, nil)
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)

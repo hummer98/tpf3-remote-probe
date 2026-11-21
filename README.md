@@ -290,6 +290,42 @@ Without the mod, `connect` answers with an error saying so, and every other comm
   road of the game's own types (a type from another mod, given with `--track` / `--template`, needs that mod), so it
   stays. Track Connector's game script state stays in the save.
 
+### My Mods from the main menu (`modhub`)
+
+```
+python3 tools/tf3ctl.py modhub status [--folder my_mod_1] [--wait 30]   # read only
+python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
+```
+
+The base's MOD hub > My Mods page lists the mods in `<user data>/staging_area/<folder>/` and validates and uploads
+them through one C++ object, `api.type.modhub.ModPublishHelper` (its buttons call its methods; no event is fired).
+In the main menu (a game launched by `launch` / `restart`, before a save is loaded) the probe makes its own one and
+uses only its reading part. **There is no upload**: `publish` and every method that changes a staging mod
+(`abortPublish`, `setRemoteModId`, `refreshMod`, the image setters, ...) are called nowhere, and the tests check that.
+Inside a save both commands are refused.
+
+- `status` answers whether `ModPublishHelper.new` worked (or the game's error message as it is), `hasPrivilegedApis()`,
+  the backends, mod.io's state (initialized, start-up check done, busy / uploading, logged in as true / false; no
+  names), and for each staging mod: the folder, its id's value, the title, `state` (Sync, Ready, Publishing,
+  HasResult), `modhubId` (valid, value: the mod.io id of an earlier upload), `modhubDetails` (what mod.io holds:
+  found, `visible`, title, version) and whether the page would upload it as new, update it, or warn that the mod.io
+  mod is gone (`upload`: new / update / remoteMissing). It waits up to `--wait` seconds for mod.io to be ready and
+  for the staging mods to leave Sync, then answers what it has (`timedOut` says what it was waiting for).
+- `validate FOLDER` runs the helper's `validate`, as the page's Re-Validate button, calls `update()` every frame
+  until it is done, and answers the result as the page counts it (`text`, counts of Critical / Error / Warning,
+  the first messages) with `criticalPc`, `criticalConsole`, `levelPc` and `levelConsole`. Progress goes to stderr
+  every 15 s. It waits up to 30 s for mod.io to be ready and up to 60 s for the mod to leave Sync; a mod in
+  Publishing or HasResult (an upload has it) is not touched. Past `--timeout` the validation is aborted
+  (`abortValidation`, as the page does when it closes). Only the folders listed in `MODHUB_VALIDATE_FOLDERS`
+  (content/remote_core.lua) are taken; edit the list for your own mods.
+- Making the helper makes the game sync the staging mods with mod.io: read requests to mod.io, no writes.
+- `validate` counts as changing the game (`--owner` warnings): it runs the validator for minutes and aborts a
+  validation already running for that mod, e.g. one a person started on the My Mods page. Do not open My Mods while
+  it runs: the page makes a helper of its own.
+- **Not checked in game.** In particular, `ModPublishHelper.new` is marked "privileged api, not available to mods";
+  the menu probe has read the equally marked `api.modhub` functions, but whether it may make the helper is what
+  `status` is there to find out.
+
 ### Several clients at once
 
 Several tool processes may run at once (a long `run` plus `status` calls, say): a lock makes them write the single
@@ -386,6 +422,8 @@ Not checked yet:
 - Whether `app.quit` ends the game without a confirmation dialog.
 - `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
+- `modhub status` and `modhub validate`, entirely: whether the menu's Lua state may make `ModPublishHelper`, the form
+  of a staging mod's id (`ModId.value`: the folder, or `StagingArea,<folder>`), and how long a validation takes.
 
 ## Tests
 

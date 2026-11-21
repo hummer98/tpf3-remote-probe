@@ -7,8 +7,8 @@
 -- A missing data(), or a nil handleEvent / update, is a Lua error (the first one ends the game).
 --
 -- This is the same command loop as in a save (remote.script.lua), in its menu mode: only status, saves, info,
--- load, newgame, poll and quit (core.MENU_COMMANDS). Once it has called loadGame or startGame it stops, and the
--- new game's own copy of the probe answers from then on.
+-- load, newgame, poll, quit and the My Mods commands modhubStatus / modhubValidate (core.MENU_COMMANDS). Once it
+-- has called loadGame or startGame it stops, and the new game's own copy of the probe answers from then on.
 local MOD = "hummer_remote_probe"
 local req = ug_require or require
 

@@ -1291,6 +1291,49 @@ class QuitLaunchTest(unittest.TestCase):
         # read only: no "who changed the game" entry, no warning about another owner
         self.assertFalse({"models", "vehicles"} & tf3ctl.CHANGES_GAME)
 
+    def test_modhub_args_timeouts_and_no_upload(self):
+        parse = tf3ctl.make_parser().parse_args
+        self.assertEqual(tf3ctl.modhub_status_args(parse(["modhub", "status"])), {})
+        self.assertEqual(tf3ctl.modhub_status_args(parse(["modhub", "status", "--folder", "a_1", "--wait", "0"])),
+                         {"folder": "a_1", "wait": 0})
+        self.assertEqual(tf3ctl.modhub_validate_args(parse(["modhub", "validate", "a_1", "--timeout", "60",
+                                                            "--messages", "5"])),
+                         {"folder": "a_1", "timeout": 60, "messages": 5})
+        # no upload of any kind: no such subcommand, and nothing in the mod's command list
+        for bad in (["modhub"], ["modhub", "validate"], ["modhub", "publish", "a_1"], ["modhub", "upload", "a_1"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit, msg=bad):
+                parse(bad)
+        for name in ("modhubPublish", "publish"):
+            self.assertIn("unknown command", mod_reads(tf3ctl.command_text(9, name, {}))["error"])
+        got = mod_reads(tf3ctl.command_text(9, "modhubValidate", {"folder": "a_1", "timeout": 60}))
+        self.assertEqual((got["cmd"], got["args"]), ("modhubValidate", {"folder": "a_1", "timeout": 60}))
+        self.assertNotIn("error", mod_reads(tf3ctl.command_text(9, "modhubStatus", {})))
+        # validate runs the game's validator and may abort a person's: others are warned; status only reads
+        self.assertIn("modhubValidate", tf3ctl.CHANGES_GAME)
+        self.assertNotIn("modhubStatus", tf3ctl.CHANGES_GAME)
+        sent = []
+        real = tf3ctl.send
+
+        def fake_send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
+            sent.append((cmd, args, timeout))
+            if on_progress:
+                on_progress({"phase": "validating", "progress": 0.5, "task": "Checking files", "seconds": 3})
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                tf3ctl.cmd_modhub(parse(["modhub", "status"]))
+                tf3ctl.cmd_modhub(parse(["modhub", "status", "--wait", "100"]))
+                tf3ctl.cmd_modhub(parse(["modhub", "validate", "a_1"]))
+                tf3ctl.cmd_modhub(parse(["modhub", "validate", "a_1", "--timeout", "900"]))
+        finally:
+            tf3ctl.send = real
+        # past the mod's own limits, so its answer (or its error) arrives first
+        self.assertEqual([(c, t) for c, _, t in sent], [("modhubStatus", 60), ("modhubStatus", 130),
+                                                        ("modhubValidate", 330), ("modhubValidate", 930)])
+        self.assertIn("validating 50% (Checking files)", err.getvalue())
+
     def test_persons_args_and_every(self):
         parse = tf3ctl.make_parser().parse_args
         self.assertEqual(tf3ctl.persons_args(parse(["persons", "--vehicle", "601"])), {"vehicle": 601})
@@ -2095,6 +2138,53 @@ class LaunchEndToEndTest(unittest.TestCase):
         self.assertEqual(code, 0, res)
         self.assertEqual(tf3ctl.game_pids(), [])
 
+
+
+class ModhubEndToEndTest(unittest.TestCase):
+    """modhub status / validate through real files, against the fake game in its main menu with a staging area."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp()
+        cls.dir = os.path.join(cls.root, "recordings")
+        cls.game = subprocess.Popen(["luajit", os.path.join(ROOT, "tests", "fake_game.lua"), cls.root, "60", "menu",
+                                     "modhub"], stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 10
+        while not glob.glob(os.path.join(cls.dir, "remote_probe__cmd_*.lua")):
+            if time.time() > deadline:
+                raise RuntimeError("the fake game did not start")
+            time.sleep(0.05)
+        os.environ["TF3_REMOTE_DIR"] = cls.dir
+        os.environ["TF3_ASSUME_RUNNING"] = "1"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.game.kill()
+        cls.game.wait()
+        cls.game.stderr.close()
+        os.environ.pop("TF3_REMOTE_DIR", None)
+        os.environ.pop("TF3_ASSUME_RUNNING", None)
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def ctl(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = tf3ctl.main(list(argv))
+        return code, json.loads(out.getvalue()) if out.getvalue() else None
+
+    def test_status_then_validate_then_a_refused_folder(self):
+        code, res = self.ctl("modhub", "status", "--wait", "10")
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["helper"])
+        self.assertEqual(sorted(m["folder"] for m in res["mods"]), ["example_mod_1", "hummer_force_unload_default_1"])
+        self.assertTrue(all(m["state"] == "Ready" for m in res["mods"]), res["mods"])
+        code, res = self.ctl("modhub", "validate", "hummer_force_unload_default_1", "--timeout", "30")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["result"]["counts"]["warning"], 1)
+        self.assertEqual(res["result"]["levelConsole"], "Warning")
+        code, res = self.ctl("modhub", "validate", "example_mod_1")
+        self.assertEqual(code, 1)
+        self.assertIn("only these staging folders", res["error"])
 
 
 class ModFilesTest(unittest.TestCase):

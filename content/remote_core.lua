@@ -17,14 +17,24 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
-	industryWorkers = true, industryStocks = true, models = true, persons = true }
+	industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
+	modhubValidate = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
-	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true } -- camera, as window: what the player sees
+	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true, -- camera, as window: what the player sees
+	-- modhubValidate changes no save and writes nothing to mod.io, but it runs the game's validator on a staging
+	-- mod for minutes, and starting one aborts a validation already running for that mod (the type's own words),
+	-- e.g. one a person started on the My Mods page: so others are warned. modhubStatus only reads.
+	modhubValidate = true }
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
-M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true }
+M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true,
+	modhubStatus = true, modhubValidate = true }
+-- what works only in the main menu: My Mods' publish helper is a privileged API (the base makes it in the menu's
+-- own privileged Lua state, main_menu.tl); inside a save the probe runs in the game's GUI state, which is not
+-- expected to have it, and the base has no My Mods page there either
+M.MENU_ONLY = { modhubStatus = true, modhubValidate = true }
 
 ---------------------------------------------------------------------------------------------------------------------
 -- mod settings (mod.json params): each arrives as a 1-based index into these lists
@@ -1607,6 +1617,124 @@ function M.personSummary(persons)
 	end
 	if out.withHappiness > 0 then out.meanHappiness = sum / out.withHappiness end
 	return out
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- modhub (remote_modhub.lua): the base's MOD hub > My Mods page, from the main menu. It reads the staging area and
+-- re-validates one staging mod, as the page's Re-Validate button does. Nothing here uploads: publishing
+-- (ModPublishHelper.publish) is left out on purpose and no command reaches it. A new mod page, or a mod made
+-- public, is not undone from the game, so an upload waits for a person's go-ahead and is not part of this probe.
+
+-- the staging folders validate takes: the author's mods already published from that staging area, and the one
+-- prepared next. Validating reads the folder and makes the game ask mod.io for the mod's details; the list keeps
+-- a typo, or a half-made folder of another project, from starting minutes of validation on the wrong mod.
+-- status reads every staging mod.
+M.MODHUB_VALIDATE_FOLDERS = {
+	hummer_construction_altitude_tooltip_1 = true,
+	hummer_cursor_altitude_tooltip_1 = true,
+	hummer_industry_pollution_display_1 = true,
+	hummer_force_unload_default_1 = true,
+}
+M.MODHUB_STATUS_WAIT = { default = 30, max = 120 } -- s status waits for mod.io and the staging mods' sync
+M.MODHUB_VALIDATE_SEC = { default = 300, max = 1800 } -- s a validation may take before it is aborted
+M.MODHUB_MESSAGES = { default = 50, max = 500 } -- validator messages listed in an answer (all are counted)
+M.MODHUB_STATES = { "Sync", "Ready", "Publishing", "HasResult" } -- Modhub.StagingModData.State
+M.LOG_LEVELS = { "Critical", "Error", "Warning", "Message", "Verbose", "Raw" } -- LogLevel, both of the api's lists
+
+-- the folder name in a staging mod's id. The game logs the id as "StagingArea,<folder>" (modHubId=... in
+-- stdout.txt) and takes it so on its --validate command line; whether Modhub.ModId.value carries the prefix in
+-- Lua is not known, so both forms are read.
+function M.stagingFolder(value)
+	if type(value) ~= "string" or value == "" then return nil end
+	return value:match("^StagingArea,(.+)$") or value
+end
+
+-- a staging folder name as given: a plain folder name, not a path
+function M.stagingFolderArg(v)
+	if type(v) ~= "string" or v == "" then return nil, "give a staging folder name (modhub status lists them)" end
+	if #v > 200 or v:find("[/\\,%c]") or v == "." or v == ".." then
+		return nil, "a staging folder is a plain folder name: " .. v:sub(1, 200)
+	end
+	return v
+end
+
+local function secondsArg(v, lim, what, positive)
+	if v == nil then return lim.default end
+	local n = tonumber(v)
+	if n == nil or n ~= n or n < 0 or n > lim.max or (positive and n == 0) then
+		return nil, what .. " must be " .. (positive and "more than 0" or "0") .. " to " .. lim.max .. " seconds"
+	end
+	return n
+end
+
+-- args: folder (only that mod in the list), wait (s to wait for mod.io and the sync; 0: answer at once)
+function M.modhubStatusArgs(args)
+	args = type(args) == "table" and args or {}
+	local out = {}
+	if args.folder ~= nil then
+		local f, err = M.stagingFolderArg(args.folder)
+		if not f then return nil, err end
+		out.folder = f
+	end
+	local w, err = secondsArg(args.wait, M.MODHUB_STATUS_WAIT, "wait")
+	if not w then return nil, err end
+	out.wait = w
+	return out
+end
+
+-- args: folder (required, from MODHUB_VALIDATE_FOLDERS), timeout (s), messages (how many to list)
+function M.modhubValidateArgs(args)
+	args = type(args) == "table" and args or {}
+	local f, err = M.stagingFolderArg(args.folder)
+	if not f then return nil, err end
+	if not M.MODHUB_VALIDATE_FOLDERS[f] then
+		local names = {}
+		for k in pairs(M.MODHUB_VALIDATE_FOLDERS) do names[#names + 1] = k end
+		table.sort(names)
+		return nil, "validate takes only these staging folders: " .. table.concat(names, ", ") .. " (not " .. f .. ")"
+	end
+	local t
+	t, err = secondsArg(args.timeout, M.MODHUB_VALIDATE_SEC, "timeout", true)
+	if not t then return nil, err end
+	local n = M.MODHUB_MESSAGES.default
+	if args.messages ~= nil then
+		n = tonumber(args.messages)
+		if n == nil or n ~= math.floor(n) or n < 0 or n > M.MODHUB_MESSAGES.max then
+			return nil, "messages must be a whole number 0-" .. M.MODHUB_MESSAGES.max
+		end
+	end
+	return { folder = f, timeout = t, messages = n }
+end
+
+-- what the base's My Mods page says of a finished validation (mod_manager_react_util.tl, "Validation: ..."), with
+-- the counts it makes: every message counted by its level, PC and console alike (consoleOnly is counted on top).
+-- r: { messages = { { level = <name>, file, message, context, consoleOnly } }, criticalPc, criticalConsole,
+-- levelPc, levelConsole } with levels as names. limit: messages listed; all are counted.
+function M.validationSummary(r, limit)
+	if type(r) ~= "table" then return nil end
+	limit = limit or M.MODHUB_MESSAGES.default
+	local counts = { critical = 0, error = 0, warning = 0, other = 0, consoleOnly = 0 }
+	local list = {}
+	local msgs = type(r.messages) == "table" and r.messages or {}
+	for i, m in ipairs(msgs) do
+		local lv = type(m) == "table" and m.level or nil
+		if lv == "Critical" then counts.critical = counts.critical + 1
+		elseif lv == "Error" then counts.error = counts.error + 1
+		elseif lv == "Warning" then counts.warning = counts.warning + 1
+		else counts.other = counts.other + 1 end
+		if type(m) == "table" and m.consoleOnly == true then counts.consoleOnly = counts.consoleOnly + 1 end
+		if i <= limit then list[#list + 1] = m end
+	end
+	local text
+	if counts.critical > 0 then text = "Validation: " .. counts.critical .. " Critical Issues"
+	elseif counts.error > 0 and counts.warning > 0 then
+		text = "Validation: " .. counts.error .. " Errors, " .. counts.warning .. " Warnings"
+	elseif counts.error > 0 then text = "Validation: " .. counts.error .. " Errors"
+	elseif counts.warning > 0 then text = "Validation: " .. counts.warning .. " Warnings"
+	else text = "Validation: No Issues Found" end
+	return { criticalPc = r.criticalPc, criticalConsole = r.criticalConsole, levelPc = r.levelPc,
+		levelConsole = r.levelConsole, counts = counts, messageCount = #msgs, messages = M.array(list),
+		truncated = #msgs > #list or nil, text = text }
 end
 
 return M
