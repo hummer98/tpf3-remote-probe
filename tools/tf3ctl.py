@@ -13,6 +13,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py load "probe" --param example_mod:treePollution=3 [--add MOD] [--remove MOD] [--dry-run]
   tf3ctl.py save "probe-after"
   tf3ctl.py newgame --size tiny --year 1900 --param example_mod:extraDemand=2 [--dry-run] [--list]
+  tf3ctl.py launch --new --editor --size tiny --no-towns --no-industries   # the map editor (isMapEditor): the
+            # official mods (ug_*) and the probe, not the running game's (--add / --remove still apply)
   tf3ctl.py log --grep remote_probe --tail 40
   tf3ctl.py poll --idle 5 --active 0.5     # until the next load; the mod settings apply again after it
   tf3ctl.py --owner alice run --months 2
@@ -60,6 +62,12 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # one straight road piece, no click: test saves only; an end within --snap m of a road node joins it
   tf3ctl.py water --at 1500,-300 | water --grid 1000,-800,2000,200,50   # read only: the water level, and per
             # point water or land and the terrain's height (a grid: at most 400 points, rows of ~ water . land)
+  tf3ctl.py terrain --rect 0,0,500,300 --flat 40 [--blend 16] [--dry-run]   # a rectangle's ground replaced
+  tf3ctl.py terrain --rect 0,0,500,300 --slope-x 5 --base 40 | --slope-y -10 --base 80   # base at x0 / y0
+            # the map editor only (--in-game: a new test game); at most 1024 m a side, a small map at most; refused
+            # when a road, construction, town building, industry or town is in it. Answers the grid, the heights,
+            # the way (gui, or update when asked), the heights read back
+  tf3ctl.py terrain --probe-api              # read only: which terrain functions the probe's two Lua states have
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
@@ -114,7 +122,7 @@ PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); lon
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
-                "build", "road", "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
+                "build", "road", "terrain", "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -779,6 +787,8 @@ def newgame_args(ns):
         args["list"] = True
     if getattr(ns, "unsafe", False):
         args["unsafe"] = True  # the mod refuses a start from inside a save too
+    if getattr(ns, "editor", False) and not ns.list:
+        args["editor"] = True  # the map editor; the mod takes the official mods and the probe as the base list
     base = load_args(argparse.Namespace(save=None, set_mods=ns.set_mods, add=ns.add, remove=ns.remove,
                                         param=ns.param, dry_run=ns.dry_run))
     base.pop("save", None)
@@ -1370,6 +1380,8 @@ def start_args(ns):
     """What launch / restart do in the main menu: (cmd, args) for --load or --new, or None."""
     if ns.load and ns.new:
         raise ToolError("give --load or --new, not both")
+    if getattr(ns, "editor", False) and not ns.new:
+        raise ToolError("--editor goes with --new (the map editor starts as a new map)")
     if ns.load:
         return "load", load_args(argparse.Namespace(save=ns.load, set_mods=ns.set_mods, add=ns.add,
                                                     remove=ns.remove, param=ns.param, dry_run=False,
@@ -1378,7 +1390,8 @@ def start_args(ns):
         return "newgame", newgame_args(argparse.Namespace(
             climate=ns.climate, generator=ns.generator, size=ns.size, year=ns.year, seed=ns.seed,
             no_towns=ns.no_towns, no_industries=ns.no_industries, list=False, unsafe=False, set_mods=ns.set_mods,
-            add=ns.add, remove=ns.remove, param=ns.param, dry_run=False, tutorial=getattr(ns, "tutorial", False)))
+            add=ns.add, remove=ns.remove, param=ns.param, dry_run=False, tutorial=getattr(ns, "tutorial", False),
+            editor=getattr(ns, "editor", False)))
     return None
 
 
@@ -1576,6 +1589,49 @@ def check_modules(mods):
             raise ToolError("params.modules slot %s: updateScript must be {\"fileName\": ..., \"params\": {...}}" % k)
 
 
+def terrain_args(ns):
+    """terrain: --rect x0,y0,x1,y1 and one of --flat Z, --slope-x PCT --base Z, --slope-y PCT --base Z (the mod
+    checks all of it again, and the heights' range)."""
+    def finite(x):
+        return x == x and abs(x) != float("inf")
+    try:
+        rect = [float(x) for x in (ns.rect or "").split(",")]
+    except ValueError:
+        raise ToolError("--rect must be numbers: x0,y0,x1,y1")
+    if len(rect) != 4 or not all(finite(x) for x in rect):
+        raise ToolError("--rect must be x0,y0,x1,y1 (finite numbers)")
+    x0, y0, x1, y1 = rect
+    if not (x1 > x0 and y1 > y0):
+        raise ToolError("--rect: x0 < x1 and y0 < y1")
+    if x1 - x0 > TERRAIN_MAX_SIDE or y1 - y0 > TERRAIN_MAX_SIDE:
+        raise ToolError("--rect: %g x %g m, at most %d m per side" % (x1 - x0, y1 - y0, TERRAIN_MAX_SIDE))
+    given = [(k, v) for k, v in (("flat", ns.flat), ("slopeX", ns.slope_x), ("slopeY", ns.slope_y)) if v is not None]
+    if len(given) != 1:
+        raise ToolError("give one of --flat Z, --slope-x PCT or --slope-y PCT")
+    mode, value = given[0]
+    if not finite(value):
+        raise ToolError("the height or percentage must be a finite number")
+    args = {"rect": rect, mode: value}
+    if mode == "flat":
+        if ns.base is not None:
+            raise ToolError("--flat is the height itself: no --base")
+    else:
+        if ns.base is None or not finite(ns.base):
+            raise ToolError("--slope-x / --slope-y need --base (the height at the rectangle's x0 / y0 edge)")
+        args["base"] = ns.base
+    if ns.blend is not None:
+        if not finite(ns.blend) or ns.blend < 0:
+            raise ToolError("--blend must be metres >= 0")
+        args["blend"] = ns.blend
+    if ns.via:
+        args["via"] = ns.via
+    if getattr(ns, "in_game", False):
+        args["inGame"] = True
+    if ns.dry_run:
+        args["dryRun"] = True
+    return args
+
+
 def water_args(ns):
     """water: --at x,y or --grid x0,y0,x1,y1,step (at most WATER_MAX_POINTS points; the mod checks again)."""
     def numbers(text, n, what):
@@ -1627,6 +1683,9 @@ def road_args(ns):
 
 
 ROAD_MAX_SNAP = 20  # the mod's core.ROAD_LIMITS.snap
+
+TERRAIN_MAX_SIDE = 1024  # the mod's core.TERRAIN_MAX_SIDE (metres per side)
+TERRAIN_TIMEOUT_SEC = 180  # the mod waits 120 s for the replacement's callback
 WATER_MAX_POINTS = 400  # the mod's core.WATER_MAX_POINTS
 WATER_MIN_STEP = 0.1  # core.WATER_MIN_STEP: a smaller step overflows the point count before the limit is checked
 BUILD_TIMEOUT_SEC = 60  # the mod waits 30 s for the engine's callback
@@ -2789,6 +2848,8 @@ def make_parser():
     ng.add_argument("--dry-run", action="store_true")
     ng.add_argument("--timeout", type=float, default=900)
     ng.add_argument("--unsafe", action="store_true", help="start it although it crashes the game from inside a save")
+    ng.add_argument("--editor", action="store_true", help="the map editor instead of a game (isMapEditor); its mods: "
+                    "the official ones (ug_*) and the probe, not the running game's")
     fr = sub.add_parser("frame", help="the game's picture with UI, from Steam's background recording")
     fr.add_argument("--out", required=True, help="image to write (.png or .jpg)")
     fr.add_argument("--crop", help="WxH+X+Y in the recording's pixels, e.g. 1150x170+2690+1450 for the speed row")
@@ -2859,6 +2920,27 @@ def make_parser():
                     "node (default 5, 0: never)")
     rd.add_argument("--dry-run", action="store_true", help="no build: the template, the ends (snapped or on the "
                     "terrain) and the length, checked here only")
+    te = sub.add_parser("terrain", help="replace a rectangle's ground: flat at a height, or a uniform slope along x "
+                        "or y (one whole-map replacement, as the map editor's); in the map editor only, unless "
+                        "--in-game")
+    te.add_argument("--rect", metavar="X0,Y0,X1,Y1", help="metres, at most %d a side (for a negative x0 write "
+                    "--rect=-100,0,100,50)" % TERRAIN_MAX_SIDE)
+    tm = te.add_mutually_exclusive_group()
+    tm.add_argument("--flat", type=float, metavar="Z", help="the height in metres")
+    tm.add_argument("--slope-x", type=float, metavar="PCT", help="per cent, rising toward x1 (negative: falling)")
+    tm.add_argument("--slope-y", type=float, metavar="PCT", help="per cent, rising toward y1")
+    tm.add_argument("--probe-api", action="store_true", help="read only: which terrain functions the guiUpdate "
+                    "state and the speed control's recipe have (type() only, nothing called)")
+    te.add_argument("--base", type=float, metavar="Z", help="with a slope: the height at x0 (--slope-x) or y0 (--slope-y)")
+    te.add_argument("--blend", type=float, metavar="M", help="metres inside the edge over which the new heights blend "
+                    "into the old, so the edge meets the land round it (default 16, less on a small rectangle; 0: a "
+                    "sharp step)")
+    te.add_argument("--via", choices=("auto", "update", "gui"), help="where it runs: the speed control's recipe "
+                    "(gui; auto, the default, is gui: the base editor calls these from react only) or the guiUpdate "
+                    "state (update, only when given)")
+    te.add_argument("--in-game", action="store_true", help="also outside the map editor (a new test game): whether "
+                    "the replacement works in a game is not known; the editor's seed and material calls are left out")
+    te.add_argument("--dry-run", action="store_true", help="the grid and the heights, nothing sent")
     wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
                                        "terrain's height (to find a shore for a harbour)")
     wg = wa.add_mutually_exclusive_group(required=True)
@@ -2887,6 +2969,7 @@ def make_parser():
         st.add_argument("--no-towns", action="store_true")
         st.add_argument("--no-industries", action="store_true")
         st.add_argument("--tutorial", action="store_true", help="with --new: start with the base tutorial (off by default)")
+        st.add_argument("--editor", action="store_true", help="with --new: the map editor (the official mods and the probe)")
         st.add_argument("--timeout", type=float, default=900, help="for the load or new game")
         st.add_argument("--launch-timeout", type=float, default=LAUNCH_TIMEOUT_SEC)
         st.add_argument("--lang", metavar="CODE", help="start in this language (de, en, ja, ...): profile.lua is "
@@ -3189,6 +3272,13 @@ def main(argv=None):
             res = send("road", road_args(ns), timeout=BUILD_TIMEOUT_SEC)
         elif ns.cmd == "water":
             res = send("water", water_args(ns))
+        elif ns.cmd == "terrain":
+            if ns.probe_api:
+                if ns.rect or ns.base is not None or ns.blend is not None or ns.via or ns.dry_run or ns.in_game:
+                    raise ToolError("--probe-api takes nothing else")
+                res = send("terrainApi", {}, timeout=30)
+            else:
+                res = send("terrain", terrain_args(ns), timeout=TERRAIN_TIMEOUT_SEC)
         elif ns.cmd == "tool":
             ev = tool_event(ns)
             if ev:

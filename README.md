@@ -96,7 +96,15 @@ python3 tools/tf3ctl.py load my-save --param example_mod:difficulty=3 --dry-run 
 python3 tools/tf3ctl.py load my-save --param example_mod:difficulty=3 [--add MOD] [--remove MOD] [--set-mods a,b]
 python3 tools/tf3ctl.py save my-save-after            # overwrites a save of the same name
 python3 tools/tf3ctl.py newgame --list                # climates and terrain generators (safe in a game)
+python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-industries   # the map editor
 ```
+
+`--editor` (with `newgame` or `launch` / `restart --new`) starts the map editor instead of a game:
+`StartGameParams.isMapEditor = true`, the rest as a new game. A map keeps the mods it was made with, so its mods are
+the official ones installed (`ug_*`) and the probe, not the running game's (`--add` / `--remove` still apply), with
+their default settings. `status` answers `mapEditor` (`gui`: `api.gui.game.isMapEditor()`, `modParams`: the base's
+`isMapEditor`). **Not checked in game yet** (written 2026-11-22): whether the editor opens this way, and whether
+the probe answers inside it.
 
 `--param mod:key=index` takes the 1-based index into that setting's `values` in the mod's `mod.json` (as mod
 presets store them); base game settings are `:key=index`. This mod always stays enabled: without it nobody would
@@ -425,6 +433,51 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   the new piece crosses (the proposal adds no crossing node: does the engine add one, refuse, or lay one over
   the other).
 
+### The ground in a rectangle (`terrain`)
+
+```
+python3 tools/tf3ctl.py terrain --probe-api                         # read only: which functions each Lua state has
+python3 tools/tf3ctl.py terrain --rect 0,0,500,300 --flat 40 --dry-run
+python3 tools/tf3ctl.py terrain --rect 0,0,500,300 --flat 40 [--blend 16]
+python3 tools/tf3ctl.py terrain --rect=-500,0,500,300 --slope-x 5 --base 40     # 40 m at x0, 5 % up toward x1
+python3 tools/tf3ctl.py terrain --rect 0,0,300,800 --slope-y -10 --base 120 [--via auto|update|gui] [--in-game]
+```
+
+- Replaces the ground heights inside the rectangle (metres, at most 1024 a side): flat at a height, or a uniform
+  slope along x or y (`--base` is the height at the x0 / y0 edge). Everything outside it stays as it is. Only in the
+  map editor (`api.gui.game.isMapEditor()`); outside it the probe refuses unless `--in-game` is given, for a new
+  test game (whether a replacement works in a game is not known). A dry run sends nothing and works anywhere. It
+  warns other clients as a game-changing command (its dry run too).
+- The map's size: the whole heightmap is copied into a Lua table, so a map with more than 4.5 M points (counted
+  from the terrain's bounding box before anything is copied: a small map, 32 x 32 tiles, has 4.2 M) is refused.
+- How: the whole map in one command, as the map editor's generate and import do. `makeMapFromGame(true, false,
+  false, false)` copies the map without towns (a map that lists towns asserts in `terrain_util::ReplaceTerrain`),
+  the grid points inside the rectangle (every 4 m, index `j * w + i + 1` from the map's min corner) are changed in
+  the copied table, the whole table is assigned back (`GameMap.heightmap` hands out a copy on each read: an element
+  written into it is lost) of a copy made with `api.type.Map.new` (as UTG does), then, in the map editor only,
+  `setMapSeedText` and `reloadMaterialIndexManagerPipeline` as the base editor calls them, and
+  `makeWorldReplaceTerrainCmd(map, baseConfig.terrain, "", world, keepAssets = true)`. Trees and rocks are
+  kept (what they do on the new ground is not known).
+- The edge: by default the new heights blend into the old over 16 m inside the rectangle (a quarter of the shorter
+  side on a small one): a point on the edge keeps its height, one 16 m in has the full new height, so the land
+  round it meets it without a step. `--blend 0` makes a sharp step at the edge.
+- Refused, nothing sent: a road or track piece, a node, a construction, a town building or an industry in the
+  rectangle or within 8 m of it (the octree), or a town whose bounding box comes within 200 m. The answer's
+  `blockers` lists them. The heights asked for must stay within -99 .. 3170 m.
+- Two ways (`via`): `gui` runs in the speed control's recipe (its join, where the base editor and the terrain mods
+  call these functions: from react only); `auto`, the default, is `gui`. `update` runs in the guiUpdate state, only
+  when given. `terrain --probe-api` answers which of `makeMapFromGame`,
+  `Map.new`, `makeWorldReplaceTerrainCmd`, `mapgen.createTowns`, `setMapSeedText`,
+  `reloadMaterialIndexManagerPipeline` and others each state has, calling none (read only).
+- The answer: `via`, `functionsUpdate` / `functionsGui`, `rect`, `grid` (the first and last grid points, `nx`,
+  `ny`, `points`), `mapPoints`, `inGame`, `target` (the heights asked for, min and max), `before` / `written` (min and max in the
+  rectangle), `changed`, `waterLevel`, `sent`, `success` (the callback), and after a replacement `samples` (the
+  middle and the corners of the full part, read back with `getHeightAt`) with `readBackOk`; `mapEditor`; on a
+  refusal `error`.
+- **Not checked in game yet** (written 2026-11-22): whether the guiUpdate state has these functions, whether the
+  replacement works outside the map editor (every use seen is in the editor), what happens to trees and to the
+  town mod's land in the rectangle, the read-back values.
+
 ### My Mods from the main menu (`modhub`)
 
 ```
@@ -650,6 +703,7 @@ Not checked yet:
 - `build`, entirely (see "One construction on the map"). `road`, entirely (see "One straight road").
 - The gui way's own send of a bought vehicle to its line and the refusal's reason; `lines --problems`;
   `stations --catchment`.
+- `terrain`, `terrain --probe-api` and `newgame --editor`, entirely (see "The ground in a rectangle").
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `modhub publish`, entirely (see "Uploading one new mod"). `modhub status` and `validate` were checked on
   2026-11-22.
