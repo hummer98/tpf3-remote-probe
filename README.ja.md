@@ -207,6 +207,7 @@ resName は実在する必要があります (`api.res.constructionRep`)。そ�
 python3 tools/tf3ctl.py depots [--grep bus]
 python3 tools/tf3ctl.py vehicles [--line 21]
 python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
+python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # または --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
@@ -365,6 +366,7 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
 - ゲーム内の ×8 / ×16 のボタン: 本体のボタンの横での見た目と幅、光るボタン、指定される速度。
 - `app.quit` が確認ダイアログなしでゲームを終えるか。
 - `connect` は全部。危ない順の一覧は「実装メモ」の「接続」。
+- `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 
 ## テスト
 
@@ -501,6 +503,28 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   `stopIndex` と `doorsTime` (扉が開いた時刻) を控え、出たあとの `lastLineStopDeparture` (と `lineStopDepartures` の
   その停車駅の値。JSON の配列の 0 から数えて `stopIndex` 番目) を出発の時刻にします。ゲーム時刻と timeUntil* の単位は
   ゲームで未確認です。
+- `persons` (読むだけ) は、自社の車両に乗っている住民 (`--vehicle`。車両の窓の乗客の一覧と同じ
+  `getVehicle2Cargo2SimEntitesMap`)、または自社の路線に乗っている人と待っている人 (`--line`、
+  `simPersonSystem.getSimPersonsForLine`。待っている人も入るかは未確認で、資料には "travelling with the given line"
+  とだけある) を id の順に並べます。住民ごとに `happiness` (`SIM_PERSON`。本体は 0.5 未満を
+  「不満」とする)、`good` (`isGoodQuality`)、`destinations` (家・買い物・職場)、`targetOrAtEntity`、`where`
+  (vehicle / terminal / other)。乗っている人は `atVehicle` (`vehicle`・`part`・`place`・`expectedArrivalTime`) と
+  `untilArrival` (見込みの到着時刻 − ゲーム時刻)・`late` (ゲーム時刻が見込みを過ぎた。本体の住民の窓が「幸福度が
+  下がっている」とする条件、`sim_person.tl`)、`trip` (路線・`lineStop0` / `lineStop1`)。待っている人は
+  `atTerminal` (路線・停車駅・`arrivalTime`・`sinceArrival`、`late` は 2 分を超えて待った。住民の窓のそこでの条件)。
+  `--vehicle` のときは `vehicleState` (state・stopIndex・speed) で海の上か港かが分かります。`summary` は並べた人の
+  集計 (不満・乗っていて遅れた数・`lateWaiting`、幸福度の平均・最小・最大)、`quality` はエンジンの旅客の集計 (`total`・`bad`・`averageQuality`・`veryBad`) で、車両・
+  その路線・路線の停車駅ごと (停車駅の `waiting`、その駅のまとまりの `stationGroupWaiting`) です。本体が「待っている
+  旅客」と「不満のある旅客」として出す数です。返事には `gameTime` が付きます。`total` は全員の数で、中身は先頭の
+  `--limit` 人 (200、最大 2000) だけです。消えた車両と自社のものでない車両は `missing: true` (エラーにしない)、
+  自社のものでない路線はエラーです。`--every SEC` (0.5 以上) で繰り返し、1回ごとに1行の JSON (JSON Lines) に
+  `sample` と `unixTime` を足して出します。`--count N` 回か Ctrl-C で止まり、ok でない返事が来ても止まります。
+  時間内に答えが無かった回は `noAnswer` の行にして続けます (終わりの終了コードは 2)。快適度は返事に無いので、
+  `vehicles` / `models` でモデルを比べてください。「0.5 未満」は住民の窓 (`sim_person_eow.script.tl`) に合わせました
+  (HUD の顔のアイコンは 0.5 より上を happy とする)。
+  乗った時刻はエンジンの記録に無いので、その人が最初に出た回から出してください。**ゲーム内では未確認です:**
+  これらのコンポーネントと関数が、本体の窓と同じように GUI のスクリプトで読めるか、`expectedArrivalTime` が
+  `gameTime` と同じ単位か (本体は2つを比べ、2 分に 1000 * 2 * 60 を足しているのでミリ秒のはず)、海の上の船で集計がどうなるか。
 - `depots` は自社の車庫だけです (路線管理と同じ `requireOwnedByPlayer`)。位置は返しません (読む API が見つからな
   かった)。種類 (road / tram / rail / water / air) は transport modes から決めます。`carrier` はある試験で 49 件すべて
   OTHER だった (本体も transport modes を見る) ので、`carrier` / `carrierRaw` は参考です。メンテナンス用の建物も出ます

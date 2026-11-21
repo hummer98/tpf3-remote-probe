@@ -17,7 +17,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
-	industryWorkers = true, industryStocks = true, models = true }
+	industryWorkers = true, industryStocks = true, models = true, persons = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -1530,6 +1530,82 @@ function M.connectArgs(args)
 		out.timeout, err = numberIn(args.timeout, "timeout (s)", M.CONNECT_TIMEOUT.min, M.CONNECT_TIMEOUT.max)
 		if not out.timeout then return nil, err end
 	end
+	return out
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- persons (read only): the sim persons on a vehicle (or on a line), each with its happiness and, aboard, the
+-- engine's expected arrival time, next to the game time; and the engine's passenger quality counts for the
+-- vehicle, its line and the line's stops. Made to time when a passenger's happiness starts to fall (on boarding,
+-- or once the expected arrival is past) by asking every few seconds.
+
+M.PERSONS_LIMIT = 200
+M.PERSONS_MAX = 2000 -- each person is four or five component reads: a ship's load at most, within one frame
+-- the base's line between happy and unhappy (sim_person_eow.script.tl HappinessBar: below 0.5 is "Unhappy")
+M.UNHAPPY_BELOW = 0.5
+-- waiting this long at a terminal, the base person window shows a falling happiness (sim_person.tl: arrivalTime +
+-- 1000 * 2 * 60)
+M.TERMINAL_GRACE_MS = 2 * 60 * 1000
+
+-- args: vehicle or line (one of them: an entity id), limit (persons listed, 1..PERSONS_MAX). Returns them or nil
+-- and why.
+function M.personsArgs(args)
+	args = type(args) == "table" and args or {}
+	local out = { limit = M.PERSONS_LIMIT }
+	for _, k in ipairs({ "vehicle", "line" }) do
+		if args[k] ~= nil then
+			local n = tonumber(args[k])
+			if n == nil or n ~= math.floor(n) or n < 0 or n > M.MAX_ENTITY_ID then
+				return nil, k .. " must be an entity id (" .. (k == "vehicle" and "the vehicles" or "the lines") .. " command lists them)"
+			end
+			out[k] = n
+		end
+	end
+	if out.vehicle and out.line then return nil, "give vehicle or line, not both" end
+	if not (out.vehicle or out.line) then return nil, "give the vehicle (or a line): its entity id" end
+	if args.limit ~= nil then
+		local n = tonumber(args.limit)
+		if n == nil or n ~= math.floor(n) or n < 1 or n > M.PERSONS_MAX then
+			return nil, "limit must be a whole number from 1 to " .. M.PERSONS_MAX
+		end
+		out.limit = n
+	end
+	return out
+end
+
+-- an engine CargoQualityData (a userdata; api/engine/util.d.tl UtilCargo) as a plain table: total, bad (the
+-- unhappy ones, for passengers), averageQuality (nil when the engine has none: nobody there), veryBad. nil in,
+-- nil out; a field that does not read is left out.
+function M.qualityOf(q)
+	if q == nil then return nil end
+	local out = { total = tonumber(M.field(q, "countTotal")), bad = tonumber(M.field(q, "countBad")),
+		averageQuality = tonumber(M.field(q, "averageQuality")) }
+	local vb = M.field(q, "isVeryBad")
+	if type(vb) == "boolean" then out.veryBad = vb end
+	if next(out) == nil then return nil end
+	return out
+end
+
+-- over the listed persons { happiness, late, atTerminal = { late }, ... }: how many, how many below UNHAPPY_BELOW,
+-- how many aboard past their expected arrival (late), how many waiting past TERMINAL_GRACE_MS (lateWaiting), and
+-- the mean, lowest and highest happiness of those with one.
+function M.personSummary(persons)
+	local out = { count = 0, withHappiness = 0, unhappy = 0, late = 0, lateWaiting = 0 }
+	local sum = 0
+	for _, p in ipairs(persons or {}) do
+		out.count = out.count + 1
+		local h = tonumber(p.happiness)
+		if h and h == h then
+			out.withHappiness = out.withHappiness + 1
+			sum = sum + h
+			if h < M.UNHAPPY_BELOW then out.unhappy = out.unhappy + 1 end
+			if out.minHappiness == nil or h < out.minHappiness then out.minHappiness = h end
+			if out.maxHappiness == nil or h > out.maxHappiness then out.maxHappiness = h end
+		end
+		if p.late == true then out.late = out.late + 1 end
+		if type(p.atTerminal) == "table" and p.atTerminal.late == true then out.lateWaiting = out.lateWaiting + 1 end
+	end
+	if out.withHappiness > 0 then out.meanHappiness = sum / out.withHappiness end
 	return out
 end
 

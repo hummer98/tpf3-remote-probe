@@ -956,6 +956,153 @@ function M.new(ctx)
 		say(string.format("money %d: %s%d (amount %d)", c.id, a.set and "set " or "add ", a.set or a.add, amount), 2)
 	end
 
+	-- the persons command (read only). Where it reads from (base GUI and api/engine.d.tl):
+	--   who is aboard: simEntityAtVehicleSystem.getVehicle2Cargo2SimEntitesMap()[vehicle][passengers + 1], as the
+	--     vehicle window's passenger list does (entity_window_util.tl PassengersWidget); who uses a line:
+	--     simPersonSystem.getSimPersonsForLine (system.d.tl: "travelling with the given line"; whether that takes in
+	--     those waiting for it is not written there, nor checked in game)
+	--   per person: SIM_PERSON (happiness; below 0.5 the base says "Unhappy"), SIM_PERSON_AT_VEHICLE (vehicle,
+	--     part, place, expectedArrivalTime), SIM_ENTITY_AT_VEHICLE (line, lineStop0, lineStop1),
+	--     SIM_ENTITY_AT_TERMINAL (waiting: line, stops, arrivalTime), util.cargo.isGoodQuality
+	--   late: the game time is past expectedArrivalTime, the base person window's test for a falling happiness
+	--     (sim_person.tl: gt.gameTime > spav.expectedArrivalTime); so both are game time (ms). Waiting, the
+	--     window's test is arrivalTime + 2 min (1000 * 2 * 60 there): atTerminal.late
+	--   counts: util.cargo.getCargoQualityDataForVehicle / ForLine / AtStop / AtStationGroup with the passenger
+	--     cargo type (vehicle_eow.script.tl, cargo_util.tl, station_group.tl, layer_public_transport.tl)
+	-- Each read on its own: one that fails or is not there is left out (nil), not the person or the answer.
+	local function personComp(e, kind) return try(function() return api.engine.getComponent(e, CT()[kind]) end) end
+	local function entityNum(v)
+		local n = tonumber(v)
+		if n == nil or n < 0 then return nil end
+		return n
+	end
+	local function personInfo(e, now)
+		local p = { id = e }
+		local sp = personComp(e, "SIM_PERSON")
+		if sp == nil then
+			p.error = "no SIM_PERSON component (the person may have just arrived or gone)"
+			return p
+		end
+		p.happiness = tonumber(core.field(sp, "happiness"))
+		p.targetOrAtEntity = entityNum(core.field(sp, "targetOrAtEntity"))
+		p.destinations = numbers(core.field(sp, "destinations")) -- residence, shopping, work (-1: none)
+		p.lastMoveMode = tonumber(core.field(sp, "lastMoveMode"))
+		local good = try(function() return api.engine.util.cargo.isGoodQuality(e) end)
+		if type(good) == "boolean" then p.good = good end
+		local spav = personComp(e, "SIM_PERSON_AT_VEHICLE")
+		if spav ~= nil then
+			local eta = tonumber(core.field(spav, "expectedArrivalTime"))
+			p.atVehicle = { vehicle = entityNum(core.field(spav, "vehicle")), part = tonumber(core.field(spav, "part")),
+				place = tonumber(core.field(spav, "place")), expectedArrivalTime = eta }
+			if eta and now then
+				p.untilArrival = eta - now
+				p.late = now > eta
+			end
+		end
+		local seav = personComp(e, "SIM_ENTITY_AT_VEHICLE")
+		if seav ~= nil then
+			p.trip = { line = entityNum(core.field(seav, "line")), lineStop0 = tonumber(core.field(seav, "lineStop0")),
+				lineStop1 = tonumber(core.field(seav, "lineStop1")), vehicle = entityNum(core.field(seav, "vehicle")),
+				roundTripCounter = tonumber(core.field(seav, "roundTripCounter")) }
+		end
+		local seat = personComp(e, "SIM_ENTITY_AT_TERMINAL")
+		if seat ~= nil then
+			local arrived = tonumber(core.field(seat, "arrivalTime"))
+			p.atTerminal = { line = entityNum(core.field(seat, "line")), lineStop0 = tonumber(core.field(seat, "lineStop0")),
+				lineStop1 = tonumber(core.field(seat, "lineStop1")), vehicle = entityNum(core.field(seat, "vehicle")),
+				arrivalTime = arrived, sinceArrival = (arrived and now) and now - arrived or nil }
+			if arrived and now then p.atTerminal.late = now > arrived + core.TERMINAL_GRACE_MS end
+		end
+		p.where = (spav or seav) and "vehicle" or (seat and "terminal") or "other"
+		return p
+	end
+
+	local function passengerCargo()
+		return tonumber(try(function() return api.res.cargoTypeRep.getPassengerCargoTypeId() end)) or 0
+	end
+
+	-- the engine's passenger counts for a line and each of its stops (stop index 0-based, as getCargoQualityDataAtStop
+	-- takes it in station_group.tl), with each stop's station group
+	local function lineQuality(line, pax)
+		local out = { line = core.qualityOf(try(function() return api.engine.util.cargo.getCargoQualityDataForLine(line, pax) end)) }
+		local lc = try(function() return api.engine.getComponent(line, CT().LINE) end)
+		local stops = {}
+		for i, s in ipairs(core.toList(lc and core.field(lc, "stops"))) do
+			local sg = entityNum(core.field(s, "stationGroup"))
+			local name = sg and try(function() return api.engine.util.getEntityName(sg) end)
+			stops[#stops + 1] = { stopIndex = i - 1, stationGroup = sg, name = type(name) == "string" and name or nil,
+				waiting = core.qualityOf(try(function() return api.engine.util.cargo.getCargoQualityDataAtStop(line, i - 1, pax) end)),
+				stationGroupWaiting = sg and core.qualityOf(try(function()
+					return api.engine.util.cargo.getCargoQualityDataAtStationGroup(sg, pax)
+				end)) or nil }
+		end
+		out.stops = core.array(stops)
+		return out
+	end
+
+	-- args: vehicle (the company's) or line (the company's), limit. Read only. A vehicle that is gone or not the
+	-- company's is answered with missing = true and no persons (not an error), so a poll sees a ship sold.
+	function handlers.persons(c)
+		local a, err = core.personsArgs(c.args)
+		if not a then return fail(c.id, err) end
+		local now = gameTime()
+		local pax = passengerCargo()
+		local res = { ok = true, gameTime = now, vehicle = a.vehicle, line = a.line, unhappyBelow = core.UNHAPPY_BELOW }
+		local ids
+		if a.vehicle then
+			-- only the company's vehicles reach a lookup (an unknown id may be the engine's assertion)
+			if not ownVehicles()[a.vehicle] then
+				res.missing, res.total, res.persons = true, 0, core.array({})
+				res.summary = core.personSummary({})
+				return answer(c.id, res)
+			end
+			local tv = vehicleComponent(a.vehicle)
+			res.line = entityNum(tv and core.field(tv, "line"))
+			-- where the vehicle is in the same answer, so a sample tells at sea from in port without a second call
+			-- (the full set is vehicles --state)
+			local stateEnum = try(function() return api.type.enum.TransportVehicleState end)
+			res.vehicleState = { state = stateEnum and core.enumName(stateEnum, VEHICLE_STATES, core.field(tv, "state")) or nil,
+				stopIndex = tonumber(core.field(tv, "stopIndex")),
+				speed = tonumber(try(function() return api.engine.util.vehicle.getSpeed(a.vehicle) end)) }
+			local map = try(function() return api.engine.system.simEntityAtVehicleSystem.getVehicle2Cargo2SimEntitesMap() end)
+			if map == nil then
+				res.personsError = "simEntityAtVehicleSystem.getVehicle2Cargo2SimEntitesMap gave nothing"
+			end
+			-- a vehicle with nobody aboard has no entry in the map (the base reads that as no passengers)
+			local byCargo = map ~= nil and core.field(map, a.vehicle) or nil
+			ids = core.toList(byCargo ~= nil and core.at(byCargo, pax + 1) or nil)
+			res.quality = { vehicle = core.qualityOf(try(function()
+				return api.engine.util.cargo.getCargoQualityDataForVehicle(a.vehicle, pax)
+			end)) }
+		else
+			local own = false
+			for _, l in ipairs(core.toList(try(function() return api.engine.system.lineSystem.getLinesForPlayer(player()) end))) do
+				if tonumber(l) == a.line then own = true end
+			end
+			if not own then return fail(c.id, "line " .. a.line .. " is not one of the company's lines (the lines command lists them)") end
+			ids = core.toList(try(function() return api.engine.system.simPersonSystem.getSimPersonsForLine(a.line) end))
+			res.quality = {}
+		end
+		-- by id: the engine's order is not documented, and with more than limit the same ones should be listed
+		-- each time
+		local sorted = {}
+		for _, e in ipairs(ids) do sorted[#sorted + 1] = tonumber(e) end
+		table.sort(sorted)
+		ids = sorted
+		local out = {}
+		for i = 1, math.min(#ids, a.limit) do
+			local e = tonumber(ids[i])
+			if e then out[#out + 1] = personInfo(e, now) end
+		end
+		res.total, res.persons = #ids, core.array(out)
+		res.summary = core.personSummary(out)
+		if res.line then
+			local lq = lineQuality(res.line, pax)
+			res.quality.line, res.quality.stops = lq.line, lq.stops
+		end
+		answer(c.id, res)
+	end
+
 	V.handlers = handlers
 	return V
 end

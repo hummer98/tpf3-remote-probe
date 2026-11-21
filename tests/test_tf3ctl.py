@@ -762,6 +762,27 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("vehicles", "--entity", "77777", "--state")
         self.assertEqual((code, res["total"], res["vehicles"], res["missing"]), (0, 0, [], [77777]))
 
+    def test_9wc_persons(self):
+        # no vehicle 77777 in the fake: missing, not an error, so a poll goes on; one JSON line per sample
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = tf3ctl.main(["persons", "--vehicle", "77777", "--every", "0.5", "--count", "3"])
+        self.assertEqual(code, 0, out.getvalue())
+        lines = out.getvalue().splitlines()
+        self.assertEqual(len(lines), 3, lines)
+        rows = [json.loads(x) for x in lines]
+        self.assertEqual([r["sample"] for r in rows], [1, 2, 3])
+        for r in rows:
+            self.assertEqual((r["ok"], r["missing"], r["total"], r["persons"], r["vehicle"]), (True, True, 0, [], 77777))
+            self.assertIn("gameTime", r)
+        self.assertGreaterEqual(rows[2]["unixTime"] - rows[0]["unixTime"], 0.9, "every 0.5 s from the start")
+        code, res = self.ctl("persons", "--vehicle", "77777")
+        self.assertEqual((code, res["missing"]), (0, True), res)
+        self.assertNotIn("sample", res, "one call: the plain answer")
+        code, res = self.ctl("persons", "--line", "999")
+        self.assertEqual(code, 1, res)
+        self.assertIn("not one of the company's lines", res["error"])
+
     def test_9w_vehicles_buy_list_sell(self):
         code, res = self.ctl("depots")
         self.assertEqual(code, 0, res)
@@ -1266,6 +1287,78 @@ class QuitLaunchTest(unittest.TestCase):
             parse(["models", "--carrier", "boat"])
         # read only: no "who changed the game" entry, no warning about another owner
         self.assertFalse({"models", "vehicles"} & tf3ctl.CHANGES_GAME)
+
+    def test_persons_args_and_every(self):
+        parse = tf3ctl.make_parser().parse_args
+        self.assertEqual(tf3ctl.persons_args(parse(["persons", "--vehicle", "601"])), {"vehicle": 601})
+        self.assertEqual(tf3ctl.persons_args(parse(["persons", "--line", "21", "--limit", "5"])), {"line": 21, "limit": 5})
+        for bad in (["--vehicle", "1", "--count", "3"], ["--vehicle", "1", "--every", "0.1"],
+                    ["--vehicle", "1", "--every", "nan"], ["--vehicle", "1", "--every", "2", "--count", "0"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.persons_args(parse(["persons"] + bad))
+        for bad in (["persons"], ["persons", "--vehicle", "1", "--line", "2"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit, msg=bad):
+                parse(bad)
+        # read only: no "who changed the game" entry, no warning about another owner
+        self.assertNotIn("persons", tf3ctl.CHANGES_GAME)
+        got = mod_reads(tf3ctl.command_text(9, "persons", {"vehicle": 601, "limit": 5}))
+        self.assertEqual(got["args"], {"vehicle": 601, "limit": 5})
+        # the loop: fixed times from the start, one compact line each, ends at the first answer that is not ok
+        now = [100.0]
+        sleeps = []
+
+        def sleep(sec):
+            sleeps.append(round(sec, 3))
+            now[0] += sec
+
+        answers = [{"ok": True, "gameTime": 1}, {"ok": True, "gameTime": 2}, {"ok": False, "error": "boom"}]
+        sent = []
+
+        def fake_send(cmd, args=None, **_):
+            sent.append((cmd, args))
+            now[0] += 0.2  # the answer takes a while: the next sample still starts on its time
+            return answers[len(sent) - 1]
+
+        out = io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send):
+            code = tf3ctl.persons_every(parse(["persons", "--vehicle", "601", "--every", "2", "--count", "5"]),
+                                        out=out, sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(code, 1)
+        rows = [json.loads(x) for x in out.getvalue().splitlines()]
+        self.assertEqual([(r["sample"], r["ok"]) for r in rows], [(1, True), (2, True), (3, False)])
+        self.assertEqual([r["unixTime"] for r in rows], [100.0, 102.0, 104.0])
+        self.assertEqual(sleeps, [1.8, 1.8])
+        self.assertEqual(sent, [("persons", {"vehicle": 601})] * 3)
+        self.assertNotIn("\n", out.getvalue().splitlines()[0])
+
+        def no_game(cmd, args=None, **_):
+            raise tf3ctl.GameNotReady("the game is in the main menu", {"state": "menu"})
+
+        out = io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", no_game):
+            code = tf3ctl.persons_every(parse(["persons", "--line", "21", "--every", "1"]), out=out, sleep=sleep,
+                                        clock=lambda: now[0])
+        self.assertEqual(code, 3)
+        row = json.loads(out.getvalue())
+        self.assertEqual((row["ok"], row["gameState"]["state"], row["sample"]), (False, "menu", 1))
+
+        # no answer in time (a stall): a line with noAnswer, and the loop goes on; exit code 2 at the end
+        calls = []
+
+        def stall_once(cmd, args=None, **_):
+            calls.append(1)
+            if len(calls) == 1:
+                raise tf3ctl.ToolError("no answer within 20 s")
+            return {"ok": True, "gameTime": 5}
+
+        out = io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", stall_once), contextlib.redirect_stderr(io.StringIO()):
+            code = tf3ctl.persons_every(parse(["persons", "--vehicle", "601", "--every", "1", "--count", "3"]), out=out,
+                                        sleep=sleep, clock=lambda: now[0])
+        rows = [json.loads(x) for x in out.getvalue().splitlines()]
+        self.assertEqual(code, 2)
+        self.assertEqual([(r["sample"], r["ok"], r.get("noAnswer")) for r in rows],
+                         [(1, False, True), (2, True, None), (3, True, None)])
 
     def test_line_args(self):
         def parse(*argv):

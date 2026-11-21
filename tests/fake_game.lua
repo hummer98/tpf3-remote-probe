@@ -111,6 +111,45 @@ function M.new(dir, opts)
 	-- booster, boostFactor } }; opts.constructionComps = { [construction] = { fileName, params } } (params handed
 	-- out as params_native, asTable, as the engine does; noNative = true: only the params record)
 	local industries = opts.industries or {}
+	-- persons (the persons command): opts.persons = { [entity] = { happiness, destinations = { home, shop, work },
+	-- targetOrAtEntity, good (isGoodQuality), atVehicle = { vehicle, part, place, expectedArrivalTime } (also puts
+	-- it in getVehicle2Cargo2SimEntitesMap under the passengers), trip = { line, lineStop0, lineStop1, vehicle }
+	-- (SIM_ENTITY_AT_VEHICLE), atTerminal = { line, lineStop0, lineStop1, arrivalTime, vehicle }, noSimPerson (its
+	-- SIM_PERSON reads nil), userdata (its components come back as userdata, as the engine's) } };
+	-- opts.quality = { vehicle = { [e] = q }, line = { [e] = q }, stop = { [line] = { [stopIndex0] = q } },
+	-- group = { [g] = q } } with q = { countTotal, countBad, averageQuality, isVeryBad }, handed out as userdata
+	local persons = opts.persons or {}
+	g.persons = persons
+	local function asUserdata(t)
+		local u = newproxy(true)
+		getmetatable(u).__index = function(_, k) return t[k] end
+		getmetatable(u).__len = function() return #t end
+		return u
+	end
+	local function qualityData(t)
+		-- nothing known: what the engine gives for nobody there (no averageQuality)
+		return asUserdata(copy(t or { countTotal = 0, countBad = 0, isVeryBad = false }))
+	end
+	local function personComponent(e, kind)
+		local p = persons[e]
+		if not p then return nil end
+		local t
+		if kind == "SIM_PERSON" and not p.noSimPerson then
+			t = { happiness = p.happiness, destinations = copy(p.destinations or { -1, -1, -1 }),
+				targetOrAtEntity = p.targetOrAtEntity or -1, lastMoveMode = p.lastMoveMode or 0, cargoType = 0 }
+		elseif kind == "SIM_PERSON_AT_VEHICLE" and p.atVehicle then
+			t = copy(p.atVehicle)
+		elseif kind == "SIM_ENTITY_AT_VEHICLE" and p.trip then
+			t = copy(p.trip)
+		elseif kind == "SIM_ENTITY_AT_TERMINAL" and p.atTerminal then
+			t = copy(p.atTerminal)
+		end
+		if t and p.userdata then
+			if t.destinations then t.destinations = asUserdata(t.destinations) end
+			return asUserdata(t)
+		end
+		return t
+	end
 	local constructionComps = opts.constructionComps or {}
 	-- a stock id the industry's list does not have: the engine's assertion (past pcall in the game)
 	local function stockOf(e, stockId)
@@ -437,6 +476,32 @@ function M.new(dir, opts)
 					local st = stockOf(e, stockId)
 					return copy(st.cargoTypes or (st.cargoType and st.cargoType >= 0 and { st.cargoType }) or {})
 				end },
+				cargo = {
+					isGoodQuality = function(e)
+						if not persons[e] then g.crashed = "ASSERT: no sim entity " .. tostring(e); error(g.crashed) end
+						if persons[e].good == nil then return (persons[e].happiness or 0) >= 0.5 end
+						return persons[e].good
+					end,
+					getCargoQualityDataForVehicle = function(e, cargo)
+						if not g.fleet[e] then g.crashed = "ASSERT: no transport vehicle " .. tostring(e); error(g.crashed) end
+						return qualityData(((opts.quality or {}).vehicle or {})[e])
+					end,
+					getCargoQualityDataForLine = function(l, cargo)
+						if not g.lines[l] then g.crashed = "ASSERT: no line " .. tostring(l); error(g.crashed) end
+						return qualityData(((opts.quality or {}).line or {})[l])
+					end,
+					getCargoQualityDataAtStop = function(l, stopIndex, cargo)
+						if not (g.lines[l] and g.lines[l].stops[stopIndex + 1]) then
+							g.crashed = "ASSERT: no stop " .. tostring(stopIndex) .. " on line " .. tostring(l)
+							error(g.crashed)
+						end
+						return qualityData((((opts.quality or {}).stop or {})[l] or {})[stopIndex])
+					end,
+					getCargoQualityDataAtStationGroup = function(gid, cargo)
+						if not groups[gid] then g.crashed = "ASSERT: no station group " .. tostring(gid); error(g.crashed) end
+						return qualityData(((opts.quality or {}).group or {})[gid])
+					end,
+				},
 				station = { isStationOfType = function(st, cargo)
 					return stationOf[st] ~= nil and (stationOf[st].passenger == true) == (cargo == false)
 				end },
@@ -528,6 +593,15 @@ function M.new(dir, opts)
 					local ids = {}
 					for i = 1, industries[e].workers or 0 do ids[i] = e * 1000 + i end
 					return ids
+				end, getSimPersonsForLine = function(line)
+					-- a line the engine does not have: taken as its assertion (the probe asks only for the company's)
+					if not g.lines[line] then g.crashed = "ASSERT: no line " .. tostring(line); error(g.crashed) end
+					local ids = {}
+					for e, p in pairs(persons) do
+						if (p.trip and p.trip.line == line) or (p.atTerminal and p.atTerminal.line == line) then ids[#ids + 1] = e end
+					end
+					table.sort(ids)
+					return ids
 				end },
 				townBuildingSystem = { getTown2personCapacitiesMap = function() return copy(opts.townCapacities or {}) end },
 				lineSystem = {
@@ -579,6 +653,20 @@ function M.new(dir, opts)
 				simEntityAtVehicleSystem = { getVehicleSimEntitiesCountForCargoType = function(e, cargo)
 					if not cargoTypes[cargo] then error("ASSERT: no cargo type " .. tostring(cargo)) end
 					return (liveOf(e).loaded or {})[cargo] or 0
+				end, getVehicle2Cargo2SimEntitesMap = function()
+					-- vehicle -> { [cargo + 1] = ids }: only vehicles with someone aboard have an entry (the base
+					-- checks for nil, entity_window_util.tl PassengersWidget); a userdata map, as the engine's
+					g.mapCalls = (g.mapCalls or 0) + 1
+					local map = {}
+					for e, p in pairs(persons) do
+						local v = p.atVehicle and p.atVehicle.vehicle
+						if v then
+							map[v] = map[v] or { {} }
+							table.insert(map[v][1], e)
+						end
+					end
+					for _, byCargo in pairs(map) do table.sort(byCargo[1]) end
+					return asUserdata(map)
 				end },
 				transportVehicleSystem = { getDepotVehicles = function(d)
 					local out = {}
@@ -592,6 +680,7 @@ function M.new(dir, opts)
 			getComponent = function(e, kind)
 				inGame("getComponent")
 				if kind == "GAME_TIME" then return { gameTime = g.gameTime } end
+				if type(kind) == "string" and kind:match("^SIM_") then return personComponent(e, kind) end
 				if kind == "GAME_SCRIPT" and e == WORKERS_ENTITY then
 					if opts.workersScript == "nostate" then return {} end
 					return { state_native = native(copy(opts.workersState or {})) }
@@ -744,7 +833,8 @@ function M.new(dir, opts)
 				STATION_GROUP = "STATION_GROUP", INDUSTRY = "INDUSTRY", NAME = "NAME", STATION = "STATION", LINE = "LINE",
 				PLAYER_OWNED = "PLAYER_OWNED", BOUNDING_VOLUME = "BOUNDING_VOLUME", GAME_SCRIPT = "GAME_SCRIPT",
 				PERSON_CAPACITY = "PERSON_CAPACITY", STOCK_LIST = "STOCK_LIST", CONSTRUCTION = "CONSTRUCTION",
-				TRANSPORT_NETWORK = "TRANSPORT_NETWORK" },
+				TRANSPORT_NETWORK = "TRANSPORT_NETWORK", SIM_PERSON = "SIM_PERSON", SIM_PERSON_AT_VEHICLE = "SIM_PERSON_AT_VEHICLE",
+				SIM_ENTITY_AT_VEHICLE = "SIM_ENTITY_AT_VEHICLE", SIM_ENTITY_AT_TERMINAL = "SIM_ENTITY_AT_TERMINAL" },
 			SavegameId = { new = function() return {} end },
 			StartGameParams = { new = function() return {} end },
 			BaseConfig = { Locations = { new = function() return { town = {}, industry = {} } end } },

@@ -214,6 +214,7 @@ within the 1.5 s gap, or just before the clear, is overwritten (or overwrites th
 python3 tools/tf3ctl.py depots [--grep bus]
 python3 tools/tf3ctl.py vehicles [--line 21]
 python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
+python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # or --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
@@ -384,6 +385,7 @@ Not checked yet:
 - The ×8 / ×16 buttons in game: their look and width beside the base buttons, the lit button, and the speed they set.
 - Whether `app.quit` ends the game without a confirmation dialog.
 - `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
+- `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 
 ## Tests
 
@@ -528,6 +530,30 @@ mod's code, and was checked against no running copy of it.
   every few seconds: while AT_TERMINAL note `stopIndex` and `doorsTime` (the doors opened); once it has left, the
   departure is `lastLineStopDeparture`, and also the entry for that stop in `lineStopDepartures` (the JSON list's
   element `stopIndex`, counting from 0). Units of the game time and of the timeUntil* fields are not checked in game.
+- `persons` (read only) lists the sim persons aboard one of the company's vehicles (`--vehicle`; the vehicle
+  window's passenger list, `getVehicle2Cargo2SimEntitesMap`), or riding and waiting for one of its lines
+  (`--line`, `simPersonSystem.getSimPersonsForLine`; that it includes those waiting is not checked: its doc says
+  "travelling with the given line"), listed by id. Per person: `happiness` (`SIM_PERSON`; the base calls
+  below 0.5 "Unhappy"), `good` (`isGoodQuality`), `destinations` (home, shopping, work), `targetOrAtEntity`,
+  `where` (vehicle / terminal / other); aboard `atVehicle` (`vehicle`, `part`, `place`, `expectedArrivalTime`)
+  with `untilArrival` (expected arrival minus the game time) and `late` (the game time is past it: the base
+  person window's test for a falling happiness, `sim_person.tl`), and `trip` (line, `lineStop0` / `lineStop1`);
+  waiting `atTerminal` (line, stops, `arrivalTime`, `sinceArrival`, `late`: waiting over 2 minutes, the person
+  window's test there). With `--vehicle`, `vehicleState` (state, stopIndex, speed) says at sea or in port. `summary`
+  counts the listed ones (unhappy, late aboard, `lateWaiting`, mean / min / max happiness); `quality` has the engine's passenger counts (`total`, `bad`,
+  `averageQuality`, `veryBad`) for the vehicle, its line and each stop of the line (`waiting` at the stop,
+  `stationGroupWaiting` at its station group): what the base shows as waiting and unhappy passengers. The answer
+  has `gameTime`. `total` counts everyone; details for the first `--limit` (200, at most 2000). A vehicle that is
+  gone or not the company's answers `missing: true` (not an error); a line that is not the company's is an error.
+  `--every SEC` (at least 0.5) repeats it and prints one compact JSON line per sample (JSON Lines) with `sample`
+  and `unixTime` added, until `--count N` samples or Ctrl-C; an answer that is not ok ends the loop, a sample with
+  no answer in time is a line with `noAnswer` and the loop goes on (exit code 2 at the end). Comfort is not in
+  the answer: compare models with `vehicles` / `models`. "Below 0.5" follows the person window
+  (`sim_person_eow.script.tl`); the HUD's happy icon takes above 0.5. The time a
+  person boarded is not in the engine's records: take the first sample it appears in. **Not checked in game:**
+  that these components and calls read in the GUI script as the base's windows read them, that
+  `expectedArrivalTime` is in the same unit as `gameTime` (the base compares the two, and adds 1000 * 2 * 60 for
+  two minutes: ms), and what the counts are for a ship at sea.
 - `depots` lists the company's depots only (`requireOwnedByPlayer`, as the line manager). No position (no API to
   read it was found). The kind (road / tram / rail / water / air) comes from the transport modes; `carrier` was
   OTHER for all 49 depots in a test (the base also goes by transport modes), so `carrier` / `carrierRaw` are for

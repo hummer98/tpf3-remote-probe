@@ -5130,5 +5130,187 @@ test("vehicles: without the new args the answer keeps its old shape; gone and fo
 	truthy(final(g, 734).error:find("line must be an entity id"), "the old refusal as it was")
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- persons: who is aboard a vehicle (or uses a line), their happiness and expected arrival, read only
+
+-- ship 601 on line 21 (Central -> Harbour), en route; game time 130000. 9001 happy, due at 140000; 9002 unhappy
+-- and past its expected arrival (125000), its components userdata as the engine's; 9003 aboard without a
+-- SIM_PERSON; 9004 waits at Central for line 21 since 100000
+local function personsGame(extra)
+	local opts = { fleet = { [601] = shipFleet(), [602] = fleetOf(101, 6) },
+		lines = { [21] = { name = "Ships", stops = { { stationGroup = 41 }, { stationGroup = 42 } } } },
+		stationGroups = { [41] = { name = "Central", stations = { { id = 411, terminals = 1 } } },
+			[42] = { name = "Harbour", stations = { { id = 421, terminals = 1 } } } },
+		persons = {
+			[9001] = { happiness = 0.8, destinations = { 11, 12, 13 }, targetOrAtEntity = 12,
+				atVehicle = { vehicle = 601, part = 0, place = 3, expectedArrivalTime = 140000 },
+				trip = { line = 21, lineStop0 = 0, lineStop1 = 1, vehicle = 601, roundTripCounter = 0 } },
+			[9002] = { happiness = 0.4, good = false, userdata = true, destinations = { 11, -1, 14 }, targetOrAtEntity = 14,
+				atVehicle = { vehicle = 601, part = 1, place = 0, expectedArrivalTime = 125000 },
+				trip = { line = 21, lineStop0 = 0, lineStop1 = 1, vehicle = 601, roundTripCounter = 0 } },
+			[9003] = { noSimPerson = true, atVehicle = { vehicle = 601, part = 0, place = 4, expectedArrivalTime = 150000 },
+				trip = { line = 21, lineStop0 = 0, lineStop1 = 1, vehicle = 601 } },
+			[9004] = { happiness = 0.6, atTerminal = { line = 21, lineStop0 = 0, lineStop1 = 1, arrivalTime = 100000, vehicle = -1 } },
+		},
+		quality = { vehicle = { [601] = { countTotal = 3, countBad = 1, averageQuality = 0.6, isVeryBad = false } },
+			line = { [21] = { countTotal = 4, countBad = 1, averageQuality = 0.65, isVeryBad = false } },
+			stop = { [21] = { [0] = { countTotal = 1, countBad = 0, averageQuality = 0.6, isVeryBad = false } } },
+			group = { [41] = { countTotal = 7, countBad = 2, averageQuality = 0.55, isVeryBad = false } } } }
+	for k, v in pairs(extra or {}) do opts[k] = v end
+	local g = modelsGame(opts)
+	g.gameTime = 130000
+	return g
+end
+
+test("persons --vehicle: happiness, expected arrival against the game time, the engine's counts, read only", function()
+	local g = personsGame()
+	local balance = g.balance
+	send(g, 740, "persons", "{ vehicle = 601 }")
+	frames(g, FIRST)
+	local a = final(g, 740)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.gameTime, 130000); eq(a.vehicle, 601); eq(a.line, 21); eq(a.total, 3); eq(#a.persons, 3); eq(a.missing, nil)
+	eq(a.unhappyBelow, 0.5)
+	local p1, p2, p3 = a.persons[1], a.persons[2], a.persons[3]
+	eq(p1.id, 9001); eq(p1.happiness, 0.8); eq(p1.good, true); eq(p1.where, "vehicle"); eq(p1.targetOrAtEntity, 12)
+	eq(p1.destinations[2], 12); eq(p1.atVehicle.vehicle, 601); eq(p1.atVehicle.place, 3)
+	eq(p1.atVehicle.expectedArrivalTime, 140000); eq(p1.untilArrival, 10000); eq(p1.late, false)
+	eq(p1.trip.line, 21); eq(p1.trip.lineStop1, 1); eq(p1.atTerminal, nil)
+	eq(p2.id, 9002); eq(p2.happiness, 0.4, "read through userdata components"); eq(p2.good, false)
+	eq(p2.untilArrival, -5000); eq(p2.late, true); eq(p2.destinations[2], -1); eq(p2.destinations[3], 14)
+	eq(p3.id, 9003); truthy(p3.error:find("no SIM_PERSON")); eq(p3.happiness, nil); eq(p3.atVehicle, nil)
+	local sm = a.summary
+	eq(sm.count, 3); eq(sm.withHappiness, 2); eq(sm.unhappy, 1); eq(sm.late, 1)
+	truthy(math.abs(sm.meanHappiness - 0.6) < 1e-9); eq(sm.minHappiness, 0.4); eq(sm.maxHappiness, 0.8)
+	local q = a.quality
+	eq(q.vehicle.total, 3); eq(q.vehicle.bad, 1); eq(q.vehicle.averageQuality, 0.6); eq(q.vehicle.veryBad, false)
+	eq(q.line.total, 4); eq(#q.stops, 2); eq(q.stops[1].stopIndex, 0); eq(q.stops[1].name, "Central")
+	eq(q.stops[1].waiting.total, 1); eq(q.stops[1].stationGroupWaiting.bad, 2)
+	eq(q.stops[2].stationGroup, 42); eq(q.stops[2].waiting.total, 0); eq(q.stops[2].waiting.averageQuality, nil, "nobody: none")
+	eq(g.balance, balance); eq(#g.commands, 0, "no engine command sent"); eq(g.crashed, nil)
+	eq(a.vehicleState.state, "AT_TERMINAL"); eq(a.vehicleState.stopIndex, 1); eq(a.vehicleState.speed, 0)
+	send(g, 741, "status", "{  }")
+	frames(g, 20)
+	eq(final(g, 741).lastAction, nil, "read only: not recorded as using the game")
+	eq(core.CHANGES_GAME.persons, nil); eq(core.COMMANDS.persons, true)
+end)
+
+test("persons: limit, a line's riders and waiting ones, nobody aboard, a vehicle gone or foreign", function()
+	local g = personsGame()
+	send(g, 745, "persons", "{ vehicle = 601, limit = 1 }")
+	frames(g, FIRST)
+	local a = final(g, 745)
+	eq(a.total, 3); eq(#a.persons, 1); eq(a.summary.count, 1, "the summary is over the listed ones")
+	send(g, 746, "persons", "{ line = 21 }")
+	frames(g, 20)
+	a = final(g, 746)
+	eq(a.ok, true, tostring(a.error)); eq(a.vehicle, nil); eq(a.line, 21); eq(a.total, 4)
+	local w = a.persons[4]
+	eq(w.id, 9004); eq(w.where, "terminal"); eq(w.atTerminal.arrivalTime, 100000); eq(w.atTerminal.sinceArrival, 30000)
+	eq(w.atTerminal.vehicle, nil, "-1: none"); eq(w.late, nil); eq(a.quality.vehicle, nil); eq(a.quality.line.total, 4)
+	eq(w.atTerminal.late, false, "30 s of waiting: within the base's 2 min"); eq(a.summary.lateWaiting, 0)
+	eq(a.vehicleState, nil)
+	for i = 2, #a.persons do truthy(a.persons[i - 1].id < a.persons[i].id, "listed by id") end
+	-- 602: the company's bus, nobody aboard and on no line
+	send(g, 747, "persons", "{ vehicle = 602 }")
+	frames(g, 20)
+	a = final(g, 747)
+	eq(a.ok, true); eq(a.total, 0); eq(a.line, nil); eq(a.missing, nil)
+	truthy(answerText(g, 747):find('"persons":[]', 1, true), "nobody: []")
+	eq(a.quality.vehicle.total, 0); eq(a.quality.vehicle.averageQuality, nil); eq(a.quality.stops, nil)
+	eq(a.summary.count, 0); eq(a.summary.meanHappiness, nil)
+	-- a vehicle that is gone, or no vehicle of the company: missing, not an error (a poll goes on)
+	local mapCalls = g.mapCalls
+	send(g, 748, "persons", "{ vehicle = 999 }")
+	frames(g, 20)
+	a = final(g, 748)
+	eq(a.ok, true); eq(a.missing, true); eq(a.total, 0); eq(g.mapCalls, mapCalls, "no engine lookup for it")
+	truthy(answerText(g, 748):find('"persons":[]', 1, true))
+	send(g, 749, "persons", "{ line = 77 }")
+	frames(g, 20)
+	truthy(final(g, 749).error:find("not one of the company's lines"))
+	eq(g.crashed, nil, "no engine lookup with an id it does not know")
+end)
+
+test("persons: long waits, a trip without SIM_PERSON_AT_VEHICLE, no game time, counts that fail", function()
+	local g = personsGame()
+	g.persons[9004].atTerminal.arrivalTime = 5000 -- 125 s waiting
+	g.persons[9005] = { happiness = 0.7, trip = { line = 21, lineStop0 = 0, lineStop1 = 1, vehicle = 601 } }
+	send(g, 770, "persons", "{ line = 21 }")
+	frames(g, FIRST)
+	local a = final(g, 770)
+	local byId = {}
+	for _, p in ipairs(a.persons) do byId[p.id] = p end
+	eq(byId[9004].atTerminal.late, true); eq(a.summary.lateWaiting, 1)
+	eq(byId[9005].where, "vehicle"); eq(byId[9005].atVehicle, nil); eq(byId[9005].late, nil); eq(byId[9005].trip.vehicle, 601)
+	-- no game time: no untilArrival, no late, the rest as before
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		if kind == "GAME_TIME" then error("no world") end
+		return getComponent(e, kind)
+	end
+	api.engine.util.cargo.getCargoQualityDataForVehicle = function() error("boom") end
+	send(g, 771, "persons", "{ vehicle = 601 }")
+	frames(g, 20)
+	a = final(g, 771)
+	eq(a.ok, true, tostring(a.error)); eq(a.gameTime, nil); eq(a.persons[1].happiness, 0.8)
+	eq(a.persons[1].atVehicle.expectedArrivalTime, 140000); eq(a.persons[1].untilArrival, nil); eq(a.persons[1].late, nil)
+	eq(a.quality.vehicle, nil, "a count that fails is left out"); eq(a.quality.line.total, 4)
+	eq(g.crashed, nil)
+end)
+
+test("persons: bad args refused; no persons map from the engine; the main menu", function()
+	local g = personsGame()
+	local bad = { { "{  }", "give the vehicle" }, { "{ vehicle = 601, line = 21 }", "not both" },
+		{ '{ vehicle = "x" }', "vehicle must be an entity id" }, { "{ vehicle = -1 }", "vehicle must be" },
+		{ "{ line = 1.5 }", "line must be" }, { "{ vehicle = 601, limit = 0 }", "limit must be" },
+		{ "{ vehicle = 601, limit = 5000 }", "limit must be" } }
+	for i, b in ipairs(bad) do
+		send(g, 750 + i, "persons", b[1])
+		frames(g, i == 1 and FIRST or 20)
+		local a = final(g, 750 + i)
+		truthy(a.ok ~= true and a.error and a.error:find(b[2], 1, true), b[1] .. " -> " .. tostring(a.error))
+	end
+	-- the engine's map call failing: the answer says so, the counts still come
+	api.engine.system.simEntityAtVehicleSystem.getVehicle2Cargo2SimEntitesMap = function() error("boom") end
+	send(g, 760, "persons", "{ vehicle = 601 }")
+	frames(g, 20)
+	local a = final(g, 760)
+	eq(a.ok, true); eq(a.total, 0); truthy(a.personsError:find("getVehicle2Cargo2SimEntitesMap")); eq(a.quality.vehicle.total, 3)
+	g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 761, "persons", "{ vehicle = 601 }")
+	frames(g, FIRST)
+	truthy(final(g, 761).error:find("needs a running game"))
+end)
+
+test("core: persons helpers (args, CargoQualityData as userdata, summary)", function()
+	local a = core.personsArgs({ vehicle = "601" })
+	eq(a.vehicle, 601); eq(a.limit, core.PERSONS_LIMIT); eq(a.line, nil)
+	eq(core.personsArgs({ line = 21, limit = 7 }).limit, 7)
+	for _, b in ipairs({ {}, { vehicle = 2 ^ 40 }, { vehicle = 1, line = 2 }, { line = "x" }, { vehicle = 1, limit = 1.5 } }) do
+		truthy(not core.personsArgs(b))
+	end
+	truthy(not core.personsArgs(nil))
+	eq(core.qualityOf(nil), nil)
+	local u = newproxy(true)
+	local t = { countTotal = 5, countBad = 2, averageQuality = 0.7, isVeryBad = true }
+	getmetatable(u).__index = function(_, k) return t[k] end
+	local q = core.qualityOf(u)
+	eq(q.total, 5); eq(q.bad, 2); eq(q.averageQuality, 0.7); eq(q.veryBad, true)
+	local locked = newproxy(true)
+	getmetatable(locked).__index = function() error("locked") end
+	eq(core.qualityOf(locked), nil, "nothing reads: nil, not an error")
+	local s = core.personSummary(nil)
+	eq(s.count, 0); eq(s.meanHappiness, nil)
+	s = core.personSummary({ { happiness = 0 / 0 }, { happiness = 0.5, late = true }, { error = "x" } })
+	eq(s.count, 3); eq(s.withHappiness, 1, "NaN is no happiness"); eq(s.unhappy, 0, "0.5 is not below 0.5"); eq(s.late, 1)
+	eq(s.meanHappiness, 0.5)
+	-- a cycle in a person does not trip the summary
+	local cyc = { happiness = 0.2 }
+	cyc.self = cyc
+	eq(core.personSummary({ cyc }).unhappy, 1)
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)
