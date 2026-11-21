@@ -298,8 +298,8 @@ python3 tools/tf3ctl.py modhub publish-clear --yes
   返さない)、そして staging の MOD ごとに、フォルダ・id の value・題・`state` (Sync・Ready・Publishing・HasResult)・
   `modhubId` (有効か・値。前に上げた mod.io の id)・`modhubDetails` (mod.io にある中身: found・`visible`・題・版) と、
   ページが新規として上げるか、更新か、mod.io の MOD が消えたと警告するか (`upload`: new / update / remoteMissing) を
-  返します。mod.io の準備と、staging の MOD が Sync を抜けるのを最大 `--wait` 秒待ち、それから分かったことを返します
-  (`timedOut` に何を待っていたかが出ます)。
+  返します。mod.io の準備と、staging の MOD が Sync を抜けるのを最大 `--wait` 秒待ち (`--folder` を付けたときはその
+  フォルダの MOD だけ)、それから分かったことを返します (`timedOut` に何を待っていたかが出ます)。
 - `validate FOLDER` は、ページの「再検証」のボタンと同じく helper の `validate` を呼び、終わるまで毎フレーム `update()` を
   呼び、結果をページと同じ数え方で返します (`text`、Critical / Error / Warning の件数、先頭のメッセージ)。
   `criticalPc`・`criticalConsole`・`levelPc`・`levelConsole` も返します。進み具合は 15 秒ごとに stderr へ。mod.io の準備を
@@ -308,13 +308,16 @@ python3 tools/tf3ctl.py modhub publish-clear --yes
   コマンド全体の上限で、過ぎると動いている検証を止めます (`abortValidation`。ページを閉じたときと同じ)。受け付けるのは
   `MODHUB_VALIDATE_FOLDERS` (content/remote_core.lua) にあるフォルダだけです。自分の MOD に合わせて直してください。
 - helper を作ると、ゲームは staging の MOD を mod.io と同期します。mod.io への読む要求で、書き込みはしません。
+- helper は、mod.io の準備ができてから最初の modhub のコマンドで1度だけ作ります。`ModPublishHelper.new` が失敗すると、
+  probe はそのエラーを覚えて、メインメニューにいる間は作り直しません。あとの modhub のコマンドは全部同じエラーを
+  返します。やり直すには、ゲームを起動し直してください。
 - `validate` はゲームを変えるコマンドとして数えます (`--owner` の警告)。検証を数分動かし、その MOD で動いている検証
   (人がマイMOD のページで始めたものなど) を止めるためです。動いている間はマイMOD を開かないでください。ページは
   自分の helper を作ります。
 - `status` と `validate` はゲーム内で動きました (2026-11-22)。「privileged api, not available to mods」の印があっても
   メニューの probe は `ModPublishHelper` を作れ、staging の MOD の id は `StagingArea,<フォルダ>` と読め、新規の MOD は
-  Ready で `modhubId` が無効でした。ほかの staging の MOD が数分 Sync のままのことがあり、`status` は `--folder` を
-  付けても全部を待ちます。
+  Ready で `modhubId` が無効でした。ほかの staging の MOD が数分 Sync のままのことがあり、`status` は `--folder` が
+  無いと全部を待ちます。
 
 #### 新しい MOD を1つ上げる (`modhub publish`)
 

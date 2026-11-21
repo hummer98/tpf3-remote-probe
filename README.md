@@ -314,7 +314,8 @@ along with `publish`, `abortPublish` and `PublishSettings` appearing only in the
   HasResult), `modhubId` (valid, value: the mod.io id of an earlier upload), `modhubDetails` (what mod.io holds:
   found, `visible`, title, version) and whether the page would upload it as new, update it, or warn that the mod.io
   mod is gone (`upload`: new / update / remoteMissing). It waits up to `--wait` seconds for mod.io to be ready and
-  for the staging mods to leave Sync, then answers what it has (`timedOut` says what it was waiting for).
+  for the staging mods to leave Sync (with `--folder`, only that folder's mod), then answers what it has
+  (`timedOut` says what it was waiting for).
 - `validate FOLDER` runs the helper's `validate`, as the page's Re-Validate button, calls `update()` every frame
   until it is done, and answers the result as the page counts it (`text`, counts of Critical / Error / Warning,
   the first messages) with `criticalPc`, `criticalConsole`, `levelPc` and `levelConsole`. Progress goes to stderr
@@ -324,13 +325,16 @@ along with `publish`, `abortPublish` and `PublishSettings` appearing only in the
   aborted (`abortValidation`, as the page does when it closes). Only the folders listed in `MODHUB_VALIDATE_FOLDERS`
   (content/remote_core.lua) are taken; edit the list for your own mods.
 - Making the helper makes the game sync the staging mods with mod.io: read requests to mod.io, no writes.
+- The helper is made once, by the first modhub command that finds mod.io ready. If `ModPublishHelper.new` fails, the
+  probe keeps that error and does not try again while the game stays in the main menu: every later modhub command
+  answers the same error. Restart the game to try again.
 - `validate` counts as changing the game (`--owner` warnings): it runs the validator for minutes and aborts a
   validation already running for that mod, e.g. one a person started on the My Mods page. Do not open My Mods while
   it runs: the page makes a helper of its own.
 - `status` and `validate` worked in game (2026-11-22): the menu probe made `ModPublishHelper` although it is marked
   "privileged api, not available to mods", a staging mod's id reads `StagingArea,<folder>`, and a new mod read
-  Ready with no valid `modhubId`. Other staging mods may stay in Sync for minutes; `status` waits for all of them,
-  also with `--folder`.
+  Ready with no valid `modhubId`. Other staging mods may stay in Sync for minutes; `status` without `--folder` waits
+  for all of them.
 
 #### Uploading one new mod (`modhub publish`)
 

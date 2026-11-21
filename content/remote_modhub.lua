@@ -239,6 +239,21 @@ function M.new(ctx)
 		return "command " .. j.id .. " (" .. j.cmd .. ") is still running; try again when it has answered"
 	end
 
+	-- one step of a job, the first (from its handler) as every later one (H.step): an error ends the job and
+	-- answers it. Without this a first step that raised left H.job behind, answered later a second time.
+	local function runStep(job, step)
+		local ok, err = pcall(step, job)
+		if not ok and H.job == job then
+			H.job = nil
+			fail(job.id, err)
+		end
+	end
+
+	local function startJob(job, step)
+		H.job = job
+		runStep(job, step)
+	end
+
 	---------------------------------------------------------------------------------------------------------------
 	-- status: privileged or not, the helper, the backends, mod.io's state, and every staging mod (or one)
 
@@ -271,12 +286,15 @@ function M.new(ctx)
 
 	-- a mod the helper does not know yet counts as in Sync, as the base page takes it (ModUploadForm: no
 	-- hasStagingMod, state Sync); getStagingModData only after hasStagingMod, as the base always asks first (for a
-	-- mod it does not have, the engine may assert rather than raise)
-	local function anySyncing(b)
+	-- mod it does not have, the engine may assert rather than raise). With a folder, only that folder's mods: another
+	-- mod's sync may take minutes (120 s and more in game, 2026-11-22) and says nothing about this one.
+	local function anySyncing(b, folder)
 		for _, id in ipairs((stagingIds(b))) do
-			if not try(function() return H.helper:hasStagingMod(id) end) then return true end
-			local d = try(function() return H.helper:getStagingModData(id) end)
-			if d ~= nil and stateName(core.field(d, "state")) == "Sync" then return true end
+			if folder == nil or core.stagingFolder(str(core.field(id, "value"))) == folder then
+				if not try(function() return H.helper:hasStagingMod(id) end) then return true end
+				local d = try(function() return H.helper:getStagingModData(id) end)
+				if d ~= nil and stateName(core.field(d, "state")) == "Sync" then return true end
+			end
 		end
 		return false
 	end
@@ -295,8 +313,10 @@ function M.new(ctx)
 			if notReady then return finishStatus(job, "waiting for mod.io") end
 			helper(job.b.publish)
 		end
-		if H.helper and anySyncing(job.b) and not over then return end
-		finishStatus(job, (H.helper and anySyncing(job.b)) and "waiting for the staging mods' sync with mod.io" or nil)
+		local folder = job.args.folder
+		if H.helper and anySyncing(job.b, folder) and not over then return end
+		finishStatus(job, (H.helper and anySyncing(job.b, folder)) and ("waiting for the sync with mod.io of "
+			.. (folder and ("staging mod " .. folder) or "the staging mods")) or nil)
 	end
 
 	function handlers.modhubStatus(c)
@@ -305,8 +325,7 @@ function M.new(ctx)
 		if H.job then return fail(c.id, busyError()) end
 		local b, berr = backends()
 		if not b then return fail(c.id, berr) end
-		H.job = { id = c.id, cmd = c.cmd, args = args, b = b, started = appTime() }
-		stepStatus(H.job)
+		startJob({ id = c.id, cmd = c.cmd, args = args, b = b, started = appTime() }, stepStatus)
 	end
 
 	---------------------------------------------------------------------------------------------------------------
@@ -416,9 +435,8 @@ function M.new(ctx)
 		if H.helperError then return fail(c.id, "ModPublishHelper.new failed: " .. H.helperError) end
 		local b, berr = backends()
 		if not b then return fail(c.id, berr) end
-		H.job = { id = c.id, cmd = c.cmd, args = args, b = b, started = appTime(), phase = "ready",
-			nextProgress = appTime() + PROGRESS_SEC, progressN = 0 }
-		stepValidate(H.job)
+		startJob({ id = c.id, cmd = c.cmd, args = args, b = b, started = appTime(), phase = "ready",
+			nextProgress = appTime() + PROGRESS_SEC, progressN = 0 }, stepValidate)
 	end
 
 	---------------------------------------------------------------------------------------------------------------
@@ -669,9 +687,8 @@ function M.new(ctx)
 		if H.helperError then return fail(c.id, "ModPublishHelper.new failed: " .. H.helperError) end
 		local b, berr = backends()
 		if not b then return fail(c.id, berr) end
-		H.job = { id = c.id, cmd = c.cmd, args = args, b = b, started = appTime(), phase = "ready",
-			nextProgress = appTime() + PROGRESS_SEC, progressN = 0 }
-		stepPublish(H.job)
+		startJob({ id = c.id, cmd = c.cmd, args = args, b = b, started = appTime(), phase = "ready",
+			nextProgress = appTime() + PROGRESS_SEC, progressN = 0 }, stepPublish)
 	end
 
 	-- why a load, new game or quit must wait: an upload of this launch that has no result yet (a quit in the
@@ -708,12 +725,7 @@ function M.new(ctx)
 		end
 		local job = H.job
 		if not job then return end
-		local step = job.cmd == "modhubStatus" and stepStatus or (job.cmd == "modhubPublish" and stepPublish or stepValidate)
-		local ok, err = pcall(step, job)
-		if not ok and H.job == job then
-			H.job = nil
-			fail(job.id, err)
-		end
+		runStep(job, job.cmd == "modhubStatus" and stepStatus or (job.cmd == "modhubPublish" and stepPublish or stepValidate))
 	end
 
 	-- a load, new game or quit ends the menu: a running validation is aborted and its command answered. An upload

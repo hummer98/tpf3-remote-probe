@@ -5745,7 +5745,9 @@ test("one code path uploads: publish, abortPublish and PublishSettings only betw
 	-- comments name them (to say what is left out); code must not, outside the one block
 	local onlyInBlock = { "[:.]publish%s*%(", "abortPublish", "PublishSettings" }
 	-- the helper's other change methods, and api.modhub's own writes (subscriptions, ratings, reports, logins,
-	-- the mode, savegame ids) and what opens a browser or a folder: nowhere
+	-- the mode, savegame ids) and what opens a browser or a folder: nowhere. A call through api.modhub itself is
+	-- held by the list of allowed reads (the test "api.modhub: only the read functions..."); these names stay here
+	-- for the helper's methods and for a write reached by any other way.
 	local banned = { "setRemoteModId", "setModDetails", "refreshMod", "LogoImage", "GalleryImage", "setPostPublishFn",
 		"openFolder", "stageSavegame", "subscribeModAsync", "unsubscribeModAsync", "forceUninstallModAsync",
 		"submitModRatingAsync", "submitModReportAsync", "setModManagementMode", "setModhubModIdForSavegame",
@@ -6069,6 +6071,121 @@ test("modhub publish: refused inside a save; quit while it validates cancels it 
 	eq(a.ok, false); truthy(a.error:find("cancelled by quit command 1439; nothing was uploaded"), a.error)
 	eq(final(g, 1439).ok, true); eq(g.abortValidations, 1)
 	noUploads(g)
+end)
+
+test("modhub status --folder waits for that mod's sync only; validate waits for its own mod too", function()
+	-- in game (2026-11-22) another staging mod stayed in Sync for 120 s and status --folder timed out on it
+	local staging = { { folder = "hummer_industry_pollution_display_1", modhubId = "6500003", syncFrames = 30,
+		details = { visible = true } }, { folder = "hummer_cursor_altitude_tooltip_1", modhubId = "6400002",
+		staysInSync = true, details = { visible = true } } }
+	local g = modhubGame({ staging = staging })
+	send(g, 1450, "modhubStatus", '{ wait = 30, folder = "hummer_industry_pollution_display_1" }')
+	frames(g, FIRST + 40)
+	local a = final(g, 1450)
+	truthy(a, "answered once its own mod is Ready, the other still in Sync")
+	eq(a.ok, true, a.error); eq(a.timedOut, nil); eq(#a.mods, 1); eq(a.mods[1].state, "Ready")
+	-- the one asked for stays in Sync: that is what it waits for, and what the answer names
+	g = modhubGame({ staging = staging })
+	send(g, 1451, "modhubStatus", '{ wait = 2, folder = "hummer_cursor_altitude_tooltip_1" }')
+	frames(g, FIRST + 90)
+	a = final(g, 1451)
+	eq(a.ok, true); eq(a.mods[1].state, "Sync")
+	truthy((a.timedOut or ""):find("staging mod hummer_cursor_altitude_tooltip_1"), tostring(a.timedOut))
+	-- without a folder, every mod's sync is waited for (as before)
+	g = modhubGame({ staging = staging })
+	send(g, 1452, "modhubStatus", '{ wait = 2 }')
+	frames(g, FIRST + 90)
+	a = final(g, 1452)
+	truthy((a.timedOut or ""):find("the staging mods"), tostring(a.timedOut))
+	-- validate of the Ready mod goes while the other is in Sync
+	g = modhubGame({ staging = staging })
+	send(g, 1453, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, FIRST + 30 * 5)
+	a = final(g, 1453)
+	eq(a.ok, true, a and a.error); eq(#g.validateCalls, 1)
+	noUploads(g)
+end)
+
+test("modhub: a first step that raises ends its job with one answer; the next command is not refused as busy", function()
+	-- the handler's own step, in the frame the command arrives: it ran outside H.step's pcall, so an error
+	-- there left H.job behind and the job answered a second time later
+	for i, c in ipairs({ { "modhubStatus", '{ wait = 30 }' },
+		{ "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }' },
+		{ "modhubPublish", publishCmd() } }) do
+		local g = modhubGame({ staging = fuStaging() })
+		local gcore = package.loaded["hummer_remote_probe::/remote_core.lua"] -- the game's own, fresh per game
+		local real, calls = gcore.toList, 0
+		gcore.toList = function(...)
+			calls = calls + 1
+			if calls == 2 then error("boom in the first step") end -- the first is backends(), in the handler
+			return real(...)
+		end
+		local id = 1454 + 2 * i
+		send(g, id, c[1], c[2])
+		frames(g, FIRST)
+		gcore.toList = real
+		truthy(calls >= 2, c[1] .. ": the first step reached the staging list")
+		frames(g, 30 * 3)
+		local a, n = final(g, id)
+		eq(n, 1, c[1] .. ": one final answer"); eq(a.ok, false, c[1])
+		truthy(a.error:find("boom in the first step"), c[1] .. ": " .. tostring(a.error))
+		send(g, id + 1, "modhubStatus", '{ wait = 0 }')
+		frames(g, 10)
+		a = final(g, id + 1)
+		truthy(not (a.error or ""):find("still running"), c[1] .. ": " .. tostring(a.error))
+		noUploads(g)
+	end
+end)
+
+test("modhub: load and newgame abort a running validation and answer it, as quit does", function()
+	for i, c in ipairs({ { "load", '{ save = "probe" }' }, { "newgame", "{ }" } }) do
+		local g = modhubGame({ staging = { { folder = "hummer_force_unload_default_1", validateUpdates = 100000 } } })
+		local id = 1463 + 2 * i
+		send(g, id, "modhubValidate", '{ folder = "hummer_force_unload_default_1" }')
+		frames(g, FIRST)
+		eq(final(g, id), nil, c[1] .. ": still validating")
+		send(g, id + 1, c[1], c[2])
+		frames(g, 30)
+		local a = final(g, id)
+		eq(a.ok, false, c[1]); truthy(a.error:find("cancelled by " .. c[1] .. " command " .. (id + 1)), c[1] .. ": " .. a.error)
+		eq(g.abortValidations, 1, c[1])
+		noUploads(g)
+	end
+end)
+
+test("api.modhub: only the read functions on the list are called anywhere in content/", function()
+	-- the list is what the probe reads; a write (subscribe, rate, log in, change the mode...) or anything new
+	-- must be added here on purpose. Every other use of api.modhub (another name, an alias, an index) fails.
+	local allowed = { getBackendIDs = true, getBackendIdForSource = true, getCapabilities = true,
+		getInstalledMods = true, getModInfoForInstalledMod = true, getModManagementState = true,
+		getUserInfo = true, isInitialized = true }
+	local p = io.popen("find '" .. root .. "/content' -name '*.lua'")
+	local n, uses = 0, 0
+	for path in p:lines() do
+		n = n + 1
+		local lineNo = 0
+		for line in io.lines(path) do
+			lineNo = lineNo + 1
+			-- api indexed by a string (api["modhub"]) is never allowed: looked for before the strings are blanked
+			truthy(not line:gsub("%-%-.*$", ""):find("api%s*%["), path .. ":" .. lineNo .. " indexes api by a key: " .. line)
+			-- comments and strings may name anything (error texts say "api.modhub cannot be read"). api.type.modhub
+			-- (the helper's type) is not api.modhub: its methods are held by the banned names of the test above.
+			local code = line:gsub('"[^"]*"', '""'):gsub("'[^']*'", "''"):gsub("%-%-.*$", "")
+			local at = 1
+			while true do
+				local s, e = code:find("api%s*%.%s*modhub", at)
+				if not s then break end
+				uses = uses + 1
+				local name = code:sub(e + 1):match("^%s*%.%s*([%a_][%w_]*)%s*%(")
+				truthy(name and allowed[name], path .. ":" .. lineNo .. " uses api.modhub "
+					.. (name and ("." .. name .. ", not on the list") or "other than as a call of a listed function")
+					.. ": " .. line)
+				at = e + 1
+			end
+		end
+	end
+	p:close()
+	truthy(n > 5, "found the content files"); truthy(uses >= 10, "found the uses: " .. uses)
 end)
 
 print(string.format("\n%d passed, %d failed", passes, failures))
