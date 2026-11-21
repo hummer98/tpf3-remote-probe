@@ -290,6 +290,47 @@ Without the mod, `connect` answers with an error saying so, and every other comm
   road of the game's own types (a type from another mod, given with `--track` / `--template`, needs that mod), so it
   stays. Track Connector's game script state stays in the save.
 
+### One construction on the map (`build`)
+
+```
+python3 tools/tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con --at 1200,800        # on the terrain
+python3 tools/tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con --at=-300,450,82 --angle 1.5708 \
+    --params '{"rbr_height": 8, "rbr_length": 120}' [--name "Ramp A"] [--seed 3] [--dry-run]
+python3 tools/tf3ctl.py build --remove 51234[,51240]      # take away constructions the probe built
+python3 tools/tf3ctl.py build --remove-all                # all it built since this load
+```
+
+**For test saves.** `build` puts one construction (a `.con`: a depot, a station, an asset, an industry, another
+mod's construction) at a point, with no click and no key: a `SimpleProposal` with one `ConstructionEntity` goes to
+the engine as `api.cmd.makeWorldBuildProposalCmd` from the probe's GUI script, the way a mod's own tool builds. The
+engine checks it as it checks a player's build (collisions, terrain, money); a refused build is not built
+(`ignoreErrors` is off), and nothing of the player's or of a town is knocked down for it.
+
+- `--res`: the construction's resource name. A mod's `content/<dir>/x.con.lua` is `<modId>::/<dir>/x.con`; a base
+  game one starts with `::/` (`depots/...con.lua` is also tried as `::/depots/...con`). A name the game does not know
+  is refused before anything is sent, with up to 12 names like it (the same file name, or the same mod's).
+- `--at x,y[,z]` in metres (a negative x: `--at=-300,450`). Without z the terrain's height there is used
+  (`api.engine.terrain.getHeightAt`); the construction's own terrain alignment then levels or cuts the ground, as
+  when a player places it. `--angle`: radians about the vertical.
+- `--params`: a JSON object laid over the construction's own defaults (each param's `numbers[defaultIndex]`, as the
+  game's construction menu starts them); `seed` is 1 unless given (`--seed`, or in `--params`), so the same
+  placement looks the same each time.
+- The answer: `entity` (the new construction), `construction` (`fileName`, `name`, `depots`, `stations`,
+  `industries`, and `ends`: the free ends of its own road or track pieces with their positions, candidates for
+  `connect --from`), `cost` (the engine's), `balanceBefore` / `balanceAfter` / `spent`, `errors`, `warnings`,
+  `collisions` (ids in the way), `params` as sent, `at` (with the z used, `zFrom`). A refusal is `ok: false` with
+  the engine's messages in `error`.
+- `--dry-run` asks the engine's `makeProposalData` without building (`buildable`, `errors`, `collisions`, `cost`).
+  That function is typed for a full `Proposal`; if it refuses a `SimpleProposal`, the answer says `checked: false`
+  and only the name and the height were checked.
+- `--remove` takes away only constructions the probe built: those built since this load, or (after a load) those
+  whose name starts with `probe-build` (the default name, `probe-build N`). A construction given its own `--name`
+  can be removed by id only in the load that built it. One id that does not qualify refuses the whole command.
+- It changes the game (as `line` and `connect`), so other clients get the usual warning; one build at a time is
+  enough (each waits up to 30 s for the engine's answer).
+- **Not checked in game yet** (written 2026-11-22): in particular whether the engine takes the default params, the
+  name and `autoFillSlots` as sent, whether `ends` read back, and the dry run.
+
 ### My Mods from the main menu (`modhub`)
 
 ```
@@ -512,6 +553,7 @@ Not checked yet:
 - The ×8 / ×16 buttons in game: their look and width beside the base buttons, the lit button, and the speed they set.
 - Whether `app.quit` ends the game without a confirmation dialog.
 - `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
+- `build`, entirely (see "One construction on the map").
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `modhub publish`, entirely (see "Uploading one new mod"). `modhub status` and `validate` were checked on
   2026-11-22.

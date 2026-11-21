@@ -771,6 +771,27 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("vehicles", "--entity", "77777", "--state")
         self.assertEqual((code, res["total"], res["vehicles"], res["missing"]), (0, 0, [], [77777]))
 
+    def test_9wb_build_place_and_remove(self):
+        ramp = "road_bridge_ramp::/road_bridge_ramp/ramp.con"
+        code, res = self.ctl("build", "--res", ramp, "--at", "300,40", "--dry-run")
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["dryRun"] and res["buildable"], res)
+        code, res = self.ctl("build", "--res", ramp, "--at", "300,40", "--params", '{"rbr_height": 4}')
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["zFrom"], "terrain")
+        self.assertEqual(res["at"]["z"], 3)
+        self.assertEqual(res["params"]["rbr_height"], 4)
+        self.assertEqual(len(res["construction"]["ends"]), 2)
+        e = res["entity"]
+        code, res = self.ctl("build", "--res", "road_bridge_ramp::/nope.con", "--at", "0,0")
+        self.assertEqual(code, 1)
+        self.assertIn(ramp, res["error"], "names like it")
+        code, res = self.ctl("build", "--remove", str(e))
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["removed"], [e])
+        code, res = self.ctl("build", "--remove-all")
+        self.assertEqual(code, 1, "nothing left the probe built")
+
     def test_9wc_persons(self):
         # no vehicle 77777 in the fake: missing, not an error, so a poll goes on; one JSON line per sample
         out = io.StringIO()
@@ -1271,6 +1292,43 @@ class QuitLaunchTest(unittest.TestCase):
             code = tf3ctl.main(["rename", "Petworth", "--entity", "48118"])
         self.assertEqual(code, 0)
         self.assertEqual(sent, [("rename", {"entity": 48118, "name": "Petworth"})])
+
+    def test_build_args_and_main(self):
+        def ns(**kw):
+            base = dict(res=None, at=None, angle=None, params=None, seed=None, name=None, dry_run=False, remove=None,
+                        remove_all=False)
+            base.update(kw)
+            return tf3ctl.argparse.Namespace(**base)
+        self.assertEqual(tf3ctl.build_args(ns(res=" m::/a/ramp.con ", at="10,-20.5")),
+                         {"res": "m::/a/ramp.con", "at": [10.0, -20.5]})
+        self.assertEqual(tf3ctl.build_args(ns(res="x.con", at="1,2,3", angle=1.5, params='{"h": 8}', seed=4, name="R",
+                                              dry_run=True)),
+                         {"res": "x.con", "at": [1.0, 2.0, 3.0], "angle": 1.5, "params": {"h": 8}, "seed": 4,
+                          "name": "R", "dryRun": True})
+        self.assertEqual(tf3ctl.build_args(ns(remove="5001, 5002")), {"remove": [5001, 5002]})
+        self.assertEqual(tf3ctl.build_args(ns(remove_all=True)), {"removeAll": True})
+        for bad in (dict(), dict(res="x.con"), dict(res=" ", at="1,2"), dict(res="x.con", at="1"),
+                    dict(res="x.con", at="1,2,3,4"), dict(res="x.con", at="a,b"), dict(res="x.con", at="nan,1"),
+                    dict(res="x.con", at="1,2", params="[1]"), dict(res="x.con", at="1,2", params="nope"),
+                    dict(res="x.con", at="1,2", name=" "), dict(remove="1,x"), dict(remove="-1"),
+                    dict(remove="1", res="x.con"), dict(remove="1", remove_all=True), dict(remove_all=True, dry_run=True)):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                tf3ctl.build_args(ns(**bad))
+        self.assertIn("build", tf3ctl.CHANGES_GAME)
+        got = mod_reads(tf3ctl.command_text(9, "build", {"res": "m::/r.con", "at": [1.0, 2.0], "params": {"h": 8}}))
+        self.assertEqual(got["args"]["at"], [1, 2])
+        self.assertEqual(got["args"]["params"], {"h": 8})
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args, timeout))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = tf3ctl.main(["build", "--res", "m::/r.con", "--at=-100,50", "--angle", "0.5"])
+        self.assertEqual(code, 0)
+        self.assertEqual(sent, [("build", {"res": "m::/r.con", "at": [-100.0, 50.0], "angle": 0.5},
+                                 tf3ctl.BUILD_TIMEOUT_SEC)])
 
     def test_event_and_tool_args(self):
         ns = tf3ctl.argparse.Namespace

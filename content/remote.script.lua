@@ -1052,6 +1052,10 @@ for k, fn in pairs(lines.handlers) do handlers[k] = fn end
 local connect = (ug_require or require)(MOD .. "::/remote_connect.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say, mod = MOD })
 for k, fn in pairs(connect.handlers) do handlers[k] = fn end
+-- build (remote_build.lua): one construction put on the map, or ones the probe built taken away
+local build = (ug_require or require)(MOD .. "::/remote_build.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = appTime, try = try, say = say })
+handlers.build = build.handle
 -- My Mods (remote_modhub.lua): the staging area, validate and the one upload, in the main menu only
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })
@@ -1274,6 +1278,7 @@ local function init()
 		vehicles.reset()
 		lines.reset()
 		connect.reset()
+		build.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1382,6 +1387,7 @@ local function step()
 	vehicles.step()
 	lines.step()
 	connect.step()
+	build.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()

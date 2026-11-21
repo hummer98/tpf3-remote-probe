@@ -17,12 +17,13 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
-	industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
+	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
 	modhubValidate = true, modhubPublish = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
 	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true, -- camera, as window: what the player sees
+	build = true, -- also its dry run: it is how a test save gets changed, so it warns others the same way
 	-- modhubValidate changes no save and writes nothing to mod.io, but it runs the game's validator on a staging
 	-- mod for minutes, and starting one aborts a validation already running for that mod (the type's own words),
 	-- e.g. one a person started on the My Mods page: so others are warned. modhubStatus only reads.
@@ -823,6 +824,122 @@ function M.renameRequest(args)
 	if type(name) ~= "string" or not name:find("%S") then return nil, "give the new name (not empty)" end
 	if #name > M.MAX_NAME_LEN then return nil, "the name is longer than " .. M.MAX_NAME_LEN .. " bytes" end
 	return { entity = e, name = name }
+end
+
+-- build (remote_build.lua does the game side): one construction put on the map, or ones the probe put there taken
+-- away. args: res (the construction's resName), at = "x,y[,z]" or a list (no z: the terrain's height there), angle
+-- (radians about the vertical, 0 by default), params (a table, over the construction's defaults), name, seed,
+-- dryRun; or remove = an id or a list of ids, or removeAll. The probe names what it builds NAME_PREFIX.. unless a
+-- name is given.
+M.BUILD_NAME_PREFIX = "probe-build"
+M.BUILD_LIMITS = { xy = 100000, z = { -1000, 5000 }, remove = 50 }
+function M.buildRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.remove ~= nil or args.removeAll then
+		if args.res ~= nil or args.at ~= nil then return nil, "remove goes alone: no res or at with it" end
+		if args.removeAll then
+			if args.remove ~= nil then return nil, "give remove or removeAll, not both" end
+			return { removeAll = true }
+		end
+		local list = type(args.remove) == "table" and args.remove or { args.remove }
+		local ids, seen = {}, {}
+		for _, v in ipairs(list) do
+			local e = tonumber(v)
+			if e == nil or e ~= math.floor(e) or e < 0 then return nil, "remove: not an entity id: " .. tostring(v) end
+			if not seen[e] then seen[e] = true; ids[#ids + 1] = e end
+		end
+		if #ids == 0 then return nil, "remove: give at least one id" end
+		if #ids > M.BUILD_LIMITS.remove then return nil, "remove: at most " .. M.BUILD_LIMITS.remove .. " ids at once" end
+		return { remove = ids }
+	end
+	local res = args.res
+	if type(res) ~= "string" or not res:find("%S") or res:find("[%c@]") or #res > 512 then
+		return nil, "give res (the construction's resName, e.g. some_mod::/path/thing.con)"
+	end
+	res = res:match("^%s*(.-)%s*$")
+	if args.at == nil then return nil, "give at: x,y[,z] in metres (no z: the terrain's height there)" end
+	local at, err = M.numberList(args.at, 3)
+	if not at then return nil, "at: " .. err end
+	if #at < 2 then return nil, "at needs at least x,y" end
+	local L = M.BUILD_LIMITS
+	if math.abs(at[1]) > L.xy or math.abs(at[2]) > L.xy then return nil, "x and y must be within " .. L.xy end
+	if at[3] ~= nil and (at[3] < L.z[1] or at[3] > L.z[2]) then
+		return nil, string.format("z must be %g-%g", L.z[1], L.z[2])
+	end
+	local angle = args.angle == nil and 0 or tonumber(args.angle)
+	if not finite(angle) or math.abs(angle) > 2 * math.pi + 1e-9 then return nil, "angle must be radians within +-2 pi" end
+	local params
+	if args.params ~= nil then
+		if type(args.params) ~= "table" then return nil, "params must be a table (a JSON object)" end
+		for k in pairs(args.params) do
+			if type(k) ~= "string" then return nil, "params: keys must be names (a JSON object, not a list)" end
+		end
+		-- the same plain-values check as a react event's param (no userdata, functions or cycles)
+		local ev, perr = M.eventRequest({ name = "params", param = args.params })
+		if not ev then return nil, "params: " .. tostring(perr):gsub("^param ", "") end
+		params = args.params
+	end
+	local seed = args.seed == nil and 1 or tonumber(args.seed)
+	if not finite(seed) or seed ~= math.floor(seed) or seed < 0 or seed > 2147483647 then
+		return nil, "seed must be a whole number 0-2147483647"
+	end
+	local name = args.name
+	if name ~= nil then
+		if type(name) ~= "string" or not name:find("%S") then return nil, "name must not be empty" end
+		if #name > M.MAX_NAME_LEN then return nil, "the name is longer than " .. M.MAX_NAME_LEN .. " bytes" end
+	end
+	return { res = res, x = at[1], y = at[2], z = at[3], angle = angle, params = params, seed = seed, name = name,
+		dryRun = args.dryRun == true }
+end
+
+-- the values a construction's own params start with, as the base's construction menu picks them
+-- (construction.tl getParamDefaultValue: numbers[defaultIndex], or defaultIndex when there are no numbers).
+-- descParams: the desc's params as plain tables { key, numbers, defaultIndex }.
+function M.buildDefaults(descParams)
+	local out = {}
+	for _, p in ipairs(descParams or {}) do
+		local key = type(p) == "table" and p.key
+		if type(key) == "string" and key ~= "" then
+			local di = tonumber(p.defaultIndex) or 0
+			local numbers = type(p.numbers) == "table" and p.numbers or {}
+			local v = tonumber(numbers[di])
+			if v == nil then v = di end
+			out[key] = v
+		end
+	end
+	return out
+end
+
+-- the params sent: the defaults, then the request's own on top, and the seed when the request has none
+-- (constructions that use randomness ask for one: a mod's pier asserts it, nova auto_piers batch.lua)
+function M.buildParams(defaults, given, seed)
+	local out = {}
+	for k, v in pairs(defaults or {}) do out[k] = v end
+	for k, v in pairs(given or {}) do out[k] = v end
+	if out.seed == nil then out.seed = seed end
+	return out
+end
+
+-- the resName as given, and the spellings it may also go by: without the file's ".lua", and a base game name
+-- with the "::/" the base's own names carry (street templates: "::/infrastructure/...")
+function M.buildResCandidates(res)
+	local out, seen = {}, {}
+	local function add(s) if s and s ~= "" and not seen[s] then seen[s] = true; out[#out + 1] = s end end
+	add(res)
+	local bare = res:gsub("%.lua$", "")
+	add(bare)
+	if not bare:find("::", 1, true) then
+		local rel = bare:gsub("^/+", "")
+		add("::/" .. rel)
+	end
+	return out
+end
+
+-- a construction may be taken away by build remove only when the probe built it: in this load (built[e]) or, after
+-- a load, by the name it got (BUILD_NAME_PREFIX)
+function M.buildRemovable(e, built, name)
+	if built and built[e] then return true end
+	return type(name) == "string" and name:sub(1, #M.BUILD_NAME_PREFIX) == M.BUILD_NAME_PREFIX
 end
 
 ---------------------------------------------------------------------------------------------------------------------

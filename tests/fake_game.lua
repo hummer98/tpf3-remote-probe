@@ -1543,6 +1543,201 @@ function M.speedControl()
 	end
 end
 
+-- The engine's side of a build (makeWorldBuildProposalCmd with a SimpleProposal), for the build command.
+-- spec.cons = { [resName] = { params = { { key, numbers, defaultIndex } }, cost = n, shape = { nodes = { { dx, dy,
+-- dz } }, edges = { { i, j } } }, depots = n } }: the constructions the rep knows and what one is made of (its own
+-- road pieces, relative to where it stands, unturned); spec.height(x, y): the terrain (0 without);
+-- spec.blocked(x, y): something in the way there (an entity id, refused as a collision); spec.dryRunFails: the
+-- engine's makeProposalData refuses a SimpleProposal; spec.lostCallback: the build runs, no callback comes;
+-- spec.sendRaises: sendCommand raises (this text).
+-- g.built[e] = { fileName, params, transf, name, player, frozenEdges, ... }; g.buildCmds: every proposal sent.
+-- Like the engine: a list element written into a proposal is lost (only a whole list assigned counts), an unknown
+-- file name or a transf that is no Mat4f is an assertion (the game would die), and a refused proposal builds nothing.
+function M.installBuild(g, spec)
+	spec = spec or {}
+	local cons = spec.cons or {}
+	g.built, g.buildCmds, g.nodes, g.edges = {}, {}, {}, {}
+	local names = {}
+	local CT = api.type.ComponentType
+	CT.BASE_NODE, CT.BASE_EDGE, CT.CONSTRUCTION = "BASE_NODE", "BASE_EDGE", "CONSTRUCTION"
+	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
+	api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
+	api.type.Vec4f = { new = function(x, y, z, w) return { x, y, z, w } end }
+	api.type.Mat4f = { new = function(c1, c2, c3, c4)
+		local m = { mat4f = true }
+		for i, c in ipairs({ c1, c2, c3, c4 }) do for j = 1, 4 do m[(i - 1) * 4 + j] = c[j] end end
+		return m
+	end }
+	api.type.Context = { new = function() return { player = -1, cleanupStreetGraph = true, gatherBuildings = true,
+		gatherFields = true } end }
+	-- engine records: fields kept in a hidden table; reading a list hands out a copy (so writing one element of it
+	-- is lost), assigning a whole list copies it in
+	local function record(fields)
+		local store = copy(fields)
+		local u = newproxy(true)
+		local mt = getmetatable(u)
+		mt.__index = function(_, k)
+			if fields[k] == nil then error("no field " .. tostring(k)) end
+			return type(store[k]) == "table" and copy(store[k]) or store[k]
+		end
+		mt.__newindex = function(_, k, v)
+			if fields[k] == nil then error("no field " .. tostring(k)) end
+			if type(v) == "table" then
+				local c = {}
+				for kk, vv in pairs(v) do c[kk] = (type(vv) == "userdata" and getmetatable(vv).store) and getmetatable(vv).store or copy(vv) end
+				v = c
+			end
+			store[k] = v
+		end
+		mt.store = store
+		return u
+	end
+	api.type.SimpleProposal = { new = function()
+		return record({ constructionsToAdd = {}, constructionsToRemove = {}, old2new = {}, streetProposal = {} })
+	end, ConstructionEntity = { new = function()
+		return record({ fileName = "", params = {}, transf = {}, name = "", playerEntity = -1, autoFillSlots = false })
+	end } }
+	api.engine.terrain = { getHeightAt = function(v) return spec.height and spec.height(v.x, v.y) or 0 end }
+	-- the names the game had before (opts.constructions, the build tool's) are still found, after the build's own
+	local oldFind = api.res.constructionRep.find
+	api.res.constructionRep = {
+		find = function(name) return cons[name] and 1 or -1 end,
+		get = function() crash("constructionRep.get with an index the fake does not track") end,
+		getAll = function()
+			local out, i = {}, 0
+			for name in pairs(cons) do i = i + 1; out[i] = name end
+			return out
+		end,
+	}
+	local byIndex = {}
+	do
+		local i = 0
+		local sorted = {}
+		for name in pairs(cons) do sorted[#sorted + 1] = name end
+		table.sort(sorted)
+		for _, name in ipairs(sorted) do i = i + 1; byIndex[i] = name end
+		api.res.constructionRep.find = function(name)
+			for k, n in ipairs(byIndex) do if n == name then return k end end
+			local old = oldFind(name)
+			return old >= 0 and 1000 + old or -1
+		end
+		api.res.constructionRep.get = function(idx)
+			if idx >= 1000 then return { params = {} } end
+			local c = cons[byIndex[idx]]
+			if not c then crash("constructionRep.get(" .. tostring(idx) .. ")") end
+			return { params = copy(c.params or {}) }
+		end
+	end
+
+	-- what the engine makes of a proposal: errors, collisions, cost (and the constructions to add, as plain values)
+	local function evaluate(p)
+		local st = getmetatable(p).store
+		local adds, removes = {}, copy(st.constructionsToRemove or {})
+		local data = { errorState = { critical = false, messages = {}, warnings = {} }, collisionInfo = { collisionEntities = {} },
+			costs = 0 }
+		for _, ce in ipairs(st.constructionsToAdd or {}) do
+			local c = cons[ce.fileName]
+			if not c then crash("no construction " .. tostring(ce.fileName)) end
+			if type(ce.transf) ~= "table" or not ce.transf.mat4f then crash("transf is no Mat4f") end
+			adds[#adds + 1] = ce
+			data.costs = data.costs + (c.cost or 0)
+			local hit = spec.blocked and spec.blocked(ce.transf[13], ce.transf[14])
+			if hit then
+				data.errorState.critical = true
+				table.insert(data.errorState.messages, "Collision")
+				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
+			end
+		end
+		for _, e in ipairs(removes) do
+			if not g.built[e] then crash("no construction " .. tostring(e) .. " to remove") end
+		end
+		if data.costs > 0 and g.balance < data.costs then
+			data.errorState.critical = true
+			table.insert(data.errorState.messages, "Not enough money")
+		end
+		return data, adds, removes
+	end
+
+	api.engine.util.proposal = { makeProposalData = function(p, ctx)
+		if spec.dryRunFails then error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)") end
+		return (evaluate(p))
+	end }
+
+	local function apply(cmd)
+		local data, adds, removes = evaluate(cmd.proposal)
+		if data.errorState.critical and not cmd.ignoreErrors then return false, data, {} end
+		g.balance = g.balance - data.costs
+		local results = {}
+		for _, e in ipairs(removes) do
+			for _, edge in ipairs(g.built[e].frozenEdges) do
+				local ed = g.edges[edge]
+				g.nodes[ed.node0], g.nodes[ed.node1], g.edges[edge] = nil, nil, nil
+			end
+			g.built[e], names[e] = nil, nil
+		end
+		for _, ce in ipairs(adds) do
+			local c, t = cons[ce.fileName], ce.transf
+			g.nextEntity = g.nextEntity + 1
+			local e = g.nextEntity
+			local nodeIds, edgeIds = {}, {}
+			local cs, sn = t[1], t[2]
+			for i, n in ipairs((c.shape or {}).nodes or {}) do
+				g.nextEntity = g.nextEntity + 1
+				nodeIds[i] = g.nextEntity
+				g.nodes[g.nextEntity] = { x = t[13] + cs * n[1] - sn * n[2], y = t[14] + sn * n[1] + cs * n[2], z = t[15] + (n[3] or 0) }
+			end
+			for _, ed in ipairs((c.shape or {}).edges or {}) do
+				g.nextEntity = g.nextEntity + 1
+				edgeIds[#edgeIds + 1] = g.nextEntity
+				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]] }
+			end
+			local depots = {}
+			for _ = 1, c.depots or 0 do g.nextEntity = g.nextEntity + 1; depots[#depots + 1] = g.nextEntity end
+			g.built[e] = { fileName = ce.fileName, params = copy(ce.params), transf = copy(t), name = ce.name,
+				player = ce.playerEntity, autoFillSlots = ce.autoFillSlots, frozenEdges = edgeIds, depots = depots }
+			if ce.name ~= "" then names[e] = ce.name end
+			results[#results + 1] = { e, 1 }
+		end
+		return true, data, results
+	end
+
+	local makeCmd = api.cmd.makeWorldBuildProposalCmd
+	api.cmd.makeWorldBuildProposalCmd = function(p, ctx, ignoreErrors, playerInitiated)
+		if type(p) ~= "userdata" then crash("makeWorldBuildProposalCmd: no proposal") end
+		return { kind = "buildProposal", proposal = p, context = copy(ctx), ignoreErrors = ignoreErrors,
+			playerInitiated = playerInitiated }
+	end
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		if type(cmd) ~= "table" or cmd.kind ~= "buildProposal" then return send(cmd, cb) end
+		if spec.sendRaises then error("sendCommand: " .. spec.sendRaises) end
+		g.commands[#g.commands + 1] = cmd
+		g.buildCmds[#g.buildCmds + 1] = cmd
+		local ok, data, results = apply(cmd)
+		if cb and not spec.lostCallback then
+			cb({ resultProposalData = data, resultEntities = {} }, ok, results)
+		end
+	end
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		if kind == "CONSTRUCTION" and g.built[e] then
+			local b = g.built[e]
+			return { fileName = b.fileName, params = copy(b.params), transf = copy(b.transf), frozenEdges = copy(b.frozenEdges),
+				depots = copy(b.depots), stations = {}, industries = {} }
+		end
+		if kind == "BASE_EDGE" and g.edges[e] then return copy(g.edges[e]) end
+		if kind == "BASE_NODE" and g.nodes[e] then return { position = copy(g.nodes[e]) } end
+		return getComponent(e, kind)
+	end
+	local getName = api.engine.util.getEntityName
+	api.engine.util.getEntityName = function(e)
+		if names[e] then return names[e] end
+		return getName(e)
+	end
+	g.buildNames = names
+	return makeCmd
+end
+
 M.dateOf = dateOf
 M.DAY_TICKS = DAY_TICKS
 
@@ -1584,6 +1779,11 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 	dofile(here .. "/tests/fake_tc.lua").install(g, {
 		nodes = { [100] = { -100, 0, 10 }, [101] = { 0, 0, 10 }, [103] = { 1000, 0, 20 }, [104] = { 1100, 0, 20 } },
 		edges = { [201] = { node0 = 100, node1 = 101 }, [202] = { node0 = 104, node1 = 103 } } })
+	-- build: one ramp the rep knows (two road pieces, its far end 80 m out and 8 m up)
+	M.installBuild(g, { height = function(x) return x / 100 end, cons = {
+		["road_bridge_ramp::/road_bridge_ramp/ramp.con"] = { cost = 5000,
+			params = { { key = "rbr_height", numbers = { 2, 4, 8 }, defaultIndex = 3 } },
+			shape = { nodes = { { 0, 0, 0 }, { 40, 0, 4 }, { 80, 0, 8 } }, edges = { { 1, 2 }, { 2, 3 } } } } } })
 	local start = os.clock()
 	local wall = 0
 	local speedControl

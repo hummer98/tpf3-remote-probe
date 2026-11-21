@@ -275,6 +275,46 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
   道路なので残ります (`--track` / `--template` で別の MOD の種類を使ったら、その MOD が要ります)。Track Connector の
   ゲームスクリプトの状態はセーブに残ります。
 
+### 建物を1つ地図に置く (`build`)
+
+```
+python3 tools/tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con --at 1200,800        # 地形の上に
+python3 tools/tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con --at=-300,450,82 --angle 1.5708 \
+    --params '{"rbr_height": 8, "rbr_length": 120}' [--name "Ramp A"] [--seed 3] [--dry-run]
+python3 tools/tf3ctl.py build --remove 51234[,51240]      # プローブが建てたものを取り除く
+python3 tools/tf3ctl.py build --remove-all                # この読み込みのあとに建てたもの全部
+```
+
+**テスト用のセーブで使います。** `build` は建物 (`.con`: 車庫、駅、アセット、産業、別の MOD の建物) を1つ、クリックも
+キーも使わずに置きます。`ConstructionEntity` を1つ入れた `SimpleProposal` を、プローブの GUI スクリプトから
+`api.cmd.makeWorldBuildProposalCmd` でエンジンに送ります (MOD が自分の道具で建てるのと同じ道)。エンジンはプレイヤーが
+建てるときと同じく調べます (衝突・地形・所持金)。断られた建物は建ちません (`ignoreErrors` は切ってあります)。
+プレイヤーや町のものを壊して建てることはしません。
+
+- `--res`: 建物のリソース名。MOD の `content/<dir>/x.con.lua` は `<modId>::/<dir>/x.con`、本体のものは `::/` で始まります
+  (`depots/...con.lua` は `::/depots/...con` としても探します)。ゲームが知らない名前は何も送らずに断り、似た名前
+  (同じファイル名か、同じ MOD のもの) を 12 個まで挙げます。
+- `--at x,y[,z]` はメートル (x が負なら `--at=-300,450`)。z が無ければ、そこの地形の高さ
+  (`api.engine.terrain.getHeightAt`) を使います。そのあとは建物自身の地形合わせで、プレイヤーが置くときと同じく地面を
+  均したり削ったりします。`--angle` は鉛直軸まわりのラジアン。
+- `--params`: 建物の初期設定の値 (各 param の `numbers[defaultIndex]`、本体の建設メニューの始めの値と同じ) に重ねる
+  JSON オブジェクト。`seed` は指定が無ければ 1 (`--seed` か `--params` で変えられる) なので、同じ置き方は毎回同じ見た目に
+  なります。
+- 答え: `entity` (できた建物)、`construction` (`fileName`、`name`、`depots`、`stations`、`industries`、`ends`: 建物自身の
+  道路・線路の空いた端と位置。`connect --from` の候補)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
+  `spent`、`errors`、`warnings`、`collisions` (邪魔をしている id)、送った `params`、`at` (使った z と `zFrom`)。断られた
+  ときは `ok: false` で、エンジンの文言が `error` に入ります。
+- `--dry-run` は建てずにエンジンの `makeProposalData` に聞きます (`buildable`、`errors`、`collisions`、`cost`)。この関数の
+  型は完全な `Proposal` 用なので、`SimpleProposal` を受け付けなければ `checked: false` と答え、名前と高さだけを
+  確認したことになります。
+- `--remove` で取り除けるのは、プローブが建てたものだけです: この読み込みのあとに建てたもの、または (読み込みのあとでも)
+  名前が `probe-build` で始まるもの (初期設定の名前は `probe-build N`)。`--name` で別の名前を付けたものは、建てた読み込みの
+  間だけ id で取り除けます。条件に合わない id が1つでもあれば、全体を断ります。
+- ゲームを変えるコマンドです (`line`・`connect` と同じ)。ほかのクライアントにはいつもの警告が出ます。1つずつ
+  建ててください (それぞれエンジンの答えを 30 秒まで待ちます)。
+- **ゲーム内では未確認** (2026-11-22 に書いたもの): とくに、初期設定の params・名前・`autoFillSlots` を送ったとおりに
+  エンジンが受け取るか、`ends` が読めるか、dry run が動くか。
+
 ### メインメニューからのマイMOD (`modhub`)
 
 ```
@@ -481,6 +521,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - ゲーム内の ×8 / ×16 のボタン: 本体のボタンの横での見た目と幅、光るボタン、指定される速度。
 - `app.quit` が確認ダイアログなしでゲームを終えるか。
 - `connect` は全部。危ない順の一覧は「実装メモ」の「接続」。
+- `build` は全部 (「建物を1つ地図に置く」を参照)。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 - `modhub publish` は全部 (「新しい MOD を1つ上げる」を参照)。`modhub status` と `validate` は 2026-11-22 に確認済み。
 

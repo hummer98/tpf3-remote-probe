@@ -46,6 +46,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
   tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 --load-mode all,available   # piers picked, full load
   tf3ctl.py connect --from 5123 --to Harbour [--build]   # a track between two free ends (needs Track Connector)
+  tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con --at 1200,800 [--angle 1.57] \
+            [--params '{"rbr_height": 8}'] [--name N] [--dry-run]   # one construction (.con), no click: test saves
+            # only; no z: the terrain's height. Answers its id, cost, the engine's errors, its depots and free ends
+  tf3ctl.py build --remove 5123[,5124] | build --remove-all   # only what the probe built (named probe-build...)
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
@@ -100,7 +104,7 @@ PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); lon
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
-                "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
+                "build", "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -1469,6 +1473,57 @@ def rename_args(ns):
     return {"entity": ns.entity, "name": ns.name}
 
 
+def build_args(ns):
+    """build: one construction at --at (x,y[,z]), or --remove / --remove-all; checked here as the mod checks them."""
+    if ns.remove is not None or ns.remove_all:
+        if ns.res or ns.at or ns.params or ns.name or ns.angle is not None or ns.seed is not None or ns.dry_run:
+            raise ToolError("--remove / --remove-all go alone")
+        if ns.remove_all:
+            if ns.remove is not None:
+                raise ToolError("give --remove or --remove-all, not both")
+            return {"removeAll": True}
+        ids = []
+        for part in ns.remove.split(","):
+            part = part.strip()
+            if not (part.isascii() and part.isdigit()):
+                raise ToolError("--remove: not an entity id: %r" % part)
+            ids.append(int(part))
+        return {"remove": ids}
+    if not ns.res or not ns.res.strip():
+        raise ToolError("give --res (the construction's resName, e.g. some_mod::/path/thing.con)")
+    if not ns.at:
+        raise ToolError("give --at x,y[,z] (metres; for a negative x write --at=-100,50)")
+    try:
+        at = [float(x) for x in ns.at.split(",")]
+    except ValueError:
+        raise ToolError("--at must be numbers: x,y[,z]")
+    if not 2 <= len(at) <= 3 or any(x != x or abs(x) == float("inf") for x in at):
+        raise ToolError("--at must be x,y or x,y,z (finite numbers)")
+    args = {"res": ns.res.strip(), "at": at}
+    if ns.angle is not None:
+        args["angle"] = ns.angle
+    if ns.params is not None:
+        try:
+            params = json.loads(ns.params)
+        except ValueError as e:
+            raise ToolError(f"--params must be a JSON object: {e}")
+        if not isinstance(params, dict):
+            raise ToolError("--params must be a JSON object, e.g. '{\"rbr_height\": 8}'")
+        args["params"] = params
+    if ns.seed is not None:
+        args["seed"] = ns.seed
+    if ns.name is not None:
+        if not ns.name.strip():
+            raise ToolError("--name must not be empty")
+        args["name"] = ns.name
+    if ns.dry_run:
+        args["dryRun"] = True
+    return args
+
+
+BUILD_TIMEOUT_SEC = 60  # the mod waits 30 s for the engine's callback
+
+
 # Tools whose base button passes more than gameCtx, so a plain push breaks the GUI; their button listens to an
 # event that opens them with the right params. notification_log.tl calls param.toolParam.storeFilterState(...) in
 # its recipe body (line 509): pushed with only gameCtx that is a nil call, "Failed during state update of
@@ -2659,6 +2714,18 @@ def make_parser():
     bt.add_argument("--close", action="store_true", help="clear the menu filter now")
     bt.add_argument("--menu", choices=BUILD_MENUS, help="first open this toolbar menu (its own button's event), which "
                     "picks its first item as the placing tool; the only way seen to open the tool (2026-11-18)")
+    bd = sub.add_parser("build", help="put one construction (.con) on the map at a point, as a mod's tool builds "
+                                       "(no click); or take away ones the probe built. Test saves only")
+    bd.add_argument("--res", help="the construction's resName: a mod's content/<dir>/x.con.lua is <modId>::/<dir>/x.con, "
+                    "a base game one ::/depots/... (on a miss the answer lists names like it)")
+    bd.add_argument("--at", metavar="X,Y[,Z]", help="where (metres); no Z: the terrain's height there")
+    bd.add_argument("--angle", type=float, help="turn about the vertical in radians (default 0)")
+    bd.add_argument("--params", help="a JSON object over the construction's default params, e.g. '{\"rbr_height\": 8}'")
+    bd.add_argument("--seed", type=int, help="params.seed when --params has none (default 1, the same look each time)")
+    bd.add_argument("--name", help="its name (default probe-build N; build --remove after a load knows it by that)")
+    bd.add_argument("--dry-run", action="store_true", help="only the engine's check (errors, collisions, cost)")
+    bd.add_argument("--remove", metavar="ID[,ID...]", help="take away constructions the probe built")
+    bd.add_argument("--remove-all", action="store_true", help="take away all the probe built since this load")
     qu = sub.add_parser("quit", help="quit the game (app.quit through the probe)")
     qu.add_argument("--kill", action="store_true", help="SIGKILL when it does not quit (an unsaved game is lost)")
     qu.add_argument("--timeout", type=float, default=QUIT_TIMEOUT_SEC)
@@ -2969,6 +3036,8 @@ def main(argv=None):
             res = send("scriptEvent", script_event_args(ns))
         elif ns.cmd == "rename":
             res = send("rename", rename_args(ns))
+        elif ns.cmd == "build":
+            res = send("build", build_args(ns), timeout=BUILD_TIMEOUT_SEC)
         elif ns.cmd == "tool":
             ev = tool_event(ns)
             if ev:

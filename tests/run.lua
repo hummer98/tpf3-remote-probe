@@ -6188,5 +6188,214 @@ test("api.modhub: only the read functions on the list are called anywhere in con
 	truthy(n > 5, "found the content files"); truthy(uses >= 10, "found the uses: " .. uses)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- build: one construction put on the map (a SimpleProposal), and ones the probe built taken away
+
+test("core.buildRequest: res, at (z optional), angle, params, seed, name; remove; every bad value refused", function()
+	local r = core.buildRequest({ res = " m::/a/ramp.con ", at = "10,20" })
+	eq(r.res, "m::/a/ramp.con"); eq(r.x, 10); eq(r.y, 20); eq(r.z, nil); eq(r.angle, 0); eq(r.seed, 1); eq(r.dryRun, false)
+	eq(r.params, nil); eq(r.name, nil)
+	local r2 = core.buildRequest({ res = "x.con", at = { 1, 2, 30 }, angle = 1.5, params = { rbr_height = 8, modules = { [1] = "a" } },
+		seed = 7, name = "Ramp A", dryRun = true })
+	eq(r2.z, 30); eq(r2.angle, 1.5); eq(r2.params.rbr_height, 8); eq(r2.seed, 7); eq(r2.name, "Ramp A"); eq(r2.dryRun, true)
+	eq(core.buildRequest({ remove = 5001 }).remove[1], 5001)
+	eq(#core.buildRequest({ remove = { 5001, "5002", 5001 } }).remove, 2, "ids as text, each once")
+	eq(core.buildRequest({ removeAll = true }).removeAll, true)
+	for _, bad in ipairs({
+		{ nil, "give res" }, { { res = "", at = "1,2" }, "give res" }, { { res = "a@1", at = "1,2" }, "give res" },
+		{ { res = 5, at = "1,2" }, "give res" }, { { res = "a.con" }, "give at" }, { { res = "a.con", at = "1" }, "at least x,y" },
+		{ { res = "a.con", at = "1,2,3,4" }, "at most 3" }, { { res = "a.con", at = "a,b" }, "finite" },
+		{ { res = "a.con", at = "200000,0" }, "within" }, { { res = "a.con", at = "1,2,9000" }, "z must" },
+		{ { res = "a.con", at = "1,2", angle = 7 }, "angle" }, { { res = "a.con", at = "1,2", params = 3 }, "params must" },
+		{ { res = "a.con", at = "1,2", params = { 1, 2 } }, "keys must" },
+		{ { res = "a.con", at = "1,2", params = { a = function() end } }, "params: holds a function" },
+		{ { res = "a.con", at = "1,2", seed = -1 }, "seed" }, { { res = "a.con", at = "1,2", seed = 1.5 }, "seed" },
+		{ { res = "a.con", at = "1,2", name = " " }, "name" },
+		{ { res = "a.con", at = "1,2", name = ("x"):rep(core.MAX_NAME_LEN + 1) }, "longer" },
+		{ { remove = -1 }, "not an entity id" }, { { remove = {} }, "at least one" }, { { remove = 1, res = "a.con" }, "alone" },
+		{ { remove = 1, removeAll = true }, "not both" },
+	}) do
+		local ok, err = core.buildRequest(bad[1])
+		eq(ok, nil, bad[2])
+		truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / wanted " .. bad[2])
+	end
+	local many = {}
+	for i = 1, core.BUILD_LIMITS.remove + 1 do many[i] = i end
+	truthy(select(2, core.buildRequest({ remove = many })):find("at most"))
+end)
+
+test("core.buildDefaults / buildParams / buildResCandidates / buildRemovable", function()
+	local d = core.buildDefaults({ { key = "len", numbers = { 40, 60, 100 }, defaultIndex = 3 }, { key = "kind", defaultIndex = 2 },
+		{ key = "", defaultIndex = 1 }, { defaultIndex = 1 }, "junk", { key = "odd", numbers = { 1 }, defaultIndex = 4 } })
+	eq(d.len, 100, "numbers[defaultIndex], as the base's menu"); eq(d.kind, 2, "no numbers: the index")
+	eq(d.odd, 4, "an index past the numbers: the index"); eq(d[""], nil)
+	eq(next(core.buildDefaults(nil)), nil)
+	local p = core.buildParams({ len = 100, kind = 2 }, { kind = 5, extra = 1 }, 9)
+	eq(p.len, 100); eq(p.kind, 5); eq(p.extra, 1); eq(p.seed, 9)
+	eq(core.buildParams({}, { seed = 3 }, 9).seed, 3, "a seed given in params wins")
+	local c = core.buildResCandidates("depots/water/x.con.lua")
+	eq(c[1], "depots/water/x.con.lua"); eq(c[2], "depots/water/x.con"); eq(c[3], "::/depots/water/x.con")
+	eq(#core.buildResCandidates("m::/a.con"), 1, "a mod's name has its ::")
+	eq(#core.buildResCandidates("::/a.con"), 1)
+	truthy(core.buildRemovable(5, { [5] = {} }, "Ramp"))
+	truthy(core.buildRemovable(6, {}, core.BUILD_NAME_PREFIX .. " 3"))
+	truthy(not core.buildRemovable(6, {}, "Coal mine")); truthy(not core.buildRemovable(6, nil, nil))
+	truthy(core.CHANGES_GAME.build and core.COMMANDS.build and not core.MENU_COMMANDS.build)
+end)
+
+local RAMP = "road_bridge_ramp::/road_bridge_ramp/ramp.con"
+local function buildWorld(spec, gameOpts)
+	local g = newGame(gameOpts or { saves = SAVES })
+	spec = spec or {}
+	spec.cons = spec.cons or {
+		[RAMP] = { cost = 5000, params = { { key = "rbr_height", numbers = { 2, 4, 8 }, defaultIndex = 3 },
+			{ key = "rbr_side", numbers = { 1, 2 }, defaultIndex = 1 } },
+			shape = { nodes = { { 0, 0, 0 }, { 40, 0, 4 }, { 80, 0, 8 } }, edges = { { 1, 2 }, { 2, 3 } } } },
+		["::/depots/water/ship_depot.con"] = { cost = 20000, depots = 1 },
+	}
+	fake.installBuild(g, spec)
+	frames(g, 2)
+	return g
+end
+local function buildRun(g, id, argsLua, n)
+	send(g, id, "build", argsLua)
+	frames(g, n or FIRST + 20)
+	return final(g, id)
+end
+
+test("build: a ramp at x,y on the terrain, turned, with its defaults; the answer has its id and free ends", function()
+	local g = buildWorld({ height = function(x, y) return 0.1 * x end })
+	local bal = g.balance
+	local a, n = buildRun(g, 900, string.format('{ res = %q, at = "100,200", angle = %s, params = { rbr_side = 2 } }', RAMP, math.pi / 2))
+	eq(n, 1, "one final answer")
+	truthy(a.ok, a.error)
+	eq(a.zFrom, "terrain"); eq(a.at.z, 10, "the terrain's height at 100,200")
+	local e = a.entity
+	truthy(g.built[e], "built")
+	local b = g.built[e]
+	eq(b.fileName, RAMP); eq(b.params.rbr_height, 8, "the default"); eq(b.params.rbr_side, 2, "the request's")
+	eq(b.params.seed, 1, "a seed"); eq(b.player, 99); eq(b.name, core.BUILD_NAME_PREFIX .. " 1"); eq(b.autoFillSlots, true)
+	eq(b.transf[13], 100); eq(b.transf[14], 200); eq(b.transf[15], 10)
+	truthy(math.abs(b.transf[1]) < 1e-9 and math.abs(b.transf[2] - 1) < 1e-9, "turned a quarter about z")
+	local cmd = g.buildCmds[1]
+	eq(cmd.ignoreErrors, false, "errors not ignored"); eq(cmd.playerInitiated, true)
+	eq(cmd.context.player, 99); eq(cmd.context.gatherBuildings, false, "nothing knocked down"); eq(cmd.context.gatherFields, false)
+	eq(a.cost, 5000); eq(a.spent, 5000); eq(g.balance, bal - 5000)
+	-- the ramp's two free ends, its middle node not: turned, so the far end is 80 m up the y axis
+	eq(#a.construction.ends, 2)
+	local far = a.construction.ends[2]
+	truthy(math.abs(far.x - 100) < 1e-6 and math.abs(far.y - 280) < 1e-6 and far.z == 18, "far end " .. tostring(far.x) .. "," .. tostring(far.y))
+	eq(a.construction.fileName, RAMP)
+	truthy(a.note:find("not checked in a game"))
+	-- a given z is used as it is; a second build gets the next name
+	local a2 = buildRun(g, 901, string.format('{ res = %q, at = { 500, 0, 42 } }', RAMP))
+	truthy(a2.ok, a2.error); eq(a2.zFrom, "given"); eq(g.built[a2.entity].transf[15], 42)
+	eq(g.built[a2.entity].name, core.BUILD_NAME_PREFIX .. " 2")
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("build: a depot's id comes back (to buy at); the base game's name without ::/ is found", function()
+	local g = buildWorld()
+	local a = buildRun(g, 910, '{ res = "depots/water/ship_depot.con.lua", at = "0,0", name = "Yard" }')
+	truthy(a.ok, a.error)
+	eq(a.res, "::/depots/water/ship_depot.con")
+	eq(#a.construction.depots, 1); eq(a.construction.name, "Yard")
+	eq(g.built[a.entity].name, "Yard")
+end)
+
+test("build: refused by the engine (collision, money): nothing built, the messages and the collision in the error", function()
+	local g = buildWorld({ blocked = function(x) return x > 1000 and 4242 or nil end })
+	local a, n = buildRun(g, 920, string.format('{ res = %q, at = "2000,0" }', RAMP))
+	eq(n, 1); eq(a.ok, false)
+	truthy(a.error:find("refused") and a.error:find("Collision"), a.error)
+	eq(a.collisions[1], 4242); eq(a.critical, true)
+	eq(next(g.built), nil, "nothing built")
+	local logged = false
+	for _, l in ipairs(g.logs) do if tostring(l):find("build place %(command 920%): refused") then logged = true end end
+	truthy(logged, "the refusal is logged")
+	g.balance = 100
+	local a2 = buildRun(g, 921, string.format('{ res = %q, at = "0,0" }', RAMP))
+	eq(a2.ok, false); truthy(a2.error:find("Not enough money"), a2.error)
+	eq(g.balance, 100)
+end)
+
+test("build: an unknown name is refused before anything is sent, with names like it", function()
+	local g = buildWorld()
+	local a = buildRun(g, 930, '{ res = "road_bridge_ramp::/ramp.con", at = "0,0" }')
+	eq(a.ok, false)
+	truthy(a.error:find("no construction") and a.error:find(RAMP, 1, true), a.error)
+	eq(#g.buildCmds, 0, "nothing sent")
+	local a2 = buildRun(g, 931, '{ res = "nothing_like_it.con", at = "0,0" }')
+	truthy(a2.error:find("no construction") and not a2.error:find("names like it"), a2.error)
+	local a3 = buildRun(g, 932, '{ res = "a.con" }')
+	truthy(a3.error:find("give at"), a3.error)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("build --dry-run: the engine's check without building; a refused check says what was not checked", function()
+	local g = buildWorld({ blocked = function(x) return x > 1000 and 77 or nil end })
+	local a = buildRun(g, 940, string.format('{ res = %q, at = "0,0", dryRun = true }', RAMP))
+	truthy(a.ok and a.dryRun and a.buildable, a.error); eq(a.cost, 5000)
+	local a2 = buildRun(g, 941, string.format('{ res = %q, at = "2000,0", dryRun = true }', RAMP))
+	truthy(a2.ok and a2.buildable == false and a2.collisions[1] == 77, "a collision found by the check")
+	eq(#g.buildCmds, 0, "no command sent"); eq(next(g.built), nil)
+	local g2 = buildWorld({ dryRunFails = true })
+	local a3 = buildRun(g2, 942, string.format('{ res = %q, at = "0,0", dryRun = true }', RAMP))
+	truthy(a3.ok and a3.checked == false and a3.why:find("could not be run"), a3.why)
+	eq(a3.at.z, 0, "the height is still read")
+end)
+
+test("build remove: only what the probe built (this load, or its name after a load); removeAll", function()
+	local g = buildWorld()
+	local a = buildRun(g, 950, string.format('{ res = %q, at = "0,0" }', RAMP))
+	local b = buildRun(g, 951, string.format('{ res = %q, at = "300,0", name = "Mine" }', RAMP))
+	-- someone else's construction (the save's coal mine, made here as the fake's, named otherwise) is refused
+	g.built[7777] = { fileName = RAMP, params = {}, transf = {}, frozenEdges = {}, depots = {} }
+	g.buildNames[7777] = "Coal mine"
+	local r = buildRun(g, 952, string.format("{ remove = { %d, 7777 } }", a.entity))
+	eq(r.ok, false); truthy(r.error:find("7777") and r.error:find("not built by the probe"), r.error)
+	truthy(g.built[a.entity], "nothing removed when one is refused")
+	local r2 = buildRun(g, 953, "{ remove = 123456 }")
+	truthy(r2.error:find("no construction"), r2.error)
+	local r3 = buildRun(g, 954, string.format("{ remove = %d }", a.entity))
+	truthy(r3.ok, r3.error); eq(g.built[a.entity], nil, "removed"); eq(r3.removed[1], a.entity)
+	-- removeAll: what this load built (b, named Mine, too)
+	local r5 = buildRun(g, 957, "{ removeAll = true }")
+	truthy(r5.ok, r5.error); eq(r5.removed[1], b.entity); eq(g.built[b.entity], nil); truthy(g.built[7777], "not ours: kept")
+	-- after a load the probe's list is empty: a construction named probe-build... is still its own
+	local g2 = buildWorld()
+	g2.built[8888] = { fileName = RAMP, params = {}, transf = {}, frozenEdges = {}, depots = {} }
+	g2.buildNames[8888] = core.BUILD_NAME_PREFIX .. " 4"
+	local r4 = buildRun(g2, 955, "{ remove = 8888 }")
+	truthy(r4.ok, r4.error); eq(g2.built[8888], nil)
+	truthy(buildRun(g2, 956, "{ removeAll = true }").error:find("built nothing"))
+	truthy(not g.crashed and not g2.crashed)
+end)
+
+test("build: no callback from the engine is an error after its wait, not a hang; refused in the main menu", function()
+	local g = buildWorld({ lostCallback = true })
+	send(g, 960, "build", string.format('{ res = %q, at = "0,0" }', RAMP))
+	frames(g, FIRST + 20)
+	eq(final(g, 960), nil, "no answer yet")
+	frames(g, 200, 0.2)
+	local a = final(g, 960)
+	truthy(a and a.ok == false and a.error:find("no answer from the engine"), a and a.error)
+	-- a send that raises: one error answer, and no second one when the wait runs out
+	local g2 = buildWorld({ sendRaises = "bad proposal" })
+	send(g2, 962, "build", string.format('{ res = %q, at = "0,0" }', RAMP))
+	frames(g2, FIRST + 20)
+	frames(g2, 200, 0.2)
+	local e2, n2 = final(g2, 962)
+	eq(n2, 1); truthy(e2.error:find("bad proposal"), e2.error)
+	local timeouts = 0
+	for _, l in ipairs(g2.logs) do if tostring(l):find("no answer from the engine") then timeouts = timeouts + 1 end end
+	eq(timeouts, 0, "no job left waiting")
+	local m = newGame({ saves = SAVES, menu = true })
+	frames(m, 2)
+	send(m, 961, "build", string.format('{ res = %q, at = "0,0" }', RAMP))
+	frames(m, FIRST)
+	truthy((answerText(m, 961, "error") or ""):find("needs a running game"))
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)
