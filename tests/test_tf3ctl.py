@@ -1040,6 +1040,41 @@ class QuitLaunchTest(unittest.TestCase):
         os.kill = lambda pid, sig: pids.clear()
         self.assertEqual(tf3ctl.quit_game(timeout=0.6, kill=True)["how"], "kill")
 
+    def test_kill_is_refused_during_an_upload_even_with_force(self):
+        pids = [77]
+        killed = []
+        tf3ctl.game_pids = lambda: list(pids)
+        os.kill = lambda pid, sig: killed.append(pid)
+        # the mod refuses the quit: the upload is still Publishing
+        tf3ctl.send = lambda *a, **kw: {"ok": False, "error": "quit the upload of staging mod x (command 5) is still "
+                                                             "Publishing: refused until it has a result"}
+        for force in (False, True):
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.quit_game(timeout=0.3, kill=True, force=force)
+            self.assertIn("not killed, not even with --force", str(cm.exception))
+        # a publish mark is there, whatever the mod says (no answer at all here)
+
+        def no_answer(*a, **kw):
+            raise tf3ctl.ToolError("no answer")
+        tf3ctl.send = no_answer
+        tf3ctl.write_pending({"folder": "x"})
+        try:
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.quit_game(timeout=0.3, kill=True, force=True)
+            self.assertIn("publish mark", str(cm.exception))
+            # restart without --no-kill takes the same way
+            ns = tf3ctl.make_parser().parse_args(["restart", "--force"])
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.cmd_start(ns, True)
+            self.assertIn("not even with --force", str(cm.exception))
+        finally:
+            os.remove(tf3ctl.pending_path())
+        self.assertEqual(killed, [])
+        # without either, the kill goes as before
+        os.kill = lambda pid, sig: (killed.append(pid), pids.clear())
+        self.assertEqual(tf3ctl.quit_game(timeout=0.3, kill=True)["how"], "kill")
+        self.assertEqual(killed, [77])
+
     def test_kill_is_refused_while_another_client_used_the_game_recently(self):
         pids = [9]
         tf3ctl.game_pids = lambda: list(pids)
@@ -2493,6 +2528,8 @@ class ModhubPublishTest(unittest.TestCase):
         self.saved = os.environ.get("TF3_REMOTE_DIR")
         os.environ["TF3_REMOTE_DIR"] = self.dir
         self.meta = make_staging(self.root)
+        with contextlib.suppress(OSError):
+            os.remove(tf3ctl.history_path())  # other classes' uploads
         self.sent = []
         self.answers = []
         self.real_send = tf3ctl.send
@@ -2509,9 +2546,18 @@ class ModhubPublishTest(unittest.TestCase):
         self.saved_wait = tf3ctl.FILEID_WAIT_SEC
         tf3ctl.FILEID_WAIT_SEC = 0.5
 
+    def history(self):
+        try:
+            with open(tf3ctl.history_path(), encoding="utf-8") as f:
+                return [json.loads(line) for line in f]
+        except FileNotFoundError:
+            return []
+
     def tearDown(self):
         tf3ctl.send = self.real_send
         tf3ctl.FILEID_WAIT_SEC = self.saved_wait
+        with contextlib.suppress(OSError):
+            os.remove(tf3ctl.history_path())
         if self.saved is None:
             os.environ.pop("TF3_REMOTE_DIR", None)
         else:
@@ -2623,6 +2669,65 @@ class ModhubPublishTest(unittest.TestCase):
         self.assertEqual(res["fileid"], "7000001")
         self.assertTrue(res["pendingCleared"])
         self.assertIsNone(tf3ctl.read_pending())
+        h = self.history()
+        self.assertEqual(len(h), 1)
+        self.assertEqual((h[0]["outcome"], h[0]["folder"], h[0]["public"], h[0]["modId"], h[0]["fileid"]),
+                         ("success", FU, True, "7000001", "7000001"))
+        self.assertIn("at", h[0])
+        self.assertEqual(os.stat(tf3ctl.history_path()).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(os.path.dirname(tf3ctl.history_path())).st_mode & 0o777, 0o700)
+
+    def test_partial_errors_keep_the_mark_and_go_to_the_history(self):
+        def partial():
+            with open(os.path.join(self.meta, "mod.io_fileid.txt"), "w") as f:
+                f.write("7000001")
+            return {"ok": False, "publishCalled": True, "outcome": "partial", "modId": "7000001",
+                    "error": "uploaded as mod.io mod 7000001, with 1 partial errors",
+                    "result": {"success": True, "modId": "7000001", "partialErrors": [{"step": "Gallery"}]}}
+        self.answers = [{"ok": True, "dryRun": True}, partial]
+        res = self.run_publish(*self.FULL)
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["pendingKept"])
+        self.assertIn("partial errors", res["note"])
+        self.assertIsNotNone(tf3ctl.read_pending(), "a person looks at mod.io first")
+        h = self.history()
+        self.assertEqual((h[-1]["outcome"], h[-1]["modId"], h[-1]["fileid"]), ("partial", "7000001", "7000001"))
+
+    def test_the_mark_is_made_exclusively(self):
+        tf3ctl.write_pending({"folder": FU})
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            tf3ctl.write_pending({"folder": "other"})
+        self.assertIn("appeared meanwhile", str(cm.exception))
+        self.assertEqual(tf3ctl.read_pending()["folder"], FU)
+        self.assertEqual(os.stat(tf3ctl.pending_path()).st_mode & 0o777, 0o600)
+        self.assertEqual([n for n in os.listdir(os.path.dirname(tf3ctl.pending_path())) if n.startswith(".publish-")], [])
+
+    def test_publish_clear_is_refused_while_the_game_says_publishing(self):
+        tf3ctl.write_pending({"folder": FU})
+        saved_pids = tf3ctl.game_pids
+        tf3ctl.game_pids = lambda: [42]
+        ns = tf3ctl.make_parser().parse_args(["modhub", "publish-clear", "--yes"])
+        try:
+            self.answers = [{"ok": True, "mods": [{"folder": FU, "state": "Publishing"}]}]
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.cmd_modhub(ns)
+            self.assertIn("still Publishing", str(cm.exception))
+            self.assertEqual(self.sent[-1][:2], ("modhubStatus", {"wait": 0, "folder": FU}))
+            self.assertIsNotNone(tf3ctl.read_pending())
+            # a result there: it goes
+            self.answers = [{"ok": True, "mods": [{"folder": FU, "state": "Ready"}]}]
+            self.assertEqual(tf3ctl.cmd_modhub(ns)["cleared"]["folder"], FU)
+            # a game that cannot be asked (in a save): --yes is the person's word
+            tf3ctl.write_pending({"folder": FU})
+
+            def cannot():
+                raise tf3ctl.ToolError("no answer")
+            self.answers = [cannot]
+            out = tf3ctl.cmd_modhub(ns)
+            self.assertEqual(out["cleared"]["folder"], FU)
+            self.assertIn("could not ask", out["statusNote"])
+        finally:
+            tf3ctl.game_pids = saved_pids
 
     def test_a_failure_keeps_the_mark_and_the_games_words(self):
         self.answers = [{"ok": True, "dryRun": True},
@@ -2637,12 +2742,25 @@ class ModhubPublishTest(unittest.TestCase):
         with self.assertRaises(tf3ctl.ToolError):
             self.run_publish(*self.FULL)
         self.assertEqual(len(self.sent), 2)
-        ns = tf3ctl.make_parser().parse_args(["modhub", "publish-clear"])
-        out = tf3ctl.cmd_modhub(ns)
-        self.assertEqual(out["cleared"]["folder"], FU)
-        self.assertIsNone(tf3ctl.read_pending())
-        out = tf3ctl.cmd_modhub(ns)
-        self.assertIsNone(out["cleared"])
+        # publish-clear wants --yes
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            tf3ctl.cmd_modhub(tf3ctl.make_parser().parse_args(["modhub", "publish-clear"]))
+        self.assertIn("--yes", str(cm.exception))
+        self.assertIsNotNone(tf3ctl.read_pending())
+        ns = tf3ctl.make_parser().parse_args(["modhub", "publish-clear", "--yes"])
+        saved_pids = tf3ctl.game_pids
+        tf3ctl.game_pids = lambda: []
+        try:
+            out = tf3ctl.cmd_modhub(ns)
+            self.assertEqual(out["cleared"]["folder"], FU)
+            self.assertIsNone(tf3ctl.read_pending())
+            out = tf3ctl.cmd_modhub(ns)
+            self.assertIsNone(out["cleared"])
+        finally:
+            tf3ctl.game_pids = saved_pids
+        lines = self.history()
+        self.assertEqual([(h["outcome"], h["folder"], h["public"]) for h in lines], [("failed", FU, True)])
+        self.assertEqual(lines[0]["error"], "Upload Failed: Name taken (code 21012)")
 
     def test_a_refusal_after_the_mark_keeps_it(self):
         self.answers = [{"ok": True, "dryRun": True},
@@ -2652,6 +2770,7 @@ class ModhubPublishTest(unittest.TestCase):
         self.assertTrue(res["pendingKept"])
         self.assertIn("publish-clear", res["note"])
         self.assertIsNotNone(tf3ctl.read_pending())
+        self.assertEqual(self.history()[-1]["outcome"], "not sent")
 
     def test_no_answer_in_time_keeps_the_mark(self):
         def lost():
@@ -2661,6 +2780,7 @@ class ModhubPublishTest(unittest.TestCase):
             self.run_publish(*self.FULL)
         self.assertIn("publish mark stays", str(cm.exception))
         self.assertIsNotNone(tf3ctl.read_pending())
+        self.assertEqual(self.history()[-1]["outcome"], "no answer")
         # the mod's own timeout answer: outcome unknown, the mark stays
         os.remove(tf3ctl.pending_path())
         self.answers = [{"ok": True, "dryRun": True},
@@ -2668,6 +2788,7 @@ class ModhubPublishTest(unittest.TestCase):
         res = self.run_publish(*self.FULL)
         self.assertTrue(res["pendingKept"])
         self.assertIsNotNone(tf3ctl.read_pending())
+        self.assertEqual(self.history()[-1]["outcome"], "unknown")
 
     def test_a_success_without_the_fileid_or_with_another_id_keeps_the_mark(self):
         self.answers = [{"ok": True, "dryRun": True}, self.success(write=None)]
@@ -2709,8 +2830,9 @@ class ModhubPublishEndToEndTest(unittest.TestCase):
         cls.game.stderr.close()
         os.environ.pop("TF3_REMOTE_DIR", None)
         os.environ.pop("TF3_ASSUME_RUNNING", None)
-        with contextlib.suppress(OSError):
-            os.remove(tf3ctl.pending_path())
+        for path in (tf3ctl.pending_path(), tf3ctl.history_path()):
+            with contextlib.suppress(OSError):
+                os.remove(path)
         shutil.rmtree(cls.root, ignore_errors=True)
 
     def ctl(self, *argv):
@@ -2739,6 +2861,8 @@ class ModhubPublishEndToEndTest(unittest.TestCase):
         self.assertTrue(res["pendingCleared"])
         self.assertTrue(res["cleanedUp"])
         self.assertIsNone(tf3ctl.read_pending())
+        with open(tf3ctl.history_path(), encoding="utf-8") as f:
+            self.assertEqual(json.loads(f.readlines()[-1])["outcome"], "success")
         # the fileid is there now: the tool refuses on its own (exit 2), before the mod sees anything
         code, res = self.ctl(*full)
         self.assertEqual(code, 2)

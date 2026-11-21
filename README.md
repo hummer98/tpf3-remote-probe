@@ -296,7 +296,7 @@ Without the mod, `connect` answers with an error saying so, and every other comm
 python3 tools/tf3ctl.py modhub status [--folder my_mod_1] [--wait 30]   # read only
 python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
 python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." --first-upload [--dry-run] [--timeout 900]
-python3 tools/tf3ctl.py modhub publish-clear
+python3 tools/tf3ctl.py modhub publish-clear --yes
 ```
 
 The base's MOD hub > My Mods page lists the mods in `<user data>/staging_area/<folder>/` and validates and uploads
@@ -357,9 +357,14 @@ game, so every one of these must hold, or nothing is sent:
 never calls `publish`. Without `--dry-run` the tool runs the same dry run first (a refusal there leaves nothing
 behind), then writes a **publish mark**, `$XDG_STATE_HOME/tf3ctl/publish_pending.json` (`~/.local/state/tf3ctl/`
 without it; folder, owner, time, visibility), and only then sends the upload. While a mark is there, every publish
-is refused. The mark goes only (1) when the upload succeeded and the fileid file appeared (within 60 s) holding the
-mod.io id the game answered, or (2) by `modhub publish-clear`, which a person runs after looking at the account's
-mods on mod.io. Any other end (a failure, a refusal after the mark, a timeout, a lost game) leaves it.
+is refused. The mark goes only (1) when the upload succeeded without partial errors and the fileid file appeared
+(within 60 s) holding the mod.io id the game answered, or (2) by `modhub publish-clear --yes`, which a person runs
+after looking at the account's mods on mod.io (refused while the running game says the upload is still
+Publishing). Any other end (a failure, partial errors, a refusal after the mark, a timeout, a lost game) leaves it.
+Every upload sent also adds one line to `publish_history.jsonl` next to the mark (time, owner, folder, visibility,
+outcome, mod.io id, fileid), success or not. While a mark is there, or while the mod refuses a quit because the
+upload is Publishing, `quit --kill` and `restart` do not kill the game, not even with `--force`. **Do not load a
+save or quit the game by hand from the menu while an upload runs.**
 
 The settings are built as the page builds them for a mod of the My Mods tab (`mod_manager_react_util.tl`): a new
 `PublishSettings` with `setPublic` from `--public` (the page's "Set Public" box, false by default for a new mod),

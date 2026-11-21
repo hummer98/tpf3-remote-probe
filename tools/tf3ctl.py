@@ -52,7 +52,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py modhub status [--folder F] | modhub validate F   # My Mods in the main menu (read; re-validate)
   tf3ctl.py modhub publish F --public yes --changelog "..." --first-upload [--dry-run]   # one new mod to mod.io
             # (one allowed folder; no fileid yet; a mark in $XDG_STATE_HOME/tf3ctl/ until the fileid appears)
-  tf3ctl.py modhub publish-clear             # remove that mark, after looking at mod.io
+  tf3ctl.py modhub publish-clear --yes       # remove that mark, after looking at mod.io
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is only shown (status:
 run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes; nothing
@@ -918,6 +918,15 @@ def _quit_game(timeout=QUIT_TIMEOUT_SEC, kill=False, force=False):
     why = err or f"it is still running {timeout:g} s after app.quit"
     if not kill:
         raise ToolError(f"the game did not quit: {why} (--kill ends it with SIGKILL; an unsaved game is lost)")
+    # an upload to mod.io may be under way (the mod refuses a quit while it is Publishing; a mark is there from the
+    # moment the tool sent one): a SIGKILL in the middle of it leaves mod.io in a state nobody knows. Not even
+    # --force kills then; a person decides, after looking at mod.io.
+    mark = read_pending()
+    if mark is not None or (err and "Publishing" in err):
+        raise ToolError("the game did not quit (%s), and an upload to mod.io %s: not killed, not even with --force. "
+                        "Let the game finish it (modhub status), look at mod.io, then `modhub publish-clear`"
+                        % (why, "may be under way (publish mark %s)" % pending_path() if mark is not None
+                           else "is under way"))
     other = recent_other_owner()
     if other and not force:
         raise ToolError("the game did not quit (%s), and %s sent '%s' %d min ago: ask that client before killing "
@@ -1699,7 +1708,8 @@ def read_pending():
 
 
 def write_pending(record):
-    """Writes the mark through a temporary file and os.replace (0600, in a 0700 folder). A failure is a ToolError:
+    """Writes the mark through a temporary file linked into place (0600, in a 0700 folder): a reader never sees half
+    a file, and the link fails if a mark appeared meanwhile (another tool process). A failure is a ToolError:
     without the mark, nothing is sent."""
     path = pending_path()
     folder = os.path.dirname(path)
@@ -1712,14 +1722,42 @@ def write_pending(record):
             json.dump(record, f)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
-        tmp = None
+        os.link(tmp, path)  # exclusive, as O_EXCL: FileExistsError when a mark is there
+    except FileExistsError:
+        raise ToolError("a publish mark appeared meanwhile (%s); nothing was sent" % path)
     except OSError as e:
         raise ToolError("could not write the publish mark %s (%s): nothing was sent" % (path, e))
     finally:
         if tmp:
             with contextlib.suppress(OSError):
                 os.remove(tmp)
+    return path
+
+
+HISTORY_NAME = "publish_history.jsonl"
+
+
+def history_path():
+    return os.path.join(state_dir(), HISTORY_NAME)
+
+
+def append_history(record):
+    """One line per upload sent (success or not) in publish_history.jsonl (0600), next to the mark: what went up,
+    when, and how it ended, also after the mark is gone. A failure to write is a warning: the upload has happened."""
+    path = history_path()
+    line = json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
+    try:
+        os.makedirs(os.path.dirname(os.path.dirname(path)), exist_ok=True)
+        _own_private_dir(os.path.dirname(path))
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        print("warning: could not add to the publish history %s: %s" % (path, e), file=sys.stderr)
+        return None
     return path
 
 
@@ -1838,20 +1876,39 @@ def cmd_modhub_publish(ns):
     path = write_pending({"v": 1, "folder": args["folder"], "owner": OWNER, "public": args["public"],
                           "firstUpload": True, "at": int(time.time()),
                           "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    def history(outcome, res=None, fileid=None):
+        res = res or {}
+        got = append_history({"v": 1, "at": int(time.time()), "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                              "owner": OWNER, "folder": args["folder"], "public": args["public"], "outcome": outcome,
+                              "publishCalled": res.get("publishCalled"), "modId": res.get("modId"), "fileid": fileid,
+                              "error": res.get("error")})
+        if got:
+            res["history"] = got
     try:
         res = send("modhubPublish", dict(args, dryRun=False), timeout=timeout, on_progress=progress, folder=folder)
     except ToolError as e:
+        history("no answer", {"error": str(e)})
         raise ToolError("%s; the outcome of the upload is not known, the publish mark stays (%s)" % (e, path))
     res["local"] = local
     res["preflight"] = {"ok": True, "validation": pre.get("validation")}
     res["pendingMark"] = path
     result = res.get("result") if isinstance(res.get("result"), dict) else {}
-    if result.get("success") is not True:
+    partial = result.get("partialErrors") or []
+    if result.get("success") is not True or partial:
         res["pendingKept"] = True
-        res["note"] = ("publish was not called: nothing was uploaded, but the mark stays (it goes only by "
-                       "`modhub publish-clear`)" if res.get("publishCalled") is False else
-                       "the upload did not succeed or its outcome is not known: the mark stays; look at mod.io before "
-                       "`modhub publish-clear`")
+        if res.get("publishCalled") is False:
+            outcome = "not sent"
+            res["note"] = ("publish was not called: nothing was uploaded, but the mark stays (it goes only by "
+                           "`modhub publish-clear`)")
+        elif partial:
+            outcome = "partial"
+            res["note"] = ("mod.io took the mod with %d partial errors: the mark stays; look at the mod on mod.io "
+                           "before `modhub publish-clear`" % len(partial))
+        else:
+            outcome = res.get("outcome") or "failed"
+            res["note"] = ("the upload did not succeed or its outcome is not known: the mark stays; look at mod.io "
+                           "before `modhub publish-clear`")
+        history(outcome, res, fileid=wait_fileid(args["folder"], folder, wait=0) if partial else None)
         return res
     got = wait_fileid(args["folder"], folder)
     res["fileid"] = got
@@ -1862,10 +1919,39 @@ def cmd_modhub_publish(ns):
                         "`modhub publish-clear`" % (res.get("modId"), FILEID_NAME,
                                                     "did not appear in %d s" % FILEID_WAIT_SEC if got is None
                                                     else "says %s" % got))
+        history("success, fileid missing" if got is None else "success, fileid differs", res, fileid=got)
         return res
+    history("success", res, fileid=got)  # before the mark goes: the record outlives it
     clear_pending()
     res["pendingCleared"] = True
     return res
+
+
+def cmd_modhub_publish_clear(ns):
+    """Removes the mark, with --yes only, and not while the game's mod says the upload is still Publishing."""
+    mark = read_pending()
+    out = {"ok": True, "path": pending_path(), "mark": mark}
+    if mark is None:
+        out.update(cleared=None, note="there was no publish mark")
+        return out
+    if not ns.yes:
+        raise ToolError("the publish mark says %s: look at the account's mods on mod.io first, then run this again "
+                        "with --yes" % json.dumps(mark, sort_keys=True))
+    if game_pids():
+        args = {"wait": 0}
+        if isinstance(mark.get("folder"), str):
+            args["folder"] = mark["folder"]
+        try:
+            st = send("modhubStatus", args, timeout=MODHUB_GRACE_SEC)
+        except ToolError as e:  # in a save, loading, no probe: nobody to ask; a person said --yes
+            st = None
+            out["statusNote"] = "could not ask the game (%s)" % e
+        publishing = [m.get("folder") for m in (st or {}).get("mods") or [] if m.get("state") == "Publishing"]
+        if publishing:
+            raise ToolError("the game says the upload of %s is still Publishing: the mark stays until it has a "
+                            "result (modhub status)" % ", ".join(str(f) for f in publishing))
+    out["cleared"] = clear_pending()
+    return out
 
 
 def cmd_modhub(ns):
@@ -1873,11 +1959,7 @@ def cmd_modhub(ns):
     if ns.action == "publish":
         return cmd_modhub_publish(ns)
     if ns.action == "publish-clear":
-        mark = clear_pending()
-        out = {"ok": True, "cleared": mark, "path": pending_path()}
-        if mark is None:
-            out["note"] = "there was no publish mark"
-        return out
+        return cmd_modhub_publish_clear(ns)
     if ns.action == "status":
         args = modhub_status_args(ns)
         wait = args.get("wait", 30)
@@ -2717,7 +2799,9 @@ def make_parser():
     mpu.add_argument("--timeout", type=float, help="seconds for the mod's whole command (default 900, at most 3600); "
                                                    "past it the upload is not aborted and its outcome is unknown")
     mpu.add_argument("--messages", type=int, help="validator messages listed (0-500, default 50)")
-    msub.add_parser("publish-clear", help="remove the publish mark (" + PENDING_NAME + ") after looking at mod.io")
+    mpc = msub.add_parser("publish-clear", help="remove the publish mark (" + PENDING_NAME + ") after looking at "
+                                                "mod.io (not while the game says the upload is Publishing)")
+    mpc.add_argument("--yes", action="store_true", help="required: you looked at mod.io")
     v = sub.add_parser("save")
     v.add_argument("name")
     sub.add_parser("state", help="where the game is (menu, loading, ...), from its log; needs no mod")

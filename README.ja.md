@@ -281,7 +281,7 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
 python3 tools/tf3ctl.py modhub status [--folder my_mod_1] [--wait 30]   # 読むだけ
 python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
 python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." --first-upload [--dry-run] [--timeout 900]
-python3 tools/tf3ctl.py modhub publish-clear
+python3 tools/tf3ctl.py modhub publish-clear --yes
 ```
 
 本体の「MODハブ > マイMOD」のページは、`<user data>/staging_area/<フォルダ>/` の MOD を一覧にし、C++ の物
@@ -339,10 +339,14 @@ python3 tools/tf3ctl.py modhub publish-clear
 `--dry-run` は、検証を含めて上の全部を通し、送るはずの設定を返します。`publish` は呼びません。`--dry-run` が無いときも、
 道具はまず同じ dry-run を回し (そこで断られれば何も残らない)、それから **「送った」の印**
 `$XDG_STATE_HOME/tf3ctl/publish_pending.json` (無ければ `~/.local/state/tf3ctl/`。フォルダ・owner・時刻・公開か) を書き、
-そのあとでアップロードを送ります。印があるあいだは、どの publish も断ります。印が消えるのは、(1) アップロードが成功し、
-ゲームが返した mod.io の id と同じ中身の fileid のファイルが (60 秒以内に) できたとき、(2) 人が mod.io のアカウントの
-MOD を見てから `modhub publish-clear` を実行したとき、の2つだけです。ほかの終わり方 (失敗・印のあとでの拒否・時間切れ・
-ゲームが落ちた) では残ります。
+そのあとでアップロードを送ります。印があるあいだは、どの publish も断ります。印が消えるのは、(1) アップロードが部分的な
+エラー無しで成功し、ゲームが返した mod.io の id と同じ中身の fileid のファイルが (60 秒以内に) できたとき、(2) 人が
+mod.io のアカウントの MOD を見てから `modhub publish-clear --yes` を実行したとき (動いているゲームが Publishing と答える
+あいだは断る)、の2つだけです。ほかの終わり方 (失敗・部分的なエラー・印のあとでの拒否・時間切れ・ゲームが落ちた) では
+残ります。送ったアップロードは、成否にかかわらず、印の隣の `publish_history.jsonl` に1行ずつ残します (時刻・owner・
+フォルダ・公開か・結果・mod.io の id・fileid)。印があるあいだと、Publishing のために MOD が quit を断るあいだは、
+`quit --kill` と `restart` は `--force` を付けてもゲームを kill しません。**アップロードの途中に、人がメニューから手で
+セーブを読んだりゲームを終えたりしないでください。**
 
 設定は、ページがマイMOD のタブの MOD に作るのと同じ形にしています (`mod_manager_react_util.tl`)。新しい
 `PublishSettings` に、`setPublic` は `--public` (ページの「Set Public」の欄。新規の MOD では初期値 false)、
