@@ -1693,7 +1693,9 @@ function M.installBuild(g, spec)
 		return u
 	end
 	api.type.SimpleProposal = { new = function()
-		return record({ constructionsToAdd = {}, constructionsToRemove = {}, old2new = {}, streetProposal = {} })
+		-- streetProposal: a record of its own, reached through the proposal (its lists assigned whole, as above)
+		return record({ constructionsToAdd = {}, constructionsToRemove = {}, old2new = {},
+			streetProposal = record({ nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {} }) })
 	end, ConstructionEntity = { new = function()
 		return record({ fileName = "", params = {}, transf = {}, name = "", playerEntity = -1, autoFillSlots = false })
 	end } }
@@ -1774,12 +1776,85 @@ function M.installBuild(g, spec)
 		end
 	end
 
+	-- roads (the road command): spec.streets = { [resName] = { roadType = "STREET" / "TRACK", yearFrom, yearTo, cost
+	-- (per metre), style, noLanes } } (streetTemplateRep); spec.year (api.engine.util.getYear); spec.roads = {
+	-- nodes = { [id] = { x, y, z } }, edges = { [id] = { node0, node1 } } }: a road network already there;
+	-- spec.noStreetResults: the callback names no entity of a built road. A street proposal whose piece names a
+	-- node that neither exists nor is added, or a template the rep does not know, is an assertion; a piece without
+	-- lanes is refused. g.streetCmds: every piece sent, as plain values.
+	local streets = spec.streets or {}
+	local streetNames = {}
+	for name in pairs(streets) do streetNames[#streetNames + 1] = name end
+	table.sort(streetNames)
+	api.type.enum.RoadType = { STREET = 0, TRACK = 1 }
+	api.type.enum.BaseEdgeType = { NORMAL = 0, BRIDGE = 1, TUNNEL = 2 }
+	api.type.NodeAndEntity = { new = function() return { entity = 0, comp = { position = { x = 0, y = 0, z = 0 } } } end }
+	api.type.SegmentAndEntity = { new = function()
+		return { entity = 0, type = -1, comp = { node0 = -1, node1 = -1, type = 0, typeIndex = -1, laneConfigs = {} },
+			streetEdge = {} }
+	end }
+	api.type.PlayerOwned = { new = function() return { player = -1 } end }
+	api.res.streetTemplateRep = {
+		find = function(name) for i, n in ipairs(streetNames) do if n == name then return i end end return -1 end,
+		get = function(idx)
+			local name = streetNames[idx]
+			if not name then crash("streetTemplateRep.get(" .. tostring(idx) .. ")") end
+			local s = streets[name]
+			return { roadType = api.type.enum.RoadType[s.roadType or "STREET"], streetStyle = s.style or (name .. ".style"),
+				availability = { yearFrom = s.yearFrom or 0, yearTo = s.yearTo or 0 }, cost = s.cost or 10,
+				laneConfigs = s.noLanes and {} or { { speed = 14, width = 3 }, { speed = 14, width = 3 } } }
+		end,
+	}
+	api.engine.util.getYear = function() return spec.year end
+	g.streetCmds = {}
+	for id, n in pairs((spec.roads or {}).nodes or {}) do g.nodes[id] = copy(n) end
+	for id, e in pairs((spec.roads or {}).edges or {}) do g.edges[id] = copy(e) end
+	-- (over a street system installed before, Track Connector's fake: its nodes and lookups are kept)
+	local oldStreets = api.engine.system.streetSystem or {}
+	local streetSystem = {}
+	for k, f in pairs(oldStreets) do streetSystem[k] = f end
+	api.engine.system.streetSystem = streetSystem
+	streetSystem.getNodeStreetSegments = function(n)
+		if not g.nodes[n] and oldStreets.getNodeStreetSegments then return oldStreets.getNodeStreetSegments(n) end
+		if not g.nodes[n] then crash("getNodeStreetSegments: no node " .. tostring(n)) end
+		local out = {}
+		for e, ed in pairs(g.edges) do
+			if (ed.node0 == n or ed.node1 == n) and ed.roadType ~= "TRACK" then out[#out + 1] = e end
+		end
+		table.sort(out)
+		return out
+	end
+
 	-- what the engine makes of a proposal: errors, collisions, cost (and the constructions to add, as plain values)
 	local function evaluate(p)
 		local st = getmetatable(p).store
 		local adds, removes = {}, copy(st.constructionsToRemove or {})
 		local data = { errorState = { critical = false, messages = {}, warnings = {} }, collisionInfo = { collisionEntities = {} },
 			costs = 0 }
+		local street = getmetatable(st.streetProposal).store
+		local newNodes = {}
+		for _, n in ipairs(street.nodesToAdd or {}) do newNodes[n.entity] = n.comp.position end
+		for _, e in ipairs(street.edgesToAdd or {}) do
+			local c = e.comp
+			for _, k in ipairs({ "node0", "node1" }) do
+				if not (g.nodes[c[k]] or newNodes[c[k]]) then crash("street proposal: no node " .. tostring(c[k])) end
+			end
+			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
+			g.streetCmds[#g.streetCmds + 1] = copy(e)
+			if #(c.laneConfigs or {}) == 0 then
+				data.errorState.critical = true
+				table.insert(data.errorState.messages, "Invalid lane configuration")
+			end
+			local p0, p1 = c.position0, c.position1
+			local len = math.sqrt((p1.x - p0.x) ^ 2 + (p1.y - p0.y) ^ 2 + (p1.z - p0.z) ^ 2)
+			data.costs = data.costs + math.floor(len * (streets[c.roadTemplate].cost or 10))
+			local hit = spec.blocked and spec.blocked((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
+			if hit then
+				data.errorState.critical = true
+				table.insert(data.errorState.messages, "Collision")
+				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
+			end
+		end
 		for _, ce in ipairs(st.constructionsToAdd or {}) do
 			local c = cons[ce.fileName]
 			if not c then crash("no construction " .. tostring(ce.fileName)) end
@@ -1819,6 +1894,13 @@ function M.installBuild(g, spec)
 			local x, y = b.transf and b.transf[13], b.transf and b.transf[14]
 			if x and x >= box.min.x and x <= box.max.x and y >= box.min.y and y <= box.max.y then cb(e) end
 		end
+		-- nodes by their position, pieces by their middle
+		local function inside(x, y) return x >= box.min.x and x <= box.max.x and y >= box.min.y and y <= box.max.y end
+		for e, n in pairs(g.nodes) do if inside(n.x, n.y) then cb(e) end end
+		for e, ed in pairs(g.edges) do
+			local a, b = g.nodes[ed.node0], g.nodes[ed.node1]
+			if a and b and inside((a.x + b.x) / 2, (a.y + b.y) / 2) then cb(e) end
+		end
 	end }
 
 	local function apply(cmd)
@@ -1832,6 +1914,22 @@ function M.installBuild(g, spec)
 				g.nodes[ed.node0], g.nodes[ed.node1], g.edges[edge] = nil, nil, nil
 			end
 			g.built[e], names[e] = nil, nil
+		end
+		-- a street proposal: new nodes, then the pieces between them
+		local street = getmetatable(getmetatable(cmd.proposal).store.streetProposal).store
+		local idOf = {}
+		for _, n in ipairs(street.nodesToAdd or {}) do
+			g.nextEntity = g.nextEntity + 1
+			idOf[n.entity] = g.nextEntity
+			g.nodes[g.nextEntity] = copy(n.comp.position)
+			if not spec.noStreetResults then results[#results + 1] = { g.nextEntity, 1 } end
+		end
+		for _, e in ipairs(street.edgesToAdd or {}) do
+			g.nextEntity = g.nextEntity + 1
+			local c = e.comp
+			g.edges[g.nextEntity] = { node0 = idOf[c.node0] or c.node0, node1 = idOf[c.node1] or c.node1,
+				roadTemplate = c.roadTemplate, roadType = c.roadType == 1 and "TRACK" or "STREET", player = e.playerOwned and e.playerOwned.player }
+			if not spec.noStreetResults then results[#results + 1] = { g.nextEntity, 1 } end
 		end
 		for _, ce in ipairs(adds) do
 			local c, t = cons[ce.fileName], ce.transf
@@ -1967,7 +2065,9 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			return n
 		end } },
 		modules = { ["::/station/water/harbor_quay.module"] = { metadata = { quay = true } } },
-		water = function(x) return x >= 1000 end, waterLevel = 5 })
+		water = function(x) return x >= 1000 end, waterLevel = 5,
+		streets = { ["::/infrastructure/street/town/town_old_medium.street_template"] = { yearTo = 1940, cost = 10 },
+			["::/infrastructure/street/town/town_new_medium.street_template"] = { yearFrom = 1940, cost = 20 } } })
 	local start = os.clock()
 	local wall = 0
 	local speedControl

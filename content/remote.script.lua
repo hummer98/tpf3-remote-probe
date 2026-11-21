@@ -1057,6 +1057,7 @@ local build = (ug_require or require)(MOD .. "::/remote_build.lua").new({ core =
 	appTime = appTime, try = try, say = say })
 handlers.build = build.handle
 handlers.water = build.water
+handlers.road = build.road
 -- My Mods (remote_modhub.lua): the staging area, validate and the one upload, in the main menu only
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })

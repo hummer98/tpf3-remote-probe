@@ -6894,5 +6894,137 @@ test("water and the dry run: a point off the map is not asked (isOnWater would a
 	truthy(not g.crashed, g.crashed)
 end)
 
+-- road: one straight piece. Streets: the base's two medium town roads (old until 1940, new from then), a small
+-- one and a track; a road network with a free end at node 8001 (100, 0, 2), its piece 8100 to node 8002
+local TOWN_OLD = "::/infrastructure/street/town/town_old_medium.street_template"
+local TOWN_NEW = "::/infrastructure/street/town/town_new_medium.street_template"
+local TOWN_SMALL = "::/infrastructure/street/town/town_new_small.street_template"
+local TRACK_STD = "::/infrastructure/track/standard/standard.street_template"
+local function roadWorld(spec)
+	spec = spec or {}
+	spec.streets = spec.streets or { [TOWN_OLD] = { yearTo = 1940, cost = 10 }, [TOWN_NEW] = { yearFrom = 1940, cost = 20 },
+		[TOWN_SMALL] = { yearFrom = 1940, cost = 5 }, [TRACK_STD] = { roadType = "TRACK" } }
+	spec.year = spec.year or 1925
+	spec.roads = spec.roads or { nodes = { [8001] = { x = 100, y = 0, z = 2 }, [8002] = { x = 0, y = 0, z = 2 },
+		[8003] = { x = 300, y = 300, z = 0 } }, edges = { [8100] = { node0 = 8002, node1 = 8001 } } }
+	return buildWorld(spec)
+end
+local function roadRun(g, id, argsLua, n)
+	send(g, id, "road", argsLua)
+	frames(g, n or FIRST + 20)
+	return final(g, id)
+end
+
+test("core.roadRequest: from and to (z optional), snap, type, dry run; every bad value refused", function()
+	local r = core.roadRequest({ from = "1,2", to = { 3, 4, 5 } })
+	eq(r.from[1], 1); eq(r.from[3], nil); eq(r.to[3], 5); eq(r.snap, 5, "the default"); eq(r.type, nil); eq(r.dryRun, false)
+	r = core.roadRequest({ from = "1,2", to = "30,4", snap = 0, type = " town_new_small ", dryRun = true })
+	eq(r.snap, 0); eq(r.type, "town_new_small"); eq(r.dryRun, true)
+	for _, bad in ipairs({
+		{ {}, "give from" }, { { from = "1,2" }, "give to" }, { { from = "1", to = "2,3" }, "at least x,y" },
+		{ { from = "1,2,3,4", to = "2,3" }, "at most 3" }, { { from = "a,2", to = "2,3" }, "finite" },
+		{ { from = "1e9,2", to = "2,3" }, "within" }, { { from = "1,2,9999", to = "2,3" }, "z must be" },
+		{ { from = "0,0", to = "3000,0" }, "at most 2000 m" }, { { from = "0,0", to = "1,0", snap = 21 }, "snap must be" },
+		{ { from = "0,0", to = "1,0", snap = -1 }, "snap must be" }, { { from = "0,0", to = "1,0", type = "" }, "type must be" },
+		{ { from = "0,0", to = "1,0", type = 5 }, "type must be" },
+	}) do
+		local ok, err = core.roadRequest(bad[1])
+		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	truthy(core.CHANGES_GAME.road and core.COMMANDS.road and not core.MENU_COMMANDS.road)
+end)
+
+test("road: from a free road end (snapped) to a new node on the terrain: the town road of the year, the ids, the cost", function()
+	local g = roadWorld({ height = function(x) return 0.01 * x end })
+	local bal = g.balance
+	local a, n = roadRun(g, 950, '{ from = "102,1", to = "200,0" }')
+	eq(n, 1); truthy(a.ok, a.error)
+	eq(a.template, TOWN_OLD, "1925: the old medium town road"); eq(a.year, 1925)
+	eq(a.from.node, 8001, "snapped to the free end"); truthy(math.abs(a.from.snapped - math.sqrt(5)) < 1e-9)
+	eq(a.from.x, 100); eq(a.from.z, 2, "the node's own position")
+	eq(a.to.node, nil); eq(a.to.zFrom, "terrain"); eq(a.to.z, 2); eq(a.newNodes, 1)
+	truthy(math.abs(a.length - 100) < 1e-9)
+	eq(#a.edges, 1); eq(#a.nodes, 1)
+	local ed = g.edges[a.edge]
+	eq(ed.node0, 8001); eq(ed.node1, a.nodes[1]); eq(a.node0, 8001); eq(a.node1, a.nodes[1])
+	eq(ed.roadTemplate, TOWN_OLD); eq(ed.roadType, "STREET"); eq(ed.player, 99, "the company's")
+	eq(a.cost, 1000); eq(a.spent, 1000); eq(g.balance, bal - 1000)
+	-- what was sent: a straight piece (both tangents the chord), plain, the template's lanes and style
+	local sent = g.streetCmds[1]
+	eq(sent.type, 0); eq(sent.comp.typeIndex, -1); eq(sent.comp.type, 0); eq(sent.comp.roadType, 0)
+	eq(sent.comp.tangent0.x, 100); eq(sent.comp.tangent1.x, 100); eq(sent.comp.tangent0.z, 0)
+	eq(#sent.comp.laneConfigs, 2); eq(sent.comp.roadStyle, TOWN_OLD .. ".style")
+	eq(sent.entity, -2, "new entities counted down: the node -1, the piece -2"); eq(sent.comp.node1, -1)
+	local cmd = g.buildCmds[1]
+	eq(cmd.ignoreErrors, false); eq(cmd.context.gatherBuildings, false)
+	truthy(a.note:find("not checked in a game"))
+	-- 1950: the new one; a type by its file name; both ends new (snap 0)
+	g = roadWorld({ year = 1950 })
+	a = roadRun(g, 951, '{ from = "0,500", to = "0,600" }')
+	truthy(a.ok, a.error); eq(a.template, TOWN_NEW)
+	a = roadRun(g, 952, '{ from = "101,0", to = "101,50", snap = 0, type = "town_new_small" }')
+	truthy(a.ok, a.error); eq(a.template, TOWN_SMALL); eq(a.from.node, nil, "snap 0: never joined"); eq(a.newNodes, 2)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road: refused before sending (a track type, a year, an unknown type, the same node, too short)", function()
+	local g = roadWorld()
+	for i, case in ipairs({
+		{ '{ from = "0,500", to = "0,600", type = %q }', TRACK_STD, "track type" },
+		{ '{ from = "0,500", to = "0,600", type = %q }', "town_new_small", "not to be had in 1925" },
+		{ '{ from = "0,500", to = "0,600", type = %q }', "nowhere_road", "no street template nowhere_road" },
+		{ '{ from = "100,1", to = "%s" }', "101,-1", "both ends are node 8001" },
+		{ '{ from = "0,500", to = "%s", snap = 0 }', "0.5,500", "at least 1 m" },
+	}) do
+		local before = #g.buildCmds
+		local a = roadRun(g, 9530 + i, string.format(case[1], case[2]))
+		eq(a.ok, false); truthy(tostring(a.error):find(case[3], 1, true), tostring(a.error) .. " / " .. case[3])
+		eq(#g.buildCmds, before, "nothing sent")
+	end
+	-- a node with no road piece (only track there) is not snapped to
+	g = roadWorld({ roads = { nodes = { [8001] = { x = 100, y = 0, z = 2 }, [8002] = { x = 0, y = 0, z = 2 } },
+		edges = { [8100] = { node0 = 8002, node1 = 8001, roadType = "TRACK" } } } })
+	local a = roadRun(g, 954, '{ from = "101,0", to = "101,80" }')
+	truthy(a.ok, a.error); eq(a.from.node, nil, "a track end is no road end")
+end)
+
+test("road: refused by the engine (collision, money): nothing built, the messages in the error", function()
+	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end })
+	local a, n = roadRun(g, 955, '{ from = "0,1500", to = "0,1600" }')
+	eq(n, 1); eq(a.ok, false)
+	truthy(a.error:find("Collision"), a.error); eq(a.collisions[1], 4343)
+	g.balance = 10
+	a = roadRun(g, 956, '{ from = "0,500", to = "0,600" }')
+	eq(a.ok, false); truthy(a.error:find("Not enough money"), a.error)
+	eq(#g.streetCmds, 2); eq(g.edges[5001], nil)
+	-- a template without lanes is refused by the engine (as the fake's: the probe sends what the rep has)
+	g = roadWorld({ streets = { [TOWN_OLD] = { yearTo = 1940, noLanes = true } } })
+	a = roadRun(g, 957, '{ from = "0,500", to = "0,600" }')
+	eq(a.ok, false); truthy(a.error:find("lane", 1, true), a.error)
+end)
+
+test("road --dry-run: the plan, nothing sent; no ids in the result or no callback: the piece found between the ends", function()
+	local g = roadWorld()
+	local a = roadRun(g, 958, '{ from = "102,1", to = "200,0", dryRun = true }')
+	truthy(a.ok, a.error); eq(a.dryRun, true); eq(a.checked, false); eq(a.from.node, 8001); eq(a.template, TOWN_OLD)
+	eq(#g.buildCmds, 0)
+	g = roadWorld({ noStreetResults = true })
+	a = roadRun(g, 959, '{ from = "102,1", to = "200,0" }')
+	truthy(a.ok, a.error); truthy(a.edge, "found"); eq(g.edges[a.edge].node0, 8001)
+	truthy(tostring(a.why):find("found between the ends", 1, true), tostring(a.why))
+	g = roadWorld({ lostCallback = true })
+	send(g, 960, "road", '{ from = "102,1", to = "200,0" }')
+	frames(g, 40, 1)
+	a = final(g, 960)
+	truthy(a.ok, a.error); truthy(a.edge); truthy(tostring(a.why):find("no answer from the engine", 1, true))
+	-- lost and not built (refused, no callback): an error
+	g = roadWorld({ lostCallback = true, blocked = function() return 1 end })
+	send(g, 961, "road", '{ from = "0,500", to = "0,600" }')
+	frames(g, 40, 1)
+	a = final(g, 961)
+	eq(a.ok, false); truthy(tostring(a.error):find("no piece between the ends", 1, true), tostring(a.error))
+	truthy(not g.crashed, g.crashed)
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)

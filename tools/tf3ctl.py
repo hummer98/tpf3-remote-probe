@@ -56,6 +56,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             --params '{"modules": {"<slot id>": {"name": "<module resName>"}}}' [--no-fill-modules]
             # a modular construction: slot ids made whole numbers, autoFillSlots off, each module's name checked
             # and its metadata / updateScript filled from moduleRep; --no-owner: playerEntity -1 (an industry)
+  tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+            # one straight road piece, no click: test saves only; an end within --snap m of a road node joins it
   tf3ctl.py water --at 1500,-300 | water --grid 1000,-800,2000,200,50   # read only: the water level, and per
             # point water or land and the terrain's height (a grid: at most 400 points, rows of ~ water . land)
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
@@ -112,7 +114,7 @@ PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); lon
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
-                "build", "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
+                "build", "road", "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -1600,6 +1602,31 @@ def water_args(ns):
     return {"grid": [x0, y0, x1, y1, step]}
 
 
+def road_args(ns):
+    """road: --from and --to as x,y[,z]; --type, --snap, --dry-run as given (the mod checks them again)."""
+    args = {}
+    for key, text in (("from", ns.from_), ("to", ns.to)):
+        try:
+            v = [float(x) for x in text.split(",")]
+        except ValueError:
+            raise ToolError("--%s must be numbers: x,y[,z]" % key)
+        if not 2 <= len(v) <= 3 or any(x != x or abs(x) == float("inf") for x in v):
+            raise ToolError("--%s must be x,y or x,y,z (finite numbers; for a negative x write --%s=-100,50)" % (key, key))
+        args[key] = v
+    if ns.type is not None:
+        if not ns.type.strip():
+            raise ToolError("--type is empty")
+        args["type"] = ns.type.strip()
+    if ns.snap is not None:
+        if ns.snap != ns.snap or not 0 <= ns.snap <= ROAD_MAX_SNAP:
+            raise ToolError("--snap must be 0-%g metres" % ROAD_MAX_SNAP)
+        args["snap"] = ns.snap
+    if ns.dry_run:
+        args["dryRun"] = True
+    return args
+
+
+ROAD_MAX_SNAP = 20  # the mod's core.ROAD_LIMITS.snap
 WATER_MAX_POINTS = 400  # the mod's core.WATER_MAX_POINTS
 WATER_MIN_STEP = 0.1  # core.WATER_MIN_STEP: a smaller step overflows the point count before the limit is checked
 BUILD_TIMEOUT_SEC = 60  # the mod waits 30 s for the engine's callback
@@ -2820,6 +2847,18 @@ def make_parser():
                     "strawberry farm); default the company's (--owner names the client, not this)")
     bd.add_argument("--no-fill-modules", action="store_true", help="with params.modules: send each module as given; "
                     "default: a module without metadata / updateScript gets moduleRep's own")
+    rd = sub.add_parser("road", help="build one straight road piece between two points, as a mod's tool builds (no "
+                                      "click; a SimpleStreetProposal). Test saves only")
+    rd.add_argument("--from", dest="from_", required=True, metavar="X,Y[,Z]",
+                    help="one end (metres); no Z: the terrain's height there")
+    rd.add_argument("--to", required=True, metavar="X,Y[,Z]", help="the other end")
+    rd.add_argument("--type", help="the street template's resName, or a base road's file name (town_new_small, "
+                    "country_old_medium; looked for under the base's town, country and highway roads); default the "
+                    "base medium town road of the game's year")
+    rd.add_argument("--snap", type=float, help="an end within this many metres of a node with road pieces joins that "
+                    "node (default 5, 0: never)")
+    rd.add_argument("--dry-run", action="store_true", help="no build: the template, the ends (snapped or on the "
+                    "terrain) and the length, checked here only")
     wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
                                        "terrain's height (to find a shore for a harbour)")
     wg = wa.add_mutually_exclusive_group(required=True)
@@ -3146,6 +3185,8 @@ def main(argv=None):
             res = send("rename", rename_args(ns))
         elif ns.cmd == "build":
             res = send("build", build_args(ns), timeout=BUILD_TIMEOUT_SEC)
+        elif ns.cmd == "road":
+            res = send("road", road_args(ns), timeout=BUILD_TIMEOUT_SEC)
         elif ns.cmd == "water":
             res = send("water", water_args(ns))
         elif ns.cmd == "tool":

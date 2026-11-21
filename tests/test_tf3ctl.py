@@ -786,6 +786,14 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(res["params"]["rbr_height"], 4)
         self.assertEqual(len(res["construction"]["ends"]), 2)
         e = res["entity"]
+        # a road from the ramp's free end (the answer's ends, as a harbour's entrance would be): joined to it
+        end = res["construction"]["ends"][0]
+        code, road = self.ctl("road", "--from", "%g,%g" % (end["x"], end["y"]), "--to", "%g,%g" % (end["x"], end["y"] + 60))
+        self.assertEqual(code, 0, road)
+        self.assertEqual(road["from"]["node"], end["node"])
+        self.assertEqual(road["template"], "::/infrastructure/street/town/town_old_medium.street_template")
+        self.assertEqual(len(road["edges"]), 1)
+        self.assertEqual(road["cost"], 600)
         code, res = self.ctl("build", "--res", "road_bridge_ramp::/nope.con", "--at", "0,0")
         self.assertEqual(code, 1)
         self.assertIn(ramp, res["error"], "names like it")
@@ -1403,6 +1411,21 @@ class QuitLaunchTest(unittest.TestCase):
             with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
                 tf3ctl.water_args(wa(**bad))
         self.assertNotIn("water", tf3ctl.CHANGES_GAME, "read only")
+        # road: changes the game; from and to as numbers, the rest only when given
+        self.assertIn("road", tf3ctl.CHANGES_GAME)
+        rd = p.parse_args(["road", "--from=-100,5", "--to", "20,5,3"])
+        self.assertEqual(tf3ctl.road_args(rd), {"from": [-100.0, 5.0], "to": [20.0, 5.0, 3.0]})
+        rd = p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--type", " town_new_small ", "--snap", "0", "--dry-run"])
+        self.assertEqual(tf3ctl.road_args(rd), {"from": [0.0, 0.0], "to": [1.0, 1.0], "type": "town_new_small",
+                                                "snap": 0.0, "dryRun": True})
+        for bad in (["--from", "0", "--to", "1,1"], ["--from", "a,b", "--to", "1,1"], ["--from", "0,0,0,0", "--to", "1,1"],
+                    ["--from", "0,0", "--to", "1,inf"], ["--from", "0,0", "--to", "1,1", "--snap", "21"],
+                    ["--from", "0,0", "--to", "1,1", "--snap", "-1"], ["--from", "0,0", "--to", "1,1", "--type", " "]):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                tf3ctl.road_args(p.parse_args(["road"] + bad))
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                p.parse_args(["road", "--from", "0,0"])
         self.assertEqual(p.parse_args(["water", "--grid", "0,0,1,1,1"]).grid, "0,0,1,1,1")
         sent = []
 

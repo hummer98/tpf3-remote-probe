@@ -386,6 +386,38 @@ python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner  
 - **Not checked in game yet** (written 2026-11-22): whether the harbour's modules go on their slots as sent, the
   terminal count, the filled metadata, `--no-owner`, and `water`'s values.
 
+### One straight road (`road`)
+
+```
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+```
+
+- Builds one straight road piece between two points (x,y[,z], metres; no z: the terrain's height), with no click:
+  a `SimpleStreetProposal` (one new edge and its new nodes, numbered down from -1, as `type.d.tl` describes it)
+  sent as `api.cmd.makeWorldBuildProposalCmd`, the way `build` sends a construction (the same context: nothing
+  knocked down, errors not ignored). Changes the game: test saves only.
+- An end within `--snap` metres (default 5, at most 20, 0: never) of a node with road pieces
+  (`streetSystem.getNodeStreetSegments`) is that node, so the piece joins the road there; a track node is not taken.
+  A free end of a construction's own road (a harbour's entrance road: `construction.ends` in the `build` answer)
+  is such a node. Otherwise the end is a new node.
+- `--type` is a street template's resName, or a base road's file name (`town_new_small`, `country_old_medium`)
+  looked for under the base's town, country and highway roads; a track type, or one not to be had in the game's
+  year, is refused. The default is the base medium town road of the year (old until 1940, new from then). The
+  piece gets the template's `laneConfigs` and `streetStyle`, type NORMAL (`typeIndex` -1: no bridge or tunnel) and
+  the company's `PlayerOwned`; both tangents are the chord (a straight piece).
+- The answer: `from` / `to` (`node` and `snapped` when joined, else `zFrom`), `template`, `year`, `length`,
+  `edges` / `nodes` (the result's new entities), `edge`, `node0` / `node1`, `cost`, `spent`, the engine's
+  `errors`, `warnings` and `collisions` when refused. Without ids in the result, or with no callback in 30 s, the
+  piece is looked for between the two ends. `--dry-run` sends nothing and answers the plan (`checked: false`).
+- Between 1 m and 2000 m long. A piece across water or a valley needs a bridge, which this does not build (the
+  engine refuses or follows the terrain: not known).
+- Use: a harbour's pedestrian link alone does not join it to the road network; a road along it, from the
+  harbour's free road end to the town's road, does (as players build it).
+- **Not checked in game yet** (written 2026-11-22): in particular whether `api.type.NodeAndEntity` /
+  `SegmentAndEntity` / `PlayerOwned` are reachable under those names (the probe also tries `api.type.Proposal.*`),
+  whether the default `streetEdge` is enough, whether the engine takes a node of a construction's road as an end,
+  and what the callback's entities hold.
+
 ### My Mods from the main menu (`modhub`)
 
 ```
@@ -608,7 +640,9 @@ Not checked yet:
 - The ×8 / ×16 buttons in game: their look and width beside the base buttons, the lit button, and the speed they set.
 - Whether `app.quit` ends the game without a confirmation dialog.
 - `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
-- `build`, entirely (see "One construction on the map").
+- `build`, entirely (see "One construction on the map"). `road`, entirely (see "One straight road").
+- The gui way's own send of a bought vehicle to its line and the refusal's reason; `lines --problems`;
+  `stations --catchment`.
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `modhub publish`, entirely (see "Uploading one new mod"). `modhub status` and `validate` were checked on
   2026-11-22.

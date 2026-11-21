@@ -18,12 +18,12 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
-	modhubValidate = true, modhubPublish = true, water = true }
+	modhubValidate = true, modhubPublish = true, water = true, road = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
 	line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true, -- camera, as window: what the player sees
-	build = true, -- also its dry run: it is how a test save gets changed, so it warns others the same way
+	build = true, road = true, -- (road too) also its dry run: it is how a test save gets changed, so it warns others the same way
 	-- modhubValidate changes no save and writes nothing to mod.io, but it runs the game's validator on a staging
 	-- mod for minutes, and starting one aborts a validation already running for that mod (the type's own words),
 	-- e.g. one a person started on the My Mods page: so others are warned. modhubStatus only reads.
@@ -979,6 +979,41 @@ end
 -- WATER_MAX_POINTS points). -> { points = { { x, y } }, grid = { x0, y0, x1, y1, step, nx, ny } or nil }
 M.WATER_MAX_POINTS = 400
 M.WATER_MIN_STEP = 0.1 -- metres: a smaller step makes the point count overflow before the limit is checked
+-- road: one straight road piece from one point to another (remote_build.lua B.road). snap: an end within this
+-- many metres of a road node joins it (0: never)
+M.ROAD_LIMITS = { snap = 20, defaultSnap = 5, minLength = 1, maxLength = 2000 }
+function M.roadRequest(args)
+	args = type(args) == "table" and args or {}
+	local L = M.BUILD_LIMITS
+	local ends = {}
+	for _, k in ipairs({ "from", "to" }) do
+		if args[k] == nil then return nil, "give " .. k .. ": x,y[,z] in metres (no z: the terrain's height there)" end
+		local p, err = M.numberList(args[k], 3)
+		if not p then return nil, k .. ": " .. err end
+		if #p < 2 then return nil, k .. " needs at least x,y" end
+		if math.abs(p[1]) > L.xy or math.abs(p[2]) > L.xy then return nil, k .. ": x and y must be within " .. L.xy end
+		if p[3] ~= nil and (p[3] < L.z[1] or p[3] > L.z[2]) then
+			return nil, string.format("%s: z must be %g-%g", k, L.z[1], L.z[2])
+		end
+		ends[k] = p
+	end
+	local R = M.ROAD_LIMITS
+	local flat = math.sqrt((ends.to[1] - ends.from[1]) ^ 2 + (ends.to[2] - ends.from[2]) ^ 2)
+	if flat > R.maxLength then
+		return nil, string.format("from and to are %.0f m apart: at most %g m for one straight piece", flat, R.maxLength)
+	end
+	local snap = args.snap == nil and R.defaultSnap or tonumber(args.snap)
+	if not finite(snap) or snap < 0 or snap > R.snap then return nil, "snap must be 0-" .. R.snap .. " metres" end
+	local t = args.type
+	if t ~= nil then
+		if type(t) ~= "string" or not t:find("%S") or t:find("[%c@]") or #t > 512 then
+			return nil, "type must be a street template's resName (or a base road's file name, e.g. town_new_small)"
+		end
+		t = t:match("^%s*(.-)%s*$")
+	end
+	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true }
+end
+
 function M.waterRequest(args)
 	args = type(args) == "table" and args or {}
 	if (args.at == nil) == (args.grid == nil) then return nil, "give at (x,y) or grid (x0,y0,x1,y1,step)" end

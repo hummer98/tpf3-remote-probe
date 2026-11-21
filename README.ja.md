@@ -366,6 +366,35 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): 港のモジュールが送ったとおりスロットに乗るか、terminal の数、
   埋めた metadata、`--no-owner`、`water` の値。
 
+### まっすぐな道路を1本 (`road`)
+
+```
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+```
+
+- 2点 (x,y[,z]、メートル。z が無ければ地形の高さ) の間に、まっすぐな道路を1本、クリック無しで建てます。
+  `SimpleStreetProposal` (新しい edge 1本と新しい node。番号は `type.d.tl` のとおり -1 から下へ) を
+  `api.cmd.makeWorldBuildProposalCmd` で送ります。`build` が建物を送るのと同じ形です (同じ context: 何も壊さない、
+  エラーを無視しない)。ゲームを変えるので、テスト用のセーブでだけ使ってください。
+- 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない) 以内に道路のある node
+  (`streetSystem.getNodeStreetSegments`) があれば、その node を端にして、そこで道路につなぎます。線路の node は使いません。
+  建物の自分の道路の空いた端 (港の入口の道路: `build` の答えの `construction.ends`) もこの node です。なければ新しい node です。
+- `--type` は street template の resName か、バニラの道路のファイル名 (`town_new_small`、`country_old_medium`。バニラの
+  town・country・highway の下で探す)。線路の種類と、ゲームの年に作れないものは断ります。指定が無ければ、その年の
+  バニラの中くらいの町の道路 (1940 年までは old、それから new)。道路には template の `laneConfigs` と `streetStyle`、
+  種類 NORMAL (`typeIndex` -1: 橋もトンネルも無し)、会社の `PlayerOwned` を付け、両端の tangent は2点を結ぶ線 (まっすぐ) です。
+- 答え: `from` / `to` (つないだときは `node` と `snapped`、ほかは `zFrom`)、`template`、`year`、`length`、`edges` /
+  `nodes` (結果の新しい entity)、`edge`、`node0` / `node1`、`cost`、`spent`、断られたときはエンジンの `errors`・`warnings`・
+  `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。`--dry-run` は
+  何も送らず、計画だけを返します (`checked: false`)。
+- 長さは 1 m から 2000 m まで。水の上や谷を渡るには橋が要りますが、これは橋を建てません (エンジンが断るか、地形に沿うか:
+  未確認)。
+- 使い道: 港の歩行者用接続路だけでは、港は道路網につながりません。その横に、港の道路の空いた端から町の道路まで道路を
+  通すとつながります (プレイヤーが建てるのと同じ)。
+- **ゲーム内では未確認** (2026-11-22 に書いたもの): 特に、`api.type.NodeAndEntity` / `SegmentAndEntity` / `PlayerOwned`
+  がその名前で届くか (`api.type.Proposal.*` も試す)、初期のままの `streetEdge` で足りるか、建物の道路の node を端として
+  エンジンが受け付けるか、コールバックの entity に何が入るか。
+
 ### メインメニューからのマイMOD (`modhub`)
 
 ```
@@ -572,7 +601,8 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - ゲーム内の ×8 / ×16 のボタン: 本体のボタンの横での見た目と幅、光るボタン、指定される速度。
 - `app.quit` が確認ダイアログなしでゲームを終えるか。
 - `connect` は全部。危ない順の一覧は「実装メモ」の「接続」。
-- `build` は全部 (「建物を1つ地図に置く」を参照)。
+- `build` は全部 (「建物を1つ地図に置く」を参照)。 `road` も全部 (「まっすぐな道路を1本」を参照)。
+- gui で買った車両を MOD が自分で路線に送ることと、断られたときの理由。`lines --problems`。`stations --catchment`。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 - `modhub publish` は全部 (「新しい MOD を1つ上げる」を参照)。`modhub status` と `validate` は 2026-11-22 に確認済み。
 

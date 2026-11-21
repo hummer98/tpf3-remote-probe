@@ -21,6 +21,7 @@ function M.new(ctx)
 	local jobs = {}
 	local built = {} -- [construction] = { res, x, y, z } for what this load of the probe built
 	local count = 0
+	local finishRoad, roadLost -- (the road command's, below)
 
 	local function CT() return api.type.ComponentType end
 	local function comp(e, kind)
@@ -418,7 +419,9 @@ function M.new(ctx)
 		for k, v in pairs(res.verdict) do out[k] = v end
 		out.balanceBefore, out.balanceAfter = job.before, balance()
 		if out.balanceBefore and out.balanceAfter then out.spent = out.balanceBefore - out.balanceAfter end
-		if job.kind == "place" then
+		if job.kind == "road" then
+			finishRoad(job, out, res)
+		elseif job.kind == "place" then
 			local cons = {}
 			for _, e in ipairs(res.entities) do
 				local d = describe(e)
@@ -440,7 +443,7 @@ function M.new(ctx)
 					end
 				end
 			end
-		else
+		elseif job.kind == "remove" then
 			if res.success then
 				for _, e in ipairs(job.list) do
 					if not comp(e, "CONSTRUCTION") then built[e] = nil end
@@ -462,6 +465,7 @@ function M.new(ctx)
 	-- and file (each build gets a name of its own, probe-build N); found, it is the probe's, as if the callback came
 	local function lost(job)
 		local why = string.format("no answer from the engine in %d s", RESULT_SEC)
+		if job.kind == "road" then return roadLost(job, why) end
 		if job.kind == "place" then
 			local o = job.out
 			for _, e in ipairs(constructionsNear(o.at.x, o.at.y, FIND_M)) do
@@ -479,6 +483,269 @@ function M.new(ctx)
 	end
 
 	local B = {}
+
+	-- whether a type with this availability ({ yearFrom, yearTo }) can be built in year: 0 is no limit, nil
+	-- availability or year is no check (as remote_connect.lua M.availableIn); -1, the base's "never", is never
+	local function availableIn(av, year)
+		if type(av) ~= "table" or type(year) ~= "number" then return true end
+		local from, to = tonumber(av.yearFrom) or 0, tonumber(av.yearTo) or 0
+		if from < 0 or to < 0 then return false end
+		return (from == 0 or from <= year) and (to == 0 or year < to)
+	end
+
+	---------------------------------------------------------------------------------------------------------------
+	-- road: one straight road piece between two points, as a SimpleStreetProposal (type.d.tl SimpleStreetProposal:
+	-- nodesToAdd and edgesToAdd, new entities counted down from -1), sent like a construction. An end within snap
+	-- metres of a node with road pieces is that node (the piece joins the road there); else a new node on the
+	-- terrain (or at the z given). The piece is the template's: its lanes, style and type (BaseEdge in engine.d.tl:
+	-- roadTemplate, roadStyle, laneConfigs, roadType), NORMAL (typeIndex -1: no bridge or tunnel), the company's.
+
+	-- the town roads a road gets by default, the one to be had this year first (their availability: old until
+	-- 1940, new from then; base/content/infrastructure/street.zip, street/town/*.street_template.lua)
+	local TOWN_ROADS = {
+		"::/infrastructure/street/town/town_new_medium.street_template",
+		"::/infrastructure/street/town/town_old_medium.street_template",
+	}
+	local ROAD_DIRS = { "town", "country", "highway" }
+	local MATCH_M = 0.5 -- a piece found after a lost callback: its ends this near the planned ones
+
+	local function enumOf(kind, name) return try(function() return api.type.enum[kind][name] end) end
+	local function gameYear()
+		local y = tonumber(try(function() return api.engine.util.getYear() end))
+		if y then return y end
+		local gt = try(function() return api.engine.getComponent(api.engine.util.getWorld(), CT().GAME_TIME).gameTime end)
+		local d = gt and try(function() return api.engine.util.getCalendarDate(gt) end)
+		return d and tonumber(core.field(d, "year")) or nil
+	end
+
+	-- a street template by resName, as plain values (and its lanes as the engine holds them), or nil
+	local function templateInfo(name)
+		local idx = tonumber(try(function() return api.res.streetTemplateRep.find(name) end))
+		if not idx or idx < 0 then return nil end
+		local t = try(function() return api.res.streetTemplateRep.get(idx) end)
+		if t == nil then return nil end
+		local av = core.field(t, "availability")
+		return { name = name, street = core.field(t, "roadType") == enumOf("RoadType", "STREET"),
+			style = core.field(t, "streetStyle"), lanes = core.field(t, "laneConfigs"),
+			availability = { yearFrom = tonumber(core.field(av, "yearFrom")) or 0, yearTo = tonumber(core.field(av, "yearTo")) or 0 },
+			cost = tonumber(core.field(t, "cost")) }
+	end
+
+	-- the template to build, or nil and why. given: a resName, or a base road's file name (town_new_small) looked
+	-- for among the base's town, country and highway roads.
+	local function roadTemplate(given, year)
+		if given == nil then
+			for _, name in ipairs(TOWN_ROADS) do
+				local t = templateInfo(name)
+				if t and availableIn(t.availability, year) then return t end
+			end
+			return nil, "none of the base town roads (" .. table.concat(TOWN_ROADS, ", ") .. ") is to be had in " .. tostring(year)
+		end
+		local names = { given }
+		if not given:find("::/", 1, true) then
+			local stem = given:gsub("%.street_template$", "")
+			for _, d in ipairs(ROAD_DIRS) do
+				names[#names + 1] = string.format("::/infrastructure/street/%s/%s.street_template", d, stem)
+			end
+		end
+		for _, name in ipairs(names) do
+			local t = templateInfo(name)
+			if t then
+				if not t.street then return nil, name .. " is a track type, not a road" end
+				if not availableIn(t.availability, year) then
+					return nil, string.format("%s is not to be had in %s (yearFrom %d, yearTo %d)", name, tostring(year),
+						t.availability.yearFrom, t.availability.yearTo)
+				end
+				return t
+			end
+		end
+		return nil, "no street template " .. given .. " (streetTemplateRep.find gives -1 for " .. table.concat(names, ", ") .. ")"
+	end
+
+	local function nodePos(n)
+		local bn = comp(n, "BASE_NODE")
+		local p = bn and core.field(bn, "position")
+		local x, y, z = tonumber(core.field(p, "x")), tonumber(core.field(p, "y")), tonumber(core.field(p, "z"))
+		if not (x and y and z) then return nil end
+		return { x = x, y = y, z = z }
+	end
+	-- the road pieces at a node; only a node is handed to the street system (its lookups assume one)
+	local function streetPieces(n)
+		if not comp(n, "BASE_NODE") then return {} end
+		return core.toList(try(function() return api.engine.system.streetSystem.getNodeStreetSegments(n) end))
+	end
+
+	-- the nearest node with a road piece within r metres (on the map's plane) of x, y, or nil
+	local function streetNodeNear(x, y, r)
+		local best, bestD
+		pcall(function()
+			local box = api.type.Box3.new(api.type.Vec3f.new(x - r, y - r, -1000), api.type.Vec3f.new(x + r, y + r, 5000))
+			api.engine.system.octreeSystem.findIntersectingEntities(box, function(e)
+				e = tonumber(e)
+				local p = e and nodePos(e)
+				if not p then return end
+				local d = math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2)
+				if d <= r and (bestD == nil or d < bestD or (d == bestD and e < best)) and #streetPieces(e) > 0 then
+					best, bestD = e, d
+				end
+			end)
+		end)
+		if not best then return nil end
+		local p = nodePos(best)
+		return { node = best, x = p.x, y = p.y, z = p.z, snapped = bestD, pieces = #streetPieces(best) }
+	end
+
+	-- one end: a road node near it (snap), else a new node at the point (z given, or the terrain's)
+	local function roadEnd(pt, snap)
+		local hit = snap > 0 and streetNodeNear(pt[1], pt[2], snap) or nil
+		if hit then return hit end
+		local z, zFrom = pt[3], "given"
+		if z == nil then
+			z, zFrom = heightAt(pt[1], pt[2]), "terrain"
+			if z == nil then return nil, "the terrain's height could not be read: give z" end
+		end
+		return { x = pt[1], y = pt[2], z = z, zFrom = zFrom }
+	end
+
+	-- an engine record type by name: api.type.X, else api.type.Proposal.X (type.d.tl declares NodeAndEntity and
+	-- SegmentAndEntity inside Proposal; mods reach them as api.type.X: which one the game has is not checked)
+	local function newRecord(name)
+		local t = try(function() return api.type[name] end) or try(function() return api.type.Proposal[name] end)
+		if t == nil then error("api.type has no " .. name, 0) end
+		return t.new()
+	end
+
+	-- the piece between the two ends, read back: an edge whose ends are at the planned points (after a lost
+	-- callback, or when the callback gives no ids)
+	local function pieceBetween(a, b)
+		local found
+		local mx, my = (a.x + b.x) / 2, (a.y + b.y) / 2
+		local r = math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) / 2 + 10
+		local function near(p, q) return p and math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2) <= MATCH_M end
+		pcall(function()
+			local box = api.type.Box3.new(api.type.Vec3f.new(mx - r, my - r, -1000), api.type.Vec3f.new(mx + r, my + r, 5000))
+			api.engine.system.octreeSystem.findIntersectingEntities(box, function(e)
+				e = tonumber(e)
+				if found or not e then return end
+				local be = comp(e, "BASE_EDGE")
+				if not be then return end
+				local p0, p1 = nodePos(core.field(be, "node0")), nodePos(core.field(be, "node1"))
+				if (near(p0, a) and near(p1, b)) or (near(p0, b) and near(p1, a)) then found = e end
+			end)
+		end)
+		return found
+	end
+
+	local NOTE_ROAD = "one straight piece as a SimpleStreetProposal; not checked in a game yet: look at it (frame) " ..
+		"before trusting the answer"
+
+	function B.road(c)
+		local r, err = core.roadRequest(c.args)
+		if not r then return fail(c.id, err) end
+		local year = gameYear()
+		local tpl, terr = roadTemplate(r.type, year)
+		if not tpl then return fail(c.id, terr) end
+		local a, aerr = roadEnd(r.from, r.snap)
+		if not a then return fail(c.id, "from: " .. aerr) end
+		local b, berr = roadEnd(r.to, r.snap)
+		if not b then return fail(c.id, "to: " .. berr) end
+		if a.node and a.node == b.node then
+			return fail(c.id, string.format("both ends are node %d: give points further apart (or a smaller snap)", a.node))
+		end
+		local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
+		local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+		if length < core.ROAD_LIMITS.minLength then
+			return fail(c.id, string.format("the piece would be %.2f m long: at least %g m", length, core.ROAD_LIMITS.minLength))
+		end
+		local out = { from = a, to = b, template = tpl.name, length = length, year = year, snap = r.snap, note = NOTE_ROAD }
+		if r.dryRun then
+			out.ok, out.dryRun, out.checked = true, true, false
+			out.why = "checked here: the template, the ends (a road node within snap, or the terrain's height) and the " ..
+				"length; the engine's check (collisions, terrain, money) only comes with a build"
+			return answer(c.id, out)
+		end
+		local sp = api.type.SimpleProposal.new()
+		local nodes, nextId = {}, -1
+		local function endNode(e)
+			if e.node then return e.node end
+			local n = newRecord("NodeAndEntity")
+			n.entity = nextId
+			n.comp.position = api.type.Vec3f.new(e.x, e.y, e.z)
+			nodes[#nodes + 1] = n
+			nextId = nextId - 1
+			return n.entity
+		end
+		local n0, n1 = endNode(a), endNode(b)
+		local e = newRecord("SegmentAndEntity")
+		e.entity = nextId
+		e.type = 0 -- 0 street, 1 track
+		e.comp.node0, e.comp.node1 = n0, n1
+		e.comp.position0 = api.type.Vec3f.new(a.x, a.y, a.z)
+		e.comp.position1 = api.type.Vec3f.new(b.x, b.y, b.z)
+		-- straight: both tangents along the chord, as long as the piece
+		e.comp.tangent0 = api.type.Vec3f.new(dx, dy, dz)
+		e.comp.tangent1 = api.type.Vec3f.new(dx, dy, dz)
+		e.comp.type = enumOf("BaseEdgeType", "NORMAL")
+		e.comp.typeIndex = -1
+		e.comp.roadType = enumOf("RoadType", "STREET")
+		e.comp.roadTemplate = tpl.name
+		if tpl.style ~= nil then e.comp.roadStyle = tpl.style end
+		if tpl.lanes ~= nil then e.comp.laneConfigs = tpl.lanes end
+		-- the company's (as a player's road): its PlayerOwned, where the type can be made
+		pcall(function()
+			local po = newRecord("PlayerOwned")
+			po.player = player()
+			e.playerOwned = po
+		end)
+		-- whole lists, never an element written into the engine's list (see place)
+		sp.streetProposal.nodesToAdd = nodes
+		sp.streetProposal.edgesToAdd = { e }
+		out.newNodes = #nodes
+		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance() }
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(), false, true), function(data, success, entities)
+			local ok, cerr = pcall(function()
+				local v = verdict(try(function() return data.resultProposalData end))
+				local list = ids(try(function() return data.resultEntities end))
+				if #list == 0 then list = ids(entities) end
+				job.result = { success = success == true, verdict = v, entities = list }
+			end)
+			if not ok then job.result = { success = success == true, verdict = { callbackError = tostring(cerr) }, entities = {} } end
+		end)
+		jobs[#jobs + 1] = job
+	end
+
+	-- a road's result: the new piece and nodes among the result's entities, else the piece found between the ends
+	finishRoad = function(job, out, res)
+		local edges, nodes = {}, {}
+		for _, e in ipairs(res.entities) do
+			if comp(e, "BASE_EDGE") then edges[#edges + 1] = e elseif comp(e, "BASE_NODE") then nodes[#nodes + 1] = e end
+		end
+		if res.success and #edges == 0 then
+			local e = pieceBetween(out.from, out.to)
+			if e then
+				edges[1] = e
+				out.why = "the result named no piece: found between the ends"
+			end
+		end
+		out.edges, out.nodes = core.array(edges), core.array(nodes)
+		out.edge = edges[1]
+		if res.success and edges[1] then
+			local be = comp(edges[1], "BASE_EDGE")
+			out.node0, out.node1 = tonumber(core.field(be, "node0")), tonumber(core.field(be, "node1"))
+		end
+	end
+
+	-- no callback in RESULT_SEC: the piece may still have been built; it is looked for between its ends
+	roadLost = function(job, why)
+		local o = job.out
+		local e = pieceBetween(o.from, o.to)
+		if e then
+			job.result = { success = true, verdict = {}, entities = { e } }
+			o.why = why .. "; a piece between the ends was found"
+			return finish(job)
+		end
+		return fail(job.id, why .. "; no piece between the ends (look at the map)")
+	end
 
 	function B.handle(c)
 		local r, err = core.buildRequest(c.args)
