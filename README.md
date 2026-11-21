@@ -547,7 +547,11 @@ mod's code, and was checked against no running copy of it.
   gone or not the company's answers `missing: true` (not an error); a line that is not the company's is an error.
   `--every SEC` (at least 0.5) repeats it and prints one compact JSON line per sample (JSON Lines) with `sample`
   and `unixTime` added, until `--count N` samples or Ctrl-C; an answer that is not ok ends the loop, a sample with
-  no answer in time is a line with `noAnswer` and the loop goes on (exit code 2 at the end). Comfort is not in
+  no answer is a line with `noAnswer` and `reason` (timeout, notPickedUp, file, other) and the loop goes on (exit
+  code 2 at the end). `sample` is the slot on the grid: after a sample that took longer than `--every`, the slots
+  gone by are skipped (the next line's `skipped`), not sent in a burst. `summary` counts the listed ones only
+  (`summary.of`; `summary.total` is everyone): to record everyone aboard, give `--limit 2000`. A negative
+  `expectedArrivalTime` is taken as none (no `late`). Comfort is not in
   the answer: compare models with `vehicles` / `models`. "Below 0.5" follows the person window
   (`sim_person_eow.script.tl`); the HUD's happy icon takes above 0.5. The time a
   person boarded is not in the engine's records: take the first sample it appears in. **Not checked in game:**

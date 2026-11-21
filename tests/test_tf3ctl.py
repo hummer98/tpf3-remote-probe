@@ -771,11 +771,14 @@ class EndToEndTest(unittest.TestCase):
         lines = out.getvalue().splitlines()
         self.assertEqual(len(lines), 3, lines)
         rows = [json.loads(x) for x in lines]
-        self.assertEqual([r["sample"] for r in rows], [1, 2, 3])
+        # the first pickup waits for the mod's idle poll (2 s), so slots may be skipped after it: never sent in a burst
+        self.assertEqual(rows[0]["sample"], 1)
+        for prev, cur in zip(rows, rows[1:]):
+            self.assertEqual(cur["sample"] - prev["sample"] - 1, cur.get("skipped", 0), rows)
+            self.assertGreaterEqual(cur["unixTime"] - rows[0]["unixTime"], 0.5 * (cur["sample"] - 1) - 0.05, rows)
         for r in rows:
             self.assertEqual((r["ok"], r["missing"], r["total"], r["persons"], r["vehicle"]), (True, True, 0, [], 77777))
             self.assertIn("gameTime", r)
-        self.assertGreaterEqual(rows[2]["unixTime"] - rows[0]["unixTime"], 0.9, "every 0.5 s from the start")
         code, res = self.ctl("persons", "--vehicle", "77777")
         self.assertEqual((code, res["missing"]), (0, True), res)
         self.assertNotIn("sample", res, "one call: the plain answer")
@@ -1293,7 +1296,9 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(tf3ctl.persons_args(parse(["persons", "--vehicle", "601"])), {"vehicle": 601})
         self.assertEqual(tf3ctl.persons_args(parse(["persons", "--line", "21", "--limit", "5"])), {"line": 21, "limit": 5})
         for bad in (["--vehicle", "1", "--count", "3"], ["--vehicle", "1", "--every", "0.1"],
-                    ["--vehicle", "1", "--every", "nan"], ["--vehicle", "1", "--every", "2", "--count", "0"]):
+                    ["--vehicle", "1", "--every", "nan"], ["--vehicle", "1", "--every", "inf"],
+                    ["--vehicle", "1", "--every", "2", "--count", "0"], ["--vehicle", "1", "--limit", "0"],
+                    ["--vehicle", "1", "--limit", "2001"]):
             with self.assertRaises(tf3ctl.ToolError, msg=bad):
                 tf3ctl.persons_args(parse(["persons"] + bad))
         for bad in (["persons"], ["persons", "--vehicle", "1", "--line", "2"]):
@@ -1357,8 +1362,49 @@ class QuitLaunchTest(unittest.TestCase):
                                         sleep=sleep, clock=lambda: now[0])
         rows = [json.loads(x) for x in out.getvalue().splitlines()]
         self.assertEqual(code, 2)
-        self.assertEqual([(r["sample"], r["ok"], r.get("noAnswer")) for r in rows],
-                         [(1, False, True), (2, True, None), (3, True, None)])
+        self.assertEqual([(r["sample"], r["ok"], r.get("noAnswer"), r.get("reason")) for r in rows],
+                         [(1, False, True, "other"), (2, True, None, None), (3, True, None, None)])
+        self.assertEqual(tf3ctl.no_answer_reason(tf3ctl.ToolError("no answer to command 5 in 20 s (x)")), "timeout")
+        self.assertEqual(tf3ctl.no_answer_reason(tf3ctl.ToolError("the mod did not pick up command 5 in 30 s")),
+                         "notPickedUp")
+        self.assertEqual(tf3ctl.no_answer_reason(tf3ctl.ToolError("cannot read /x: y")), "file")
+        self.assertEqual(tf3ctl.no_answer_reason(OSError("disk")), "file")
+
+        # a stall past later slots: those are skipped, not sent in a burst; the loop waits for the next slot
+        now[0] = 1000.0
+        sleeps.clear()
+        times = []
+
+        def slow_second(cmd, args=None, **_):
+            times.append(now[0])
+            if len(times) == 2:
+                now[0] += 7.5  # the second sample takes 7.5 s: slots at 1004, 1006, 1008 go by
+            return {"ok": True}
+
+        out, err = io.StringIO(), io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", slow_second), contextlib.redirect_stderr(err):
+            code = tf3ctl.persons_every(parse(["persons", "--vehicle", "601", "--every", "2", "--count", "4"]), out=out,
+                                        sleep=sleep, clock=lambda: now[0])
+        rows = [json.loads(x) for x in out.getvalue().splitlines()]
+        self.assertEqual(code, 0)
+        self.assertEqual(times, [1000.0, 1002.0, 1010.0, 1012.0], "no burst after the stall")
+        self.assertEqual([(r["sample"], r.get("skipped")) for r in rows], [(1, None), (2, None), (6, 3), (7, None)])
+        self.assertIn("3 slots skipped", err.getvalue())
+
+        # Ctrl-C: the counts are still said
+        def interrupt(cmd, args=None, **_):
+            if len(calls) >= 2:
+                raise KeyboardInterrupt
+            calls.append(1)
+            raise tf3ctl.ToolError("no answer to command 1 in 20 s")
+
+        calls.clear()
+        err = io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", interrupt), contextlib.redirect_stderr(err), \
+                self.assertRaises(KeyboardInterrupt):
+            tf3ctl.persons_every(parse(["persons", "--vehicle", "601", "--every", "1"]), out=io.StringIO(),
+                                 sleep=sleep, clock=lambda: now[0])
+        self.assertIn("2 of 2 samples got no answer", err.getvalue())
 
     def test_line_args(self):
         def parse(*argv):

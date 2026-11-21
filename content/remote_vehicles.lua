@@ -994,7 +994,8 @@ function M.new(ctx)
 			local eta = tonumber(core.field(spav, "expectedArrivalTime"))
 			p.atVehicle = { vehicle = entityNum(core.field(spav, "vehicle")), part = tonumber(core.field(spav, "part")),
 				place = tonumber(core.field(spav, "place")), expectedArrivalTime = eta }
-			if eta and now then
+			-- a negative time is no expected arrival (the base person window tests >= 0 for the car's, sim_person.tl)
+			if eta and eta >= 0 and now then
 				p.untilArrival = eta - now
 				p.late = now > eta
 			end
@@ -1054,6 +1055,7 @@ function M.new(ctx)
 			if not ownVehicles()[a.vehicle] then
 				res.missing, res.total, res.persons = true, 0, core.array({})
 				res.summary = core.personSummary({})
+				res.summary.of, res.summary.total = 0, 0
 				return answer(c.id, res)
 			end
 			local tv = vehicleComponent(a.vehicle)
@@ -1096,6 +1098,8 @@ function M.new(ctx)
 		end
 		res.total, res.persons = #ids, core.array(out)
 		res.summary = core.personSummary(out)
+		-- the summary is over the listed ones only: of says how many, total how many there are (--limit 2000 for all)
+		res.summary.of, res.summary.total = #out, #ids
 		if res.line then
 			local lq = lineQuality(res.line, pax)
 			res.quality.line, res.quality.stops = lq.line, lq.stops

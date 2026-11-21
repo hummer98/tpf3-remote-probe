@@ -5180,7 +5180,7 @@ test("persons --vehicle: happiness, expected arrival against the game time, the 
 	eq(p2.untilArrival, -5000); eq(p2.late, true); eq(p2.destinations[2], -1); eq(p2.destinations[3], 14)
 	eq(p3.id, 9003); truthy(p3.error:find("no SIM_PERSON")); eq(p3.happiness, nil); eq(p3.atVehicle, nil)
 	local sm = a.summary
-	eq(sm.count, 3); eq(sm.withHappiness, 2); eq(sm.unhappy, 1); eq(sm.late, 1)
+	eq(sm.count, 3); eq(sm.withHappiness, 2); eq(sm.unhappy, 1); eq(sm.late, 1); eq(sm.of, 3); eq(sm.total, 3)
 	truthy(math.abs(sm.meanHappiness - 0.6) < 1e-9); eq(sm.minHappiness, 0.4); eq(sm.maxHappiness, 0.8)
 	local q = a.quality
 	eq(q.vehicle.total, 3); eq(q.vehicle.bad, 1); eq(q.vehicle.averageQuality, 0.6); eq(q.vehicle.veryBad, false)
@@ -5201,6 +5201,7 @@ test("persons: limit, a line's riders and waiting ones, nobody aboard, a vehicle
 	frames(g, FIRST)
 	local a = final(g, 745)
 	eq(a.total, 3); eq(#a.persons, 1); eq(a.summary.count, 1, "the summary is over the listed ones")
+	eq(a.summary.of, 1, "and says so"); eq(a.summary.total, 3)
 	send(g, 746, "persons", "{ line = 21 }")
 	frames(g, 20)
 	a = final(g, 746)
@@ -5225,11 +5226,22 @@ test("persons: limit, a line's riders and waiting ones, nobody aboard, a vehicle
 	frames(g, 20)
 	a = final(g, 748)
 	eq(a.ok, true); eq(a.missing, true); eq(a.total, 0); eq(g.mapCalls, mapCalls, "no engine lookup for it")
+	eq(a.summary.of, 0); eq(a.summary.total, 0)
 	truthy(answerText(g, 748):find('"persons":[]', 1, true))
 	send(g, 749, "persons", "{ line = 77 }")
 	frames(g, 20)
 	truthy(final(g, 749).error:find("not one of the company's lines"))
 	eq(g.crashed, nil, "no engine lookup with an id it does not know")
+end)
+
+test("persons: a negative expected arrival is none: no late, no untilArrival", function()
+	local g = personsGame()
+	g.persons[9001].atVehicle.expectedArrivalTime = -1
+	send(g, 765, "persons", "{ vehicle = 601 }")
+	frames(g, FIRST)
+	local p = final(g, 765).persons[1]
+	eq(p.id, 9001); eq(p.atVehicle.expectedArrivalTime, -1); eq(p.late, nil); eq(p.untilArrival, nil)
+	eq(final(g, 765).summary.late, 1, "only 9002, whose arrival is past")
 end)
 
 test("persons: long waits, a trip without SIM_PERSON_AT_VEHICLE, no game time, counts that fail", function()

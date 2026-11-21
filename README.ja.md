@@ -519,7 +519,11 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   `--limit` 人 (200、最大 2000) だけです。消えた車両と自社のものでない車両は `missing: true` (エラーにしない)、
   自社のものでない路線はエラーです。`--every SEC` (0.5 以上) で繰り返し、1回ごとに1行の JSON (JSON Lines) に
   `sample` と `unixTime` を足して出します。`--count N` 回か Ctrl-C で止まり、ok でない返事が来ても止まります。
-  時間内に答えが無かった回は `noAnswer` の行にして続けます (終わりの終了コードは 2)。快適度は返事に無いので、
+  答えが無かった回は `noAnswer` と `reason` (timeout・notPickedUp・file・other) の行にして続けます (終わりの
+  終了コードは 2)。`sample` は予定の何回目かで、1回が `--every` より長くかかったら、過ぎた予定は飛ばし (次の行の
+  `skipped`)、まとめて送りません。`summary` は並べた人だけの集計です (`summary.of` が数えた人数、`summary.total` が
+  全員の数)。乗っている全員を記録するときは `--limit 2000` を付けてください。`expectedArrivalTime` が負のときは
+  見込み無しとして `late` にしません。快適度は返事に無いので、
   `vehicles` / `models` でモデルを比べてください。「0.5 未満」は住民の窓 (`sim_person_eow.script.tl`) に合わせました
   (HUD の顔のアイコンは 0.5 より上を happy とする)。
   乗った時刻はエンジンの記録に無いので、その人が最初に出た回から出してください。**ゲーム内では未確認です:**

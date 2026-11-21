@@ -41,7 +41,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py persons --vehicle 601 [--limit 50] [--every 5 --count 120]   # who is aboard: happiness, expected
             # arrival vs the game time; the engine's unhappy counts for the vehicle, its line and stops (read only).
             # --every: one compact JSON line per sample (JSON Lines), until --count or Ctrl-C; --line 21: a line's
-            # riders and those waiting for it instead of one vehicle
+            # riders instead of one vehicle (whether those waiting for it are included is not checked)
   tf3ctl.py line create --stops Central,Harbour [--name "[probe] A"] [--cargo grain] [--via gui|cmd]
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
   tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 --load-mode all,available   # piers picked, full load
@@ -74,6 +74,7 @@ import fcntl
 import filecmp
 import glob
 import json
+import math
 import os
 import re
 import signal
@@ -1559,57 +1560,96 @@ def vehicles_args(ns):
 PERSONS_MIN_EVERY_SEC = 0.5  # the mod reads the command file every 0.25 s while active: faster only queues up
 
 
+PERSONS_MAX = 2000  # the mod's PERSONS_MAX (remote_core.lua)
+
+
 def persons_args(ns):
     """The persons command's args: --vehicle or --line (argparse makes it one of them), --limit when given."""
     args = {"vehicle": ns.vehicle} if ns.vehicle is not None else {"line": ns.line}
     if ns.limit is not None:
+        if not 1 <= ns.limit <= PERSONS_MAX:
+            raise ToolError("--limit must be from 1 to %d" % PERSONS_MAX)
         args["limit"] = ns.limit
     if ns.count is not None and ns.every is None:
         raise ToolError("--count goes with --every")
-    if ns.every is not None and not ns.every >= PERSONS_MIN_EVERY_SEC:
-        raise ToolError("--every must be at least %g seconds" % PERSONS_MIN_EVERY_SEC)
+    if ns.every is not None and not (math.isfinite(ns.every) and ns.every >= PERSONS_MIN_EVERY_SEC):
+        raise ToolError("--every must be a number of seconds, at least %g" % PERSONS_MIN_EVERY_SEC)
     if ns.count is not None and ns.count < 1:
         raise ToolError("--count must be 1 or more")
     return args
 
 
+def no_answer_reason(err):
+    """Why a sample got nothing, from the tool's own error: timeout (the mod took the command but did not answer
+    in time), notPickedUp (the mod did not read the command file), file (an exchange file could not be read or
+    written), other."""
+    msg = str(err)
+    if isinstance(err, OSError) or msg.startswith("cannot read"):
+        return "file"
+    if msg.startswith("no answer to command"):
+        return "timeout"
+    if "did not pick up" in msg:
+        return "notPickedUp"
+    return "other"
+
+
 def persons_every(ns, out=None, sleep=time.sleep, clock=time.time):
-    """--every: one sample every ns.every seconds (from the start, so a slow answer does not drift the times),
-    each as one compact JSON line with sample (1-based) and unixTime (when the tool sent it) added, until
-    ns.count samples or Ctrl-C. Read only, as one call is. An answer that is not ok, or a game that cannot answer
-    (menu, closed), ends the loop as a last line with ok false; its exit code is the loop's. No answer in time is a
-    line with noAnswer and the loop goes on (exit code 2 at the end)."""
+    """--every: samples on a fixed grid of ns.every seconds from the start (a slow answer does not drift the times),
+    each as one compact JSON line with sample (its slot on the grid, 1-based) and unixTime (when the tool sent it)
+    added, until ns.count samples or Ctrl-C. A sample that ran past later slots does not make up for them in a
+    burst: those slots are skipped (the next line says how many, under skipped) and the loop waits for the next
+    one. Read only, as one call is. An answer that is not ok, or a game that cannot answer (menu, closed), ends
+    the loop as a last line with ok false; its exit code is the loop's. No answer is a line with noAnswer and
+    reason, and the loop goes on (exit code 2 at the end)."""
     out = out or sys.stdout
     args = persons_args(ns)
     start = clock()
-    i = gaps = 0
-    while ns.count is None or i < ns.count:
-        wait = start + i * ns.every - clock()
-        if wait > 0:
-            sleep(wait)
-        i += 1
-        sent = clock()
-        code = 0
-        try:
-            res = send("persons", args)
-            if not res.get("ok"):
-                code = 1
-        except GameNotReady as e:
-            res, code = {"ok": False, "error": str(e), "gameState": e.state}, 3
-        except ToolError as e:
-            # no answer in time (an autosave or a long frame holds the game up): noted, and the next sample is
-            # tried, so a voyage's record does not end on one stall
-            res, code = {"ok": False, "error": str(e), "noAnswer": True}, 0
-            gaps += 1
-        res = dict(res, sample=i, unixTime=round(sent, 3))
-        out.write(json.dumps(res, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
-        out.flush()
-        if code:
-            return code
+    slot = taken = gaps = skipped = 0
+    try:
+        while ns.count is None or taken < ns.count:
+            # the next slot not yet past: start + slot * every >= now
+            due = max(slot, math.ceil((clock() - start) / ns.every - 1e-9)) if slot else 0
+            missed, slot = due - slot, due
+            wait = start + slot * ns.every - clock()
+            if wait > 0:
+                sleep(wait)
+            slot += 1
+            skipped += missed
+            sent = clock()
+            code = 0
+            try:
+                res = send("persons", args)
+                if not res.get("ok"):
+                    code = 1
+            except GameNotReady as e:
+                res, code = {"ok": False, "error": str(e), "gameState": e.state}, 3
+            except (ToolError, OSError) as e:
+                # nothing in time (an autosave or a long frame holds the game up): noted, and the next sample is
+                # tried, so a voyage's record does not end on one stall
+                res = {"ok": False, "error": str(e), "noAnswer": True, "reason": no_answer_reason(e)}
+                gaps += 1
+            res = dict(res, sample=slot, unixTime=round(sent, 3))
+            if missed:
+                res["skipped"] = missed
+            out.write(json.dumps(res, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+            out.flush()
+            taken += 1  # after the line: a sample cut short by Ctrl-C is not counted
+            if code:
+                return code
+    except KeyboardInterrupt:
+        persons_warn(taken, gaps, skipped)
+        raise
+    persons_warn(taken, gaps, skipped)
+    return 2 if gaps else 0
+
+
+def persons_warn(taken, gaps, skipped):
     if gaps:
-        print("warning: %d of %d samples got no answer (noAnswer in their lines)" % (gaps, i), file=sys.stderr)
-        return 2
-    return 0
+        print("warning: %d of %d samples got no answer (noAnswer and reason in their lines)" % (gaps, taken),
+              file=sys.stderr)
+    if skipped:
+        print("warning: %d slots skipped: a sample took longer than --every (skipped in the next line)" % skipped,
+              file=sys.stderr)
 
 
 def models_args(ns):
@@ -2238,7 +2278,7 @@ def make_parser():
                                         "arrival and the game time, line and stops; the engine's unhappy counts")
     pw = ps.add_mutually_exclusive_group(required=True)
     pw.add_argument("--vehicle", type=int, help="the company's vehicle (vehicles lists them); gone: missing true")
-    pw.add_argument("--line", type=int, help="the company's line: who rides it and who waits for it")
+    pw.add_argument("--line", type=int, help="the company's line: who rides it (those waiting for it too: not checked)")
     ps.add_argument("--limit", type=int, help="persons listed, 1-2000 (default 200; total counts them all)")
     ps.add_argument("--every", type=float, help="repeat every this many seconds (at least 0.5): one JSON line each")
     ps.add_argument("--count", type=int, help="with --every: this many samples (default: until Ctrl-C)")
