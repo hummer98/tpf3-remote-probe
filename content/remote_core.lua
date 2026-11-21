@@ -1034,13 +1034,17 @@ end
 M.TERRAIN_MAX_SIDE = 1024 -- metres per side: at most 257 x 257 points of 4 m
 M.TERRAIN_BLEND = 16 -- metres inside the rectangle's edge over which the new heights blend into the old (4 points)
 M.TERRAIN_MAX_PCT = 100
+-- the whole map's heightmap is copied into a Lua table: at most this many points (a small map, 32 x 32 tiles, has
+-- 2049^2 = 4.2 M; a medium one 7.9 M), counted from the terrain's bounding box before anything is copied
+M.TERRAIN_MAX_MAP_POINTS = 4500000
+M.TERRAIN_STEP = 4 -- metres between heightmap points (GameMap.resolution.x in the base maps)
 -- inside the engine's range (-100 .. 3176.75 m: offsetZ -100 plus 65535 steps of 0.05 m), as UTG keeps its heights
 M.TERRAIN_HEIGHTS = { -99, 3170 }
 -- what the guiUpdate script or the recipe needs for a replacement (looked at with type(), never called to look)
-M.TERRAIN_NEEDS = { "api.engine.terrain.makeMapFromGame", "api.engine.terrain.getBoundingBox",
+M.TERRAIN_NEEDS = { "api.engine.terrain.makeMapFromGame", "api.engine.terrain.getBoundingBox", "api.type.Map.new",
 	"api.cmd.makeWorldReplaceTerrainCmd", "api.cmd.sendCommand", "api.res.getBaseConfig", "api.engine.util.getWorld" }
 -- also reported by terrainApi: what the base map editor calls round it, and what later steps (towns) would need
-M.TERRAIN_LOOKS = { "api.type.Map.new", "api.gui.map.setMapSeedText", "api.gui.map.reloadMaterialIndexManagerPipeline",
+M.TERRAIN_LOOKS = { "api.gui.map.setMapSeedText", "api.gui.map.reloadMaterialIndexManagerPipeline",
 	"api.engine.mapgen.createTowns", "api.engine.mapgen.createIndustries", "api.cmd.makeTownCreateCmd",
 	"api.gui.game.isMapEditor", "api.engine.terrain.getHeightAt" }
 
@@ -1072,7 +1076,8 @@ M.TERRAIN_VIAS = { auto = true, update = true, gui = true }
 
 -- args: rect = "x0,y0,x1,y1" (x0 < x1, y0 < y1, metres), and one of flat = z, slopeX = pct, slopeY = pct (with
 -- base = the height at x0 / y0, the rectangle's west / south edge; pct > 0 rises toward x1 / y1); blend (metres,
--- default TERRAIN_BLEND, 0 = a sharp edge), dryRun, via (auto, update, gui). -> the request, or nil and why
+-- default TERRAIN_BLEND, 0 = a sharp edge), dryRun, via (auto = gui, update, gui), inGame (outside the map editor:
+-- only when asked for). -> the request, or nil and why
 function M.terrainRequest(args)
 	args = type(args) == "table" and args or {}
 	if args.rect == nil then return nil, "give rect (x0,y0,x1,y1)" end
@@ -1114,6 +1119,8 @@ function M.terrainRequest(args)
 	local via = args.via == nil and "auto" or args.via
 	if not M.TERRAIN_VIAS[via] then return nil, "via must be auto, update or gui" end
 	r.via = via
+	if args.inGame ~= nil and type(args.inGame) ~= "boolean" then return nil, "inGame must be true or false" end
+	r.inGame = args.inGame == true
 	local lo, hi = M.terrainRange(r)
 	local H = M.TERRAIN_HEIGHTS
 	if lo < H[1] or hi > H[2] then
@@ -1235,6 +1242,17 @@ function M.terrainRequests(list)
 		end
 	end
 	return out
+end
+
+-- the number of heightmap points of a map whose terrain's bounding box is box ({ min = { x, y }, max = { x, y } }).
+-- -> n, or nil when the box cannot be read
+function M.terrainMapPoints(box)
+	local lo, hi = type(box) == "table" and box.min, type(box) == "table" and box.max
+	local x0, y0 = tonumber(lo and lo.x), tonumber(lo and lo.y)
+	local x1, y1 = tonumber(hi and hi.x), tonumber(hi and hi.y)
+	if not (x0 and y0 and x1 and y1) or x1 < x0 or y1 < y0 then return nil end
+	local s = M.TERRAIN_STEP
+	return (math.floor((x1 - x0) / s + 0.5) + 1) * (math.floor((y1 - y0) / s + 0.5) + 1)
 end
 
 -- the official mods (Urban Games' vehicle packs on mod.io, ug_*): a map editor started by newgame --editor takes

@@ -60,8 +60,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # point water or land and the terrain's height (a grid: at most 400 points, rows of ~ water . land)
   tf3ctl.py terrain --rect 0,0,500,300 --flat 40 [--blend 16] [--dry-run]   # a rectangle's ground replaced
   tf3ctl.py terrain --rect 0,0,500,300 --slope-x 5 --base 40 | --slope-y -10 --base 80   # base at x0 / y0
-            # test saves or the map editor only; at most 1024 m a side; refused when a road, construction, town
-            # building, industry or town is in it. Answers the grid, the heights, the way (update / gui), read back
+            # the map editor only (--in-game: a new test game); at most 1024 m a side, a small map at most; refused
+            # when a road, construction, town building, industry or town is in it. Answers the grid, the heights,
+            # the way (gui, or update when asked), the heights read back
   tf3ctl.py terrain --probe-api              # read only: which terrain functions the probe's two Lua states have
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
@@ -1608,6 +1609,8 @@ def terrain_args(ns):
         args["blend"] = ns.blend
     if ns.via:
         args["via"] = ns.via
+    if getattr(ns, "in_game", False):
+        args["inGame"] = True
     if ns.dry_run:
         args["dryRun"] = True
     return args
@@ -2859,7 +2862,8 @@ def make_parser():
     bd.add_argument("--no-fill-modules", action="store_true", help="with params.modules: send each module as given; "
                     "default: a module without metadata / updateScript gets moduleRep's own")
     te = sub.add_parser("terrain", help="replace a rectangle's ground: flat at a height, or a uniform slope along x "
-                        "or y (one whole-map replacement, as the map editor's); test saves or the map editor only")
+                        "or y (one whole-map replacement, as the map editor's); in the map editor only, unless "
+                        "--in-game")
     te.add_argument("--rect", metavar="X0,Y0,X1,Y1", help="metres, at most %d a side (for a negative x0 write "
                     "--rect=-100,0,100,50)" % TERRAIN_MAX_SIDE)
     tm = te.add_mutually_exclusive_group()
@@ -2872,8 +2876,11 @@ def make_parser():
     te.add_argument("--blend", type=float, metavar="M", help="metres inside the edge over which the new heights blend "
                     "into the old, so the edge meets the land round it (default 16, less on a small rectangle; 0: a "
                     "sharp step)")
-    te.add_argument("--via", choices=("auto", "update", "gui"), help="where it runs: the guiUpdate state, the speed "
-                    "control's recipe, or auto (default: update when the functions are there)")
+    te.add_argument("--via", choices=("auto", "update", "gui"), help="where it runs: the speed control's recipe "
+                    "(gui; auto, the default, is gui: the base editor calls these from react only) or the guiUpdate "
+                    "state (update, only when given)")
+    te.add_argument("--in-game", action="store_true", help="also outside the map editor (a new test game): whether "
+                    "the replacement works in a game is not known; the editor's seed and material calls are left out")
     te.add_argument("--dry-run", action="store_true", help="the grid and the heights, nothing sent")
     wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
                                        "terrain's height (to find a shore for a harbour)")
@@ -3198,7 +3205,7 @@ def main(argv=None):
             res = send("water", water_args(ns))
         elif ns.cmd == "terrain":
             if ns.probe_api:
-                if ns.rect or ns.base is not None or ns.blend is not None or ns.via or ns.dry_run:
+                if ns.rect or ns.base is not None or ns.blend is not None or ns.via or ns.dry_run or ns.in_game:
                     raise ToolError("--probe-api takes nothing else")
                 res = send("terrainApi", {}, timeout=30)
             else:

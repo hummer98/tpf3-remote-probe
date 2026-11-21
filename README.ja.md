@@ -378,28 +378,32 @@ python3 tools/tf3ctl.py terrain --probe-api                         # 読むだ�
 python3 tools/tf3ctl.py terrain --rect 0,0,500,300 --flat 40 --dry-run
 python3 tools/tf3ctl.py terrain --rect 0,0,500,300 --flat 40 [--blend 16]
 python3 tools/tf3ctl.py terrain --rect=-500,0,500,300 --slope-x 5 --base 40     # x0 で 40 m、x1 へ 5 % 上がる
-python3 tools/tf3ctl.py terrain --rect 0,0,300,800 --slope-y -10 --base 120 [--via auto|update|gui]
+python3 tools/tf3ctl.py terrain --rect 0,0,300,800 --slope-y -10 --base 120 [--via auto|update|gui] [--in-game]
 ```
 
 - 長方形 (m、1 辺 1024 まで) の中の地面の高さを置き換えます。決まった高さの平地か、x か y の向きに一様な勾配の
-  斜面 (`--base` は x0 / y0 の辺の高さ)。範囲の外は今のまま。テスト用のセーブとマップエディタでだけ使います。
-  ゲームを変えるコマンドとして、ほかのクライアントに警告が出ます (dry run も)。
+  斜面 (`--base` は x0 / y0 の辺の高さ)。範囲の外は今のまま。マップエディタの中 (`api.gui.game.isMapEditor()`)
+  でだけ送ります。エディタの外では、`--in-game` を付けたとき (テスト用の新しいゲーム) だけ通します (普通のゲームで
+  置き換えが効くかは分かっていない)。dry run は何も送らないので、どこでも使えます。ゲームを変えるコマンドとして、
+  ほかのクライアントに警告が出ます (dry run も)。
+- 地図の大きさ: heightmap を丸ごと Lua の表に写すので、格子の点が 450 万を超える地図は断ります (写す前に地形の
+  bounding box から数える。small の地図 32 x 32 タイルは 420 万点)。
 - やり方: マップエディタの生成・取り込みと同じく、地図まるごとを1つのコマンドで。`makeMapFromGame(true, false,
   false, false)` で町なしの写しを取り (町の入った地図は `terrain_util::ReplaceTerrain` の assertion で落ちる)、
   写した表の中の範囲の格子点 (4 m ごと、地図の最小の角から添字 `j * w + i + 1`) を変え、表を丸ごと代入し
-  (`GameMap.heightmap` は読むたびに写しを返すので、1 つずつ書くと消える)、本体のエディタと同じく
-  `setMapSeedText` と `reloadMaterialIndexManagerPipeline` を呼んでから、`makeWorldReplaceTerrainCmd(map,
+  (`GameMap.heightmap` は読むたびに写しを返すので、1 つずつ書くと消える。代入する先は UTG と同じく
+  `api.type.Map.new` で作った写し)、エディタの中でだけ本体のエディタと同じく `setMapSeedText` と
+  `reloadMaterialIndexManagerPipeline` を呼んでから、`makeWorldReplaceTerrainCmd(map,
   baseConfig.terrain, "", world, keepAssets = true)` を送ります。木と岩は残します (新しい地面の上でどうなるかは不明)。
 - 境: 初期設定では、範囲の内側 16 m (小さい範囲では短い辺の 1/4) で新しい高さを古い高さに混ぜます。辺の上の点は
   高さがそのまま、16 m 内側から新しい高さになるので、まわりと段差になりません。`--blend 0` で辺に段差を付けます。
 - 断って何も送らない場合: 範囲か、そのまわり 8 m に、道路・線路の区間、ノード、建物 (construction)、町の建物、産業が
   ある (octree で探す)、または町の bounding box が 200 m 以内に来る。答えの `blockers` に並べます。頼む高さは
   -99 〜 3170 m の中。
-- 2 つの道 (`via`): `update` は guiUpdate の状態で、`gui` は速度ボタンのレシピ (その join。本体のエディタと地形の MOD が
-  同じ関数を呼ぶ所) で動かします。`auto` (初期設定) は、要る関数が全部あれば (`type()` で見るだけ) `update`、なければ
-  `gui`。`terrain --probe-api` は、`makeMapFromGame`・`Map.new`・`makeWorldReplaceTerrainCmd`・`mapgen.createTowns`・
+- 2 つの道 (`via`): `gui` は速度ボタンのレシピ (その join。本体のエディタと地形の MOD が同じ関数を react の中からだけ
+  呼んでいる所) で動かします。`auto` (初期設定) は `gui` です。`update` は guiUpdate の状態で、書いたときだけ。`terrain --probe-api` は、`makeMapFromGame`・`Map.new`・`makeWorldReplaceTerrainCmd`・`mapgen.createTowns`・
   `setMapSeedText`・`reloadMaterialIndexManagerPipeline` などがそれぞれの状態にあるかを、どれも呼ばずに答えます (読むだけ)。
-- 答え: `via`、`functionsUpdate` / `functionsGui`、`rect`、`grid` (最初と最後の格子点、`nx`・`ny`・`points`)、`target`
+- 答え: `via`、`functionsUpdate` / `functionsGui`、`rect`、`grid` (最初と最後の格子点、`nx`・`ny`・`points`)、`mapPoints`、`inGame`、`target`
   (頼んだ高さの最小と最大)、`before` / `written` (範囲の中の最小と最大)、`changed`、`waterLevel`、`sent`、`success`
   (callback)、置き換えのあとは `samples` (全部が新しい高さになる部分の真ん中と角を `getHeightAt` で読み直したもの) と
   `readBackOk`、`mapEditor`。断ったときは `error`。

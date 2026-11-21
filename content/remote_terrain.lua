@@ -8,10 +8,13 @@
 -- TOWN_MARGIN_M. Any of them and nothing is sent: the heights under them would change and what the engine does with
 -- that is not known (the editor removes towns and industries before it replaces the terrain).
 --
--- Two ways (via): "update" runs terrain_work in this guiUpdate state, "gui" hands the request to the speed
--- control's recipe (its join, on the main thread, where the base editor and the terrain mods call the same
--- functions) through the GUI save data and reads its report back. auto: update when every function it needs is
--- here (type() only), else gui. The answer says which way went, and which functions each state had.
+-- Only in the map editor (api.gui.game.isMapEditor()), unless inGame is given (a new test game): whether the
+-- replacement works in a game, and what it does there, is not known. A dry run sends nothing and needs neither.
+--
+-- Two ways (via): "gui" (and auto, the default) hands the request to the speed control's recipe (its join, on the
+-- main thread, where the base editor and the terrain mods call the same functions: they call them from react
+-- only) through the GUI save data and reads its report back; "update" runs terrain_work in this guiUpdate state,
+-- only when asked for. The answer says which way went, and which functions each state had.
 --
 -- Not checked in a game yet (written 2026-11-22): the answer says so.
 local M = {}
@@ -146,7 +149,8 @@ function M.new(ctx)
 	-- the answer from the request and the work's report
 	local function payload(job)
 		local r, rep = job.r, job.report or {}
-		local out = { ok = true, cmd = "terrain", via = job.via, dryRun = r.dryRun or nil, rect = r.rect, mode = r.mode,
+		local out = { ok = true, cmd = "terrain", via = job.via, dryRun = r.dryRun or nil, inGame = r.inGame or nil,
+			mapPoints = rep.mapPoints, rect = r.rect, mode = r.mode,
 			z = r.z, pct = r.pct, base = r.base, blend = r.blend, keepAssets = true, note = NOTE,
 			functionsUpdate = job.here, functionsGui = job.via == "gui" and rep.functions or nil,
 			map = rep.map, grid = rep.grid, target = rep.target, before = rep.before, written = rep.written,
@@ -205,8 +209,13 @@ function M.new(ctx)
 				.. ". Clear them first, or pick another place"
 			return answer(c.id, out, "error")
 		end
+		if not r.dryRun and not r.inGame and mapEditor() ~= true then
+			job.via = "none"
+			return failJob(job, "not the map editor (api.gui.game.isMapEditor() is " .. tostring(mapEditor())
+				.. "): whether a replacement works in a game is not known. In a new test game give inGame (--in-game)")
+		end
 		local via = r.via
-		if via == "auto" then via = #missing == 0 and "update" or "gui" end
+		if via == "auto" then via = "gui" end
 		job.via = via
 		if via == "update" then
 			if #missing > 0 then return failJob(job, "via update: missing in the guiUpdate state: " .. table.concat(missing, ", ")) end

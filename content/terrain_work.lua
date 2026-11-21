@@ -7,7 +7,8 @@
 -- this same code. Plain values only go back (the report): the engine's objects stay here.
 --
 -- As the base map editor before its replacement (map_editor.tl): api.gui.map.setMapSeedText and
--- reloadMaterialIndexManagerPipeline, each in pcall, the report says whether each ran. keepAssets on: the rest of
+-- reloadMaterialIndexManagerPipeline, each in pcall, the report says whether each ran; only in the map editor
+-- (what they do to a game's GUI is not known, so a run with inGame leaves them out). keepAssets on: the rest of
 -- the map keeps its trees and rocks (the map copied without assets). The map copied without towns and industries:
 -- a map that lists towns asserts in terrain_util::ReplaceTerrain (UTG's note); towns standing in the world stay.
 --
@@ -55,9 +56,23 @@ function M.work(r, report)
 	local functions, missing = core.terrainFunctions()
 	report.functions = functions
 	if #missing > 0 then error("missing here: " .. table.concat(missing, ", "), 0) end
-	local map = api.engine.terrain.makeMapFromGame(true, false, false, false)
-	if map == nil then error("makeMapFromGame gave nothing", 0) end
-	local info, err = M.mapInfo(map, api.engine.terrain.getBoundingBox())
+	local box = api.engine.terrain.getBoundingBox()
+	-- the map's size first: its whole heightmap becomes a Lua table below
+	local lo, hi = field(box, "min"), field(box, "max")
+	local points = core.terrainMapPoints({ min = { x = lo and field(lo, "x"), y = lo and field(lo, "y") },
+		max = { x = hi and field(hi, "x"), y = hi and field(hi, "y") } })
+	if not points then error("the terrain's bounding box could not be read", 0) end
+	report.mapPoints = points
+	if points > core.TERRAIN_MAX_MAP_POINTS then
+		error(string.format("the map has %d heightmap points, at most %d (a small map or smaller): its whole "
+			.. "heightmap would be copied", points, core.TERRAIN_MAX_MAP_POINTS), 0)
+	end
+	local base = api.engine.terrain.makeMapFromGame(true, false, false, false)
+	if base == nil then error("makeMapFromGame gave nothing", 0) end
+	-- a copy of its own, as UTG makes it (api.type.Map.new(base)) before the heights are assigned
+	local map = api.type.Map.new(base)
+	if map == nil then error("Map.new gave nothing", 0) end
+	local info, err = M.mapInfo(map, box)
 	if not info then error(err, 0) end
 	local towns = field(map, "towns")
 	if towns ~= nil and core.size(towns) ~= 0 then
@@ -91,18 +106,26 @@ function M.work(r, report)
 	end
 	-- the whole table assigned (an element written into map.heightmap is lost)
 	map.heightmap = heights
-	-- as the base editor before its replacement: each optional, and said whether it ran
-	local okS, errS = pcall(function() api.gui.map.setMapSeedText(M.SEED) end)
-	report.seedText = okS or tostring(errS)
-	local okR, errR = pcall(function() api.gui.map.reloadMaterialIndexManagerPipeline() end)
-	report.reloadMaterials = okR or tostring(errR)
+	-- as the base editor before its replacement, in the map editor only: each optional, and said whether it ran
+	local okE, isEditor = pcall(function() return api.gui.game.isMapEditor() end)
+	local editor = okE and isEditor == true
+	if editor then
+		local okS, errS = pcall(function() api.gui.map.setMapSeedText(M.SEED) end)
+		report.seedText = okS or tostring(errS)
+		local okR, errR = pcall(function() api.gui.map.reloadMaterialIndexManagerPipeline() end)
+		report.reloadMaterials = okR or tostring(errR)
+	else
+		report.seedText, report.reloadMaterials = "not called (not the map editor)", "not called (not the map editor)"
+	end
 	local cmd = api.cmd.makeWorldReplaceTerrainCmd(map, api.res.getBaseConfig().terrain, M.SEED,
 		api.engine.util.getWorld(), true)
-	report.sent = true
+	report.sent = false
 	api.cmd.sendCommand(cmd, function(_, success)
 		-- plain values only leave the callback
 		report.success = success == true
 	end)
+	-- (only once the send went through: one that raises leaves sent false, and the error is the caller's)
+	report.sent = true
 end
 
 -- the recipe's side (gui way): a probe looks at the functions there; an apply runs the work

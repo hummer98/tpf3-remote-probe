@@ -1840,7 +1840,9 @@ end
 -- spec.reactOnly: the terrain functions are there only in a react state (M.inReact): nil in the guiUpdate state;
 -- spec.replaceFails: the callback says no success, nothing changes; spec.lostCallback: no callback;
 -- spec.townsInMap: makeMapFromGame lists a town even without towns asked for; spec.vectorHeights: the heightmap read
--- is an engine vector (userdata with # and [i]).
+-- is an engine vector (userdata with # and [i]); spec.box = { x0, y0, x1, y1 }: getBoundingBox gives this instead
+-- (a larger map than the heights); spec.sendRaises: sendCommand raises on the replacement (this text).
+-- api.type.Map.new(map) copies a GameMap (anything else is an assertion).
 -- Like the engine: GameMap.heightmap hands out a copy on each read (an element written into it is lost; only a whole
 -- table assigned counts), a map that lists towns is an assertion in ReplaceTerrain, so is a heightmap of the wrong
 -- size. g.heights: the engine's heights; g.terrainCmds: each replacement sent; g.seedTexts, g.materialReloads.
@@ -1863,10 +1865,10 @@ function M.installTerrain(g, spec)
 	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
 	api.type.Box3 = api.type.Box3 or { new = function(lo, hi) return { min = lo, max = hi } end }
 	local maps = setmetatable({}, { __mode = "k" })
-	local function newMap(withHeights, towns)
-		local store = { heightmap = withHeights and copy(g.heights) or {}, numTilesX = tx, numTilesY = ty, levels = 1,
-			offsetZ = -100, waterLevel = level, climateId = "temperate", resolution = { x = step, y = step, z = 0.05 },
-			towns = towns or {}, industries = {} }
+	local function newMap(withHeights, towns, from)
+		local store = from and copy(from) or { heightmap = withHeights and copy(g.heights) or {}, numTilesX = tx,
+			numTilesY = ty, levels = 1, offsetZ = -100, waterLevel = level, climateId = "temperate",
+			resolution = { x = step, y = step, z = 0.05 }, towns = towns or {}, industries = {} }
 		local u = newproxy(true)
 		local mt = getmetatable(u)
 		mt.__index = function(_, k)
@@ -1899,6 +1901,8 @@ function M.installTerrain(g, spec)
 			return newMap(wH, (wT or spec.townsInMap) and { { name = "Town" } } or {})
 		end,
 		getBoundingBox = function()
+			local b = spec.box
+			if b then return { min = { x = b[1], y = b[2] }, max = { x = b[3], y = b[4] } } end
 			return { min = { x = minX, y = minY }, max = { x = minX + (w - 1) * step, y = minY + (h - 1) * step } }
 		end,
 	}
@@ -1913,7 +1917,12 @@ function M.installTerrain(g, spec)
 	api.engine.terrain = setmetatable(terrain, { __index = function(_, k) if shown(k) then return hidden[k] end end })
 	local cfg = { terrainConfig = true }
 	api.res.getBaseConfig = function() return { terrain = cfg } end
-	api.type.Map = { new = function(m) return m end }
+	g.mapCopies = 0
+	api.type.Map = { new = function(m)
+		if not maps[m] then crash("Map.new: no GameMap") end
+		g.mapCopies = g.mapCopies + 1
+		return newMap(nil, nil, maps[m])
+	end }
 	api.engine.mapgen = { createTowns = function() return { toAdd = {} } end, createIndustries = function() return { toAdd = {} } end }
 	api.gui.map = { setMapSeedText = function(t) g.seedTexts[#g.seedTexts + 1] = t end,
 		reloadMaterialIndexManagerPipeline = function() g.materialReloads = g.materialReloads + 1 end }
@@ -1932,6 +1941,7 @@ function M.installTerrain(g, spec)
 	local send = api.cmd.sendCommand
 	api.cmd.sendCommand = function(cmd, cb)
 		if type(cmd) ~= "table" or cmd.kind ~= "replaceTerrain" then return send(cmd, cb) end
+		if spec.sendRaises then error("sendCommand: " .. spec.sendRaises) end
 		g.commands[#g.commands + 1] = cmd
 		if #cmd.towns > 0 then crash("terrain_util::ReplaceTerrain: Assertion 'map.towns.empty()' failed") end
 		if #cmd.heights ~= w * h then crash("ReplaceTerrain: heightmap of " .. #cmd.heights .. " values, " .. w * h .. " wanted") end

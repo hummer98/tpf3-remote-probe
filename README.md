@@ -399,18 +399,23 @@ python3 tools/tf3ctl.py terrain --probe-api                         # read only:
 python3 tools/tf3ctl.py terrain --rect 0,0,500,300 --flat 40 --dry-run
 python3 tools/tf3ctl.py terrain --rect 0,0,500,300 --flat 40 [--blend 16]
 python3 tools/tf3ctl.py terrain --rect=-500,0,500,300 --slope-x 5 --base 40     # 40 m at x0, 5 % up toward x1
-python3 tools/tf3ctl.py terrain --rect 0,0,300,800 --slope-y -10 --base 120 [--via auto|update|gui]
+python3 tools/tf3ctl.py terrain --rect 0,0,300,800 --slope-y -10 --base 120 [--via auto|update|gui] [--in-game]
 ```
 
 - Replaces the ground heights inside the rectangle (metres, at most 1024 a side): flat at a height, or a uniform
-  slope along x or y (`--base` is the height at the x0 / y0 edge). Everything outside it stays as it is. For test
-  saves and the map editor only; it warns other clients as a game-changing command (its dry run too).
+  slope along x or y (`--base` is the height at the x0 / y0 edge). Everything outside it stays as it is. Only in the
+  map editor (`api.gui.game.isMapEditor()`); outside it the probe refuses unless `--in-game` is given, for a new
+  test game (whether a replacement works in a game is not known). A dry run sends nothing and works anywhere. It
+  warns other clients as a game-changing command (its dry run too).
+- The map's size: the whole heightmap is copied into a Lua table, so a map with more than 4.5 M points (counted
+  from the terrain's bounding box before anything is copied: a small map, 32 x 32 tiles, has 4.2 M) is refused.
 - How: the whole map in one command, as the map editor's generate and import do. `makeMapFromGame(true, false,
   false, false)` copies the map without towns (a map that lists towns asserts in `terrain_util::ReplaceTerrain`),
   the grid points inside the rectangle (every 4 m, index `j * w + i + 1` from the map's min corner) are changed in
   the copied table, the whole table is assigned back (`GameMap.heightmap` hands out a copy on each read: an element
-  written into it is lost), then `setMapSeedText` and `reloadMaterialIndexManagerPipeline` as the base editor calls
-  them, and `makeWorldReplaceTerrainCmd(map, baseConfig.terrain, "", world, keepAssets = true)`. Trees and rocks are
+  written into it is lost) of a copy made with `api.type.Map.new` (as UTG does), then, in the map editor only,
+  `setMapSeedText` and `reloadMaterialIndexManagerPipeline` as the base editor calls them, and
+  `makeWorldReplaceTerrainCmd(map, baseConfig.terrain, "", world, keepAssets = true)`. Trees and rocks are
   kept (what they do on the new ground is not known).
 - The edge: by default the new heights blend into the old over 16 m inside the rectangle (a quarter of the shorter
   side on a small one): a point on the edge keeps its height, one 16 m in has the full new height, so the land
@@ -418,13 +423,13 @@ python3 tools/tf3ctl.py terrain --rect 0,0,300,800 --slope-y -10 --base 120 [--v
 - Refused, nothing sent: a road or track piece, a node, a construction, a town building or an industry in the
   rectangle or within 8 m of it (the octree), or a town whose bounding box comes within 200 m. The answer's
   `blockers` lists them. The heights asked for must stay within -99 .. 3170 m.
-- Two ways (`via`): `update` runs in the guiUpdate state, `gui` in the speed control's recipe (its join, where the
-  base editor and the terrain mods call these functions). `auto` (default) takes `update` when every function it
-  needs is there (`type()` only), else `gui`. `terrain --probe-api` answers which of `makeMapFromGame`,
+- Two ways (`via`): `gui` runs in the speed control's recipe (its join, where the base editor and the terrain mods
+  call these functions: from react only); `auto`, the default, is `gui`. `update` runs in the guiUpdate state, only
+  when given. `terrain --probe-api` answers which of `makeMapFromGame`,
   `Map.new`, `makeWorldReplaceTerrainCmd`, `mapgen.createTowns`, `setMapSeedText`,
   `reloadMaterialIndexManagerPipeline` and others each state has, calling none (read only).
 - The answer: `via`, `functionsUpdate` / `functionsGui`, `rect`, `grid` (the first and last grid points, `nx`,
-  `ny`, `points`), `target` (the heights asked for, min and max), `before` / `written` (min and max in the
+  `ny`, `points`), `mapPoints`, `inGame`, `target` (the heights asked for, min and max), `before` / `written` (min and max in the
   rectangle), `changed`, `waterLevel`, `sent`, `success` (the callback), and after a replacement `samples` (the
   middle and the corners of the full part, read back with `getHeightAt`) with `readBackOk`; `mapEditor`; on a
   refusal `error`.

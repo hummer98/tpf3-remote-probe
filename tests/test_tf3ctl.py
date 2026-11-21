@@ -1426,6 +1426,8 @@ class QuitLaunchTest(unittest.TestCase):
                           "via": "gui"})
         self.assertEqual(args("--rect", "0,0,1024,1024", "--slope-y", "-10", "--base", "80")["slopeY"], -10.0,
                          "the limit itself")
+        self.assertEqual(args("--rect", "0,0,10,10", "--flat", "1", "--in-game")["inGame"], True)
+        self.assertNotIn("inGame", args("--rect", "0,0,10,10", "--flat", "1"), "the map editor only by default")
         for bad in (["--rect", "0,0,1", "--flat", "1"], ["--rect", "5,0,1,1", "--flat", "1"],
                     ["--rect", "0,0,1025,10", "--flat", "1"], ["--rect", "0,0,10,10"],
                     ["--rect", "0,0,10,10", "--slope-x", "5"], ["--rect", "0,0,10,10", "--flat", "1", "--base", "2"],
