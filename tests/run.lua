@@ -5678,6 +5678,66 @@ test("modhub without api.modhub (or an unreadable one) answers an error, not a c
 	noUploads(g)
 end)
 
+test("modhub: a helper just made may not know the staging mods yet: status and validate wait, and never ask it for one it lacks", function()
+	local staging = { { folder = "hummer_industry_pollution_display_1", modhubId = "6500003", unknownFrames = 60,
+		details = { visible = true } } }
+	local g = modhubGame({ staging = staging })
+	send(g, 1351, "modhubStatus", '{ wait = 30 }')
+	frames(g, FIRST)
+	eq(final(g, 1351), nil, "unknown to the helper counts as Sync: still waiting")
+	frames(g, 60)
+	local a = final(g, 1351)
+	eq(a.ok, true, a.error); eq(a.mods[1].inHelper, true); eq(a.mods[1].state, "Ready"); eq(a.timedOut, nil)
+	eq(g.asserted or 0, 0, "getStagingModData only after hasStagingMod")
+	g = modhubGame({ staging = staging })
+	send(g, 1352, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, FIRST + 90)
+	a = final(g, 1352)
+	eq(a.ok, true, a and a.error); eq(#g.validateCalls, 1); eq(g.asserted or 0, 0)
+	-- one the helper never gets: the sync wait ends it, without asking for it
+	staging[1].unknownFrames = 1e9
+	g = modhubGame({ staging = staging })
+	send(g, 1353, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1" }')
+	frames(g, FIRST + 30 * 61)
+	a = final(g, 1353)
+	eq(a.ok, false); truthy(a.error:find("unknown to the publish helper after 60 s"), a.error)
+	eq(#g.validateCalls, 0); eq(g.asserted or 0, 0)
+	noUploads(g)
+end)
+
+test("modhub validate a second time: the result from before is not taken for this one (results are new userdata each read)", function()
+	local staging = { { folder = "hummer_force_unload_default_1", lateStart = true, validateUpdates = 300,
+		result = { messages = { { level = "Error", message = "x" } } } } }
+	local g = modhubGame({ staging = staging })
+	send(g, 1355, "modhubValidate", '{ folder = "hummer_force_unload_default_1" }')
+	frames(g, FIRST + 320)
+	local a = final(g, 1355)
+	eq(a.ok, true, a and a.error); eq(a.result.counts.error, 1)
+	staging[1].result = { messages = {} } -- the next run finds nothing
+	send(g, 1356, "modhubValidate", '{ folder = "hummer_force_unload_default_1" }')
+	frames(g, 30)
+	eq(final(g, 1356), nil, "the old result is there and validating not yet seen: not done")
+	frames(g, 330)
+	a = final(g, 1356)
+	eq(a.ok, true, a and a.error); eq(a.result.counts.error, 0, "this run's result"); eq(a.note, nil)
+	noUploads(g)
+end)
+
+test("modhub validate: --timeout covers the waits for mod.io too, with progress while waiting", function()
+	local g = modhubGame()
+	g.modhubBusy = true
+	send(g, 1358, "modhubValidate", '{ folder = "hummer_industry_pollution_display_1", timeout = 20 }')
+	frames(g, FIRST + 30 * 16)
+	local p = answerText(g, 1358, "p1")
+	truthy(p, "progress while waiting")
+	eq(decode(p).phase, "ready")
+	frames(g, 30 * 6)
+	local a = final(g, 1358)
+	eq(a.ok, false); truthy(a.error:find("timed out after 20 s while waiting %(ready%); not validated"), a.error)
+	eq(#g.validateCalls, 0); eq(g.helpersMade, 0)
+	noUploads(g)
+end)
+
 test("no code path uploads: the probe's code calls none of the helper's publish or change methods", function()
 	-- comments name them (to say they are left out); code must not
 	local banned = { "[:.]publish%s*%(", "abortPublish", "PublishSettings", "setRemoteModId", "setModDetails",

@@ -183,25 +183,32 @@ function M.installModhub(g, spec)
 			g.helpersMade = g.helpersMade + 1
 			local mods = {}
 			for _, e in ipairs(staging) do
-				mods[valueOf(e)] = { e = e, state = "Sync", syncLeft = e.syncFrames or 3, validating = false, progress = 0 }
+				mods[valueOf(e)] = { e = e, state = "Sync", syncLeft = e.syncFrames or 3, validating = false, progress = 0,
+					unknownLeft = e.unknownFrames or 0 }
 			end
 			-- the sync with mod.io runs in C++, whether update() is called or not
 			g.modhubTick = function()
 				for _, m in pairs(mods) do
+					if m.unknownLeft > 0 then m.unknownLeft = m.unknownLeft - 1 end
 					if m.state == "Sync" and not m.e.staysInSync then
 						m.syncLeft = m.syncLeft - 1
 						if m.syncLeft <= 0 then m.state = m.e.state or "Ready" end
 					end
 				end
 			end
+			-- a mod the helper does not have: the engine is taken to assert (g.asserted), not to raise a Lua error
+			-- a pcall could catch. unknownFrames: the first frames after the helper is made, before it has the mod.
 			local function mod(id)
 				local m = mods[id.value]
-				if not m then error("staging mod not found: " .. tostring(id.value)) end
+				if not m or m.unknownLeft > 0 then
+					g.asserted = (g.asserted or 0) + 1
+					error("assertion: staging mod not found: " .. tostring(id.value))
+				end
 				return m
 			end
 			local methods = {
 				hasAnyStagingMods = function() return next(mods) ~= nil end,
-				hasStagingMod = function(_, id) return mods[id.value] ~= nil end,
+				hasStagingMod = function(_, id) local m = mods[id.value]; return m ~= nil and m.unknownLeft == 0 end,
 				getStagingModData = function(_, id)
 					local m = mod(id)
 					return object({ state = State[m.state], modhubId = modId(m.e.modhubId),
@@ -212,11 +219,12 @@ function M.installModhub(g, spec)
 				update = function()
 					g.helperUpdates = g.helperUpdates + 1
 					for _, m in pairs(mods) do
+						if m.pending then m.pending, m.validating = nil, true end
 						if m.validating then
 							m.left = m.left - 1
 							m.progress = 1 - m.left / (m.e.validateUpdates or 5)
 							if m.left <= 0 and not m.e.validationHangs then
-								m.validating, m.result = false, makeResult(m.e.result or {})
+								m.validating, m.result = false, m.e.result or {}
 							end
 						end
 					end
@@ -224,7 +232,9 @@ function M.installModhub(g, spec)
 				validate = function(_, id)
 					local m = mod(id)
 					g.validateCalls[#g.validateCalls + 1] = id.value
-					m.validating, m.left, m.progress = true, m.e.validateUpdates or 5, 0
+					-- lateStart: validating shows only from the next update(), as an async start may
+					m.validating, m.left, m.progress = not m.e.lateStart, m.e.validateUpdates or 5, 0
+					m.pending = m.e.lateStart
 				end,
 				abortValidation = function(_, id)
 					g.abortValidations = g.abortValidations + 1
@@ -232,8 +242,9 @@ function M.installModhub(g, spec)
 				end,
 				getValidationData = function(_, id)
 					local m = mod(id)
+					-- a new userdata on each read, as the engine's (no identity to compare)
 					return object({ validating = m.validating, progress = m.progress, task = m.validating and "Checking files" or "",
-						result = m.result }, nil, "ValidationData")
+						result = makeResult(m.result) }, nil, "ValidationData")
 				end,
 			}
 			for _, n in ipairs(forbiddenNames) do

@@ -299,7 +299,8 @@ python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
   呼び、結果をページと同じ数え方で返します (`text`、Critical / Error / Warning の件数、先頭のメッセージ)。
   `criticalPc`・`criticalConsole`・`levelPc`・`levelConsole` も返します。進み具合は 15 秒ごとに stderr へ。mod.io の準備を
   最大 30 秒、MOD が Sync を抜けるのを最大 60 秒待ちます。Publishing か HasResult の MOD (アップロードが持っている) には
-  触りません。`--timeout` を過ぎると検証を止めます (`abortValidation`。ページを閉じたときと同じ)。受け付けるのは
+  触りません。helper がまだ知らない MOD は、ページと同じく Sync とみなします。`--timeout` はこれらの待ちも含めた
+  コマンド全体の上限で、過ぎると動いている検証を止めます (`abortValidation`。ページを閉じたときと同じ)。受け付けるのは
   `MODHUB_VALIDATE_FOLDERS` (content/remote_core.lua) にあるフォルダだけです。自分の MOD に合わせて直してください。
 - helper を作ると、ゲームは staging の MOD を mod.io と同期します。mod.io への読む要求で、書き込みはしません。
 - `validate` はゲームを変えるコマンドとして数えます (`--owner` の警告)。検証を数分動かし、その MOD で動いている検証

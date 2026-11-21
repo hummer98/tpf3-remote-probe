@@ -315,8 +315,9 @@ Inside a save both commands are refused.
   until it is done, and answers the result as the page counts it (`text`, counts of Critical / Error / Warning,
   the first messages) with `criticalPc`, `criticalConsole`, `levelPc` and `levelConsole`. Progress goes to stderr
   every 15 s. It waits up to 30 s for mod.io to be ready and up to 60 s for the mod to leave Sync; a mod in
-  Publishing or HasResult (an upload has it) is not touched. Past `--timeout` the validation is aborted
-  (`abortValidation`, as the page does when it closes). Only the folders listed in `MODHUB_VALIDATE_FOLDERS`
+  Publishing or HasResult (an upload has it) is not touched. A mod the helper does not know yet counts as in Sync,
+  as on the page. `--timeout` covers the whole command, these waits included; past it a running validation is
+  aborted (`abortValidation`, as the page does when it closes). Only the folders listed in `MODHUB_VALIDATE_FOLDERS`
   (content/remote_core.lua) are taken; edit the list for your own mods.
 - Making the helper makes the game sync the staging mods with mod.io: read requests to mod.io, no writes.
 - `validate` counts as changing the game (`--owner` warnings): it runs the validator for minutes and aborts a

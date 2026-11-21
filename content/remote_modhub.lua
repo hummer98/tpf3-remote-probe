@@ -181,14 +181,20 @@ function M.new(ctx)
 		return e
 	end
 
+	-- the first id of that folder the helper knows, else the first of that folder: when the staging backend is
+	-- the info-only one, it may also list a mod of the same folder name elsewhere (not seen; a guess)
 	local function findId(b, folder)
 		local ids, err = stagingIds(b)
-		local seen = {}
+		local seen, first = {}, nil
 		for _, id in ipairs(ids) do
 			local f = core.stagingFolder(str(core.field(id, "value")))
-			if f == folder then return id end
+			if f == folder then
+				if H.helper and try(function() return H.helper:hasStagingMod(id) end) then return id end
+				first = first or id
+			end
 			seen[#seen + 1] = tostring(f)
 		end
+		if first then return first end
 		return nil, err or ("no staging mod in folder " .. folder .. " (the staging area has: "
 			.. (#seen > 0 and table.concat(seen, ", ") or "none") .. ")")
 	end
@@ -225,8 +231,12 @@ function M.new(ctx)
 		return out
 	end
 
+	-- a mod the helper does not know yet counts as in Sync, as the base page takes it (ModUploadForm: no
+	-- hasStagingMod, state Sync); getStagingModData only after hasStagingMod, as the base always asks first (for a
+	-- mod it does not have, the engine may assert rather than raise)
 	local function anySyncing(b)
 		for _, id in ipairs((stagingIds(b))) do
+			if not try(function() return H.helper:hasStagingMod(id) end) then return true end
 			local d = try(function() return H.helper:getStagingModData(id) end)
 			if d ~= nil and stateName(core.field(d, "state")) == "Sync" then return true end
 		end
@@ -279,8 +289,25 @@ function M.new(ctx)
 		end
 	end
 
+	local function progress(job, v)
+		if appTime() < job.nextProgress then return end
+		job.nextProgress = appTime() + PROGRESS_SEC
+		job.progressN = job.progressN + 1
+		local out = payload(job)
+		out.ok, out.running = true, true
+		out.progress, out.task = v and v.progress, v and v.task
+		answer(job.id, out, "p" .. job.progressN)
+	end
+
 	local function stepValidate(job)
 		local t = appTime() - job.started
+		-- --timeout covers the whole command, the waits for mod.io and the sync too, so the tool's own wait
+		-- (timeout + a margin) never runs out first; nothing was validated yet in those phases
+		if job.phase ~= "validating" and t > job.args.timeout then
+			return endJob(job, payload(job), "timed out after " .. job.args.timeout .. " s while waiting ("
+				.. job.phase .. "); not validated")
+		end
+		if job.phase ~= "validating" then progress(job, nil) end
 		if job.phase == "ready" then
 			local _, notReady = readiness(job.b.publish)
 			if notReady then
@@ -292,18 +319,17 @@ function M.new(ctx)
 			local id, ferr = findId(job.b, job.args.folder)
 			if not id then return endJob(job, payload(job), ferr) end
 			job.mid, job.value = id, str(core.field(id, "value"))
-			if not try(function() return h:hasStagingMod(id) end) then
-				return endJob(job, payload(job), "the publish helper does not know staging mod " .. job.args.folder)
-			end
 			job.phase, job.syncSince = "sync", appTime()
 		end
 		if job.phase == "sync" then
-			local d = try(function() return H.helper:getStagingModData(job.mid) end)
-			local s = stateName(core.field(d, "state"))
+			-- not known to the helper yet (just made): the same wait as Sync
+			local known = try(function() return H.helper:hasStagingMod(job.mid) end)
+			local d = known and try(function() return H.helper:getStagingModData(job.mid) end) or nil
+			local s = known and stateName(core.field(d, "state")) or "Sync"
 			if s == "Sync" or s == nil then
 				if appTime() - job.syncSince < M.SYNC_SEC then return end
-				return endJob(job, payload(job), "the staging mod is still " .. tostring(s or "unreadable") .. " after "
-					.. M.SYNC_SEC .. " s (its sync with mod.io)")
+				return endJob(job, payload(job), "the staging mod is still " .. (known and tostring(s or "unreadable")
+					or "unknown to the publish helper") .. " after " .. M.SYNC_SEC .. " s (its sync with mod.io)")
 			end
 			if s ~= "Ready" then
 				-- Publishing / HasResult: an upload (by a person on the My Mods page) owns the mod now; this
@@ -327,9 +353,10 @@ function M.new(ctx)
 			end
 			local v, res = validation(H.helper, job.mid, nil)
 			if v and v.validating then job.sawValidating = true end
+			-- the engine likely hands out a new userdata on each read, so the result before cannot be told apart by
+			-- identity: without validating seen, a result that was there before waits FRESH_SEC
 			local done = v and not v.validating and res ~= nil
-				and (job.sawValidating or job.before == nil or res ~= job.before
-					or appTime() - job.validateSince >= M.FRESH_SEC)
+				and (job.sawValidating or job.before == nil or appTime() - job.validateSince >= M.FRESH_SEC)
 			if done then
 				local out = payload(job)
 				out.result = core.validationSummary(readResult(res), job.args.messages)
@@ -340,14 +367,7 @@ function M.new(ctx)
 				out.state = stateName(core.field(d, "state"))
 				return endJob(job, out)
 			end
-			if appTime() >= job.nextProgress then
-				job.nextProgress = appTime() + PROGRESS_SEC
-				job.progressN = job.progressN + 1
-				local out = payload(job)
-				out.ok, out.running = true, true
-				out.progress, out.task = v and v.progress, v and v.task
-				answer(job.id, out, "p" .. job.progressN)
-			end
+			progress(job, v)
 		end
 	end
 
