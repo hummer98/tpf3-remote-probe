@@ -1542,6 +1542,8 @@ def check_modules(mods):
     if not isinstance(mods, dict):
         raise ToolError("params.modules must be a JSON object of slot id -> module, e.g. "
                         "'{\"modules\": {\"120001\": {\"name\": \"...module\"}}}'")
+    if not mods:
+        raise ToolError("params.modules is empty: give at least one module, or leave modules out")
     for k, m in mods.items():
         if not (k.isascii() and k.isdigit()):
             raise ToolError("params.modules: slot ids are whole numbers 0 or more, not %r" % k)
@@ -1550,6 +1552,12 @@ def check_modules(mods):
         v = m.get("variant", 0)
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
             raise ToolError("params.modules slot %s: variant must be a whole number 0 or more" % k)
+        if "metadata" in m and not isinstance(m["metadata"], dict):
+            raise ToolError("params.modules slot %s: metadata must be a JSON object" % k)
+        us = m.get("updateScript")
+        if "updateScript" in m and not (isinstance(us, dict) and isinstance(us.get("fileName"), str)
+                                        and isinstance(us.get("params", {}), dict)):
+            raise ToolError("params.modules slot %s: updateScript must be {\"fileName\": ..., \"params\": {...}}" % k)
 
 
 def water_args(ns):
@@ -1569,8 +1577,8 @@ def water_args(ns):
     x0, y0, x1, y1, step = numbers(ns.grid, 5, ("--grid", "x0,y0,x1,y1,step"))
     if x1 < x0 or y1 < y0:
         raise ToolError("--grid: x0 <= x1 and y0 <= y1")
-    if step <= 0:
-        raise ToolError("--grid: step must be more than 0")
+    if step < WATER_MIN_STEP:
+        raise ToolError("--grid: step must be at least %g m" % WATER_MIN_STEP)
     nx, ny = math.floor((x1 - x0) / step + 1e-9) + 1, math.floor((y1 - y0) / step + 1e-9) + 1
     if nx * ny > WATER_MAX_POINTS:
         raise ToolError("--grid: %d x %d = %d points, at most %d (a larger step or a smaller box)"
@@ -1579,6 +1587,7 @@ def water_args(ns):
 
 
 WATER_MAX_POINTS = 400  # the mod's core.WATER_MAX_POINTS
+WATER_MIN_STEP = 0.1  # core.WATER_MIN_STEP: a smaller step overflows the point count before the limit is checked
 BUILD_TIMEOUT_SEC = 60  # the mod waits 30 s for the engine's callback
 
 

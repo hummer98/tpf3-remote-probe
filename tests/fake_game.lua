@@ -1553,7 +1553,10 @@ end
 -- spec.modules = { [resName] = { metadata = {...}, updateScript = { fileName, params } } }: moduleRep (find, get,
 -- getAll); a construction's stations = n with terminals = n, or a function(params) -> n per station (a harbour's
 -- terminals counted from its modules under whole-number keys only: one under a text key sits on no slot).
--- spec.water(x, y) -> true / false: isOnWater; spec.waterLevel: TERRAIN.waterLevel of the world (entity 1).
+-- A module's getFails: moduleRep.get raises; metadataNative: its metadata an engine map (userdata with asTable);
+-- metadataOpaque: userdata without asTable.
+-- spec.water(x, y) -> true / false: isOnWater; spec.waterLevel: TERRAIN.waterLevel of the world (entity 1);
+-- spec.bounds = { x0, y0, x1, y1 }: isValidCoordinate, and isOnWater off the map is an assertion.
 -- g.built[e] = { fileName, params, transf, name, player, frozenEdges, ... }; g.buildCmds: every proposal sent.
 -- Like the engine: a list element written into a proposal is lost (only a whole list assigned counts), an unknown
 -- file name or a transf that is no Mat4f is an assertion (the game would die), a refused proposal builds nothing,
@@ -1606,8 +1609,13 @@ function M.installBuild(g, spec)
 		return record({ fileName = "", params = {}, transf = {}, name = "", playerEntity = -1, autoFillSlots = false })
 	end } }
 	api.engine.terrain = { getHeightAt = function(v) return spec.height and spec.height(v.x, v.y) or 0 end,
+		isValidCoordinate = function(v)
+			local b = spec.bounds
+			return not b or (v.x >= b[1] and v.y >= b[2] and v.x <= b[3] and v.y <= b[4])
+		end,
 		isOnWater = function(v)
 			if type(v) ~= "table" or v.x == nil then crash("isOnWater: no Vec2f") end
+			if not api.engine.terrain.isValidCoordinate(v) then crash("isOnWater off the map") end
 			return spec.water and spec.water(v.x, v.y) == true or false
 		end }
 	local mods = spec.modules or {}
@@ -1627,7 +1635,18 @@ function M.installBuild(g, spec)
 			local name = modIndex[idx]
 			if not name then crash("moduleRep.get(" .. tostring(idx) .. ")") end
 			local m = mods[name]
-			return { fileName = name, metadata = m.metadata, updateScript = m.updateScript }
+			if m.getFails then error("moduleRep.get: no desc") end
+			local md = m.metadata
+			if m.metadataNative or m.metadataOpaque then
+				local u = newproxy(true)
+				if m.metadataNative then
+					getmetatable(u).__index = { asTable = function() return copy(m.metadata) end }
+				else
+					getmetatable(u).__index = function() error("no field") end
+				end
+				md = u
+			end
+			return { fileName = name, metadata = md, updateScript = m.updateScript }
 		end,
 		getAll = function()
 			local out = {}

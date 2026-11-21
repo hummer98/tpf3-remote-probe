@@ -1368,11 +1368,17 @@ class QuitLaunchTest(unittest.TestCase):
         got = tf3ctl.build_args(ns(params=mods, no_owner=True, no_fill_modules=True))
         self.assertEqual(got, {"res": "h.con", "at": [1.0, 2.0], "noOwner": True, "fillModules": False,
                                "params": {"modules": {"120001": {"name": "a.module", "variant": 1}}}})
+        ok = '{"modules": {"1": {"name": "x", "metadata": {"a": 1}, "updateScript": {"fileName": "s", "params": {}}}}}'
+        self.assertIn("params", tf3ctl.build_args(ns(params=ok)))
         self.assertNotIn("noOwner", tf3ctl.build_args(ns()), "the default: the company's")
         self.assertNotIn("fillModules", tf3ctl.build_args(ns()), "the default: filled")
         for bad in ('{"modules": [1]}', '{"modules": {"a": {"name": "x"}}}', '{"modules": {"-1": {"name": "x"}}}',
                     '{"modules": {"1": "x"}}', '{"modules": {"1": {"name": " "}}}',
-                    '{"modules": {"1": {"name": "x", "variant": -1}}}', '{"modules": {"1": {"name": "x", "variant": true}}}'):
+                    '{"modules": {"1": {"name": "x", "variant": -1}}}', '{"modules": {"1": {"name": "x", "variant": true}}}',
+                    '{"modules": {}}', '{"modules": {"1": {"name": "x", "metadata": 3}}}',
+                    '{"modules": {"1": {"name": "x", "updateScript": "s"}}}',
+                    '{"modules": {"1": {"name": "x", "updateScript": {"params": {}}}}}',
+                    '{"modules": {"1": {"name": "x", "updateScript": {"fileName": "s", "params": 1}}}}'):
             with self.assertRaises(tf3ctl.ToolError, msg=bad):
                 tf3ctl.build_args(ns(params=bad))
         for bad in (dict(remove="1", res=None, at=None, no_owner=True), dict(remove="1", res=None, at=None, no_fill_modules=True)):
@@ -1391,7 +1397,9 @@ class QuitLaunchTest(unittest.TestCase):
                          "400 points: the limit itself")
         for bad in (dict(at=None, grid=None), dict(at="1,2", grid="0,0,1,1,1"), dict(at="1", grid=None),
                     dict(at="a,b", grid=None), dict(at="nan,1", grid=None), dict(at=None, grid="0,0,1,1"),
-                    dict(at=None, grid="5,0,1,1,1"), dict(at=None, grid="0,0,1,1,0"), dict(at=None, grid="0,0,400,0,1")):
+                    dict(at=None, grid="5,0,1,1,1"), dict(at=None, grid="0,0,1,1,0"), dict(at=None, grid="0,0,400,0,1"),
+                    dict(at=None, grid="0,0,1,1,1e-300"), dict(at=None, grid="0,0,1,1,0.05"),
+                    dict(at=None, grid="0,0,1,1,inf")):
             with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
                 tf3ctl.water_args(wa(**bad))
         self.assertNotIn("water", tf3ctl.CHANGES_GAME, "read only")

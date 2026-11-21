@@ -940,6 +940,7 @@ function M.buildModules(mods)
 		n = n + 1
 		if n > M.BUILD_MODULE_LIMIT then return nil, "at most " .. M.BUILD_MODULE_LIMIT .. " modules" end
 	end
+	if n == 0 then return nil, "give at least one module (no modules: leave modules out)" end
 	return out
 end
 
@@ -977,6 +978,7 @@ end
 -- there, to find a shore for a harbour. args: at = "x,y" or grid = "x0,y0,x1,y1,step" (x0 <= x1, y0 <= y1; at most
 -- WATER_MAX_POINTS points). -> { points = { { x, y } }, grid = { x0, y0, x1, y1, step, nx, ny } or nil }
 M.WATER_MAX_POINTS = 400
+M.WATER_MIN_STEP = 0.1 -- metres: a smaller step makes the point count overflow before the limit is checked
 function M.waterRequest(args)
 	args = type(args) == "table" and args or {}
 	if (args.at == nil) == (args.grid == nil) then return nil, "give at (x,y) or grid (x0,y0,x1,y1,step)" end
@@ -994,7 +996,7 @@ function M.waterRequest(args)
 	local x0, y0, x1, y1, step = g[1], g[2], g[3], g[4], g[5]
 	for i = 1, 4 do if math.abs(g[i]) > L then return nil, "grid: x and y must be within " .. L end end
 	if x1 < x0 or y1 < y0 then return nil, "grid: x0 <= x1 and y0 <= y1" end
-	if step <= 0 then return nil, "grid: step must be more than 0" end
+	if step < M.WATER_MIN_STEP then return nil, "grid: step must be at least " .. M.WATER_MIN_STEP .. " m" end
 	local nx, ny = math.floor((x1 - x0) / step + 1e-9) + 1, math.floor((y1 - y0) / step + 1e-9) + 1
 	if nx * ny > M.WATER_MAX_POINTS then
 		return nil, string.format("grid: %d x %d = %d points, at most %d (a larger step or a smaller box)",

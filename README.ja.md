@@ -346,7 +346,9 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
   全体を断り、似た名前 (同じファイル名か、同じフォルダのもの) を挙げます。
 - `metadata` か `updateScript` が無いモジュールには、`moduleRep.get` のそのモジュールの値をそのまま入れます。エンジンが
   自分で埋める場合も同じ値になります。`--no-fill-modules` を付けると、渡したとおりに送ります (ある MOD の料金所は
-  `name` と `variant` だけを送ります)。答えの `params.modules` には、スロット・名前・variant・metadata と updateScript を
+  `name` と `variant` だけを送ります。`metadata` 無しで送ったモジュールは `moduleWarnings` に挙げます)。埋める設定のとき、
+  metadata が渡されず読めもしない (moduleRep.get が失敗した・`asTable` の無いエンジンの値) モジュールがあれば、全体を
+  断ります。港のモジュールのスクリプトは `mod.metadata.platform` を確かめずに読むためです。空の `modules` も断ります。答えの `params.modules` には、スロット・名前・variant・metadata と updateScript を
   送ったか・何を埋めたか (`filled`) が入ります。
 - 建てたあと、駅を持つ建物 (港) の答えには `terminals` (全部の駅の terminal の数、`STATION.terminals`) と
   `stationTerminals` が入ります。0 のときは、モジュールがスロットに乗っていないかもしれない、という `warning` が付きます。
@@ -354,9 +356,10 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
   会社のものです。(コマンドの前の `--owner` は、ほかのコマンドと同じく、クライアントの名前です。)
 - `water` は読むだけです (ほかのクライアントに警告は出ません)。`waterLevel` (ワールドの `TERRAIN.waterLevel`) と、点ごとの
   `onWater` (`api.engine.terrain.isOnWater`)・`height` (`getHeightAt`。水の下では水底)・`depth` (水の上で、水面から地形の
-  高さを引いたもの) を返します。`--grid x0,y0,x1,y1,step` は箱の中を step メートルごとに 400 点まで調べ、`rows`
+  高さを引いたもの) を返します。`--grid x0,y0,x1,y1,step` は箱の中を step メートル (0.1 m 以上) ごとに 400 点まで調べ、`rows`
   (y0 から上へ y ごとに1行、各行は x0 から: `~` 水、`.` 陸、`?` 読めない) と、数の `water` / `land` を足します。
-  `build --dry-run` の答えにも、その点の `waterLevel` と `onWater` が入ります。水の上の建物には z (`water` の水面の高さ) を
+  isOnWater は `isValidCoordinate` で地図の中と分かった点にだけ聞きます。外の点は `onWater` が null、`offMap` が true
+  (行では `?`) です。`build --dry-run` の答えにも、その点の `waterLevel` と `onWater` が入ります。水の上の建物には z (`water` の水面の高さ) を
   渡してください。
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): 港のモジュールが送ったとおりスロットに乗るか、terminal の数、
   埋めた metadata、`--no-owner`、`water` の値。

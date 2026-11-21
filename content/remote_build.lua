@@ -66,11 +66,12 @@ function M.new(ctx)
 		return nil, nil, like
 	end
 
-	-- a module's desc by its resName (moduleRep), or nil with names that look alike: the same file name, or another
-	-- module in the same folder (a harbour's are all in one)
+	-- a module's desc by its resName (moduleRep): the desc, or false when the rep knows the name but get gives
+	-- nothing; nil with names that look alike: the same file name, or another module in the same folder (a
+	-- harbour's are all in one)
 	local function moduleOf(name)
 		local idx = tonumber(try(function() return api.res.moduleRep.find(name) end))
-		if idx and idx >= 0 then return try(function() return api.res.moduleRep.get(idx) end) or {} end
+		if idx and idx >= 0 then return try(function() return api.res.moduleRep.get(idx) end) or false end
 		local stem = (name:gsub("%.lua$", ""):gsub("%.module$", ""):match("([^/:]+)$") or name):lower()
 		local dir = name:match("^(.*/)[^/]*$")
 		local like = {}
@@ -84,40 +85,55 @@ function M.new(ctx)
 		return nil, like
 	end
 
-	-- the desc's metadata and updateScript as values the params can carry: metadata is a Lua table already
-	-- (ModuleDesc.metadata : table), the ScriptRef an engine record, copied out as { fileName, params }
+	-- the desc's metadata and updateScript as values the params can carry: metadata is a Lua table
+	-- (ModuleDesc.metadata : table), or an engine map turned into one with asTable; nil when neither (the caller
+	-- refuses then: a harbour's module scripts read mod.metadata.platform unchecked, modules.script.lua). The
+	-- ScriptRef is an engine record, copied out as { fileName, params } (params a table, else empty)
 	local function moduleDesc(d)
 		local us = core.field(d, "updateScript")
 		local file = us and core.field(us, "fileName")
 		local script
 		if type(file) == "string" and file ~= "" then
 			local p = core.field(us, "params")
-			script = { fileName = file, params = type(p) == "table" and p or (p ~= nil and core.plain(p)) or {} }
+			script = { fileName = file, params = type(p) == "table" and p or {} }
 		end
 		local md = core.field(d, "metadata")
+		if type(md) == "userdata" then
+			local ok, t = pcall(function() return md:asTable() end)
+			md = ok and t or nil
+		end
 		return { metadata = type(md) == "table" and md or nil, updateScript = script }
 	end
 
-	-- every module's name checked before anything is sent; with fill, what each lacks filled from its desc.
-	-- -> filled ({ [slot] = { field names } }), or nil and why
+	-- every module's name checked before anything is sent; with fill, what each lacks filled from its desc, and
+	-- a module whose metadata is neither given nor readable refused (it would go without one).
+	-- -> filled ({ [slot] = { field names } }) and warnings (a list or nil), or nil and why
 	local function checkModules(mods, fill)
 		local slots = {}
 		for k in pairs(mods) do slots[#slots + 1] = k end
 		table.sort(slots)
-		local filled, bad = {}, {}
+		local filled, bad, warn = {}, {}, {}
 		for _, k in ipairs(slots) do
 			local m = mods[k]
 			local d, like = moduleOf(m.name)
-			if not d then
+			if d == nil then
 				local msg = string.format("slot %d: no module %s", k, m.name)
 				if like and #like > 0 then msg = msg .. " (names like it: " .. table.concat(like, ", ") .. ")" end
 				bad[#bad + 1] = msg
 			elseif fill then
-				filled[k] = core.fillModule(m, moduleDesc(d))
+				local desc = d and moduleDesc(d) or {}
+				if m.metadata == nil and desc.metadata == nil then
+					bad[#bad + 1] = string.format("slot %d: metadata of %s could not be read", k, m.name)
+				else
+					filled[k] = core.fillModule(m, desc)
+				end
+			elseif m.metadata == nil then
+				warn[#warn + 1] = string.format("slot %d: %s goes without metadata (--no-fill-modules); a module "
+					.. "script that reads it may fail", k, m.name)
 			end
 		end
 		if #bad > 0 then return nil, "nothing sent: " .. table.concat(bad, "; ") end
-		return filled
+		return filled, #warn > 0 and core.array(warn) or nil
 	end
 
 	local function waterLevel()
@@ -125,8 +141,12 @@ function M.new(ctx)
 			return api.engine.getComponent(api.engine.util.getWorld(), CT().TERRAIN).waterLevel
 		end))
 	end
-	-- true / false, or nil when it could not be read
+	-- true / false, or nil when it could not be read; isOnWater is asked only for a point isValidCoordinate takes
+	-- (off the map it may assert), so a point off the map, or one that cannot be checked, is nil and the second
+	-- value says why ("outside" / "unchecked")
 	local function onWater(x, y)
+		local valid = try(function() return api.engine.terrain.isValidCoordinate(api.type.Vec2f.new(x, y)) end)
+		if valid ~= true then return nil, valid == false and "outside" or "unchecked" end
 		local w = try(function() return api.engine.terrain.isOnWater(api.type.Vec2f.new(x, y)) end)
 		if w == true or w == false then return w end
 		return nil
@@ -278,12 +298,12 @@ function M.new(ctx)
 			if z == nil then return fail(c.id, "the terrain's height at x,y could not be read: give z") end
 		end
 		local params = core.buildParams(defaultsOf(idx), r.params, r.seed)
-		local filled
+		local filled, moduleWarnings
 		if r.modules then
 			-- a module the rep does not know is refused here, not sent (what the engine does with one: not checked)
-			local f, merr = checkModules(params.modules, r.fillModules)
-			if not f then return fail(c.id, merr) end
-			filled = f
+			local f, w = checkModules(params.modules, r.fillModules)
+			if not f then return fail(c.id, w) end
+			filled, moduleWarnings = f, w
 		end
 		count = count + 1
 		local name = r.name or string.format("%s %d", core.BUILD_NAME_PREFIX, count)
@@ -309,7 +329,7 @@ function M.new(ctx)
 		end
 		local out = { res = res, at = { x = r.x, y = r.y, z = z }, zFrom = zFrom, angle = r.angle, params = shown,
 			name = name, note = NOTE, autoFillSlots = ce.autoFillSlots, owner = r.noOwner and "none" or nil,
-			modulesNote = r.modules and NOTE_MODULES or nil }
+			modulesNote = r.modules and NOTE_MODULES or nil, moduleWarnings = moduleWarnings }
 		if r.dryRun then
 			-- the probe's own checks only: the engine's makeProposalData takes a Proposal and has no SimpleProposal
 			-- form (engine/util.d.tl:939), so it is not called (no buildable: only a build says that)
@@ -324,7 +344,8 @@ function M.new(ctx)
 			out.nearRadius = NEAR_M
 			out.near = core.array(near)
 			-- the water there (a harbour stands at the shore): the level, and whether the point itself is water
-			out.waterLevel, out.onWater = waterLevel(), onWater(r.x, r.y)
+			local w, off = onWater(r.x, r.y)
+			out.waterLevel, out.onWater, out.offMap = waterLevel(), w, off == "outside" or nil
 			return answer(c.id, out)
 		end
 		-- (the job is listed once the command is sent: a send that raises is answered by the handler's pcall alone)
@@ -498,14 +519,17 @@ function M.new(ctx)
 		local r, err = core.waterRequest(c.args)
 		if not r then return fail(c.id, err) end
 		local level = waterLevel()
-		local pts, nWater, nLand = {}, 0, 0
+		local pts, nWater, nLand, nOff = {}, 0, 0, 0
 		for _, p in ipairs(r.points) do
-			local w, h = onWater(p.x, p.y), heightAt(p.x, p.y)
+			local w, off = onWater(p.x, p.y)
+			local h = heightAt(p.x, p.y)
 			if w == true then nWater = nWater + 1 elseif w == false then nLand = nLand + 1 end
-			pts[#pts + 1] = { x = p.x, y = p.y, onWater = w, height = h,
+			if off == "outside" then nOff = nOff + 1 end
+			pts[#pts + 1] = { x = p.x, y = p.y, onWater = w, height = h, offMap = off == "outside" or nil,
 				depth = (w and level and h and h < level) and level - h or nil }
 		end
-		local out = { ok = true, waterLevel = level, points = core.array(pts), water = nWater, land = nLand }
+		local out = { ok = true, waterLevel = level, points = core.array(pts), water = nWater, land = nLand,
+			offMap = nOff > 0 and nOff or nil }
 		if r.grid then
 			out.grid = r.grid
 			-- rows from y0 up, each from x0 east: "~" water, "." land, "?" not read

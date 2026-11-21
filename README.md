@@ -365,7 +365,10 @@ python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner  
   whole command before anything is sent, with names like it (the same file name, or the same folder's).
 - A module without `metadata` or `updateScript` gets the module's own from `moduleRep.get` (its desc's values, as
   they are), so an engine that fills them itself gets the same. `--no-fill-modules` sends each module as given
-  (a mod's toll station sends only `name` and `variant`). The answer's `params.modules` lists slot, name, variant,
+  (a mod's toll station sends only `name` and `variant`; one sent without `metadata` is named in
+  `moduleWarnings`). With filling on, a module whose metadata is neither given nor readable (moduleRep.get fails,
+  or an engine map without `asTable`) refuses the whole command: a harbour's module scripts read
+  `mod.metadata.platform` unchecked. An empty `modules` is refused. The answer's `params.modules` lists slot, name, variant,
   whether metadata and updateScript went, and what was `filled`.
 - After a build, a construction with stations (a harbour) has `terminals` (all its stations' terminals,
   `STATION.terminals`) and `stationTerminals`; 0 comes with a `warning` that the modules may not be on their slots.
@@ -374,8 +377,9 @@ python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner  
 - `water` reads only (no warning to others): `waterLevel` (the world's `TERRAIN.waterLevel`) and per point
   `onWater` (`api.engine.terrain.isOnWater`), `height` (`getHeightAt`, the bottom under water) and `depth` (the
   level minus the height, on water). `--grid x0,y0,x1,y1,step` takes points every step metres in the box, at
-  most 400, and adds `rows` (one per y from y0 up, each from x0: `~` water, `.` land, `?` not read) and the counts
-  `water` / `land`. The `build --dry-run` answer has `waterLevel` and `onWater` at the point too. For a construction
+  most 400 (step at least 0.1 m), and adds `rows` (one per y from y0 up, each from x0: `~` water, `.` land, `?` not read) and the counts
+  `water` / `land`. isOnWater is asked only where `isValidCoordinate` says the point is on the map: off it
+  `onWater` is null, `offMap` true (`?` in the rows). The `build --dry-run` answer has `waterLevel` and `onWater` at the point too. For a construction
   on water, give z (the level from `water`).
 - **Not checked in game yet** (written 2026-11-22): whether the harbour's modules go on their slots as sent, the
   terminal count, the filled metadata, `--no-owner`, and `water`'s values.

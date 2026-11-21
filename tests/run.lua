@@ -6469,7 +6469,7 @@ test("core.buildModules: text slot ids become whole numbers; variant 0 by defaul
 		{ { [1.5] = { name = "x" } }, "whole numbers" }, { { ["1"] = { name = "x" }, [1] = { name = "y" } }, "twice" },
 		{ { [1] = "x" }, "give the module's name" }, { { [1] = { name = " " } }, "give the module's name" },
 		{ { [1] = { name = "x", variant = -1 } }, "variant" }, { { [1] = { name = "x", metadata = 3 } }, "metadata" },
-		{ { [1] = { name = "x", updateScript = { params = {} } } }, "updateScript" },
+		{ { [1] = { name = "x", updateScript = { params = {} } } }, "updateScript" }, { {}, "at least one module" },
 	}) do
 		local ok, err = core.buildModules(bad[1])
 		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / wanted " .. bad[2])
@@ -6499,7 +6499,8 @@ test("core.waterRequest: a point or a grid; the grid's points and its limit; wat
 	for _, bad in ipairs({ { {}, "give at" }, { { at = "1,2", grid = "0,0,1,1,1" }, "give at" }, { { at = "1" }, "x,y" },
 		{ { at = "1,2,3" }, "at most 2" }, { { at = "200000,0" }, "within" }, { { grid = "0,0,1,1" }, "x0,y0,x1,y1,step" },
 		{ { grid = "5,0,1,1,1" }, "x0 <= x1" }, { { grid = "0,0,1,1,0" }, "step" }, { { grid = "0,0,1,1,-1" }, "step" },
-		{ { grid = "0,0,1e6,1,1" }, "within" }, { { at = "a,b" }, "finite" } }) do
+		{ { grid = "0,0,1e6,1,1" }, "within" }, { { at = "a,b" }, "finite" }, { { grid = "0,0,1,1,1e-300" }, "at least" },
+		{ { grid = "0,0,1,1,0.05" }, "at least" }, { { grid = "0,0,1,1,inf" }, "finite" } }) do
 		local ok, err = core.waterRequest(bad[1])
 		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / wanted " .. bad[2])
 	end
@@ -6557,6 +6558,8 @@ test("build: a harbour's modules on whole-number slots, autoFillSlots off, metad
 	truthy(a3.ok, a3.error)
 	local m3 = g.built[a3.entity].params.modules[5]
 	eq(m3.metadata, nil); eq(m3.updateScript, nil); eq(a3.params.modules[1].filled, nil)
+	truthy(a3.moduleWarnings and a3.moduleWarnings[1]:find("slot 5: .* goes without metadata"), "no metadata: warned")
+	eq(a.moduleWarnings, nil)
 	-- no modules: as before (autoFillSlots on); a station with 0 terminals is warned about
 	local a4 = buildRun(g, 973, string.format('{ res = %q, at = "1600,0" }', HARBOR))
 	truthy(a4.ok, a4.error)
@@ -6624,6 +6627,47 @@ test("water: a point and a grid (water, land, height, depth, rows); the limit; r
 	send(m, 988, "water", '{ at = "0,0" }')
 	frames(m, FIRST)
 	truthy((answerText(m, 988, "error") or ""):find("needs a running game"))
+end)
+
+test("build: a module's metadata that cannot be read refuses it (fill on); an engine map is turned into a table", function()
+	local NATIVE, OPAQUE, NODESC = "::/station/water/a_native.module", "::/station/water/b_opaque.module", "::/station/water/c_nodesc.module"
+	local g = harborWorld({ modules = {
+		[NATIVE] = { metadata = { platform = true }, metadataNative = true, updateScript = { fileName = "s", params = "x" } },
+		[OPAQUE] = { metadata = { platform = true }, metadataOpaque = true },
+		[NODESC] = { getFails = true },
+	} })
+	local a = buildRun(g, 990, string.format('{ res = %q, at = "990,0", params = { modules = { [1] = { name = %q } } } }', HARBOR, NATIVE))
+	truthy(a.ok, a.error)
+	local m = g.built[a.entity].params.modules[1]
+	eq(type(m.metadata), "table", "asTable"); eq(m.metadata.platform, true)
+	eq(type(m.updateScript.params), "table", "params not a table: empty"); eq(next(m.updateScript.params), nil)
+	for i, name in ipairs({ OPAQUE, NODESC }) do
+		local n = #g.buildCmds
+		local b = buildRun(g, 990 + i, string.format('{ res = %q, at = "990,0", params = { modules = { [7] = { name = %q } } } }', HARBOR, name))
+		eq(b.ok, false)
+		truthy(b.error:find("nothing sent: slot 7: metadata of " .. name .. " could not be read", 1, true), b.error)
+		eq(#g.buildCmds, n, "nothing sent")
+	end
+	-- metadata given: the desc's is not needed
+	local c = buildRun(g, 995, string.format('{ res = %q, at = "1200,0", params = { modules = { [7] = { name = %q, metadata = { platform = false } } } } }', HARBOR, OPAQUE))
+	truthy(c.ok, c.error)
+	-- fill off: sent without metadata, with a warning
+	local d = buildRun(g, 996, string.format('{ res = %q, at = "1400,0", fillModules = false, params = { modules = { [7] = { name = %q } } } }', HARBOR, NODESC))
+	truthy(d.ok, d.error); truthy(d.moduleWarnings and d.moduleWarnings[1]:find("without metadata"))
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("water and the dry run: a point off the map is not asked (isOnWater would assert): onWater nil, ? in the rows", function()
+	local g = harborWorld({ bounds = { -2000, -2000, 2000, 2000 } })
+	send(g, 997, "water", '{ grid = "1900,0,2100,0,100" }')
+	frames(g, FIRST + 2)
+	local a = final(g, 997)
+	truthy(a and a.ok, a and a.error)
+	eq(a.rows[1], "~~?"); eq(a.points[3].onWater, nil); eq(a.points[3].offMap, true); eq(a.offMap, 1)
+	eq(a.water, 2); eq(a.land, 0)
+	local b = buildRun(g, 998, string.format('{ res = %q, at = "2500,0", dryRun = true }', HARBOR))
+	truthy(b.ok, b.error); eq(b.onWater, nil); eq(b.offMap, true)
+	truthy(not g.crashed, g.crashed)
 end)
 
 print(string.format("\n%d passed, %d failed", passes, failures))
