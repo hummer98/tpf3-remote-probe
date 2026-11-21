@@ -1547,12 +1547,14 @@ end
 -- spec.cons = { [resName] = { params = { { key, numbers, defaultIndex } }, cost = n, shape = { nodes = { { dx, dy,
 -- dz } }, edges = { { i, j } } }, depots = n } }: the constructions the rep knows and what one is made of (its own
 -- road pieces, relative to where it stands, unturned); spec.height(x, y): the terrain (0 without);
--- spec.blocked(x, y): something in the way there (an entity id, refused as a collision); spec.dryRunFails: the
--- engine's makeProposalData refuses a SimpleProposal; spec.lostCallback: the build runs, no callback comes;
+-- spec.blocked(x, y): something in the way there (an entity id, refused as a collision); spec.lostCallback: the
+-- build runs, no callback comes; spec.raiseInCallback: reading the callback's data raises;
 -- spec.sendRaises: sendCommand raises (this text).
 -- g.built[e] = { fileName, params, transf, name, player, frozenEdges, ... }; g.buildCmds: every proposal sent.
 -- Like the engine: a list element written into a proposal is lost (only a whole list assigned counts), an unknown
--- file name or a transf that is no Mat4f is an assertion (the game would die), and a refused proposal builds nothing.
+-- file name or a transf that is no Mat4f is an assertion (the game would die), a refused proposal builds nothing,
+-- and makeProposalData takes no SimpleProposal (engine/util.d.tl:939 types it for a Proposal; g.proposalDataCalls).
+-- The octree finds the constructions in g.built by their transf's position.
 function M.installBuild(g, spec)
 	spec = spec or {}
 	local cons = spec.cons or {}
@@ -1658,9 +1660,22 @@ function M.installBuild(g, spec)
 		return data, adds, removes
 	end
 
+	g.proposalDataCalls = 0
 	api.engine.util.proposal = { makeProposalData = function(p, ctx)
-		if spec.dryRunFails then error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)") end
-		return (evaluate(p))
+		g.proposalDataCalls = g.proposalDataCalls + 1
+		error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)")
+	end }
+	api.type.Box3 = { new = function(lo, hi) return { min = lo, max = hi } end }
+	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
+	api.engine.system = api.engine.system or {}
+	-- (over an octree installed before, Track Connector's fake: what it finds is still found)
+	local oldOctree = api.engine.system.octreeSystem
+	api.engine.system.octreeSystem = { findIntersectingEntities = function(box, cb)
+		if oldOctree then oldOctree.findIntersectingEntities(box, cb) end
+		for e, b in pairs(g.built) do
+			local x, y = b.transf and b.transf[13], b.transf and b.transf[14]
+			if x and x >= box.min.x and x <= box.max.x and y >= box.min.y and y <= box.max.y then cb(e) end
+		end
 	end }
 
 	local function apply(cmd)
@@ -1715,14 +1730,18 @@ function M.installBuild(g, spec)
 		g.buildCmds[#g.buildCmds + 1] = cmd
 		local ok, data, results = apply(cmd)
 		if cb and not spec.lostCallback then
-			cb({ resultProposalData = data, resultEntities = {} }, ok, results)
+			local d = { resultProposalData = data, resultEntities = {} }
+			if spec.raiseInCallback then d = setmetatable({}, { __index = function() error("engine data gone") end }) end
+			cb(d, ok, results)
 		end
 	end
 	local getComponent = api.engine.getComponent
 	api.engine.getComponent = function(e, kind)
 		if kind == "CONSTRUCTION" and g.built[e] then
 			local b = g.built[e]
-			return { fileName = b.fileName, params = copy(b.params), transf = copy(b.transf), frozenEdges = copy(b.frozenEdges),
+			local pn = copy(b.params)
+			return { fileName = b.fileName, params = copy(b.params), params_native = { asTable = function() return copy(pn) end },
+				transf = copy(b.transf), frozenEdges = copy(b.frozenEdges),
 				depots = copy(b.depots), stations = {}, industries = {} }
 		end
 		if kind == "BASE_EDGE" and g.edges[e] then return copy(g.edges[e]) end

@@ -49,7 +49,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con --at 1200,800 [--angle 1.57] \
             [--params '{"rbr_height": 8}'] [--name N] [--dry-run]   # one construction (.con), no click: test saves
             # only; no z: the terrain's height. Answers its id, cost, the engine's errors, its depots and free ends
-  tf3ctl.py build --remove 5123[,5124] | build --remove-all   # only what the probe built (named probe-build...)
+  tf3ctl.py build --remove 5123[,5124] | build --remove-all   # only what the probe built (as built, or its name + mark)
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
@@ -1501,6 +1501,8 @@ def build_args(ns):
         raise ToolError("--at must be x,y or x,y,z (finite numbers)")
     args = {"res": ns.res.strip(), "at": at}
     if ns.angle is not None:
+        if ns.angle != ns.angle or abs(ns.angle) == float("inf"):
+            raise ToolError("--angle must be a finite number of radians")
         args["angle"] = ns.angle
     if ns.params is not None:
         try:
@@ -2718,13 +2720,17 @@ def make_parser():
                                        "(no click); or take away ones the probe built. Test saves only")
     bd.add_argument("--res", help="the construction's resName: a mod's content/<dir>/x.con.lua is <modId>::/<dir>/x.con, "
                     "a base game one ::/depots/... (on a miss the answer lists names like it)")
-    bd.add_argument("--at", metavar="X,Y[,Z]", help="where (metres); no Z: the terrain's height there")
+    bd.add_argument("--at", metavar="X,Y[,Z]", help="where (metres); no Z: the terrain's height there (under water "
+                    "the bottom: give Z for a construction on water)")
     bd.add_argument("--angle", type=float, help="turn about the vertical in radians (default 0)")
-    bd.add_argument("--params", help="a JSON object over the construction's default params, e.g. '{\"rbr_height\": 8}'")
+    bd.add_argument("--params", help="a JSON object over the construction's default params, as values (not indexes; a "
+                    "param without numbers takes its index), e.g. '{\"rbr_height\": 8}'")
     bd.add_argument("--seed", type=int, help="params.seed when --params has none (default 1, the same look each time)")
     bd.add_argument("--name", help="its name (default probe-build N; build --remove after a load knows it by that)")
-    bd.add_argument("--dry-run", action="store_true", help="only the engine's check (errors, collisions, cost)")
-    bd.add_argument("--remove", metavar="ID[,ID...]", help="take away constructions the probe built")
+    bd.add_argument("--dry-run", action="store_true", help="no build and no engine check (it takes no SimpleProposal): the name, the "
+                    "params and the height, and the constructions within 30 m")
+    bd.add_argument("--remove", metavar="ID[,ID...]", help="take away constructions the probe built (the same file "
+                    "and place it built, or after a load its probe-build name with the probe's mark in the params)")
     bd.add_argument("--remove-all", action="store_true", help="take away all the probe built since this load")
     qu = sub.add_parser("quit", help="quit the game (app.quit through the probe)")
     qu.add_argument("--kill", action="store_true", help="SIGKILL when it does not quit (an unsaved game is lost)")

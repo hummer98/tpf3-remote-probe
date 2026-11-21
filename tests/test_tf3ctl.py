@@ -775,7 +775,10 @@ class EndToEndTest(unittest.TestCase):
         ramp = "road_bridge_ramp::/road_bridge_ramp/ramp.con"
         code, res = self.ctl("build", "--res", ramp, "--at", "300,40", "--dry-run")
         self.assertEqual(code, 0, res)
-        self.assertTrue(res["dryRun"] and res["buildable"], res)
+        self.assertTrue(res["dryRun"], res)
+        self.assertIs(res["checked"], False, "the engine's check is not run")
+        self.assertNotIn("buildable", res, "no verdict without the engine's check")
+        self.assertEqual(res["near"], [])
         code, res = self.ctl("build", "--res", ramp, "--at", "300,40", "--params", '{"rbr_height": 4}')
         self.assertEqual(code, 0, res)
         self.assertEqual(res["zFrom"], "terrain")
@@ -1310,7 +1313,8 @@ class QuitLaunchTest(unittest.TestCase):
         for bad in (dict(), dict(res="x.con"), dict(res=" ", at="1,2"), dict(res="x.con", at="1"),
                     dict(res="x.con", at="1,2,3,4"), dict(res="x.con", at="a,b"), dict(res="x.con", at="nan,1"),
                     dict(res="x.con", at="1,2", params="[1]"), dict(res="x.con", at="1,2", params="nope"),
-                    dict(res="x.con", at="1,2", name=" "), dict(remove="1,x"), dict(remove="-1"),
+                    dict(res="x.con", at="1,2", name=" "), dict(res="x.con", at="1,2", angle=float("nan")),
+                    dict(res="x.con", at="1,2", angle=float("inf")), dict(remove="1,x"), dict(remove="-1"),
                     dict(remove="1", res="x.con"), dict(remove="1", remove_all=True), dict(remove_all=True, dry_run=True)):
             with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
                 tf3ctl.build_args(ns(**bad))

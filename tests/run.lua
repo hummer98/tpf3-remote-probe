@@ -6231,15 +6231,30 @@ test("core.buildDefaults / buildParams / buildResCandidates / buildRemovable", f
 	eq(d.odd, 4, "an index past the numbers: the index"); eq(d[""], nil)
 	eq(next(core.buildDefaults(nil)), nil)
 	local p = core.buildParams({ len = 100, kind = 2 }, { kind = 5, extra = 1 }, 9)
-	eq(p.len, 100); eq(p.kind, 5); eq(p.extra, 1); eq(p.seed, 9)
+	eq(p.len, 100); eq(p.kind, 5); eq(p.extra, 1); eq(p.seed, 9); eq(p[core.BUILD_MARK], 1, "the probe's mark")
 	eq(core.buildParams({}, { seed = 3 }, 9).seed, 3, "a seed given in params wins")
 	local c = core.buildResCandidates("depots/water/x.con.lua")
 	eq(c[1], "depots/water/x.con.lua"); eq(c[2], "depots/water/x.con"); eq(c[3], "::/depots/water/x.con")
 	eq(#core.buildResCandidates("m::/a.con"), 1, "a mod's name has its ::")
 	eq(#core.buildResCandidates("::/a.con"), 1)
-	truthy(core.buildRemovable(5, { [5] = {} }, "Ramp"))
-	truthy(core.buildRemovable(6, {}, core.BUILD_NAME_PREFIX .. " 3"))
-	truthy(not core.buildRemovable(6, {}, "Coal mine")); truthy(not core.buildRemovable(6, nil, nil))
+	local rec = { res = "m::/r.con", x = 100, y = 200 }
+	local function con(t)
+		local c = { fileName = "m::/r.con", x = 100, y = 200, name = "Ramp", marked = false }
+		for k, v in pairs(t or {}) do c[k] = v end
+		return c
+	end
+	truthy(core.buildRemovable(rec, con()), "what this load built, as built")
+	truthy(core.buildRemovable(rec, con({ x = 100.5, y = 199.5 })), "within a metre")
+	-- the id given again to something else (a town's building after ours went): refused, with why
+	local ok, why = core.buildRemovable(rec, con({ fileName = "::/building/town/house.con", name = "House" }))
+	truthy(not ok and why:find("given again"), why)
+	truthy(not core.buildRemovable(rec, con({ x = 140 })), "the same file elsewhere")
+	truthy(not core.buildRemovable(rec, con({ x = false })), "no position read")
+	-- after a load: the name and the mark, both
+	truthy(core.buildRemovable(nil, con({ name = core.BUILD_NAME_PREFIX .. " 3", marked = true })))
+	truthy(not core.buildRemovable(nil, con({ name = core.BUILD_NAME_PREFIX .. " 3" })), "a probe-build name alone is not enough")
+	truthy(not core.buildRemovable(nil, con({ marked = true })), "the mark alone neither")
+	truthy(not core.buildRemovable(nil, nil)); truthy(not core.buildRemovable(rec, {}))
 	truthy(core.CHANGES_GAME.build and core.COMMANDS.build and not core.MENU_COMMANDS.build)
 end)
 
@@ -6332,25 +6347,29 @@ test("build: an unknown name is refused before anything is sent, with names like
 	truthy(not g.crashed, g.crashed)
 end)
 
-test("build --dry-run: the engine's check without building; a refused check says what was not checked", function()
-	local g = buildWorld({ blocked = function(x) return x > 1000 and 77 or nil end })
-	local a = buildRun(g, 940, string.format('{ res = %q, at = "0,0", dryRun = true }', RAMP))
-	truthy(a.ok and a.dryRun and a.buildable, a.error); eq(a.cost, 5000)
-	local a2 = buildRun(g, 941, string.format('{ res = %q, at = "2000,0", dryRun = true }', RAMP))
-	truthy(a2.ok and a2.buildable == false and a2.collisions[1] == 77, "a collision found by the check")
-	eq(#g.buildCmds, 0, "no command sent"); eq(next(g.built), nil)
-	local g2 = buildWorld({ dryRunFails = true })
-	local a3 = buildRun(g2, 942, string.format('{ res = %q, at = "0,0", dryRun = true }', RAMP))
-	truthy(a3.ok and a3.checked == false and a3.why:find("could not be run"), a3.why)
-	eq(a3.at.z, 0, "the height is still read")
+test("build --dry-run: no engine check (makeProposalData takes no SimpleProposal); name, params, height, what is near", function()
+	local g = buildWorld()
+	local a0 = buildRun(g, 939, string.format('{ res = %q, at = "1000,0" }', RAMP))
+	truthy(a0.ok, a0.error)
+	local n = #g.buildCmds
+	local a = buildRun(g, 940, string.format('{ res = %q, at = "1010,5", dryRun = true, params = { rbr_height = 4 } }', RAMP))
+	truthy(a.ok and a.dryRun, a.error)
+	eq(a.checked, false); eq(a.buildable, nil, "no verdict: only a build has the engine's"); truthy(a.why:find("only comes with a build"))
+	eq(a.params.rbr_height, 4); eq(a.at.z, 0); eq(a.res, RAMP)
+	eq(#a.near, 1); eq(a.near[1].entity, a0.entity, "the ramp built before, within the radius")
+	eq(g.proposalDataCalls, 0, "makeProposalData is never called")
+	eq(#g.buildCmds, n, "no command sent")
+	local a2 = buildRun(g, 941, string.format('{ res = %q, at = "5000,0", dryRun = true }', RAMP))
+	eq(#a2.near, 0)
+	truthy(buildRun(g, 942, '{ res = "x.con", at = "0,0", dryRun = true }').error:find("no construction"), "a wrong name")
 end)
 
-test("build remove: only what the probe built (this load, or its name after a load); removeAll", function()
+test("build remove: only what the probe built, as built (file and place) or by its name and mark; removeAll", function()
 	local g = buildWorld()
 	local a = buildRun(g, 950, string.format('{ res = %q, at = "0,0" }', RAMP))
 	local b = buildRun(g, 951, string.format('{ res = %q, at = "300,0", name = "Mine" }', RAMP))
-	-- someone else's construction (the save's coal mine, made here as the fake's, named otherwise) is refused
-	g.built[7777] = { fileName = RAMP, params = {}, transf = {}, frozenEdges = {}, depots = {} }
+	-- someone else's construction (named otherwise, no mark) is refused, and with it the whole command
+	g.built[7777] = { fileName = RAMP, params = {}, transf = { [13] = 900, [14] = 0 }, frozenEdges = {}, depots = {} }
 	g.buildNames[7777] = "Coal mine"
 	local r = buildRun(g, 952, string.format("{ remove = { %d, 7777 } }", a.entity))
 	eq(r.ok, false); truthy(r.error:find("7777") and r.error:find("not built by the probe"), r.error)
@@ -6359,27 +6378,58 @@ test("build remove: only what the probe built (this load, or its name after a lo
 	truthy(r2.error:find("no construction"), r2.error)
 	local r3 = buildRun(g, 954, string.format("{ remove = %d }", a.entity))
 	truthy(r3.ok, r3.error); eq(g.built[a.entity], nil, "removed"); eq(r3.removed[1], a.entity)
-	-- removeAll: what this load built (b, named Mine, too)
+	-- regression: ours went without the probe seeing it, and the engine gave its id to a town's building. The
+	-- probe's list still holds the id: neither remove nor removeAll may take the house
+	local c = buildRun(g, 955, string.format('{ res = %q, at = "600,0" }', RAMP))
+	g.built[c.entity] = { fileName = "::/building/town/house.con", params = {}, transf = { [13] = 610, [14] = 3 },
+		frozenEdges = {}, depots = {} }
+	g.buildNames[c.entity] = "House"
+	local r4 = buildRun(g, 956, string.format("{ remove = %d }", c.entity))
+	truthy(not r4.ok and r4.error:find("given again"), r4.error)
+	truthy(g.built[c.entity], "the house stays")
+	-- removeAll: b goes; c (now the house) is forgotten, not removed; the other one was never ours
 	local r5 = buildRun(g, 957, "{ removeAll = true }")
-	truthy(r5.ok, r5.error); eq(r5.removed[1], b.entity); eq(g.built[b.entity], nil); truthy(g.built[7777], "not ours: kept")
-	-- after a load the probe's list is empty: a construction named probe-build... is still its own
+	truthy(r5.ok, r5.error); eq(#r5.removed, 1); eq(r5.removed[1], b.entity); eq(g.built[b.entity], nil)
+	eq(r5.forgotten[1], c.entity); truthy(g.built[c.entity], "the house stays"); truthy(g.built[7777], "not ours: kept")
+	truthy(buildRun(g, 958, "{ removeAll = true }").error:find("built nothing"), "the list is empty now")
+	-- after a load the probe's list is empty: a construction named probe-build... with the mark is still its own;
+	-- the name alone (a player's own "probe-build" or one without the mark) is not
 	local g2 = buildWorld()
-	g2.built[8888] = { fileName = RAMP, params = {}, transf = {}, frozenEdges = {}, depots = {} }
+	g2.built[8888] = { fileName = RAMP, params = { [core.BUILD_MARK] = 1 }, transf = { [13] = 0, [14] = 0 }, frozenEdges = {}, depots = {} }
 	g2.buildNames[8888] = core.BUILD_NAME_PREFIX .. " 4"
-	local r4 = buildRun(g2, 955, "{ remove = 8888 }")
-	truthy(r4.ok, r4.error); eq(g2.built[8888], nil)
-	truthy(buildRun(g2, 956, "{ removeAll = true }").error:find("built nothing"))
+	g2.built[8889] = { fileName = RAMP, params = {}, transf = { [13] = 50, [14] = 0 }, frozenEdges = {}, depots = {} }
+	g2.buildNames[8889] = core.BUILD_NAME_PREFIX .. " 5"
+	truthy(not buildRun(g2, 959, "{ remove = 8889 }").ok, "no mark: refused")
+	local r6 = buildRun(g2, 960, "{ remove = 8888 }")
+	truthy(r6.ok, r6.error); eq(g2.built[8888], nil); truthy(g2.built[8889])
+	truthy(buildRun(g2, 961, "{ removeAll = true }").error:find("built nothing"))
+	-- what the probe builds carries the mark, so it can be removed by name after a load
+	local d = buildRun(g2, 962, string.format('{ res = %q, at = "900,900" }', RAMP))
+	eq(g2.built[d.entity].params[core.BUILD_MARK], 1)
 	truthy(not g.crashed and not g2.crashed)
 end)
 
-test("build: no callback from the engine is an error after its wait, not a hang; refused in the main menu", function()
-	local g = buildWorld({ lostCallback = true })
+test("build: no callback: found by its name near the point, else an error with the way to find it; the callback guarded", function()
+	-- built, but the callback never came: found by its name and file near the point, and the probe's from then on
+	local lostSpec = { lostCallback = true }
+	local g = buildWorld(lostSpec)
 	send(g, 960, "build", string.format('{ res = %q, at = "0,0" }', RAMP))
 	frames(g, FIRST + 20)
 	eq(final(g, 960), nil, "no answer yet")
 	frames(g, 200, 0.2)
 	local a = final(g, 960)
-	truthy(a and a.ok == false and a.error:find("no answer from the engine"), a and a.error)
+	truthy(a and a.ok and a.entity and a.why:find("found by its name"), a and (a.error or a.why))
+	truthy(g.built[a.entity])
+	lostSpec.lostCallback = false
+	local r = buildRun(g, 963, string.format("{ remove = %d }", a.entity))
+	truthy(r.ok, "removable as the probe's: " .. tostring(r.error))
+	-- refused and no callback (nothing built): an error after the wait, naming what to look for
+	local g3 = buildWorld({ lostCallback = true, blocked = function() return 1 end })
+	send(g3, 964, "build", string.format('{ res = %q, at = "0,0" }', RAMP))
+	frames(g3, FIRST + 20)
+	frames(g3, 200, 0.2)
+	local e3, n3 = final(g3, 964)
+	eq(n3, 1); truthy(e3.error:find("no answer from the engine") and e3.error:find("nothing named probe%-build 1"), e3.error)
 	-- a send that raises: one error answer, and no second one when the wait runs out
 	local g2 = buildWorld({ sendRaises = "bad proposal" })
 	send(g2, 962, "build", string.format('{ res = %q, at = "0,0" }', RAMP))
@@ -6390,6 +6440,11 @@ test("build: no callback from the engine is an error after its wait, not a hang;
 	local timeouts = 0
 	for _, l in ipairs(g2.logs) do if tostring(l):find("no answer from the engine") then timeouts = timeouts + 1 end end
 	eq(timeouts, 0, "no job left waiting")
+	-- the callback's data raises when read: nothing escapes the callback, and the command still ends
+	local g4 = buildWorld({ raiseInCallback = true })
+	local a4, n4 = buildRun(g4, 965, string.format('{ res = %q, at = "0,0" }', RAMP))
+	eq(n4, 1); truthy(a4 ~= nil, "answered")
+	truthy(not g4.crashed)
 	local m = newGame({ saves = SAVES, menu = true })
 	frames(m, 2)
 	send(m, 961, "build", string.format('{ res = %q, at = "0,0" }', RAMP))

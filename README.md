@@ -311,25 +311,38 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   is refused before anything is sent, with up to 12 names like it (the same file name, or the same mod's).
 - `--at x,y[,z]` in metres (a negative x: `--at=-300,450`). Without z the terrain's height there is used
   (`api.engine.terrain.getHeightAt`); the construction's own terrain alignment then levels or cuts the ground, as
-  when a player places it. `--angle`: radians about the vertical.
+  when a player places it. Under water that height is the bottom, not the surface: **give z for a construction on
+  water** (a shipyard, a harbour). `--angle`: radians about the vertical.
 - `--params`: a JSON object laid over the construction's own defaults (each param's `numbers[defaultIndex]`, as the
-  game's construction menu starts them); `seed` is 1 unless given (`--seed`, or in `--params`), so the same
-  placement looks the same each time.
+  game's construction menu starts them). The values are the params' values, not indexes into their lists: a param
+  with `numbers` takes one of its numbers (`"rbr_height": 8` for 8 m), a param without `numbers` takes its index
+  (that is its value). `seed` is 1 unless given (`--seed`, or in `--params`), so the same placement looks the
+  same each time. The probe adds `remote_probe_build = 1` to the params, its mark (see `--remove`); the
+  construction's updateFn does not know the key and leaves it alone.
 - The answer: `entity` (the new construction), `construction` (`fileName`, `name`, `depots`, `stations`,
   `industries`, and `ends`: the free ends of its own road or track pieces with their positions, candidates for
   `connect --from`), `cost` (the engine's), `balanceBefore` / `balanceAfter` / `spent`, `errors`, `warnings`,
   `collisions` (ids in the way), `params` as sent, `at` (with the z used, `zFrom`). A refusal is `ok: false` with
   the engine's messages in `error`.
-- `--dry-run` asks the engine's `makeProposalData` without building (`buildable`, `errors`, `collisions`, `cost`).
-  That function is typed for a full `Proposal`; if it refuses a `SimpleProposal`, the answer says `checked: false`
-  and only the name and the height were checked.
-- `--remove` takes away only constructions the probe built: those built since this load, or (after a load) those
-  whose name starts with `probe-build` (the default name, `probe-build N`). A construction given its own `--name`
-  can be removed by id only in the load that built it. One id that does not qualify refuses the whole command.
+- `--dry-run` builds nothing and does **not** ask the engine: its `makeProposalData` takes a full `Proposal` and has
+  no `SimpleProposal` form (`engine/util.d.tl:939`), so it is not called. The probe checks the name, the params it
+  would send and the height, and lists the constructions within 30 m of the point (`near`, a rough look by their
+  boxes). The answer has `checked: false` and no `buildable`: whether the engine takes it (collisions, terrain,
+  money) is known only from a build.
+- `--remove` takes away only constructions the probe built: one built since this load, if the engine still has
+  the same file at the same place under that id (an id the engine gave again to something else, after ours went
+  by hand or unseen, is refused); or, after a load, one whose name starts with `probe-build` (the default name,
+  `probe-build N`) **and** whose params carry the probe's mark. A construction given its own `--name` can be
+  removed only in the load that built it. One id that does not qualify refuses the whole command. `--remove-all`
+  takes what this load built and still stands as built; the rest is dropped from its list unremoved and named in
+  `forgotten`.
+- No answer from the engine in 30 s: a build is then looked for by its name (each gets its own, `probe-build N`)
+  and file within 60 m of the point, and if found answered as built (`why` says so). Otherwise the error names
+  what to look for: if it shows up later, it carries that name and the mark, so `build --remove <id>` takes it.
 - It changes the game (as `line` and `connect`), so other clients get the usual warning; one build at a time is
   enough (each waits up to 30 s for the engine's answer).
 - **Not checked in game yet** (written 2026-11-22): in particular whether the engine takes the default params, the
-  name and `autoFillSlots` as sent, whether `ends` read back, and the dry run.
+  mark, the name and `autoFillSlots` as sent, whether `ends` and the mark read back, and the dry run's `near`.
 
 ### My Mods from the main menu (`modhub`)
 

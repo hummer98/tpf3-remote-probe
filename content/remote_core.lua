@@ -910,13 +910,18 @@ function M.buildDefaults(descParams)
 	return out
 end
 
--- the params sent: the defaults, then the request's own on top, and the seed when the request has none
--- (constructions that use randomness ask for one: a mod's pier asserts it, nova auto_piers batch.lua)
+-- the params sent: the defaults, then the request's own on top, the seed when the request has none
+-- (constructions that use randomness ask for one: a mod's pier asserts it, nova auto_piers batch.lua), and the
+-- probe's mark, which stays in the construction's params (a key its updateFn does not know: nova's piers carry one
+-- of their own the same way, batch.lua nova_sert_vss_auto) and tells build remove, after a load, that the probe
+-- built it
+M.BUILD_MARK = "remote_probe_build"
 function M.buildParams(defaults, given, seed)
 	local out = {}
 	for k, v in pairs(defaults or {}) do out[k] = v end
 	for k, v in pairs(given or {}) do out[k] = v end
 	if out.seed == nil then out.seed = seed end
+	out[M.BUILD_MARK] = 1
 	return out
 end
 
@@ -935,11 +940,25 @@ function M.buildResCandidates(res)
 	return out
 end
 
--- a construction may be taken away by build remove only when the probe built it: in this load (built[e]) or, after
--- a load, by the name it got (BUILD_NAME_PREFIX)
-function M.buildRemovable(e, built, name)
-	if built and built[e] then return true end
-	return type(name) == "string" and name:sub(1, #M.BUILD_NAME_PREFIX) == M.BUILD_NAME_PREFIX
+-- May build remove take this construction away? Only what the probe built:
+--   rec (what this load of the probe built under that id: { res, x, y }): the same file at the same place (an id
+--   the engine gave again to something else after ours went, by hand or unseen, is not ours);
+--   or, after a load, its name starts with BUILD_NAME_PREFIX and its params carry the probe's mark.
+-- con: what the engine has under the id now: { fileName, x, y, name, marked }. -> true, or false and why
+M.BUILD_SAME_PLACE_M = 1
+function M.buildRemovable(rec, con)
+	if type(con) ~= "table" or type(con.fileName) ~= "string" then return false, "no construction" end
+	if type(rec) == "table" and rec.res == con.fileName and tonumber(con.x) and tonumber(con.y)
+		and math.abs(con.x - rec.x) <= M.BUILD_SAME_PLACE_M and math.abs(con.y - rec.y) <= M.BUILD_SAME_PLACE_M then
+		return true
+	end
+	if con.marked and type(con.name) == "string" and con.name:sub(1, #M.BUILD_NAME_PREFIX) == M.BUILD_NAME_PREFIX then
+		return true
+	end
+	if type(rec) == "table" then
+		return false, "not what the probe built under this id (another file or place now: the id may have been given again)"
+	end
+	return false, "not built by the probe (no " .. M.BUILD_NAME_PREFIX .. " name with the probe's mark in its params)"
 end
 
 ---------------------------------------------------------------------------------------------------------------------

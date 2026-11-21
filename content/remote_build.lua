@@ -12,6 +12,8 @@ local M = {}
 local RESULT_SEC = 30 -- for the command's callback
 local SETTLE_FRAMES = 5 -- before the balance after a build is read: a cost booked after the callback is in it
 local MAX_SUGGEST = 12
+local NEAR_M = 30 -- the dry run lists constructions this near the point (a rough look, not the engine's check)
+local FIND_M = 60 -- after a lost callback, how far from the point the new construction is looked for by its name
 
 -- ctx: core, answer(id, payload, tag), fail(id, msg), appTime(), try(fn), say(msg, level)
 function M.new(ctx)
@@ -142,6 +144,40 @@ function M.new(ctx)
 			industries = list("industries") }
 	end
 
+	-- what the engine has under an id now, for build remove (core.buildRemovable): file, position, name, mark
+	local function conInfo(e)
+		local c = comp(e, "CONSTRUCTION")
+		if not c then return nil end
+		local t = core.field(c, "transf")
+		local params
+		local pn = core.field(c, "params_native")
+		if pn ~= nil then
+			local ok, tb = pcall(function() return pn:asTable() end)
+			if ok and type(tb) == "table" then params = tb end
+		end
+		local mark = params and params[core.BUILD_MARK]
+		if mark == nil then mark = core.field(core.field(c, "params"), core.BUILD_MARK) end
+		return { fileName = tostring(core.field(c, "fileName")), x = tonumber(core.field(t, 13)),
+			y = tonumber(core.field(t, 14)), name = nameOf(e), marked = tonumber(mark) == 1 }
+	end
+
+	-- the constructions whose box meets a square of r metres around x, y (the octree, as remote_connect reads it)
+	local function constructionsNear(x, y, r)
+		local found, seen = {}, {}
+		pcall(function()
+			local box = api.type.Box3.new(api.type.Vec3f.new(x - r, y - r, -1000), api.type.Vec3f.new(x + r, y + r, 5000))
+			api.engine.system.octreeSystem.findIntersectingEntities(box, function(e)
+				e = tonumber(e)
+				if e and not seen[e] and comp(e, "CONSTRUCTION") then
+					seen[e] = true
+					found[#found + 1] = e
+				end
+			end)
+		end)
+		table.sort(found)
+		return found
+	end
+
 	local NOTE = "not checked in a game yet: look at it (frame) before trusting the answer"
 
 	local function place(c, r)
@@ -176,58 +212,81 @@ function M.new(ctx)
 		local out = { res = res, at = { x = r.x, y = r.y, z = z }, zFrom = zFrom, angle = r.angle, params = params,
 			name = name, note = NOTE }
 		if r.dryRun then
-			-- the engine's own check, without building; makeProposalData is typed for a Proposal (cmd.d.tl), so a
-			-- SimpleProposal may be refused: then only the name and the height were checked
-			local ok, data = pcall(function() return api.engine.util.proposal.makeProposalData(sp, context()) end)
-			out.ok, out.dryRun = true, true
-			if ok and data then
-				for k, v in pairs(verdict(data)) do out[k] = v end
-				out.buildable = not out.critical and not (out.errors and #out.errors > 0)
-			else
-				out.checked = false
-				out.why = "the engine's check of a proposal could not be run here: " .. tostring(data)
+			-- the probe's own checks only: the engine's makeProposalData takes a Proposal and has no SimpleProposal
+			-- form (engine/util.d.tl:939), so it is not called (no buildable: only a build says that)
+			out.ok, out.dryRun, out.checked = true, true, false
+			out.why = "checked here: the name, the params sent and the height; the engine's check (collisions, terrain, "
+				.. "money) only comes with a build"
+			local near = {}
+			for _, e in ipairs(constructionsNear(r.x, r.y, NEAR_M)) do
+				local info = conInfo(e)
+				near[#near + 1] = { entity = e, fileName = info and info.fileName, name = info and info.name }
 			end
+			out.nearRadius = NEAR_M
+			out.near = core.array(near)
 			return answer(c.id, out)
 		end
 		-- (the job is listed once the command is sent: a send that raises is answered by the handler's pcall alone)
 		local job = { id = c.id, kind = "place", out = out, started = appTime(), before = balance() }
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(), false, true), function(data, success, entities)
-			-- only plain values leave the callback (the engine's objects belong to it)
-			local v = verdict(try(function() return data.resultProposalData end))
-			local list = ids(try(function() return data.resultEntities end))
-			if #list == 0 then list = ids(entities) end
-			job.result = { success = success == true, verdict = v, entities = list }
+			-- all of it guarded, as AoM's strawberries.lua: it may run where an error has no one to catch it. Only
+			-- plain values leave the callback (the engine's objects belong to it)
+			local ok, err = pcall(function()
+				local v = verdict(try(function() return data.resultProposalData end))
+				local list = ids(try(function() return data.resultEntities end))
+				if #list == 0 then list = ids(entities) end
+				job.result = { success = success == true, verdict = v, entities = list }
+			end)
+			if not ok then job.result = { success = success == true, verdict = { callbackError = tostring(err) }, entities = {} } end
 		end)
 		jobs[#jobs + 1] = job
 	end
 
 	local function remove(c, r)
-		local list = r.remove
+		local list, forgotten = r.remove, nil
 		if r.removeAll then
-			list = {}
-			for e in pairs(built) do list[#list + 1] = e end
-			table.sort(list)
+			-- what this load built and still stands as it was built; the rest is dropped from the list (gone, or the
+			-- id given again to something else) and named in the answer, never removed
+			list, forgotten = {}, {}
+			local all = {}
+			for e in pairs(built) do all[#all + 1] = e end
+			table.sort(all)
+			for _, e in ipairs(all) do
+				local info = conInfo(e)
+				if info and core.buildRemovable(built[e], info) then
+					list[#list + 1] = e
+				else
+					built[e] = nil
+					forgotten[#forgotten + 1] = e
+				end
+			end
 			if #list == 0 then
-				return fail(c.id, "this load of the probe built nothing (after a load give the ids: those named "
-					.. core.BUILD_NAME_PREFIX .. "... are taken)")
+				return fail(c.id, "this load of the probe built nothing that still stands as built"
+					.. (#forgotten > 0 and (" (forgotten: " .. table.concat(forgotten, ", ") .. ")") or "")
+					.. "; after a load give the ids: those named " .. core.BUILD_NAME_PREFIX .. "... with the probe's mark are taken")
 			end
 		end
 		local bad = {}
 		for _, e in ipairs(list) do
-			local name = nameOf(e)
-			if not comp(e, "CONSTRUCTION") then
+			local info = conInfo(e)
+			if not info then
 				bad[#bad + 1] = string.format("%d is no construction", e)
-			elseif not core.buildRemovable(e, built, name) then
-				bad[#bad + 1] = string.format("%d (%s) was not built by the probe", e, tostring(name))
+			else
+				local ok, why = core.buildRemovable(built[e], info)
+				if not ok then bad[#bad + 1] = string.format("%d (%s, %s): %s", e, tostring(info.name), info.fileName, why) end
 			end
 		end
 		if #bad > 0 then return fail(c.id, "nothing removed: " .. table.concat(bad, "; ")) end
 		local sp = api.type.SimpleProposal.new()
 		sp.constructionsToRemove = list
-		local job = { id = c.id, kind = "remove", out = { removed = core.array(list), note = NOTE }, started = appTime(),
+		local job = { id = c.id, kind = "remove", out = { removed = core.array(list), note = NOTE,
+			forgotten = forgotten and #forgotten > 0 and core.array(forgotten) or nil }, started = appTime(),
 			before = balance(), list = list }
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(), false, true), function(data, success)
-			job.result = { success = success == true, verdict = verdict(try(function() return data.resultProposalData end)) }
+			local ok, err = pcall(function()
+				job.result = { success = success == true, verdict = verdict(try(function() return data.resultProposalData end)) }
+			end)
+			if not ok then job.result = { success = success == true, verdict = { callbackError = tostring(err) } } end
 		end)
 		jobs[#jobs + 1] = job
 	end
@@ -268,6 +327,26 @@ function M.new(ctx)
 		answer(job.id, out)
 	end
 
+	-- no callback in RESULT_SEC: a place may still have been built. It is looked for near its point by its name
+	-- and file (each build gets a name of its own, probe-build N); found, it is the probe's, as if the callback came
+	local function lost(job)
+		local why = string.format("no answer from the engine in %d s", RESULT_SEC)
+		if job.kind == "place" then
+			local o = job.out
+			for _, e in ipairs(constructionsNear(o.at.x, o.at.y, FIND_M)) do
+				local info = conInfo(e)
+				if info and info.name == o.name and info.fileName == o.res and not built[e] then
+					job.result = { success = true, verdict = {}, entities = { e } }
+					o.why = why .. "; found by its name " .. o.name .. " near the point"
+					return finish(job)
+				end
+			end
+			return fail(job.id, why .. "; nothing named " .. o.name .. " (" .. o.res .. ") within " .. FIND_M
+				.. " m of the point. If it shows up later it carries that name: build --remove <id> takes it")
+		end
+		fail(job.id, why .. " (look at the map: it may be gone)")
+	end
+
 	local B = {}
 
 	function B.handle(c)
@@ -290,7 +369,8 @@ function M.new(ctx)
 					keep[#keep + 1] = job
 				end
 			elseif appTime() - job.started > RESULT_SEC then
-				fail(job.id, string.format("no answer from the engine in %d s (look at the map: it may be built)", RESULT_SEC))
+				local ok, err = pcall(lost, job)
+				if not ok then fail(job.id, err) end
 			else
 				keep[#keep + 1] = job
 			end
