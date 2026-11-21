@@ -525,7 +525,9 @@ function M.new(ctx)
 		local t = try(function() return api.res.streetTemplateRep.get(idx) end)
 		if t == nil then return nil end
 		local av = core.field(t, "availability")
-		return { name = name, street = core.field(t, "roadType") == enumOf("RoadType", "STREET"),
+		-- street only when both the template's road type and the enum read (two nils are no match)
+		local rt, street = core.field(t, "roadType"), enumOf("RoadType", "STREET")
+		return { name = name, street = rt ~= nil and street ~= nil and rt == street, typeUnread = rt == nil or street == nil,
 			style = core.field(t, "streetStyle"), lanes = core.field(t, "laneConfigs"),
 			availability = { yearFrom = tonumber(core.field(av, "yearFrom")) or 0, yearTo = tonumber(core.field(av, "yearTo")) or 0 },
 			cost = tonumber(core.field(t, "cost")) }
@@ -537,7 +539,7 @@ function M.new(ctx)
 		if given == nil then
 			for _, name in ipairs(TOWN_ROADS) do
 				local t = templateInfo(name)
-				if t and availableIn(t.availability, year) then return t end
+				if t and t.street and availableIn(t.availability, year) then return t end
 			end
 			return nil, "none of the base town roads (" .. table.concat(TOWN_ROADS, ", ") .. ") is to be had in " .. tostring(year)
 		end
@@ -551,6 +553,7 @@ function M.new(ctx)
 		for _, name in ipairs(names) do
 			local t = templateInfo(name)
 			if t then
+				if t.typeUnread then return nil, name .. ": its road type (or the RoadType enum) could not be read" end
 				if not t.street then return nil, name .. " is a track type, not a road" end
 				if not availableIn(t.availability, year) then
 					return nil, string.format("%s is not to be had in %s (yearFrom %d, yearTo %d)", name, tostring(year),
@@ -569,41 +572,65 @@ function M.new(ctx)
 		if not (x and y and z) then return nil end
 		return { x = x, y = y, z = z }
 	end
-	-- the road pieces at a node; only a node is handed to the street system (its lookups assume one)
-	local function streetPieces(n)
-		if not comp(n, "BASE_NODE") then return {} end
-		return core.toList(try(function() return api.engine.system.streetSystem.getNodeStreetSegments(n) end))
+	-- the road pieces (BASE_EDGE of roadType STREET) whose box meets a circle of r metres around x, y: the octree
+	-- lists edges, not nodes (as nova's elevated_road builder.lua finds road ends: BASE_EDGE by findEntitiesInCircle,
+	-- then their node0 / node1). A piece whose road type cannot be read is left out (never taken for a road).
+	local function streetEdgesNear(x, y, r)
+		local street = enumOf("RoadType", "STREET")
+		local out, seen = {}, {}
+		local function take(e)
+			e = tonumber(e)
+			if not e or seen[e] then return end
+			seen[e] = true
+			local be = comp(e, "BASE_EDGE")
+			local rt = be and core.field(be, "roadType")
+			if street ~= nil and rt ~= nil and rt == street then out[#out + 1] = e end
+		end
+		local list = try(function()
+			return api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), r, CT().BASE_EDGE)
+		end)
+		if list ~= nil then
+			for _, e in ipairs(core.toList(list)) do take(e) end
+		else
+			-- (no octree util: the octree system's box, edges only)
+			pcall(function()
+				local box = api.type.Box3.new(api.type.Vec3f.new(x - r, y - r, -1000), api.type.Vec3f.new(x + r, y + r, 5000))
+				api.engine.system.octreeSystem.findIntersectingEntities(box, function(e) take(e) end)
+			end)
+		end
+		table.sort(out)
+		return out
 	end
 
-	-- the nearest node with a road piece within r metres (on the map's plane) of x, y, or nil
-	local function streetNodeNear(x, y, r)
-		local best, bestD
-		pcall(function()
-			local box = api.type.Box3.new(api.type.Vec3f.new(x - r, y - r, -1000), api.type.Vec3f.new(x + r, y + r, 5000))
-			api.engine.system.octreeSystem.findIntersectingEntities(box, function(e)
-				e = tonumber(e)
-				local p = e and nodePos(e)
-				if not p then return end
-				local d = math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2)
-				if d <= r and (bestD == nil or d < bestD or (d == bestD and e < best)) and #streetPieces(e) > 0 then
-					best, bestD = e, d
+	-- the nearest end of a road piece within r metres of x, y, z (in three dimensions: a node of a bridge or a
+	-- raised road above the point is not taken; no z: on the map's plane), or nil. Only the street pieces' own
+	-- nodes are looked at, so no track node is asked about.
+	local function streetNodeNear(x, y, z, r)
+		local best, bestD, pieces = nil, nil, {}
+		for _, e in ipairs(streetEdgesNear(x, y, r)) do
+			local be = comp(e, "BASE_EDGE")
+			for _, k in ipairs({ "node0", "node1" }) do
+				local n = tonumber(core.field(be, k))
+				local p = n and nodePos(n)
+				if p then
+					pieces[n] = (pieces[n] or 0) + 1
+					local d = math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2 + (z and (p.z - z) ^ 2 or 0))
+					if d <= r and (bestD == nil or d < bestD or (d == bestD and n < best)) then best, bestD = n, d end
 				end
-			end)
-		end)
+			end
+		end
 		if not best then return nil end
 		local p = nodePos(best)
-		return { node = best, x = p.x, y = p.y, z = p.z, snapped = bestD, pieces = #streetPieces(best) }
+		return { node = best, x = p.x, y = p.y, z = p.z, snapped = bestD, pieces = pieces[best] }
 	end
 
 	-- one end: a road node near it (snap), else a new node at the point (z given, or the terrain's)
 	local function roadEnd(pt, snap)
-		local hit = snap > 0 and streetNodeNear(pt[1], pt[2], snap) or nil
-		if hit then return hit end
 		local z, zFrom = pt[3], "given"
-		if z == nil then
-			z, zFrom = heightAt(pt[1], pt[2]), "terrain"
-			if z == nil then return nil, "the terrain's height could not be read: give z" end
-		end
+		if z == nil then z, zFrom = heightAt(pt[1], pt[2]), "terrain" end
+		local hit = snap > 0 and streetNodeNear(pt[1], pt[2], z, snap) or nil
+		if hit then return hit end
+		if z == nil then return nil, "the terrain's height could not be read: give z" end
 		return { x = pt[1], y = pt[2], z = z, zFrom = zFrom }
 	end
 
@@ -615,25 +642,30 @@ function M.new(ctx)
 		return t.new()
 	end
 
-	-- the piece between the two ends, read back: an edge whose ends are at the planned points (after a lost
-	-- callback, or when the callback gives no ids)
-	local function pieceBetween(a, b)
-		local found
-		local mx, my = (a.x + b.x) / 2, (a.y + b.y) / 2
+	-- the road pieces near either end and the middle, by id: taken before sending, so a piece found afterwards
+	-- is a new one
+	local function piecesAround(a, b)
+		local set = {}
 		local r = math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) / 2 + 10
+		for _, e in ipairs(streetEdgesNear((a.x + b.x) / 2, (a.y + b.y) / 2, r)) do set[e] = true end
+		for _, q in ipairs({ a, b }) do
+			for _, e in ipairs(streetEdgesNear(q.x, q.y, 10)) do set[e] = true end
+		end
+		return set
+	end
+
+	-- the piece between the two ends, read back: a road piece not there before (before: piecesAround) whose ends
+	-- are at the planned points (after a lost callback, or when the callback gives no ids)
+	local function pieceBetween(a, b, before)
 		local function near(p, q) return p and math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2) <= MATCH_M end
-		pcall(function()
-			local box = api.type.Box3.new(api.type.Vec3f.new(mx - r, my - r, -1000), api.type.Vec3f.new(mx + r, my + r, 5000))
-			api.engine.system.octreeSystem.findIntersectingEntities(box, function(e)
-				e = tonumber(e)
-				if found or not e then return end
+		for e in pairs(piecesAround(a, b)) do
+			if not (before and before[e]) then
 				local be = comp(e, "BASE_EDGE")
-				if not be then return end
 				local p0, p1 = nodePos(core.field(be, "node0")), nodePos(core.field(be, "node1"))
-				if (near(p0, a) and near(p1, b)) or (near(p0, b) and near(p1, a)) then found = e end
-			end)
-		end)
-		return found
+				if (near(p0, a) and near(p1, b)) or (near(p0, b) and near(p1, a)) then return e end
+			end
+		end
+		return nil
 	end
 
 	local NOTE_ROAD = "one straight piece as a SimpleStreetProposal; not checked in a game yet: look at it (frame) " ..
@@ -656,6 +688,10 @@ function M.new(ctx)
 		local length = math.sqrt(dx * dx + dy * dy + dz * dz)
 		if length < core.ROAD_LIMITS.minLength then
 			return fail(c.id, string.format("the piece would be %.2f m long: at least %g m", length, core.ROAD_LIMITS.minLength))
+		end
+		local normal, streetType = enumOf("BaseEdgeType", "NORMAL"), enumOf("RoadType", "STREET")
+		if normal == nil or streetType == nil then
+			return fail(c.id, "api.type.enum.BaseEdgeType.NORMAL or RoadType.STREET could not be read: nothing sent")
 		end
 		local out = { from = a, to = b, template = tpl.name, length = length, year = year, snap = r.snap, note = NOTE_ROAD }
 		if r.dryRun then
@@ -685,9 +721,9 @@ function M.new(ctx)
 		-- straight: both tangents along the chord, as long as the piece
 		e.comp.tangent0 = api.type.Vec3f.new(dx, dy, dz)
 		e.comp.tangent1 = api.type.Vec3f.new(dx, dy, dz)
-		e.comp.type = enumOf("BaseEdgeType", "NORMAL")
+		e.comp.type = normal
 		e.comp.typeIndex = -1
-		e.comp.roadType = enumOf("RoadType", "STREET")
+		e.comp.roadType = streetType
 		e.comp.roadTemplate = tpl.name
 		if tpl.style ~= nil then e.comp.roadStyle = tpl.style end
 		if tpl.lanes ~= nil then e.comp.laneConfigs = tpl.lanes end
@@ -701,7 +737,8 @@ function M.new(ctx)
 		sp.streetProposal.nodesToAdd = nodes
 		sp.streetProposal.edgesToAdd = { e }
 		out.newNodes = #nodes
-		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance() }
+		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
+			piecesBefore = piecesAround(a, b) }
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(), false, true), function(data, success, entities)
 			local ok, cerr = pcall(function()
 				local v = verdict(try(function() return data.resultProposalData end))
@@ -721,10 +758,12 @@ function M.new(ctx)
 			if comp(e, "BASE_EDGE") then edges[#edges + 1] = e elseif comp(e, "BASE_NODE") then nodes[#nodes + 1] = e end
 		end
 		if res.success and #edges == 0 then
-			local e = pieceBetween(out.from, out.to)
+			local e = pieceBetween(out.from, out.to, job.piecesBefore)
 			if e then
 				edges[1] = e
 				out.why = "the result named no piece: found between the ends"
+			else
+				out.warning = "the engine said built, but no new piece between the ends was found (look at the map)"
 			end
 		end
 		out.edges, out.nodes = core.array(edges), core.array(nodes)
@@ -738,7 +777,7 @@ function M.new(ctx)
 	-- no callback in RESULT_SEC: the piece may still have been built; it is looked for between its ends
 	roadLost = function(job, why)
 		local o = job.out
-		local e = pieceBetween(o.from, o.to)
+		local e = pieceBetween(o.from, o.to, job.piecesBefore)
 		if e then
 			job.result = { success = true, verdict = {}, entities = { e } }
 			o.why = why .. "; a piece between the ends was found"

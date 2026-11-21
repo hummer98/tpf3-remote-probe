@@ -396,8 +396,11 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   a `SimpleStreetProposal` (one new edge and its new nodes, numbered down from -1, as `type.d.tl` describes it)
   sent as `api.cmd.makeWorldBuildProposalCmd`, the way `build` sends a construction (the same context: nothing
   knocked down, errors not ignored). Changes the game: test saves only.
-- An end within `--snap` metres (default 5, at most 20, 0: never) of a node with road pieces
-  (`streetSystem.getNodeStreetSegments`) is that node, so the piece joins the road there; a track node is not taken.
+- An end within `--snap` metres (default 5, at most 20, 0: never; measured in three dimensions, so a bridge's
+  node above the point is not taken) of an end of a road piece is that node, so the piece joins the road there.
+  The pieces are found in the octree (`api.engine.util.octree.findEntitiesInCircle` with BASE_EDGE, else the
+  octree system's box), roads only (`roadType` STREET; one whose type does not read is left out), and their
+  `node0` / `node1` taken: nodes are not looked up by themselves, and no track node is asked about.
   A free end of a construction's own road (a harbour's entrance road: `construction.ends` in the `build` answer)
   is such a node. Otherwise the end is a new node.
 - `--type` is a street template's resName, or a base road's file name (`town_new_small`, `country_old_medium`)
@@ -408,7 +411,9 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
 - The answer: `from` / `to` (`node` and `snapped` when joined, else `zFrom`), `template`, `year`, `length`,
   `edges` / `nodes` (the result's new entities), `edge`, `node0` / `node1`, `cost`, `spent`, the engine's
   `errors`, `warnings` and `collisions` when refused. Without ids in the result, or with no callback in 30 s, the
-  piece is looked for between the two ends. `--dry-run` sends nothing and answers the plan (`checked: false`).
+  piece is looked for between the two ends, leaving out the pieces that were there before it was sent; built with
+  no new piece found gives a `warning`. A template or the `BaseEdgeType` / `RoadType` enum that does not read
+  refuses the command before anything is sent. `--dry-run` sends nothing and answers the plan (`checked: false`).
 - Between 1 m and 2000 m long. A piece across water or a valley needs a bridge, which this does not build (the
   engine refuses or follows the terrain: not known).
 - Use: a harbour's pedestrian link alone does not join it to the road network; a road along it, from the
@@ -416,7 +421,9 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
 - **Not checked in game yet** (written 2026-11-22): in particular whether `api.type.NodeAndEntity` /
   `SegmentAndEntity` / `PlayerOwned` are reachable under those names (the probe also tries `api.type.Proposal.*`),
   whether the default `streetEdge` is enough, whether the engine takes a node of a construction's road as an end,
-  and what the callback's entities hold.
+  what the callback's entities hold, whether nodes are indeed not in the octree, and what becomes of a town road
+  the new piece crosses (the proposal adds no crossing node: does the engine add one, refuse, or lay one over
+  the other).
 
 ### My Mods from the main menu (`modhub`)
 

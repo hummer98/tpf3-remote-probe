@@ -6940,7 +6940,11 @@ test("road: from a free road end (snapped) to a new node on the terrain: the tow
 	local a, n = roadRun(g, 950, '{ from = "102,1", to = "200,0" }')
 	eq(n, 1); truthy(a.ok, a.error)
 	eq(a.template, TOWN_OLD, "1925: the old medium town road"); eq(a.year, 1925)
-	eq(a.from.node, 8001, "snapped to the free end"); truthy(math.abs(a.from.snapped - math.sqrt(5)) < 1e-9)
+	eq(a.from.node, 8001, "snapped to the free end")
+	-- in three dimensions: the terrain at x 102 is 1.02, the node at z 2
+	truthy(math.abs(a.from.snapped - math.sqrt(5 + 0.98 ^ 2)) < 1e-9, tostring(a.from.snapped))
+	eq(g.streetSegmentCalls, nil, "the street system is never asked about a node")
+	truthy(g.circleCalls > 0, "road pieces found through the octree util")
 	eq(a.from.x, 100); eq(a.from.z, 2, "the node's own position")
 	eq(a.to.node, nil); eq(a.to.zFrom, "terrain"); eq(a.to.z, 2); eq(a.newNodes, 1)
 	truthy(math.abs(a.length - 100) < 1e-9)
@@ -6986,6 +6990,63 @@ test("road: refused before sending (a track type, a year, an unknown type, the s
 		edges = { [8100] = { node0 = 8002, node1 = 8001, roadType = "TRACK" } } } })
 	local a = roadRun(g, 954, '{ from = "101,0", to = "101,80" }')
 	truthy(a.ok, a.error); eq(a.from.node, nil, "a track end is no road end")
+end)
+
+-- review 2026-11-22: nodes are not in the octree (found through their pieces), snap in three dimensions, a piece
+-- there before the build never taken for the new one, a road type that cannot be read never taken for a road
+test("road snap: through the road pieces' ends, in three dimensions; track pieces and unread road types left out", function()
+	-- a bridge's node 8004 right above the point (z 12) and the free end 8001 3 m away on the ground
+	local g = roadWorld({ roads = { nodes = { [8001] = { x = 103, y = 0, z = 0 }, [8002] = { x = 0, y = 0, z = 0 },
+		[8004] = { x = 100, y = 0, z = 12 }, [8005] = { x = 100, y = 200, z = 12 } },
+		edges = { [8100] = { node0 = 8002, node1 = 8001 }, [8101] = { node0 = 8004, node1 = 8005 } } } })
+	local a = roadRun(g, 962, '{ from = "100,0", to = "100,-80" }')
+	truthy(a.ok, a.error); eq(a.from.node, 8001, "the ground node 3 m away, not the bridge's 12 m above")
+	-- only track there: no node taken, and the street system never asked
+	g = roadWorld({ roads = { nodes = { [8001] = { x = 100, y = 0, z = 0 }, [8002] = { x = 0, y = 0, z = 0 } },
+		edges = { [8100] = { node0 = 8002, node1 = 8001, roadType = "TRACK" } } } })
+	a = roadRun(g, 963, '{ from = "101,0", to = "101,80" }')
+	truthy(a.ok, a.error); eq(a.from.node, nil); eq(g.streetSegmentCalls, nil)
+	-- a piece whose road type does not read: not a road
+	g = roadWorld({ edgeRoadTypeUnread = true, height = function() return 2 end })
+	a = roadRun(g, 964, '{ from = "101,0", to = "101,80" }')
+	truthy(a.ok, a.error); eq(a.from.node, nil)
+	-- without the octree util: the octree system's box, pieces only
+	g = roadWorld({ noOctreeUtil = true, height = function() return 2 end })
+	a = roadRun(g, 965, '{ from = "101,0", to = "101,80" }')
+	truthy(a.ok, a.error); eq(a.from.node, 8001)
+end)
+
+test("road: a template or enum that does not read is refused before sending", function()
+	local g = roadWorld()
+	local real = api.type.enum.BaseEdgeType
+	api.type.enum.BaseEdgeType = nil
+	local a = roadRun(g, 966, '{ from = "0,500", to = "0,600" }')
+	api.type.enum.BaseEdgeType = real
+	eq(a.ok, false); truthy(tostring(a.error):find("BaseEdgeType", 1, true), tostring(a.error)); eq(#g.buildCmds, 0)
+	local rt = api.type.enum.RoadType
+	api.type.enum.RoadType = nil
+	a = roadRun(g, 967, string.format('{ from = "0,500", to = "0,600", type = %q }', TRACK_STD))
+	eq(a.ok, false); truthy(tostring(a.error):find("could not be read", 1, true), tostring(a.error))
+	a = roadRun(g, 968, '{ from = "0,500", to = "0,600" }')
+	api.type.enum.RoadType = rt
+	eq(a.ok, false, "no default either: a type that does not read is no road"); eq(#g.buildCmds, 0)
+end)
+
+test("road: a piece there before the build is never the new one; built with no new piece found: a warning", function()
+	-- an old piece already between the two points, and a build whose result names nothing and adds nothing
+	local g = roadWorld({ noStreetResults = true, roads = { nodes = { [8001] = { x = 0, y = 500, z = 0 },
+		[8002] = { x = 0, y = 600, z = 0 } }, edges = { [8100] = { node0 = 8001, node1 = 8002 } } } })
+	local apply = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		if type(cmd) == "table" and cmd.kind == "buildProposal" then
+			return cb({ resultProposalData = { costs = 0 }, resultEntities = {} }, true, {})
+		end
+		return apply(cmd, cb)
+	end
+	local a = roadRun(g, 969, '{ from = "0,500", to = "0,600", snap = 0 }')
+	api.cmd.sendCommand = apply
+	truthy(a.ok, a.error); eq(a.edge, nil, "the old piece 8100 is not taken")
+	truthy(tostring(a.warning):find("no new piece", 1, true), tostring(a.warning))
 end)
 
 test("road: refused by the engine (collision, money): nothing built, the messages in the error", function()

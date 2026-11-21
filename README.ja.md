@@ -376,8 +376,11 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   `SimpleStreetProposal` (新しい edge 1本と新しい node。番号は `type.d.tl` のとおり -1 から下へ) を
   `api.cmd.makeWorldBuildProposalCmd` で送ります。`build` が建物を送るのと同じ形です (同じ context: 何も壊さない、
   エラーを無視しない)。ゲームを変えるので、テスト用のセーブでだけ使ってください。
-- 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない) 以内に道路のある node
-  (`streetSystem.getNodeStreetSegments`) があれば、その node を端にして、そこで道路につなぎます。線路の node は使いません。
+- 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない。3次元で測るので、点の上にある橋の node は使わない)
+  以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。道路は octree
+  (`api.engine.util.octree.findEntitiesInCircle` で BASE_EDGE、無ければ octree system の箱) から探し、道路だけ
+  (`roadType` が STREET。種類が読めないものは除く) の `node0` / `node1` を使います。node そのものは探さず、線路の node
+  についても聞きません。
   建物の自分の道路の空いた端 (港の入口の道路: `build` の答えの `construction.ends`) もこの node です。なければ新しい node です。
 - `--type` は street template の resName か、バニラの道路のファイル名 (`town_new_small`、`country_old_medium`。バニラの
   town・country・highway の下で探す)。線路の種類と、ゲームの年に作れないものは断ります。指定が無ければ、その年の
@@ -386,14 +389,17 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
 - 答え: `from` / `to` (つないだときは `node` と `snapped`、ほかは `zFrom`)、`template`、`year`、`length`、`edges` /
   `nodes` (結果の新しい entity)、`edge`、`node0` / `node1`、`cost`、`spent`、断られたときはエンジンの `errors`・`warnings`・
   `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。`--dry-run` は
-  何も送らず、計画だけを返します (`checked: false`)。
+  何も送らず、計画だけを返します (`checked: false`)。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい
+  道路が見つからないときは `warning` を付けます。template や `BaseEdgeType` / `RoadType` の enum が読めないときは、
+  何も送らずに断ります。
 - 長さは 1 m から 2000 m まで。水の上や谷を渡るには橋が要りますが、これは橋を建てません (エンジンが断るか、地形に沿うか:
   未確認)。
 - 使い道: 港の歩行者用接続路だけでは、港は道路網につながりません。その横に、港の道路の空いた端から町の道路まで道路を
   通すとつながります (プレイヤーが建てるのと同じ)。
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): 特に、`api.type.NodeAndEntity` / `SegmentAndEntity` / `PlayerOwned`
   がその名前で届くか (`api.type.Proposal.*` も試す)、初期のままの `streetEdge` で足りるか、建物の道路の node を端として
-  エンジンが受け付けるか、コールバックの entity に何が入るか。
+  エンジンが受け付けるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
+  どうなるか (proposal に交差の node は入れていない: エンジンが足すか、断るか、重ねるか)。
 
 ### メインメニューからのマイMOD (`modhub`)
 

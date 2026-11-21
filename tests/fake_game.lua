@@ -1800,7 +1800,8 @@ function M.installBuild(g, spec)
 			local name = streetNames[idx]
 			if not name then crash("streetTemplateRep.get(" .. tostring(idx) .. ")") end
 			local s = streets[name]
-			return { roadType = api.type.enum.RoadType[s.roadType or "STREET"], streetStyle = s.style or (name .. ".style"),
+			local RT = api.type.enum.RoadType
+			return { roadType = RT and RT[s.roadType or "STREET"] or nil, streetStyle = s.style or (name .. ".style"),
 				availability = { yearFrom = s.yearFrom or 0, yearTo = s.yearTo or 0 }, cost = s.cost or 10,
 				laneConfigs = s.noLanes and {} or { { speed = 14, width = 3 }, { speed = 14, width = 3 } } }
 		end,
@@ -1815,6 +1816,7 @@ function M.installBuild(g, spec)
 	for k, f in pairs(oldStreets) do streetSystem[k] = f end
 	api.engine.system.streetSystem = streetSystem
 	streetSystem.getNodeStreetSegments = function(n)
+		g.streetSegmentCalls = (g.streetSegmentCalls or 0) + 1
 		if not g.nodes[n] and oldStreets.getNodeStreetSegments then return oldStreets.getNodeStreetSegments(n) end
 		if not g.nodes[n] then crash("getNodeStreetSegments: no node " .. tostring(n)) end
 		local out = {}
@@ -1894,14 +1896,41 @@ function M.installBuild(g, spec)
 			local x, y = b.transf and b.transf[13], b.transf and b.transf[14]
 			if x and x >= box.min.x and x <= box.max.x and y >= box.min.y and y <= box.max.y then cb(e) end
 		end
-		-- nodes by their position, pieces by their middle
+		-- pieces where any part of their line is in the box; nodes are not in the octree (as in the game, by
+		-- nova's builder.lua)
 		local function inside(x, y) return x >= box.min.x and x <= box.max.x and y >= box.min.y and y <= box.max.y end
-		for e, n in pairs(g.nodes) do if inside(n.x, n.y) then cb(e) end end
 		for e, ed in pairs(g.edges) do
 			local a, b = g.nodes[ed.node0], g.nodes[ed.node1]
-			if a and b and inside((a.x + b.x) / 2, (a.y + b.y) / 2) then cb(e) end
+			if a and b then
+				for i = 0, 40 do
+					local t = i / 40
+					if inside(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)) then cb(e); break end
+				end
+			end
 		end
 	end }
+	-- api.engine.util.octree.findEntitiesInCircle (engine/util.d.tl UtilOctree): the pieces (BASE_EDGE) whose
+	-- straight line comes within r of the centre; other component types: none. spec.noOctreeUtil: not there
+	if not spec.noOctreeUtil then
+		api.engine.util.octree = { findEntitiesInCircle = function(c, r, kind)
+			if type(c) ~= "table" or c.x == nil then crash("findEntitiesInCircle: no Vec2f") end
+			g.circleCalls = (g.circleCalls or 0) + 1
+			local out = {}
+			if kind ~= "BASE_EDGE" then return out end
+			for e, ed in pairs(g.edges) do
+				local a, b = g.nodes[ed.node0], g.nodes[ed.node1]
+				if a and b then
+					local dx, dy = b.x - a.x, b.y - a.y
+					local l2 = dx * dx + dy * dy
+					local t = l2 > 0 and math.max(0, math.min(1, ((c.x - a.x) * dx + (c.y - a.y) * dy) / l2)) or 0
+					local px, py = a.x + t * dx, a.y + t * dy
+					if (px - c.x) ^ 2 + (py - c.y) ^ 2 <= r * r then out[#out + 1] = e end
+				end
+			end
+			table.sort(out)
+			return out
+		end }
+	end
 
 	local function apply(cmd)
 		local data, adds, removes = evaluate(cmd.proposal)
@@ -1999,7 +2028,12 @@ function M.installBuild(g, spec)
 			return { terminals = t }
 		end
 		if kind == "TERRAIN" and e == 1 and spec.waterLevel ~= nil then return { waterLevel = spec.waterLevel } end
-		if kind == "BASE_EDGE" and g.edges[e] then return copy(g.edges[e]) end
+		if kind == "BASE_EDGE" and g.edges[e] then
+			-- roadType as the engine's enum (a construction's own pieces: roads); spec.edgeRoadTypeUnread: none
+			local be = copy(g.edges[e])
+			be.roadType = (not spec.edgeRoadTypeUnread) and api.type.enum.RoadType[g.edges[e].roadType or "STREET"] or nil
+			return be
+		end
 		if kind == "BASE_NODE" and g.nodes[e] then return { position = copy(g.nodes[e]) } end
 		return getComponent(e, kind)
 	end
