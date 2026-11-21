@@ -50,6 +50,12 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             [--params '{"rbr_height": 8}'] [--name N] [--dry-run]   # one construction (.con), no click: test saves
             # only; no z: the terrain's height. Answers its id, cost, the engine's errors, its depots and free ends
   tf3ctl.py build --remove 5123[,5124] | build --remove-all   # only what the probe built (as built, or its name + mark)
+  tf3ctl.py build --res ::/stations/water/harbor_modular.con --at 1500,-300 \
+            --params '{"modules": {"<slot id>": {"name": "<module resName>"}}}' [--no-fill-modules]
+            # a modular construction: slot ids made whole numbers, autoFillSlots off, each module's name checked
+            # and its metadata / updateScript filled from moduleRep; --no-owner: playerEntity -1 (an industry)
+  tf3ctl.py water --at 1500,-300 | water --grid 1000,-800,2000,200,50   # read only: the water level, and per
+            # point water or land and the terrain's height (a grid: at most 400 points, rows of ~ water . land)
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
@@ -1476,7 +1482,8 @@ def rename_args(ns):
 def build_args(ns):
     """build: one construction at --at (x,y[,z]), or --remove / --remove-all; checked here as the mod checks them."""
     if ns.remove is not None or ns.remove_all:
-        if ns.res or ns.at or ns.params or ns.name or ns.angle is not None or ns.seed is not None or ns.dry_run:
+        if ns.res or ns.at or ns.params or ns.name or ns.angle is not None or ns.seed is not None or ns.dry_run \
+                or getattr(ns, "no_owner", False) or getattr(ns, "no_fill_modules", False):
             raise ToolError("--remove / --remove-all go alone")
         if ns.remove_all:
             if ns.remove is not None:
@@ -1511,6 +1518,8 @@ def build_args(ns):
             raise ToolError(f"--params must be a JSON object: {e}")
         if not isinstance(params, dict):
             raise ToolError("--params must be a JSON object, e.g. '{\"rbr_height\": 8}'")
+        if "modules" in params:
+            check_modules(params["modules"])
         args["params"] = params
     if ns.seed is not None:
         args["seed"] = ns.seed
@@ -1520,9 +1529,56 @@ def build_args(ns):
         args["name"] = ns.name
     if ns.dry_run:
         args["dryRun"] = True
+    if getattr(ns, "no_owner", False):
+        args["noOwner"] = True
+    if getattr(ns, "no_fill_modules", False):
+        args["fillModules"] = False
     return args
 
 
+def check_modules(mods):
+    """params.modules: {slot id: {name, variant?, metadata?, updateScript?}}. JSON keys are text: the mod makes
+    them whole numbers (a module under a text key sits on no slot); here only the shape is checked."""
+    if not isinstance(mods, dict):
+        raise ToolError("params.modules must be a JSON object of slot id -> module, e.g. "
+                        "'{\"modules\": {\"120001\": {\"name\": \"...module\"}}}'")
+    for k, m in mods.items():
+        if not (k.isascii() and k.isdigit()):
+            raise ToolError("params.modules: slot ids are whole numbers 0 or more, not %r" % k)
+        if not isinstance(m, dict) or not isinstance(m.get("name"), str) or not m["name"].strip():
+            raise ToolError("params.modules slot %s: give the module's name (its resName)" % k)
+        v = m.get("variant", 0)
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ToolError("params.modules slot %s: variant must be a whole number 0 or more" % k)
+
+
+def water_args(ns):
+    """water: --at x,y or --grid x0,y0,x1,y1,step (at most WATER_MAX_POINTS points; the mod checks again)."""
+    def numbers(text, n, what):
+        try:
+            v = [float(x) for x in text.split(",")]
+        except ValueError:
+            raise ToolError("%s must be numbers: %s" % (what[0], what[1]))
+        if len(v) != n or any(x != x or abs(x) == float("inf") for x in v):
+            raise ToolError("%s must be %s (finite numbers)" % what)
+        return v
+    if (ns.at is None) == (ns.grid is None):
+        raise ToolError("give --at x,y or --grid x0,y0,x1,y1,step")
+    if ns.at is not None:
+        return {"at": numbers(ns.at, 2, ("--at", "x,y"))}
+    x0, y0, x1, y1, step = numbers(ns.grid, 5, ("--grid", "x0,y0,x1,y1,step"))
+    if x1 < x0 or y1 < y0:
+        raise ToolError("--grid: x0 <= x1 and y0 <= y1")
+    if step <= 0:
+        raise ToolError("--grid: step must be more than 0")
+    nx, ny = math.floor((x1 - x0) / step + 1e-9) + 1, math.floor((y1 - y0) / step + 1e-9) + 1
+    if nx * ny > WATER_MAX_POINTS:
+        raise ToolError("--grid: %d x %d = %d points, at most %d (a larger step or a smaller box)"
+                        % (nx, ny, nx * ny, WATER_MAX_POINTS))
+    return {"grid": [x0, y0, x1, y1, step]}
+
+
+WATER_MAX_POINTS = 400  # the mod's core.WATER_MAX_POINTS
 BUILD_TIMEOUT_SEC = 60  # the mod waits 30 s for the engine's callback
 
 
@@ -2732,6 +2788,16 @@ def make_parser():
     bd.add_argument("--remove", metavar="ID[,ID...]", help="take away constructions the probe built (the same file "
                     "and place it built, or after a load its probe-build name with the probe's mark in the params)")
     bd.add_argument("--remove-all", action="store_true", help="take away all the probe built since this load")
+    bd.add_argument("--no-owner", action="store_true", help="no company's: playerEntity -1, as an industry (AoM's "
+                    "strawberry farm); default the company's (--owner names the client, not this)")
+    bd.add_argument("--no-fill-modules", action="store_true", help="with params.modules: send each module as given; "
+                    "default: a module without metadata / updateScript gets moduleRep's own")
+    wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
+                                       "terrain's height (to find a shore for a harbour)")
+    wg = wa.add_mutually_exclusive_group(required=True)
+    wg.add_argument("--at", metavar="X,Y", help="one point (for a negative x write --at=-100,50)")
+    wg.add_argument("--grid", metavar="X0,Y0,X1,Y1,STEP", help="points every STEP metres in the box, at most %d; "
+                    "rows from Y0 up, each from X0: ~ water, . land, ? not read" % WATER_MAX_POINTS)
     qu = sub.add_parser("quit", help="quit the game (app.quit through the probe)")
     qu.add_argument("--kill", action="store_true", help="SIGKILL when it does not quit (an unsaved game is lost)")
     qu.add_argument("--timeout", type=float, default=QUIT_TIMEOUT_SEC)
@@ -3044,6 +3110,8 @@ def main(argv=None):
             res = send("rename", rename_args(ns))
         elif ns.cmd == "build":
             res = send("build", build_args(ns), timeout=BUILD_TIMEOUT_SEC)
+        elif ns.cmd == "water":
+            res = send("water", water_args(ns))
         elif ns.cmd == "tool":
             ev = tool_event(ns)
             if ev:

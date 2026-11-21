@@ -795,6 +795,30 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("build", "--remove-all")
         self.assertEqual(code, 1, "nothing left the probe built")
 
+    def test_9wb_build_harbour_modules_and_water(self):
+        harbour, quay = "::/stations/water/harbor_modular.con", "::/station/water/harbor_quay.module"
+        code, res = self.ctl("water", "--at", "1100,0")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["waterLevel"], res["points"][0]["onWater"], res["points"][0]["height"]), (5, True, -3))
+        code, res = self.ctl("water", "--grid", "900,0,1100,100,100")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["rows"], res["water"], res["land"]), ([".~~", ".~~"], 4, 2))
+        code, res = self.ctl("build", "--res", harbour, "--at", "1050,0", "--dry-run")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["waterLevel"], res["onWater"]), (5, True))
+        mods = json.dumps({"modules": {"120001": {"name": quay}}})
+        code, res = self.ctl("build", "--res", harbour, "--at", "1050,0", "--params", mods)
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["terminals"], res["autoFillSlots"]), (1, False), "the text slot id reached a slot")
+        self.assertEqual(res["params"]["modules"][0]["slot"], 120001)
+        self.assertEqual(res["params"]["modules"][0]["filled"], ["metadata"])
+        code, res = self.ctl("build", "--res", harbour, "--at", "1300,0", "--params",
+                             json.dumps({"modules": {"1": {"name": "::/station/water/nope.module"}}}))
+        self.assertEqual(code, 1)
+        self.assertIn(quay, res["error"], "names like it")
+        code, res = self.ctl("build", "--remove-all")
+        self.assertEqual(code, 0, res)
+
     def test_9wc_persons(self):
         # no vehicle 77777 in the fake: missing, not an error, so a poll goes on; one JSON line per sample
         out = io.StringIO()
@@ -1333,6 +1357,54 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(sent, [("build", {"res": "m::/r.con", "at": [-100.0, 50.0], "angle": 0.5},
                                  tf3ctl.BUILD_TIMEOUT_SEC)])
+
+    def test_build_modules_owner_and_water_args(self):
+        def ns(**kw):
+            base = dict(res="h.con", at="1,2", angle=None, params=None, seed=None, name=None, dry_run=False,
+                        remove=None, remove_all=False, no_owner=False, no_fill_modules=False)
+            base.update(kw)
+            return tf3ctl.argparse.Namespace(**base)
+        mods = '{"modules": {"120001": {"name": "a.module", "variant": 1}}}'
+        got = tf3ctl.build_args(ns(params=mods, no_owner=True, no_fill_modules=True))
+        self.assertEqual(got, {"res": "h.con", "at": [1.0, 2.0], "noOwner": True, "fillModules": False,
+                               "params": {"modules": {"120001": {"name": "a.module", "variant": 1}}}})
+        self.assertNotIn("noOwner", tf3ctl.build_args(ns()), "the default: the company's")
+        self.assertNotIn("fillModules", tf3ctl.build_args(ns()), "the default: filled")
+        for bad in ('{"modules": [1]}', '{"modules": {"a": {"name": "x"}}}', '{"modules": {"-1": {"name": "x"}}}',
+                    '{"modules": {"1": "x"}}', '{"modules": {"1": {"name": " "}}}',
+                    '{"modules": {"1": {"name": "x", "variant": -1}}}', '{"modules": {"1": {"name": "x", "variant": true}}}'):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.build_args(ns(params=bad))
+        for bad in (dict(remove="1", res=None, at=None, no_owner=True), dict(remove="1", res=None, at=None, no_fill_modules=True)):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                tf3ctl.build_args(ns(**bad))
+        p = tf3ctl.make_parser()
+        self.assertTrue(p.parse_args(["build", "--res", "x", "--at", "1,2", "--no-owner"]).no_owner)
+        # the mod reads the text key as text; it makes it a number itself (core.buildModules)
+        got = mod_reads(tf3ctl.command_text(9, "build", tf3ctl.build_args(ns(params=mods))))
+        self.assertEqual(got["args"]["params"]["modules"]["120001"]["name"], "a.module")
+        # water
+        wa = tf3ctl.argparse.Namespace
+        self.assertEqual(tf3ctl.water_args(wa(at="10,-20", grid=None)), {"at": [10.0, -20.0]})
+        self.assertEqual(tf3ctl.water_args(wa(at=None, grid="0,0,100,50,50")), {"grid": [0.0, 0.0, 100.0, 50.0, 50.0]})
+        self.assertEqual(tf3ctl.water_args(wa(at=None, grid="0,0,399,0,1")), {"grid": [0.0, 0.0, 399.0, 0.0, 1.0]},
+                         "400 points: the limit itself")
+        for bad in (dict(at=None, grid=None), dict(at="1,2", grid="0,0,1,1,1"), dict(at="1", grid=None),
+                    dict(at="a,b", grid=None), dict(at="nan,1", grid=None), dict(at=None, grid="0,0,1,1"),
+                    dict(at=None, grid="5,0,1,1,1"), dict(at=None, grid="0,0,1,1,0"), dict(at=None, grid="0,0,400,0,1")):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                tf3ctl.water_args(wa(**bad))
+        self.assertNotIn("water", tf3ctl.CHANGES_GAME, "read only")
+        self.assertEqual(p.parse_args(["water", "--grid", "0,0,1,1,1"]).grid, "0,0,1,1,1")
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = tf3ctl.main(["water", "--at=-100,50"])
+        self.assertEqual((code, sent), (0, [("water", {"at": [-100.0, 50.0]})]))
 
     def test_event_and_tool_args(self):
         ns = tf3ctl.argparse.Namespace

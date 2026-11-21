@@ -6195,7 +6195,7 @@ test("core.buildRequest: res, at (z optional), angle, params, seed, name; remove
 	local r = core.buildRequest({ res = " m::/a/ramp.con ", at = "10,20" })
 	eq(r.res, "m::/a/ramp.con"); eq(r.x, 10); eq(r.y, 20); eq(r.z, nil); eq(r.angle, 0); eq(r.seed, 1); eq(r.dryRun, false)
 	eq(r.params, nil); eq(r.name, nil)
-	local r2 = core.buildRequest({ res = "x.con", at = { 1, 2, 30 }, angle = 1.5, params = { rbr_height = 8, modules = { [1] = "a" } },
+	local r2 = core.buildRequest({ res = "x.con", at = { 1, 2, 30 }, angle = 1.5, params = { rbr_height = 8, modules = { [1] = { name = "a.module" } } },
 		seed = 7, name = "Ramp A", dryRun = true })
 	eq(r2.z, 30); eq(r2.angle, 1.5); eq(r2.params.rbr_height, 8); eq(r2.seed, 7); eq(r2.name, "Ramp A"); eq(r2.dryRun, true)
 	eq(core.buildRequest({ remove = 5001 }).remove[1], 5001)
@@ -6450,6 +6450,180 @@ test("build: no callback: found by its name near the point, else an error with t
 	send(m, 961, "build", string.format('{ res = %q, at = "0,0" }', RAMP))
 	frames(m, FIRST)
 	truthy((answerText(m, 961, "error") or ""):find("needs a running game"))
+end)
+
+---------------------------------------------------------------------------------------------------------------------
+-- build with modules (a modular harbour), with no owner (an industry), and water (read only)
+
+test("core.buildModules: text slot ids become whole numbers; variant 0 by default; bad modules refused", function()
+	local m = core.buildModules({ ["12"] = { name = " a.module " }, [3] = { name = "b.module", variant = 2 } })
+	eq(m["12"], nil, "no text key left"); eq(m[12].name, "a.module"); eq(m[12].variant, 0); eq(m[3].variant, 2)
+	eq(type(next(m)), "number")
+	local r = core.buildRequest({ res = "h.con", at = "1,2", params = { size = 1, modules = { ["7"] = { name = "x.module" } } } })
+	eq(r.modules, true); eq(r.params.modules[7].name, "x.module"); eq(r.params.size, 1)
+	eq(r.fillModules, true, "on by default"); eq(r.noOwner, false)
+	local r2 = core.buildRequest({ res = "h.con", at = "1,2", fillModules = false, noOwner = true })
+	eq(r2.fillModules, false); eq(r2.noOwner, true); eq(r2.modules, nil, "no modules given")
+	for _, bad in ipairs({
+		{ "x", "JSON object" }, { { a = { name = "x" } }, "whole numbers" }, { { ["-1"] = { name = "x" } }, "whole numbers" },
+		{ { [1.5] = { name = "x" } }, "whole numbers" }, { { ["1"] = { name = "x" }, [1] = { name = "y" } }, "twice" },
+		{ { [1] = "x" }, "give the module's name" }, { { [1] = { name = " " } }, "give the module's name" },
+		{ { [1] = { name = "x", variant = -1 } }, "variant" }, { { [1] = { name = "x", metadata = 3 } }, "metadata" },
+		{ { [1] = { name = "x", updateScript = { params = {} } } }, "updateScript" },
+	}) do
+		local ok, err = core.buildModules(bad[1])
+		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / wanted " .. bad[2])
+	end
+	truthy(select(2, core.buildRequest({ res = "h.con", at = "1,2", params = { modules = { a = { name = "x" } } } })):find("params.modules"))
+	truthy(select(2, core.buildRequest({ res = "h.con", at = "1,2", noOwner = 1 })):find("noOwner"))
+	truthy(select(2, core.buildRequest({ res = "h.con", at = "1,2", fillModules = "no" })):find("fillModules"))
+	-- fillModule: only what is missing, the desc's own values
+	local md = { price = 5 }
+	local mod = { name = "x", variant = 0 }
+	local f = core.fillModule(mod, { metadata = md, updateScript = { fileName = "s", params = {} } })
+	eq(#f, 2); truthy(mod.metadata == md, "the rep's value itself"); eq(mod.updateScript.fileName, "s")
+	local own = { name = "x", variant = 0, metadata = { mine = 1 } }
+	eq(#core.fillModule(own, { metadata = md }), 0); eq(own.metadata.mine, 1, "a given metadata stays")
+end)
+
+test("core.waterRequest: a point or a grid; the grid's points and its limit; waterRows", function()
+	local r = core.waterRequest({ at = "10,-20" })
+	eq(#r.points, 1); eq(r.points[1].x, 10); eq(r.points[1].y, -20); eq(r.grid, nil)
+	local g = core.waterRequest({ grid = "0,0,100,50,50" })
+	eq(g.grid.nx, 3); eq(g.grid.ny, 2); eq(#g.points, 6)
+	eq(g.points[4].x, 0); eq(g.points[4].y, 50, "row by row, y0 first")
+	eq(#core.waterRequest({ grid = { 0, 0, 0, 0, 1 } }).points, 1, "one point")
+	local n = core.WATER_MAX_POINTS
+	eq(#core.waterRequest({ grid = string.format("0,0,%d,0,1", n - 1) }).points, n, "the limit itself")
+	truthy(select(2, core.waterRequest({ grid = string.format("0,0,%d,0,1", n) })):find("at most " .. n))
+	for _, bad in ipairs({ { {}, "give at" }, { { at = "1,2", grid = "0,0,1,1,1" }, "give at" }, { { at = "1" }, "x,y" },
+		{ { at = "1,2,3" }, "at most 2" }, { { at = "200000,0" }, "within" }, { { grid = "0,0,1,1" }, "x0,y0,x1,y1,step" },
+		{ { grid = "5,0,1,1,1" }, "x0 <= x1" }, { { grid = "0,0,1,1,0" }, "step" }, { { grid = "0,0,1,1,-1" }, "step" },
+		{ { grid = "0,0,1e6,1,1" }, "within" }, { { at = "a,b" }, "finite" } }) do
+		local ok, err = core.waterRequest(bad[1])
+		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / wanted " .. bad[2])
+	end
+	local rows = core.waterRows({ { onWater = true }, { onWater = false }, { onWater = nil }, { onWater = true } }, 2)
+	eq(rows[1], "~."); eq(rows[2], "?~")
+	truthy(core.COMMANDS.water and not core.CHANGES_GAME.water and not core.MENU_COMMANDS.water, "read only, in a game")
+end)
+
+local HARBOR = "::/stations/water/harbor_modular.con"
+local QUAY = "::/station/water/harbor_quay.module"
+local function harborWorld(spec)
+	spec = spec or {}
+	spec.cons = {
+		[HARBOR] = { cost = 30000, stations = 1, params = { { key = "size", numbers = { 1, 2 }, defaultIndex = 1 } },
+			-- a terminal per module on a whole-number slot (one under a text key sits on no slot)
+			terminals = function(params)
+				local n = 0
+				for k in pairs(params.modules or {}) do if type(k) == "number" then n = n + 1 end end
+				return n
+			end },
+		[RAMP] = { cost = 5000, params = {} },
+		["::/industry/coal_mine.con"] = { cost = 0 },
+	}
+	spec.modules = spec.modules or {
+		[QUAY] = { metadata = { harbor = { quay = true } }, updateScript = { fileName = "construction/harbor_quay.updateFn", params = { n = 1 } } },
+		["::/station/water/harbor_crane.module"] = { metadata = { crane = 1 } },
+	}
+	spec.waterLevel = spec.waterLevel or 5
+	spec.water = spec.water or function(x) return x >= 1000 end
+	spec.height = spec.height or function(x) return x >= 1000 and -3 or 8 end
+	return buildWorld(spec)
+end
+
+test("build: a harbour's modules on whole-number slots, autoFillSlots off, metadata filled; terminals in the answer", function()
+	local g = harborWorld()
+	-- as the tool writes a JSON object: the slot id as text
+	local a = buildRun(g, 970, string.format('{ res = %q, at = "990,0", params = { modules = { ["120001"] = { name = %q } } } }', HARBOR, QUAY))
+	truthy(a.ok, a.error)
+	local b = g.built[a.entity]
+	eq(b.autoFillSlots, false, "modules given: only those"); eq(a.autoFillSlots, false)
+	local m = b.params.modules[120001]
+	truthy(m, "on a whole-number slot"); eq(b.params.modules["120001"], nil)
+	eq(m.name, QUAY); eq(m.variant, 0)
+	eq(m.metadata.harbor.quay, true, "metadata from moduleRep"); eq(m.updateScript.fileName, "construction/harbor_quay.updateFn")
+	eq(m.updateScript.params.n, 1)
+	eq(a.params.modules[1].slot, 120001); eq(a.params.modules[1].filled[1], "metadata"); eq(a.params.modules[1].filled[2], "updateScript")
+	eq(a.terminals, 1); eq(a.stationTerminals[1].terminals, 1); eq(a.warning, nil)
+	truthy(a.modulesNote:find("not checked in a game"))
+	-- given metadata stays; fill off sends name and variant only
+	local a2 = buildRun(g, 971, string.format('{ res = %q, at = "1200,0", params = { modules = { [5] = { name = %q, variant = 1, metadata = { own = 2 } } } } }', HARBOR, QUAY))
+	truthy(a2.ok, a2.error)
+	local m2 = g.built[a2.entity].params.modules[5]
+	eq(m2.metadata.own, 2); eq(m2.metadata.harbor, nil); eq(m2.variant, 1); eq(m2.updateScript.fileName, "construction/harbor_quay.updateFn")
+	local a3 = buildRun(g, 972, string.format('{ res = %q, at = "1400,0", fillModules = false, params = { modules = { [5] = { name = %q } } } }', HARBOR, QUAY))
+	truthy(a3.ok, a3.error)
+	local m3 = g.built[a3.entity].params.modules[5]
+	eq(m3.metadata, nil); eq(m3.updateScript, nil); eq(a3.params.modules[1].filled, nil)
+	-- no modules: as before (autoFillSlots on); a station with 0 terminals is warned about
+	local a4 = buildRun(g, 973, string.format('{ res = %q, at = "1600,0" }', HARBOR))
+	truthy(a4.ok, a4.error)
+	eq(g.built[a4.entity].autoFillSlots, true); eq(a4.autoFillSlots, true); eq(a4.modulesNote, nil)
+	eq(a4.terminals, 0); truthy(a4.warning and a4.warning:find("0 terminals"), a4.warning)
+	-- a construction without stations: no terminals in the answer
+	local a5 = buildRun(g, 974, string.format('{ res = %q, at = "0,0" }', RAMP))
+	eq(a5.terminals, nil); eq(a5.warning, nil)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("build: a module the rep does not know is refused before anything is sent, with names like it", function()
+	local g = harborWorld()
+	local a = buildRun(g, 975, string.format('{ res = %q, at = "990,0", params = { modules = { [1] = { name = %q }, [2] = { name = "::/station/water/harbor_quai.module" } } } }', HARBOR, QUAY))
+	eq(a.ok, false)
+	truthy(a.error:find("slot 2: no module ::/station/water/harbor_quai.module", 1, true), a.error)
+	truthy(not a.error:find("slot 1"), "the known one is not named")
+	truthy(a.error:find("names like it") and a.error:find("harbor_crane.module", 1, true), a.error)
+	eq(#g.buildCmds, 0, "nothing sent")
+	local a2 = buildRun(g, 976, string.format('{ res = %q, at = "990,0", dryRun = true, params = { modules = { [1] = { name = "zzz" } } } }', HARBOR))
+	truthy(a2.error:find("no module zzz"), "the dry run checks the names too: " .. tostring(a2.error))
+	local a3 = buildRun(g, 977, string.format('{ res = %q, at = "990,0", params = { modules = { a = { name = %q } } } }', HARBOR, QUAY))
+	truthy(a3.error:find("whole numbers"), a3.error)
+end)
+
+test("build --no-owner: playerEntity -1 (an industry); the default is the company", function()
+	local g = harborWorld()
+	local a = buildRun(g, 978, '{ res = "::/industry/coal_mine.con", at = "0,0", noOwner = true }')
+	truthy(a.ok, a.error); eq(g.built[a.entity].player, -1); eq(a.owner, "none")
+	local a2 = buildRun(g, 979, '{ res = "::/industry/coal_mine.con", at = "300,0" }')
+	eq(g.built[a2.entity].player, 99); eq(a2.owner, nil)
+end)
+
+test("build --dry-run: the water level and whether the point is water", function()
+	local g = harborWorld()
+	local a = buildRun(g, 980, string.format('{ res = %q, at = "1100,0", dryRun = true, params = { modules = { ["9"] = { name = %q } } } }', HARBOR, QUAY))
+	truthy(a.ok and a.dryRun, a.error)
+	eq(a.waterLevel, 5); eq(a.onWater, true); eq(a.params.modules[1].slot, 9); eq(a.params.modules[1].metadata, true)
+	local a2 = buildRun(g, 981, string.format('{ res = %q, at = "100,0", dryRun = true }', HARBOR))
+	eq(a2.onWater, false); eq(a2.waterLevel, 5)
+	eq(#g.buildCmds, 0)
+end)
+
+test("water: a point and a grid (water, land, height, depth, rows); the limit; read only, needs a game", function()
+	local g = harborWorld()
+	send(g, 985, "water", '{ at = "1100,0" }')
+	frames(g, FIRST + 2)
+	local a = final(g, 985)
+	truthy(a and a.ok and a.waterLevel == 5, a and a.error)
+	eq(#a.points, 1); eq(a.points[1].onWater, true); eq(a.points[1].height, -3); eq(a.points[1].depth, 8)
+	eq(a.water, 1); eq(a.land, 0); eq(a.rows, nil)
+	send(g, 986, "water", '{ grid = "900,0,1100,100,100" }')
+	frames(g, FIRST + 2)
+	local b = final(g, 986)
+	eq(#b.points, 6); eq(b.grid.nx, 3); eq(b.grid.ny, 2); eq(b.water, 4); eq(b.land, 2)
+	eq(b.rows[1], ".~~"); eq(b.rows[2], ".~~")
+	eq(b.points[1].onWater, false); eq(b.points[1].height, 8); eq(b.points[1].depth, nil)
+	send(g, 987, "water", '{ grid = "0,0,10000,10000,10" }')
+	frames(g, FIRST + 2)
+	truthy((answerText(g, 987, "error") or ""):find("at most"), "the limit")
+	eq(#g.buildCmds, 0, "nothing built")
+	truthy(not g.crashed, g.crashed)
+	local m = newGame({ saves = SAVES, menu = true })
+	frames(m, 2)
+	send(m, 988, "water", '{ at = "0,0" }')
+	frames(m, FIRST)
+	truthy((answerText(m, 988, "error") or ""):find("needs a running game"))
 end)
 
 print(string.format("\n%d passed, %d failed", passes, failures))

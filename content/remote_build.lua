@@ -66,6 +66,88 @@ function M.new(ctx)
 		return nil, nil, like
 	end
 
+	-- a module's desc by its resName (moduleRep), or nil with names that look alike: the same file name, or another
+	-- module in the same folder (a harbour's are all in one)
+	local function moduleOf(name)
+		local idx = tonumber(try(function() return api.res.moduleRep.find(name) end))
+		if idx and idx >= 0 then return try(function() return api.res.moduleRep.get(idx) end) or {} end
+		local stem = (name:gsub("%.lua$", ""):gsub("%.module$", ""):match("([^/:]+)$") or name):lower()
+		local dir = name:match("^(.*/)[^/]*$")
+		local like = {}
+		for _, n in pairs(try(function() return api.res.moduleRep.getAll() end) or {}) do
+			if type(n) == "string" and (n:lower():find(stem, 1, true) or (dir and n:sub(1, #dir) == dir)) then
+				like[#like + 1] = n
+			end
+		end
+		table.sort(like)
+		while #like > MAX_SUGGEST do table.remove(like) end
+		return nil, like
+	end
+
+	-- the desc's metadata and updateScript as values the params can carry: metadata is a Lua table already
+	-- (ModuleDesc.metadata : table), the ScriptRef an engine record, copied out as { fileName, params }
+	local function moduleDesc(d)
+		local us = core.field(d, "updateScript")
+		local file = us and core.field(us, "fileName")
+		local script
+		if type(file) == "string" and file ~= "" then
+			local p = core.field(us, "params")
+			script = { fileName = file, params = type(p) == "table" and p or (p ~= nil and core.plain(p)) or {} }
+		end
+		local md = core.field(d, "metadata")
+		return { metadata = type(md) == "table" and md or nil, updateScript = script }
+	end
+
+	-- every module's name checked before anything is sent; with fill, what each lacks filled from its desc.
+	-- -> filled ({ [slot] = { field names } }), or nil and why
+	local function checkModules(mods, fill)
+		local slots = {}
+		for k in pairs(mods) do slots[#slots + 1] = k end
+		table.sort(slots)
+		local filled, bad = {}, {}
+		for _, k in ipairs(slots) do
+			local m = mods[k]
+			local d, like = moduleOf(m.name)
+			if not d then
+				local msg = string.format("slot %d: no module %s", k, m.name)
+				if like and #like > 0 then msg = msg .. " (names like it: " .. table.concat(like, ", ") .. ")" end
+				bad[#bad + 1] = msg
+			elseif fill then
+				filled[k] = core.fillModule(m, moduleDesc(d))
+			end
+		end
+		if #bad > 0 then return nil, "nothing sent: " .. table.concat(bad, "; ") end
+		return filled
+	end
+
+	local function waterLevel()
+		return tonumber(try(function()
+			return api.engine.getComponent(api.engine.util.getWorld(), CT().TERRAIN).waterLevel
+		end))
+	end
+	-- true / false, or nil when it could not be read
+	local function onWater(x, y)
+		local w = try(function() return api.engine.terrain.isOnWater(api.type.Vec2f.new(x, y)) end)
+		if w == true or w == false then return w end
+		return nil
+	end
+	local function heightAt(x, y)
+		return tonumber(try(function() return api.engine.terrain.getHeightAt(api.type.Vec2f.new(x, y)) end))
+	end
+
+	-- the terminals of a construction's stations (STATION.terminals), or nil when it has no station or none reads
+	local function terminalsOf(stations)
+		local total, per, read = 0, {}, false
+		for _, st in ipairs(stations or {}) do
+			local sc = comp(st, "STATION")
+			local n = sc and core.size(core.field(sc, "terminals"))
+			if n then read = true; total = total + n end
+			per[#per + 1] = { station = st, terminals = n }
+		end
+		if not read then return nil end
+		return total, core.array(per)
+	end
+
 	-- the construction's params as the base's menu starts them (core.buildDefaults)
 	local function defaultsOf(idx)
 		local desc = try(function() return api.res.constructionRep.get(idx) end)
@@ -179,6 +261,7 @@ function M.new(ctx)
 	end
 
 	local NOTE = "not checked in a game yet: look at it (frame) before trusting the answer"
+	local NOTE_MODULES = "modules with whole-number slot ids, autoFillSlots off; not checked in a game yet"
 
 	local function place(c, r)
 		local res, idx, like = resolve(r.res)
@@ -195,6 +278,13 @@ function M.new(ctx)
 			if z == nil then return fail(c.id, "the terrain's height at x,y could not be read: give z") end
 		end
 		local params = core.buildParams(defaultsOf(idx), r.params, r.seed)
+		local filled
+		if r.modules then
+			-- a module the rep does not know is refused here, not sent (what the engine does with one: not checked)
+			local f, merr = checkModules(params.modules, r.fillModules)
+			if not f then return fail(c.id, merr) end
+			filled = f
+		end
 		count = count + 1
 		local name = r.name or string.format("%s %d", core.BUILD_NAME_PREFIX, count)
 		local sp = api.type.SimpleProposal.new()
@@ -203,14 +293,23 @@ function M.new(ctx)
 		ce.params = params
 		ce.transf = transfOf(r.x, r.y, z, r.angle)
 		ce.name = name
-		ce.playerEntity = player()
-		-- (a station's or a depot's module slots as the player's menu fills them)
-		ce.autoFillSlots = true
+		-- noOwner: no company's (an industry, as AoM's strawberry farm builds one: playerEntity -1)
+		ce.playerEntity = r.noOwner and -1 or player()
+		-- (a station's or a depot's module slots as the player's menu fills them; with modules given, only those:
+		-- AoM's strawberries.lua turns it off when it hands its own)
+		ce.autoFillSlots = not r.modules
 		-- the whole list at once: an element written into the engine's list is lost (AoM strawberries.lua, in game
 		-- 2026-11-16: "build done", 0 entities)
 		sp.constructionsToAdd = { ce }
-		local out = { res = res, at = { x = r.x, y = r.y, z = z }, zFrom = zFrom, angle = r.angle, params = params,
-			name = name, note = NOTE }
+		local shown = params
+		if r.modules then
+			shown = {}
+			for k, v in pairs(params) do shown[k] = v end
+			shown.modules = core.moduleSummary(params.modules, filled)
+		end
+		local out = { res = res, at = { x = r.x, y = r.y, z = z }, zFrom = zFrom, angle = r.angle, params = shown,
+			name = name, note = NOTE, autoFillSlots = ce.autoFillSlots, owner = r.noOwner and "none" or nil,
+			modulesNote = r.modules and NOTE_MODULES or nil }
 		if r.dryRun then
 			-- the probe's own checks only: the engine's makeProposalData takes a Proposal and has no SimpleProposal
 			-- form (engine/util.d.tl:939), so it is not called (no buildable: only a build says that)
@@ -224,6 +323,8 @@ function M.new(ctx)
 			end
 			out.nearRadius = NEAR_M
 			out.near = core.array(near)
+			-- the water there (a harbour stands at the shore): the level, and whether the point itself is water
+			out.waterLevel, out.onWater = waterLevel(), onWater(r.x, r.y)
 			return answer(c.id, out)
 		end
 		-- (the job is listed once the command is sent: a send that raises is answered by the handler's pcall alone)
@@ -308,6 +409,15 @@ function M.new(ctx)
 				out.construction = cons[1]
 				for _, d in ipairs(cons) do built[d.entity] = { res = out.res, x = out.at.x, y = out.at.y, z = out.at.z } end
 				if not cons[1] then out.why = "built, but no construction came back among the result's entities" end
+				-- a station construction (a harbour) with no terminal: its modules may be on no slot
+				local d = cons[1]
+				if d and d.stations then
+					local total, per = terminalsOf(d.stations)
+					out.terminals, out.stationTerminals = total, per
+					if total == 0 then
+						out.warning = "its stations have 0 terminals: the modules may not be on their slots (look at it)"
+					end
+				end
 			end
 		else
 			if res.success then
@@ -381,6 +491,28 @@ function M.new(ctx)
 	-- a new game: nothing it built carries over (ids are the old game's), and no job waits for its callback
 	function B.reset()
 		jobs, built, count = {}, {}, 0
+	end
+
+	-- water (read only): the level, and at each point water or land and the terrain's height
+	function B.water(c)
+		local r, err = core.waterRequest(c.args)
+		if not r then return fail(c.id, err) end
+		local level = waterLevel()
+		local pts, nWater, nLand = {}, 0, 0
+		for _, p in ipairs(r.points) do
+			local w, h = onWater(p.x, p.y), heightAt(p.x, p.y)
+			if w == true then nWater = nWater + 1 elseif w == false then nLand = nLand + 1 end
+			pts[#pts + 1] = { x = p.x, y = p.y, onWater = w, height = h,
+				depth = (w and level and h and h < level) and level - h or nil }
+		end
+		local out = { ok = true, waterLevel = level, points = core.array(pts), water = nWater, land = nLand }
+		if r.grid then
+			out.grid = r.grid
+			-- rows from y0 up, each from x0 east: "~" water, "." land, "?" not read
+			out.rows = core.waterRows(pts, r.grid.nx)
+		end
+		if level == nil then out.why = "the water level could not be read (TERRAIN of the world)" end
+		answer(c.id, out)
 	end
 
 	B.built = function() return built end

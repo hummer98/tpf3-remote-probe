@@ -1550,6 +1550,10 @@ end
 -- spec.blocked(x, y): something in the way there (an entity id, refused as a collision); spec.lostCallback: the
 -- build runs, no callback comes; spec.raiseInCallback: reading the callback's data raises;
 -- spec.sendRaises: sendCommand raises (this text).
+-- spec.modules = { [resName] = { metadata = {...}, updateScript = { fileName, params } } }: moduleRep (find, get,
+-- getAll); a construction's stations = n with terminals = n, or a function(params) -> n per station (a harbour's
+-- terminals counted from its modules under whole-number keys only: one under a text key sits on no slot).
+-- spec.water(x, y) -> true / false: isOnWater; spec.waterLevel: TERRAIN.waterLevel of the world (entity 1).
 -- g.built[e] = { fileName, params, transf, name, player, frozenEdges, ... }; g.buildCmds: every proposal sent.
 -- Like the engine: a list element written into a proposal is lost (only a whole list assigned counts), an unknown
 -- file name or a transf that is no Mat4f is an assertion (the game would die), a refused proposal builds nothing,
@@ -1562,6 +1566,8 @@ function M.installBuild(g, spec)
 	local names = {}
 	local CT = api.type.ComponentType
 	CT.BASE_NODE, CT.BASE_EDGE, CT.CONSTRUCTION = "BASE_NODE", "BASE_EDGE", "CONSTRUCTION"
+	CT.STATION, CT.TERRAIN = CT.STATION or "STATION", CT.TERRAIN or "TERRAIN"
+	g.buildStations = {}
 	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
 	api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
 	api.type.Vec4f = { new = function(x, y, z, w) return { x, y, z, w } end }
@@ -1599,7 +1605,36 @@ function M.installBuild(g, spec)
 	end, ConstructionEntity = { new = function()
 		return record({ fileName = "", params = {}, transf = {}, name = "", playerEntity = -1, autoFillSlots = false })
 	end } }
-	api.engine.terrain = { getHeightAt = function(v) return spec.height and spec.height(v.x, v.y) or 0 end }
+	api.engine.terrain = { getHeightAt = function(v) return spec.height and spec.height(v.x, v.y) or 0 end,
+		isOnWater = function(v)
+			if type(v) ~= "table" or v.x == nil then crash("isOnWater: no Vec2f") end
+			return spec.water and spec.water(v.x, v.y) == true or false
+		end }
+	local mods = spec.modules or {}
+	local modIndex = {}
+	do
+		local sorted = {}
+		for name in pairs(mods) do sorted[#sorted + 1] = name end
+		table.sort(sorted)
+		for i, name in ipairs(sorted) do modIndex[i] = name end
+	end
+	api.res.moduleRep = {
+		find = function(name)
+			for i, n in ipairs(modIndex) do if n == name then return i end end
+			return -1
+		end,
+		get = function(idx)
+			local name = modIndex[idx]
+			if not name then crash("moduleRep.get(" .. tostring(idx) .. ")") end
+			local m = mods[name]
+			return { fileName = name, metadata = m.metadata, updateScript = m.updateScript }
+		end,
+		getAll = function()
+			local out = {}
+			for i, n in ipairs(modIndex) do out[i] = n end
+			return out
+		end,
+	}
 	-- the names the game had before (opts.constructions, the build tool's) are still found, after the build's own
 	local oldFind = api.res.constructionRep.find
 	api.res.constructionRep = {
@@ -1708,8 +1743,16 @@ function M.installBuild(g, spec)
 			end
 			local depots = {}
 			for _ = 1, c.depots or 0 do g.nextEntity = g.nextEntity + 1; depots[#depots + 1] = g.nextEntity end
+			local stations = {}
+			for _ = 1, c.stations or 0 do
+				g.nextEntity = g.nextEntity + 1
+				stations[#stations + 1] = g.nextEntity
+				local n = type(c.terminals) == "function" and c.terminals(ce.params) or c.terminals or 0
+				g.buildStations[g.nextEntity] = { terminals = n }
+			end
 			g.built[e] = { fileName = ce.fileName, params = copy(ce.params), transf = copy(t), name = ce.name,
-				player = ce.playerEntity, autoFillSlots = ce.autoFillSlots, frozenEdges = edgeIds, depots = depots }
+				player = ce.playerEntity, autoFillSlots = ce.autoFillSlots, frozenEdges = edgeIds, depots = depots,
+				stations = stations }
 			if ce.name ~= "" then names[e] = ce.name end
 			results[#results + 1] = { e, 1 }
 		end
@@ -1742,8 +1785,14 @@ function M.installBuild(g, spec)
 			local pn = copy(b.params)
 			return { fileName = b.fileName, params = copy(b.params), params_native = { asTable = function() return copy(pn) end },
 				transf = copy(b.transf), frozenEdges = copy(b.frozenEdges),
-				depots = copy(b.depots), stations = {}, industries = {} }
+				depots = copy(b.depots), stations = copy(b.stations or {}), industries = {} }
 		end
+		if kind == "STATION" and g.buildStations[e] then
+			local t = {}
+			for i = 1, g.buildStations[e].terminals do t[i] = { tag = i } end
+			return { terminals = t }
+		end
+		if kind == "TERRAIN" and e == 1 and spec.waterLevel ~= nil then return { waterLevel = spec.waterLevel } end
 		if kind == "BASE_EDGE" and g.edges[e] then return copy(g.edges[e]) end
 		if kind == "BASE_NODE" and g.nodes[e] then return { position = copy(g.nodes[e]) } end
 		return getComponent(e, kind)
@@ -1799,10 +1848,18 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		nodes = { [100] = { -100, 0, 10 }, [101] = { 0, 0, 10 }, [103] = { 1000, 0, 20 }, [104] = { 1100, 0, 20 } },
 		edges = { [201] = { node0 = 100, node1 = 101 }, [202] = { node0 = 104, node1 = 103 } } })
 	-- build: one ramp the rep knows (two road pieces, its far end 80 m out and 8 m up)
-	M.installBuild(g, { height = function(x) return x / 100 end, cons = {
+	-- and a modular harbour whose terminals are its modules on whole-number slots; water east of x = 1000, level 5
+	M.installBuild(g, { height = function(x) return x >= 1000 and -3 or x / 100 end, cons = {
 		["road_bridge_ramp::/road_bridge_ramp/ramp.con"] = { cost = 5000,
 			params = { { key = "rbr_height", numbers = { 2, 4, 8 }, defaultIndex = 3 } },
-			shape = { nodes = { { 0, 0, 0 }, { 40, 0, 4 }, { 80, 0, 8 } }, edges = { { 1, 2 }, { 2, 3 } } } } } })
+			shape = { nodes = { { 0, 0, 0 }, { 40, 0, 4 }, { 80, 0, 8 } }, edges = { { 1, 2 }, { 2, 3 } } } },
+		["::/stations/water/harbor_modular.con"] = { cost = 30000, stations = 1, terminals = function(params)
+			local n = 0
+			for k in pairs(params.modules or {}) do if type(k) == "number" then n = n + 1 end end
+			return n
+		end } },
+		modules = { ["::/station/water/harbor_quay.module"] = { metadata = { quay = true } } },
+		water = function(x) return x >= 1000 end, waterLevel = 5 })
 	local start = os.clock()
 	local wall = 0
 	local speedControl

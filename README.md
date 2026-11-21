@@ -344,6 +344,42 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
 - **Not checked in game yet** (written 2026-11-22): in particular whether the engine takes the default params, the
   mark, the name and `autoFillSlots` as sent, whether `ends` and the mark read back, and the dry run's `near`.
 
+#### A modular construction (a harbour), an industry, and the water (`water`)
+
+```
+python3 tools/tf3ctl.py water --at 1500,-300                     # read only: the level, water or land, the height
+python3 tools/tf3ctl.py water --grid 1000,-800,2000,200,50       # at most 400 points: rows of ~ (water) and . (land)
+python3 tools/tf3ctl.py build --res ::/stations/water/harbor_modular.con --at 1500,-300,5 --dry-run \
+    --params '{"modules": {"120001": {"name": "<module resName>"}, "120002": {"name": "<module resName>", "variant": 1}}}'
+python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner   # no company's (an industry)
+```
+
+- `params.modules` is `{slot id: {name, variant, metadata, updateScript}}`, as a modular construction's updateFn
+  reads it (`construction_util_serialized.d.tl`, `ModuleUpdateFnParams.modules : {integer : Module}`). A JSON
+  object's keys are text; the probe makes each `"120001"` the whole number 120001 before sending, since a module
+  under a text key would sit on no slot. `variant` is 0 unless given. Slot ids depend on the construction (its
+  updateFn's slots); the probe does not work them out.
+- With modules given, `autoFillSlots` is off (only the modules given go on), as AoM's strawberry farm does it.
+  Without `params.modules` nothing changes: `autoFillSlots` stays on.
+- Each module's `name` is looked up with `api.res.moduleRep.find` first; one the game does not know refuses the
+  whole command before anything is sent, with names like it (the same file name, or the same folder's).
+- A module without `metadata` or `updateScript` gets the module's own from `moduleRep.get` (its desc's values, as
+  they are), so an engine that fills them itself gets the same. `--no-fill-modules` sends each module as given
+  (a mod's toll station sends only `name` and `variant`). The answer's `params.modules` lists slot, name, variant,
+  whether metadata and updateScript went, and what was `filled`.
+- After a build, a construction with stations (a harbour) has `terminals` (all its stations' terminals,
+  `STATION.terminals`) and `stationTerminals`; 0 comes with a `warning` that the modules may not be on their slots.
+- `--no-owner` builds with `playerEntity` -1, no company's, as AoM builds its industries; by default it is the
+  company's. (`--owner`, before the command, names the client, as for every command.)
+- `water` reads only (no warning to others): `waterLevel` (the world's `TERRAIN.waterLevel`) and per point
+  `onWater` (`api.engine.terrain.isOnWater`), `height` (`getHeightAt`, the bottom under water) and `depth` (the
+  level minus the height, on water). `--grid x0,y0,x1,y1,step` takes points every step metres in the box, at
+  most 400, and adds `rows` (one per y from y0 up, each from x0: `~` water, `.` land, `?` not read) and the counts
+  `water` / `land`. The `build --dry-run` answer has `waterLevel` and `onWater` at the point too. For a construction
+  on water, give z (the level from `water`).
+- **Not checked in game yet** (written 2026-11-22): whether the harbour's modules go on their slots as sent, the
+  terminal count, the filled metadata, `--no-owner`, and `water`'s values.
+
 ### My Mods from the main menu (`modhub`)
 
 ```

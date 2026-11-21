@@ -18,7 +18,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
-	modhubValidate = true, modhubPublish = true }
+	modhubValidate = true, modhubPublish = true, water = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -888,8 +888,134 @@ function M.buildRequest(args)
 		if type(name) ~= "string" or not name:find("%S") then return nil, "name must not be empty" end
 		if #name > M.MAX_NAME_LEN then return nil, "the name is longer than " .. M.MAX_NAME_LEN .. " bytes" end
 	end
+	local modules
+	if params and params.modules ~= nil then
+		local mods, merr = M.buildModules(params.modules)
+		if not mods then return nil, "params.modules: " .. merr end
+		local p = {}
+		for k, v in pairs(params) do p[k] = v end
+		p.modules, params, modules = mods, p, true
+	end
+	for _, k in ipairs({ "fillModules", "noOwner" }) do
+		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
+	end
 	return { res = res, x = at[1], y = at[2], z = at[3], angle = angle, params = params, seed = seed, name = name,
-		dryRun = args.dryRun == true }
+		dryRun = args.dryRun == true, modules = modules, fillModules = args.fillModules ~= false,
+		noOwner = args.noOwner == true }
+end
+
+-- A modular construction's params.modules (a harbour's, a station's): { [slot id] = { name, variant, metadata,
+-- updateScript } }, keyed by whole numbers (construction_util_serialized.d.tl ModuleUpdateFnParams.modules is
+-- {integer : Module}). A JSON object can only have text keys, and the tool writes them as text, so "12" is made
+-- 12 here: a module under a text key would sit on no slot. name is the module's resName; variant defaults to 0 (a
+-- mod's toll station sends name and variant only, pyt_toll.script.tl); metadata and updateScript, when given, go
+-- as they are (remote_build fills those left out from moduleRep). -> the modules, or nil and why.
+M.BUILD_MODULE_LIMIT = 500
+function M.buildModules(mods)
+	if type(mods) ~= "table" then return nil, "a JSON object of slot id -> module" end
+	local out, n = {}, 0
+	for k, m in pairs(mods) do
+		local slot = k
+		if type(k) == "string" and k:match("^%d+$") then slot = tonumber(k) end
+		if type(slot) ~= "number" or slot ~= math.floor(slot) or slot < 0 or slot > 2 ^ 53 then
+			return nil, "slot ids are whole numbers 0 or more, not " .. tostring(k)
+		end
+		if out[slot] ~= nil then return nil, "slot " .. string.format("%d", slot) .. " is given twice" end
+		if type(m) ~= "table" or type(m.name) ~= "string" or not m.name:find("%S") or m.name:find("%c") then
+			return nil, string.format("slot %d: give the module's name (its resName, e.g. ...module)", slot)
+		end
+		local variant = m.variant == nil and 0 or tonumber(m.variant)
+		if variant == nil or variant ~= math.floor(variant) or variant < 0 then
+			return nil, string.format("slot %d: variant must be a whole number 0 or more", slot)
+		end
+		if m.metadata ~= nil and type(m.metadata) ~= "table" then
+			return nil, string.format("slot %d: metadata must be a table", slot)
+		end
+		local us = m.updateScript
+		if us ~= nil and (type(us) ~= "table" or type(us.fileName) ~= "string"
+			or (us.params ~= nil and type(us.params) ~= "table")) then
+			return nil, string.format("slot %d: updateScript must be { fileName, params }", slot)
+		end
+		out[slot] = { name = m.name:match("^%s*(.-)%s*$"), variant = variant, metadata = m.metadata, updateScript = us }
+		n = n + 1
+		if n > M.BUILD_MODULE_LIMIT then return nil, "at most " .. M.BUILD_MODULE_LIMIT .. " modules" end
+	end
+	return out
+end
+
+-- a module's metadata and updateScript left out, filled from the module's own desc (moduleRep.get): the rep's
+-- values themselves, so a construction that fills them on its own gets the same. desc: { metadata, updateScript }.
+-- -> the names of the fields filled, in order
+function M.fillModule(mod, desc)
+	local filled = {}
+	if type(desc) ~= "table" then return filled end
+	for _, k in ipairs({ "metadata", "updateScript" }) do
+		if mod[k] == nil and desc[k] ~= nil then
+			mod[k] = desc[k]
+			filled[#filled + 1] = k
+		end
+	end
+	return filled
+end
+
+-- the modules as the answer shows them: slot, name, variant and what was filled (metadata and scripts can be
+-- large and hold engine values the answer's JSON need not carry). Sorted by slot.
+function M.moduleSummary(mods, filled)
+	local slots = {}
+	for k in pairs(mods or {}) do slots[#slots + 1] = k end
+	table.sort(slots)
+	local out = {}
+	for _, k in ipairs(slots) do
+		local m = mods[k]
+		out[#out + 1] = { slot = k, name = m.name, variant = m.variant, metadata = m.metadata ~= nil,
+			updateScript = m.updateScript ~= nil, filled = filled and filled[k] and #filled[k] > 0 and M.array(filled[k]) or nil }
+	end
+	return M.array(out)
+end
+
+-- water (read only): the water level and, at a point or on a grid, whether it is water and the terrain's height
+-- there, to find a shore for a harbour. args: at = "x,y" or grid = "x0,y0,x1,y1,step" (x0 <= x1, y0 <= y1; at most
+-- WATER_MAX_POINTS points). -> { points = { { x, y } }, grid = { x0, y0, x1, y1, step, nx, ny } or nil }
+M.WATER_MAX_POINTS = 400
+function M.waterRequest(args)
+	args = type(args) == "table" and args or {}
+	if (args.at == nil) == (args.grid == nil) then return nil, "give at (x,y) or grid (x0,y0,x1,y1,step)" end
+	local L = M.BUILD_LIMITS.xy
+	if args.at ~= nil then
+		local at, err = M.numberList(args.at, 2)
+		if not at then return nil, "at: " .. err end
+		if #at ~= 2 then return nil, "at needs x,y" end
+		if math.abs(at[1]) > L or math.abs(at[2]) > L then return nil, "x and y must be within " .. L end
+		return { points = { { x = at[1], y = at[2] } } }
+	end
+	local g, err = M.numberList(args.grid, 5)
+	if not g then return nil, "grid: " .. err end
+	if #g ~= 5 then return nil, "grid needs x0,y0,x1,y1,step" end
+	local x0, y0, x1, y1, step = g[1], g[2], g[3], g[4], g[5]
+	for i = 1, 4 do if math.abs(g[i]) > L then return nil, "grid: x and y must be within " .. L end end
+	if x1 < x0 or y1 < y0 then return nil, "grid: x0 <= x1 and y0 <= y1" end
+	if step <= 0 then return nil, "grid: step must be more than 0" end
+	local nx, ny = math.floor((x1 - x0) / step + 1e-9) + 1, math.floor((y1 - y0) / step + 1e-9) + 1
+	if nx * ny > M.WATER_MAX_POINTS then
+		return nil, string.format("grid: %d x %d = %d points, at most %d (a larger step or a smaller box)",
+			nx, ny, nx * ny, M.WATER_MAX_POINTS)
+	end
+	local pts = {}
+	for j = 0, ny - 1 do
+		for i = 0, nx - 1 do pts[#pts + 1] = { x = x0 + i * step, y = y0 + j * step } end
+	end
+	return { points = pts, grid = { x0 = x0, y0 = y0, x1 = x1, y1 = y1, step = step, nx = nx, ny = ny } }
+end
+
+-- a grid's points (row by row, y0 first) as text rows: "~" water, "." land, "?" not read. -> a list of strings
+function M.waterRows(points, nx)
+	local rows, row = {}, {}
+	for _, p in ipairs(points) do
+		row[#row + 1] = p.onWater == true and "~" or p.onWater == false and "." or "?"
+		if #row == nx then rows[#rows + 1] = table.concat(row); row = {} end
+	end
+	if #row > 0 then rows[#rows + 1] = table.concat(row) end
+	return M.array(rows)
 end
 
 -- the values a construction's own params start with, as the base's construction menu picks them

@@ -325,6 +325,42 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): とくに、初期設定の params・印・名前・`autoFillSlots` を送ったとおりに
   エンジンが受け取るか、`ends` と印が読めるか、dry run の `near`。
 
+#### モジュール式の建物 (港)・産業・水 (`water`)
+
+```
+python3 tools/tf3ctl.py water --at 1500,-300                     # 読むだけ: 水面の高さ、水か陸か、地形の高さ
+python3 tools/tf3ctl.py water --grid 1000,-800,2000,200,50       # 400 点まで: ~ (水) と . (陸) の行
+python3 tools/tf3ctl.py build --res ::/stations/water/harbor_modular.con --at 1500,-300,5 --dry-run \
+    --params '{"modules": {"120001": {"name": "<モジュールの resName>"}, "120002": {"name": "<モジュールの resName>", "variant": 1}}}'
+python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner   # 会社のものにしない (産業)
+```
+
+- `params.modules` は `{スロット id: {name, variant, metadata, updateScript}}` で、モジュール式の建物の updateFn が読む形です
+  (`construction_util_serialized.d.tl` の `ModuleUpdateFnParams.modules : {integer : Module}`)。JSON オブジェクトのキーは
+  文字列なので、プローブは送る前に `"120001"` を整数 120001 にします。文字列のキーのモジュールはどのスロットにも
+  乗らないためです。`variant` は指定が無ければ 0。スロット id は建物 (その updateFn のスロット) によって決まり、
+  プローブは計算しません。
+- モジュールを渡したときは `autoFillSlots` を切ります (渡したモジュールだけが乗ります。AoM のイチゴ農場と同じ)。
+  `params.modules` が無ければ今までどおりで、`autoFillSlots` は入ったままです。
+- 各モジュールの `name` は先に `api.res.moduleRep.find` で探します。ゲームが知らない名前が1つでもあれば、何も送らずに
+  全体を断り、似た名前 (同じファイル名か、同じフォルダのもの) を挙げます。
+- `metadata` か `updateScript` が無いモジュールには、`moduleRep.get` のそのモジュールの値をそのまま入れます。エンジンが
+  自分で埋める場合も同じ値になります。`--no-fill-modules` を付けると、渡したとおりに送ります (ある MOD の料金所は
+  `name` と `variant` だけを送ります)。答えの `params.modules` には、スロット・名前・variant・metadata と updateScript を
+  送ったか・何を埋めたか (`filled`) が入ります。
+- 建てたあと、駅を持つ建物 (港) の答えには `terminals` (全部の駅の terminal の数、`STATION.terminals`) と
+  `stationTerminals` が入ります。0 のときは、モジュールがスロットに乗っていないかもしれない、という `warning` が付きます。
+- `--no-owner` は `playerEntity` を -1 にして、会社のものにせずに建てます (AoM が産業を建てるのと同じ)。指定が無ければ
+  会社のものです。(コマンドの前の `--owner` は、ほかのコマンドと同じく、クライアントの名前です。)
+- `water` は読むだけです (ほかのクライアントに警告は出ません)。`waterLevel` (ワールドの `TERRAIN.waterLevel`) と、点ごとの
+  `onWater` (`api.engine.terrain.isOnWater`)・`height` (`getHeightAt`。水の下では水底)・`depth` (水の上で、水面から地形の
+  高さを引いたもの) を返します。`--grid x0,y0,x1,y1,step` は箱の中を step メートルごとに 400 点まで調べ、`rows`
+  (y0 から上へ y ごとに1行、各行は x0 から: `~` 水、`.` 陸、`?` 読めない) と、数の `water` / `land` を足します。
+  `build --dry-run` の答えにも、その点の `waterLevel` と `onWater` が入ります。水の上の建物には z (`water` の水面の高さ) を
+  渡してください。
+- **ゲーム内では未確認** (2026-11-22 に書いたもの): 港のモジュールが送ったとおりスロットに乗るか、terminal の数、
+  埋めた metadata、`--no-owner`、`water` の値。
+
 ### メインメニューからのマイMOD (`modhub`)
 
 ```
