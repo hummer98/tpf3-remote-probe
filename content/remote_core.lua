@@ -18,7 +18,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
-	modhubValidate = true, modhubPublish = true, water = true }
+	modhubValidate = true, modhubPublish = true, water = true, terrain = true, terrainApi = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -28,7 +28,8 @@ M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame =
 	-- mod for minutes, and starting one aborts a validation already running for that mod (the type's own words),
 	-- e.g. one a person started on the My Mods page: so others are warned. modhubStatus only reads.
 	-- modhubPublish uploads to mod.io (its dry run validates, as modhubValidate)
-	modhubValidate = true, modhubPublish = true }
+	modhubValidate = true, modhubPublish = true,
+	terrain = true } -- also its dry run, as build's (terrainApi only looks whether functions exist)
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true,
@@ -584,7 +585,7 @@ function M.newGamePlan(args, ctx)
 		climate = climate, generator = generator, economy = c.economy, numTiles = { x, y }, year = year,
 		seed = tostring(args.seed or ("remote_probe_" .. tostring(ctx.time or 0))),
 		towns = args.towns ~= false, industries = args.industries ~= false,
-		mods = mods, modParams = params,
+		mods = mods, modParams = params, editor = args.editor == true or nil,
 	}
 end
 
@@ -634,6 +635,7 @@ function M.uiRequest(d)
 	end
 	out.vehicles = M.vehicleRequests(d.vehicles)
 	out.lines = M.lineRequests(d.lines)
+	out.terrain = M.terrainRequests(d.terrain)
 	return out
 end
 
@@ -1018,6 +1020,233 @@ function M.waterRows(points, nx)
 	end
 	if #row > 0 then rows[#rows + 1] = table.concat(row) end
 	return M.array(rows)
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- terrain: a rectangle's ground heights replaced (flat, or a uniform slope along x or y), the rest of the map as it
+-- is. The engine's way is one command with a whole map (api.cmd.makeWorldReplaceTerrainCmd, as the map editor's
+-- generate and import): the map is copied from the game (makeMapFromGame without towns: a map listing towns asserts
+-- in terrain_util::ReplaceTerrain), the heights inside the rectangle changed in the copied table, and the whole
+-- table assigned back (GameMap.heightmap hands out a copy on each read: an element written into it is lost).
+-- The heightmap: (numTiles * 256 / step + 1) points per row, point (i, j) at index j * w + i + 1, i along x from the
+-- map's min corner, heights in metres.
+
+M.TERRAIN_MAX_SIDE = 1024 -- metres per side: at most 257 x 257 points of 4 m
+M.TERRAIN_BLEND = 16 -- metres inside the rectangle's edge over which the new heights blend into the old (4 points)
+M.TERRAIN_MAX_PCT = 100
+-- inside the engine's range (-100 .. 3176.75 m: offsetZ -100 plus 65535 steps of 0.05 m), as UTG keeps its heights
+M.TERRAIN_HEIGHTS = { -99, 3170 }
+-- what the guiUpdate script or the recipe needs for a replacement (looked at with type(), never called to look)
+M.TERRAIN_NEEDS = { "api.engine.terrain.makeMapFromGame", "api.engine.terrain.getBoundingBox",
+	"api.cmd.makeWorldReplaceTerrainCmd", "api.cmd.sendCommand", "api.res.getBaseConfig", "api.engine.util.getWorld" }
+-- also reported by terrainApi: what the base map editor calls round it, and what later steps (towns) would need
+M.TERRAIN_LOOKS = { "api.type.Map.new", "api.gui.map.setMapSeedText", "api.gui.map.reloadMaterialIndexManagerPipeline",
+	"api.engine.mapgen.createTowns", "api.engine.mapgen.createIndustries", "api.cmd.makeTownCreateCmd",
+	"api.gui.game.isMapEditor", "api.engine.terrain.getHeightAt" }
+
+-- "a.b.c" under the global table: its type() ("nil" where a step is missing), nothing called
+function M.typeAt(path, root)
+	local v = root or _G
+	for part in path:gmatch("[^%.]+") do
+		if type(v) ~= "table" and type(v) ~= "userdata" then return "nil" end
+		local ok, nv = pcall(function() return v[part] end)
+		if not ok then return "nil" end
+		v = nv
+	end
+	return type(v)
+end
+
+-- { [path] = type } for the needs and the looks; second value: the needs missing (a list, empty when all are there)
+function M.terrainFunctions(root)
+	local out, missing = {}, {}
+	for _, list in ipairs({ M.TERRAIN_NEEDS, M.TERRAIN_LOOKS }) do
+		for _, p in ipairs(list) do out[p] = M.typeAt(p, root) end
+	end
+	for _, p in ipairs(M.TERRAIN_NEEDS) do
+		if out[p] ~= "function" then missing[#missing + 1] = p end
+	end
+	return out, missing
+end
+
+M.TERRAIN_VIAS = { auto = true, update = true, gui = true }
+
+-- args: rect = "x0,y0,x1,y1" (x0 < x1, y0 < y1, metres), and one of flat = z, slopeX = pct, slopeY = pct (with
+-- base = the height at x0 / y0, the rectangle's west / south edge; pct > 0 rises toward x1 / y1); blend (metres,
+-- default TERRAIN_BLEND, 0 = a sharp edge), dryRun, via (auto, update, gui). -> the request, or nil and why
+function M.terrainRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.rect == nil then return nil, "give rect (x0,y0,x1,y1)" end
+	local rc, err = M.numberList(args.rect, 4)
+	if not rc then return nil, "rect: " .. err end
+	if #rc ~= 4 then return nil, "rect needs x0,y0,x1,y1" end
+	local L = M.BUILD_LIMITS.xy
+	for i = 1, 4 do if math.abs(rc[i]) > L then return nil, "rect: x and y must be within " .. L end end
+	local x0, y0, x1, y1 = rc[1], rc[2], rc[3], rc[4]
+	if not (x1 > x0 and y1 > y0) then return nil, "rect: x0 < x1 and y0 < y1" end
+	local S = M.TERRAIN_MAX_SIDE
+	if x1 - x0 > S or y1 - y0 > S then
+		return nil, string.format("rect: %g x %g m, at most %d m per side", x1 - x0, y1 - y0, S)
+	end
+	local given = {}
+	for _, k in ipairs({ "flat", "slopeX", "slopeY" }) do if args[k] ~= nil then given[#given + 1] = k end end
+	if #given ~= 1 then return nil, "give one of flat (a height), slopeX or slopeY (a percentage, with base)" end
+	local r = { rect = { x0 = x0, y0 = y0, x1 = x1, y1 = y1 }, mode = given[1], dryRun = args.dryRun == true }
+	local v = tonumber(args[r.mode])
+	if not finite(v) then return nil, r.mode .. " must be a finite number" end
+	if r.mode == "flat" then
+		if args.base ~= nil then return nil, "flat is the height itself: no base" end
+		r.z = v
+	else
+		if math.abs(v) > M.TERRAIN_MAX_PCT then return nil, r.mode .. ": at most " .. M.TERRAIN_MAX_PCT .. " %" end
+		local b = tonumber(args.base)
+		if not finite(b) then return nil, "give base (the height at the rectangle's " .. (r.mode == "slopeX" and "x0" or "y0") .. " edge)" end
+		r.pct, r.base = v, b
+	end
+	local blend = args.blend
+	-- not given: TERRAIN_BLEND, or a quarter of the shorter side on a small rectangle
+	if blend == nil then blend = math.min(M.TERRAIN_BLEND, math.min(x1 - x0, y1 - y0) / 4) end
+	blend = tonumber(blend)
+	if not finite(blend) or blend < 0 then return nil, "blend must be a number of metres >= 0" end
+	if 2 * blend > math.min(x1 - x0, y1 - y0) then
+		return nil, string.format("blend %g m is more than half the rectangle's shorter side", blend)
+	end
+	r.blend = blend
+	local via = args.via == nil and "auto" or args.via
+	if not M.TERRAIN_VIAS[via] then return nil, "via must be auto, update or gui" end
+	r.via = via
+	local lo, hi = M.terrainRange(r)
+	local H = M.TERRAIN_HEIGHTS
+	if lo < H[1] or hi > H[2] then
+		return nil, string.format("the heights asked for run %g .. %g m; the engine's range is kept to %g .. %g m",
+			lo, hi, H[1], H[2])
+	end
+	return r
+end
+
+-- the height asked for at x, y (before the blend)
+function M.terrainTarget(r, x, y)
+	if r.mode == "flat" then return r.z end
+	if r.mode == "slopeX" then return r.base + r.pct / 100 * (x - r.rect.x0) end
+	return r.base + r.pct / 100 * (y - r.rect.y0)
+end
+
+-- the lowest and highest height asked for in the rectangle (a plane: at its corners)
+function M.terrainRange(r)
+	local c = r.rect
+	local lo, hi = math.huge, -math.huge
+	for _, p in ipairs({ { c.x0, c.y0 }, { c.x1, c.y0 }, { c.x0, c.y1 }, { c.x1, c.y1 } }) do
+		local h = M.terrainTarget(r, p[1], p[2])
+		if h < lo then lo = h end
+		if h > hi then hi = h end
+	end
+	return lo, hi
+end
+
+-- how much of the new height a point takes: 0 on the rectangle's edge (so the edge stays as it is, and the land
+-- outside meets it without a step), 1 from blend metres inside it on; a sharp edge (blend 0) is 1 everywhere
+function M.terrainWeight(r, x, y)
+	if r.blend <= 0 then return 1 end
+	local c = r.rect
+	local d = math.min(x - c.x0, c.x1 - x, y - c.y0, c.y1 - y)
+	if d <= 0 then return 0 end
+	return math.min(1, d / r.blend)
+end
+
+-- the map's grid: info = { minX, minY, maxX, maxY (the terrain's bounding box), step, w, h (points per row and
+-- column) }. -> the grid points inside the rectangle { i0, i1, j0, j1, nx, ny, points, x0, y0, x1, y1 (the first
+-- and last points' positions) }, or nil and why (the rectangle off the map, no point in it)
+function M.terrainGrid(r, info)
+	local c = r.rect
+	local eps = 1e-6
+	if c.x0 < info.minX - eps or c.y0 < info.minY - eps or c.x1 > info.maxX + eps or c.y1 > info.maxY + eps then
+		return nil, string.format("rect is not inside the map (%g,%g .. %g,%g)", info.minX, info.minY, info.maxX, info.maxY)
+	end
+	local s = info.step
+	local i0, i1 = math.ceil((c.x0 - info.minX) / s - eps), math.floor((c.x1 - info.minX) / s + eps)
+	local j0, j1 = math.ceil((c.y0 - info.minY) / s - eps), math.floor((c.y1 - info.minY) / s + eps)
+	i0, j0 = math.max(i0, 0), math.max(j0, 0)
+	i1, j1 = math.min(i1, info.w - 1), math.min(j1, info.h - 1)
+	if i1 < i0 or j1 < j0 then return nil, "no grid point of the map (every " .. s .. " m) lies in rect" end
+	local nx, ny = i1 - i0 + 1, j1 - j0 + 1
+	return { i0 = i0, i1 = i1, j0 = j0, j1 = j1, nx = nx, ny = ny, points = nx * ny, step = s,
+		x0 = info.minX + i0 * s, y0 = info.minY + j0 * s, x1 = info.minX + i1 * s, y1 = info.minY + j1 * s }
+end
+
+-- the new heights written into heights (the copied table, in place) at the grid's points. -> { changed (points
+-- that moved more than 1 mm), before = { min, max }, written = { min, max } }
+function M.terrainFill(heights, grid, r, info)
+	local s, w = info.step, info.w
+	local changed = 0
+	local bLo, bHi, wLo, wHi = math.huge, -math.huge, math.huge, -math.huge
+	for j = grid.j0, grid.j1 do
+		local y = info.minY + j * s
+		local row = j * w + 1
+		for i = grid.i0, grid.i1 do
+			local x = info.minX + i * s
+			local k = row + i
+			local old = heights[k]
+			local t = M.terrainWeight(r, x, y)
+			local new = old + (M.terrainTarget(r, x, y) - old) * t
+			heights[k] = new
+			if math.abs(new - old) > 0.001 then changed = changed + 1 end
+			if old < bLo then bLo = old end
+			if old > bHi then bHi = old end
+			if new < wLo then wLo = new end
+			if new > wHi then wHi = new end
+		end
+	end
+	return { changed = changed, before = { min = bLo, max = bHi }, written = { min = wLo, max = wHi } }
+end
+
+-- points to read back after the replacement (getHeightAt): the middle and the corners of the part that takes the
+-- full new height (blend metres in from the edge), each on a grid point; expected = what the table holds there.
+-- -> a list of { x, y, expected }
+function M.terrainSamples(heights, grid, r, info)
+	local s, c = info.step, r.rect
+	local function snapI(x) return math.max(grid.i0, math.min(grid.i1, math.floor((x - info.minX) / s + 0.5))) end
+	local function snapJ(y) return math.max(grid.j0, math.min(grid.j1, math.floor((y - info.minY) / s + 0.5))) end
+	local b = r.blend
+	local xs = { (c.x0 + c.x1) / 2, c.x0 + b, c.x1 - b, c.x0 + b, c.x1 - b }
+	local ys = { (c.y0 + c.y1) / 2, c.y0 + b, c.y0 + b, c.y1 - b, c.y1 - b }
+	local out, seen = {}, {}
+	for n = 1, #xs do
+		local i, j = snapI(xs[n]), snapJ(ys[n])
+		local k = j * info.w + i + 1
+		if not seen[k] then
+			seen[k] = true
+			out[#out + 1] = { x = info.minX + i * s, y = info.minY + j * s, expected = heights[k] }
+		end
+	end
+	return out
+end
+
+-- the terrain requests the guiUpdate script hands the speed control (the gui way): { { id, kind = "probe" } } to look
+-- at the functions there, or { { id, kind = "apply", args = <terrainRequest's args> } }; checked again here,
+-- malformed ones left out
+function M.terrainRequests(list)
+	local out = {}
+	if type(list) ~= "table" then return out end
+	for _, r in ipairs(list) do
+		local id = type(r) == "table" and tonumber(r.id)
+		if id and r.kind == "probe" then
+			out[#out + 1] = { id = id, kind = "probe" }
+		elseif id and r.kind == "apply" and type(r.args) == "table" and M.terrainRequest(r.args) then
+			out[#out + 1] = { id = id, kind = "apply", args = r.args }
+		end
+	end
+	return out
+end
+
+-- the official mods (Urban Games' vehicle packs on mod.io, ug_*): a map editor started by newgame --editor takes
+-- these and the probe, not the running game's (a map keeps its mods)
+M.OFFICIAL_PREFIX = "ug_"
+function M.officialMods(installed)
+	local out = {}
+	for _, n in ipairs(installed or {}) do
+		if type(n) == "string" and n:sub(1, #M.OFFICIAL_PREFIX) == M.OFFICIAL_PREFIX then out[#out + 1] = n end
+	end
+	table.sort(out)
+	return out
 end
 
 -- the values a construction's own params start with, as the base's construction menu picks them

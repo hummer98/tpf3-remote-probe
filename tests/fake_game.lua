@@ -348,7 +348,7 @@ function M.new(dir, opts)
 	opts.saves = opts.saves or {}
 	local g = { dir = dir, time = 1000, gameTime = 0, speedup = 1, logs = {}, commands = {}, loads = {}, saved = {},
 		mods = opts.mods or { "hummer_remote_probe" }, modParams = opts.modParams or {}, running = true, callbacks = {},
-		started = {}, menu = opts.menu == true }
+		started = {}, menu = opts.menu == true, mapEditor = opts.mapEditor == true }
 	-- the main menu (opts.menu, startup.lua): no world, no mod params of a game, no GUI save data
 	local function inGame(what) if g.menu then error(what .. " in the main menu") end end
 
@@ -680,9 +680,14 @@ function M.new(dir, opts)
 		setWaitForStartReadyGame = function() g.waitedForStart = true end,
 		quit = function() g.quitCalled = (g.quitCalled or 0) + 1 end,
 		-- the mods' descriptions (mod.json params) as the base new-game page reads their defaults
+		-- opts.installed: the mods installed (getInstalledMods, as ModIds with a name)
 		getUserProfile = function() return { getModRep = function() return { getModDesc = function(_, id)
 			local d = (opts.modDescs or { [""] = { { key = "guideSystemConfig.tutorial", defaultIndex = 1 } } })[id.name]
 			return d and { params = d } or nil
+		end, getInstalledMods = function()
+			local out = {}
+			for i, n in ipairs(opts.installed or {}) do out[i] = { name = n } end
+			return out
 		end } end } end,
 		-- climates and terrain generators as resource reps (ids -> descs), like app.res in the game
 		res = {
@@ -1229,6 +1234,8 @@ function M.new(dir, opts)
 			end,
 			getGuiSaveData = function(mod) inGame("getGuiSaveData"); return M.guiSave[mod] end,
 			getDefaultSavegameId = function() return "default" end,
+			-- the map editor: a game started with isMapEditor (or opts.mapEditor)
+			isMapEditor = function() inGame("isMapEditor"); return g.mapEditor == true end,
 		} },
 	}
 	if opts.modhub then M.installModhub(g, opts.modhub == true and {} or opts.modhub) end
@@ -1471,6 +1478,7 @@ function M.new(dir, opts)
 			local self = false
 			for _, m in ipairs(p.mods) do self = self or m == "hummer_remote_probe" end
 			g.mods, g.modParams = p.mods, p.modParams
+			g.mapEditor = p.isMapEditor == true
 			g.gameTime = ((p.startDate.year - 1900) * 365) * DAY_TICKS
 			g.time = g.time + 5
 			g.menu = false
@@ -1823,6 +1831,139 @@ function M.installBuild(g, spec)
 	end
 	g.buildNames = names
 	return makeCmd
+end
+
+-- The engine's side of the terrain command (makeMapFromGame, makeWorldReplaceTerrainCmd), for remote_terrain.lua.
+-- spec.tiles = { tx, ty } (default 2 x 2: 512 m, 129 points a row of 4 m), the map centred on 0, 0;
+-- spec.height(x, y): the heights it starts with (default 10); spec.waterLevel (default 0);
+-- spec.entities = { [id] = { kind = "BASE_EDGE" | "CONSTRUCTION" | ..., x, y } }: what the octree finds;
+-- spec.reactOnly: the terrain functions are there only in a react state (M.inReact): nil in the guiUpdate state;
+-- spec.replaceFails: the callback says no success, nothing changes; spec.lostCallback: no callback;
+-- spec.townsInMap: makeMapFromGame lists a town even without towns asked for; spec.vectorHeights: the heightmap read
+-- is an engine vector (userdata with # and [i]).
+-- Like the engine: GameMap.heightmap hands out a copy on each read (an element written into it is lost; only a whole
+-- table assigned counts), a map that lists towns is an assertion in ReplaceTerrain, so is a heightmap of the wrong
+-- size. g.heights: the engine's heights; g.terrainCmds: each replacement sent; g.seedTexts, g.materialReloads.
+function M.installTerrain(g, spec)
+	spec = spec or {}
+	local tx, ty = (spec.tiles or {})[1] or 2, (spec.tiles or {})[2] or 2
+	local step = 4
+	local w, h = tx * 256 / step + 1, ty * 256 / step + 1
+	local minX, minY = -tx * 128, -ty * 128
+	g.heights = {}
+	for j = 0, h - 1 do
+		for i = 0, w - 1 do
+			g.heights[j * w + i + 1] = spec.height and spec.height(minX + i * step, minY + j * step) or 10
+		end
+	end
+	g.terrainCmds, g.seedTexts, g.materialReloads = {}, {}, 0
+	local level = spec.waterLevel or 0
+	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
+	api.type.Vec2f = api.type.Vec2f or { new = function(x, y) return { x = x, y = y } end }
+	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
+	api.type.Box3 = api.type.Box3 or { new = function(lo, hi) return { min = lo, max = hi } end }
+	local maps = setmetatable({}, { __mode = "k" })
+	local function newMap(withHeights, towns)
+		local store = { heightmap = withHeights and copy(g.heights) or {}, numTilesX = tx, numTilesY = ty, levels = 1,
+			offsetZ = -100, waterLevel = level, climateId = "temperate", resolution = { x = step, y = step, z = 0.05 },
+			towns = towns or {}, industries = {} }
+		local u = newproxy(true)
+		local mt = getmetatable(u)
+		mt.__index = function(_, k)
+			if store[k] == nil then error("no field " .. tostring(k)) end
+			if k == "heightmap" and spec.vectorHeights then
+				local c = copy(store.heightmap)
+				local v = newproxy(true)
+				getmetatable(v).__len = function() return #c end
+				getmetatable(v).__index = function(_, i) return c[i] end
+				return v
+			end
+			return type(store[k]) == "table" and copy(store[k]) or store[k]
+		end
+		mt.__newindex = function(_, k, v)
+			if store[k] == nil then error("no field " .. tostring(k)) end
+			store[k] = type(v) == "table" and copy(v) or v
+		end
+		maps[u] = store
+		return u
+	end
+	local function heightAt(x, y)
+		local fi, fj = (x - minX) / step, (y - minY) / step
+		local i0, j0 = math.max(0, math.min(w - 2, math.floor(fi))), math.max(0, math.min(h - 2, math.floor(fj)))
+		local ax, ay = fi - i0, fj - j0
+		local function at(i, j) return g.heights[j * w + i + 1] end
+		return (1 - ay) * ((1 - ax) * at(i0, j0) + ax * at(i0 + 1, j0)) + ay * ((1 - ax) * at(i0, j0 + 1) + ax * at(i0 + 1, j0 + 1))
+	end
+	local hidden = {
+		makeMapFromGame = function(wH, wT, wI, wA)
+			return newMap(wH, (wT or spec.townsInMap) and { { name = "Town" } } or {})
+		end,
+		getBoundingBox = function()
+			return { min = { x = minX, y = minY }, max = { x = minX + (w - 1) * step, y = minY + (h - 1) * step } }
+		end,
+	}
+	local terrain = {
+		getHeightAt = function(v) return heightAt(v.x, v.y) end,
+		isValidCoordinate = function(v)
+			return v.x >= minX and v.y >= minY and v.x <= minX + (w - 1) * step and v.y <= minY + (h - 1) * step
+		end,
+		isOnWater = function(v) return heightAt(v.x, v.y) < level end,
+	}
+	local function shown(k) return hidden[k] ~= nil and (not spec.reactOnly or M.inReact) end
+	api.engine.terrain = setmetatable(terrain, { __index = function(_, k) if shown(k) then return hidden[k] end end })
+	local cfg = { terrainConfig = true }
+	api.res.getBaseConfig = function() return { terrain = cfg } end
+	api.type.Map = { new = function(m) return m end }
+	api.engine.mapgen = { createTowns = function() return { toAdd = {} } end, createIndustries = function() return { toAdd = {} } end }
+	api.gui.map = { setMapSeedText = function(t) g.seedTexts[#g.seedTexts + 1] = t end,
+		reloadMaterialIndexManagerPipeline = function() g.materialReloads = g.materialReloads + 1 end }
+	local replaceCmd = function(map, terrainConfig, seed, world, keepAssets)
+		if not maps[map] then crash("makeWorldReplaceTerrainCmd: no GameMap") end
+		if terrainConfig ~= cfg then crash("makeWorldReplaceTerrainCmd: no terrain config") end
+		local st = maps[map]
+		return { kind = "replaceTerrain", heights = copy(st.heightmap), towns = copy(st.towns), seed = seed,
+			world = world, keepAssets = keepAssets }
+	end
+	if spec.reactOnly then
+		setmetatable(api.cmd, { __index = function(_, k) if k == "makeWorldReplaceTerrainCmd" and M.inReact then return replaceCmd end end })
+	else
+		api.cmd.makeWorldReplaceTerrainCmd = replaceCmd
+	end
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		if type(cmd) ~= "table" or cmd.kind ~= "replaceTerrain" then return send(cmd, cb) end
+		g.commands[#g.commands + 1] = cmd
+		if #cmd.towns > 0 then crash("terrain_util::ReplaceTerrain: Assertion 'map.towns.empty()' failed") end
+		if #cmd.heights ~= w * h then crash("ReplaceTerrain: heightmap of " .. #cmd.heights .. " values, " .. w * h .. " wanted") end
+		g.terrainCmds[#g.terrainCmds + 1] = cmd
+		if not spec.replaceFails then g.heights = copy(cmd.heights) end
+		if cb and not spec.lostCallback then cb({}, not spec.replaceFails) end
+	end
+	-- what stands on the map
+	local ents = spec.entities or {}
+	api.engine.system = api.engine.system or {}
+	local oldOctree = api.engine.system.octreeSystem
+	api.engine.system.octreeSystem = { findIntersectingEntities = function(box, cb)
+		if oldOctree then oldOctree.findIntersectingEntities(box, cb) end
+		for e, b in pairs(ents) do
+			if b.x >= box.min.x and b.x <= box.max.x and b.y >= box.min.y and b.y <= box.max.y then cb(e) end
+		end
+	end }
+	local CT = api.type.ComponentType
+	for _, k in ipairs({ "BASE_EDGE", "BASE_NODE", "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY", "SUBCONSTRUCTION" }) do
+		CT[k] = CT[k] or k
+	end
+	local exists = api.engine.entityExists
+	api.engine.entityExists = function(e)
+		if ents[e] then return true end
+		for _, t in ipairs(api.engine.getEntitiesWithComponent(CT.TOWN) or {}) do if t == e then return true end end
+		return exists(e)
+	end
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		if ents[e] then return ents[e].kind == kind and {} or nil end
+		return getComponent(e, kind)
+	end
 end
 
 M.dateOf = dateOf

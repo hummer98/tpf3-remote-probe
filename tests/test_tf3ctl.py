@@ -1414,6 +1414,63 @@ class QuitLaunchTest(unittest.TestCase):
             code = tf3ctl.main(["water", "--at=-100,50"])
         self.assertEqual((code, sent), (0, [("water", {"at": [-100.0, 50.0]})]))
 
+    def test_terrain_args_and_probe_api(self):
+        p = tf3ctl.make_parser()
+
+        def args(*argv):
+            return tf3ctl.terrain_args(p.parse_args(["terrain"] + list(argv)))
+        self.assertEqual(args("--rect=-100,0,100,50", "--flat", "40"), {"rect": [-100.0, 0.0, 100.0, 50.0], "flat": 40.0})
+        self.assertEqual(args("--rect", "0,0,500,300", "--slope-x", "5", "--base", "40", "--blend", "0", "--dry-run",
+                              "--via", "gui"),
+                         {"rect": [0.0, 0.0, 500.0, 300.0], "slopeX": 5.0, "base": 40.0, "blend": 0.0, "dryRun": True,
+                          "via": "gui"})
+        self.assertEqual(args("--rect", "0,0,1024,1024", "--slope-y", "-10", "--base", "80")["slopeY"], -10.0,
+                         "the limit itself")
+        for bad in (["--rect", "0,0,1", "--flat", "1"], ["--rect", "5,0,1,1", "--flat", "1"],
+                    ["--rect", "0,0,1025,10", "--flat", "1"], ["--rect", "0,0,10,10"],
+                    ["--rect", "0,0,10,10", "--slope-x", "5"], ["--rect", "0,0,10,10", "--flat", "1", "--base", "2"],
+                    ["--rect", "0,0,10,10", "--flat", "nan"], ["--rect", "0,0,10,10", "--flat", "1", "--blend", "-1"],
+                    ["--rect", "a,b,c,d", "--flat", "1"], ["--flat", "1"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                args(*bad)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            p.parse_args(["terrain", "--rect", "0,0,1,1", "--flat", "1", "--slope-x", "2"])
+        self.assertIn("terrain", tf3ctl.CHANGES_GAME)
+        self.assertNotIn("terrainApi", tf3ctl.CHANGES_GAME, "it only looks")
+        # the mod reads the rect as a list of numbers
+        got = mod_reads(tf3ctl.command_text(9, "terrain", args("--rect", "0,0,10,10", "--flat", "1")))
+        self.assertEqual((got["cmd"], got["args"]["rect"][3], got["args"]["flat"]), ("terrain", 10, 1))
+        sent = []
+
+        def fake_send(cmd, a=None, timeout=20, **kw):
+            sent.append((cmd, a, timeout))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = tf3ctl.main(["terrain", "--probe-api"])
+            code2 = tf3ctl.main(["terrain", "--rect", "0,0,10,10", "--flat", "3", "--dry-run"])
+        self.assertEqual((code, code2), (0, 0))
+        self.assertEqual(sent[0][:2], ("terrainApi", {}))
+        self.assertEqual(sent[1][:2], ("terrain", {"rect": [0.0, 0.0, 10.0, 10.0], "flat": 3.0, "dryRun": True}))
+        self.assertEqual(sent[1][2], tf3ctl.TERRAIN_TIMEOUT_SEC)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["terrain", "--probe-api", "--rect", "0,0,1,1"]), 2)
+
+    def test_newgame_and_launch_editor(self):
+        p = tf3ctl.make_parser()
+        ns = p.parse_args(["newgame", "--editor", "--size", "tiny", "--no-towns", "--dry-run"])
+        got = tf3ctl.newgame_args(ns)
+        self.assertEqual((got["editor"], got["towns"], got["size"]), (True, False, "tiny"))
+        self.assertNotIn("editor", tf3ctl.newgame_args(p.parse_args(["newgame", "--size", "tiny"])), "off by default")
+        self.assertNotIn("editor", tf3ctl.newgame_args(p.parse_args(["newgame", "--editor", "--list"])), "--list: no plan")
+        cmd, a = tf3ctl.start_args(p.parse_args(["launch", "--new", "--editor", "--size", "tiny"]))
+        self.assertEqual((cmd, a["editor"]), ("newgame", True))
+        self.assertNotIn("editor", tf3ctl.start_args(p.parse_args(["launch", "--new"]))[1])
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.start_args(p.parse_args(["launch", "--editor"]))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.start_args(p.parse_args(["restart", "--load", "x", "--editor"]))
+
     def test_event_and_tool_args(self):
         ns = tf3ctl.argparse.Namespace
         self.assertEqual(tf3ctl.event_args(ns(name="example_window.show", param='{"welcome": true}')),

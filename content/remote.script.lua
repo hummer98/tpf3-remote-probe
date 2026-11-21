@@ -262,13 +262,24 @@ local function cancelRun(reason)
 	answer(r.id, { ok = false, error = "cancelled: " .. reason, summary = r.summary() }, "error")
 end
 
+-- whether this game is the map editor: as the GUI says (api.gui.game.isMapEditor) and as the base's mod params
+-- hold it (modParams[""].isMapEditor); either may be nil when it cannot be read
+local function mapEditorNow()
+	local gui = try(function() return api.gui.game.isMapEditor() end)
+	local params = modParamsNow()
+	local base = type(params) == "table" and params[""] or nil
+	local mp = type(base) == "table" and base.isMapEditor or nil
+	local function flag(v) if v == true or v == false then return v end return nil end
+	return { gui = flag(gui), modParams = flag(mp) }
+end
+
 function handlers.status(c)
 	local t = now()
 	answer(c.id, { ok = true, version = core.VERSION, mod = MOD, stamp = G.stamp, dir = G.dir, menu = G.menu == true, state = t,
 		defaultSavegameId = try(function() return api.gui.game.getDefaultSavegameId() end),
 		modParams = modParamsNow(), run = runInfo(), poll = { idle = G.pollIdle, active = G.pollActive },
 		ui = (not G.menu) and uiReadBack() or nil,
-		logLevel = G.options.logLevel, lastAction = G.lastAction })
+		logLevel = G.options.logLevel, lastAction = G.lastAction, mapEditor = (not G.menu) and mapEditorNow() or nil })
 end
 
 function handlers.speed(c)
@@ -923,7 +934,19 @@ local function defaultParams(mods)
 	return out
 end
 
--- args: climate, generator, size, year, seed, towns, industries, mods, params, list, dryRun
+-- the official mods installed (core.officialMods: ug_*), from the user profile's mod repository
+local function officialMods()
+	local names = {}
+	local list = try(function() return app.getUserProfile():getModRep():getInstalledMods() end)
+	for _, id in ipairs(core.toList(list)) do
+		local n = core.field(id, "name")
+		if type(n) == "string" then names[#names + 1] = n end
+	end
+	return core.officialMods(names)
+end
+
+-- args: climate, generator, size, year, seed, towns, industries, mods, params, list, dryRun, editor (the map
+-- editor: StartGameParams.isMapEditor)
 function handlers.newgame(c)
 	local catalog = climateCatalog()
 	-- this script only runs inside a save, and there app.startGame hits the base's StartGame assertion
@@ -934,7 +957,12 @@ function handlers.newgame(c)
 	end
 	if c.args.list then return answer(c.id, { ok = true, climates = catalog, sizes = core.MAP_SIZES }) end
 	local current, mods
-	if G.menu then
+	if c.args.editor then
+		-- a map keeps the mods it was made with: the official ones and the probe, not the running game's (args.mods
+		-- still add and remove), with their defaults as in the menu
+		mods = officialMods()
+		current = defaultParams(core.mergeMods(mods, c.args.mods, MOD))
+	elseif G.menu then
 		-- no game to take them from: the defaults, as the base new-game page builds them
 		-- (new_game_react_util.makeDefaultBaseModParams). Without the base's own params the game started with
 		-- no money and the tutorial on (2026-11-16).
@@ -1002,7 +1030,7 @@ local function stepStart()
 		p.startDate = api.type.Date.new(plan.year, 1, 1)
 		p.startTimeOfDaySeconds = 12 * 3600
 		p.startCloudCoverage = 0
-		p.isMapEditor = false
+		p.isMapEditor = plan.editor == true
 		p.generateTowns = plan.towns
 		p.generateIndustries = plan.industries
 		p.generateAssets = true
@@ -1057,6 +1085,13 @@ local build = (ug_require or require)(MOD .. "::/remote_build.lua").new({ core =
 	appTime = appTime, try = try, say = say })
 handlers.build = build.handle
 handlers.water = build.water
+-- terrain (remote_terrain.lua, terrain_work.lua): a rectangle made flat or a slope; terrainApi looks at the functions
+local terrain = (ug_require or require)(MOD .. "::/remote_terrain.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = appTime, try = try, say = say, publishUi = publishUi, mod = MOD,
+	work = (ug_require or require)(MOD .. "::/terrain_work.lua"),
+	towns = function() return entitiesOf("town") end })
+handlers.terrain = terrain.handle
+handlers.terrainApi = terrain.api
 -- My Mods (remote_modhub.lua): the staging area, validate and the one upload, in the main menu only
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })
@@ -1274,12 +1309,14 @@ local function init()
 	G.buildTool = nil -- a new GUI: no filter left to clear
 	-- the save may hold the last game's label and requests; buttons now, not at the first label step, so a game
 	-- set to hide them never shows them
-	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {}, buttons = G.options.speedButtons ~= false })
+	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {}, terrain = {},
+		buttons = G.options.speedButtons ~= false })
 	if not G.menu then
 		vehicles.reset()
 		lines.reset()
 		connect.reset()
 		build.reset()
+		terrain.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1389,6 +1426,7 @@ local function step()
 	lines.step()
 	connect.step()
 	build.step()
+	terrain.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()

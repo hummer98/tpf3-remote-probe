@@ -6670,5 +6670,278 @@ test("water and the dry run: a point off the map is not asked (isOnWater would a
 	truthy(not g.crashed, g.crashed)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- terrain (a rectangle flat or a slope), terrainApi, newgame --editor
+
+test("core.terrainRequest: rect, one of flat / slopeX / slopeY (with base), blend, via; the limits", function()
+	local r = core.terrainRequest({ rect = "0,0,100,50", flat = 20 })
+	eq(r.mode, "flat"); eq(r.z, 20); eq(r.rect.x1, 100); eq(r.blend, 12.5, "a quarter of 50 m");
+	eq(core.terrainRequest({ rect = "0,0,100,100", flat = 1 }).blend, core.TERRAIN_BLEND); eq(r.via, "auto"); eq(r.dryRun, false)
+	local s = core.terrainRequest({ rect = { -10, -10, 90, 90 }, slopeX = 5, base = 30, blend = 0, dryRun = true, via = "gui" })
+	eq(s.mode, "slopeX"); eq(s.pct, 5); eq(s.base, 30); eq(s.blend, 0); eq(s.dryRun, true); eq(s.via, "gui")
+	eq(core.terrainTarget(s, -10, 0), 30, "base at x0"); eq(core.terrainTarget(s, 90, 0), 35, "5 % over 100 m")
+	local lo, hi = core.terrainRange(core.terrainRequest({ rect = "0,0,200,100", slopeY = -10, base = 50 }))
+	eq(lo, 40); eq(hi, 50)
+	local S = core.TERRAIN_MAX_SIDE
+	truthy(core.terrainRequest({ rect = string.format("0,0,%d,%d", S, S), flat = 1 }), "the limit itself")
+	for _, bad in ipairs({
+		{ {}, "give rect" }, { { rect = "0,0,1", flat = 1 }, "x0,y0,x1,y1" }, { { rect = "5,0,1,1", flat = 1 }, "x0 < x1" },
+		{ { rect = "0,0,0,10", flat = 1 }, "x0 < x1" }, { { rect = string.format("0,0,%d,10", S + 1), flat = 1 }, "at most " .. S },
+		{ { rect = "0,0,10,10" }, "give one of" }, { { rect = "0,0,10,10", flat = 1, slopeX = 2 }, "give one of" },
+		{ { rect = "0,0,10,10", flat = "x" }, "finite" }, { { rect = "0,0,10,10", flat = 1, base = 2 }, "no base" },
+		{ { rect = "0,0,10,10", slopeX = 5 }, "give base" }, { { rect = "0,0,10,10", slopeY = 101, base = 1 }, "at most 100" },
+		{ { rect = "0,0,100,100", flat = 1, blend = -1 }, "blend" }, { { rect = "0,0,100,20", flat = 1, blend = 11 }, "half" },
+		{ { rect = "0,0,10,10", flat = 1, via = "cmd" }, "via" }, { { rect = "0,0,10,10", flat = 4000 }, "engine's range" },
+		{ { rect = "0,0,1000,10", slopeX = 100, base = 3000, blend = 0 }, "engine's range" }, { { rect = "0,0,1e6,1", flat = 1 }, "within" },
+	}) do
+		local ok, err = core.terrainRequest(bad[1])
+		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / wanted " .. bad[2])
+	end
+	truthy(core.COMMANDS.terrain and core.CHANGES_GAME.terrain and not core.MENU_COMMANDS.terrain, "changes the game, in a game")
+	truthy(core.COMMANDS.terrainApi and not core.CHANGES_GAME.terrainApi and not core.MENU_COMMANDS.terrainApi, "terrainApi only looks")
+end)
+
+test("core.terrainGrid / terrainFill: the points in the rect, flat and slope values, the blend, nothing outside", function()
+	-- a 3 x 3 tile map would be large; a small grid of the same layout: 11 x 11 points of 4 m from -20, -20
+	local info = { minX = -20, minY = -20, maxX = 20, maxY = 20, step = 4, w = 11, h = 11 }
+	local function heights() local t = {} for k = 1, 121 do t[k] = 7 end return t end
+	local r = core.terrainRequest({ rect = "-6,-6,6,6", flat = 3, blend = 0 })
+	local grid = core.terrainGrid(r, info)
+	eq(grid.i0, 4); eq(grid.i1, 6); eq(grid.nx, 3); eq(grid.ny, 3); eq(grid.points, 9); eq(grid.x0, -4); eq(grid.x1, 4)
+	local H = heights()
+	local st = core.terrainFill(H, grid, r, info)
+	eq(st.changed, 9); eq(st.before.min, 7); eq(st.written.min, 3); eq(st.written.max, 3)
+	for j = 0, 10 do for i = 0, 10 do
+		local inside = i >= 4 and i <= 6 and j >= 4 and j <= 6
+		eq(H[j * 11 + i + 1], inside and 3 or 7, string.format("point %d,%d", i, j))
+	end end
+	-- a slope along y: 10 % from y0 = -20 (the map's edge), 0.4 m a point
+	local sy = core.terrainRequest({ rect = "-20,-20,20,20", slopeY = 10, base = 50, blend = 0 })
+	local H2 = heights()
+	core.terrainFill(H2, core.terrainGrid(sy, info), sy, info)
+	for j = 0, 10 do eq(H2[j * 11 + 5 + 1], 50 + 0.4 * j, "row " .. j) end
+	eq(H2[3 * 11 + 1], H2[3 * 11 + 11], "the same along x")
+	-- the blend: the edge stays, blend metres in the full height
+	local b = core.terrainRequest({ rect = "-20,-20,20,20", flat = 1, blend = 8 })
+	local H3 = heights()
+	core.terrainFill(H3, core.terrainGrid(b, info), b, info)
+	eq(H3[5 * 11 + 1], 7, "on the edge: as it was"); eq(H3[5 * 11 + 2], 4, "4 m in: half way"); eq(H3[5 * 11 + 3], 1, "8 m in: full")
+	eq(H3[5 * 11 + 6], 1)
+	-- off the map, and a rect between two points
+	truthy(select(2, core.terrainGrid(core.terrainRequest({ rect = "-30,0,0,10", flat = 1 }), info)):find("not inside the map"))
+	truthy(select(2, core.terrainGrid(core.terrainRequest({ rect = "1,1,2,2", flat = 1, blend = 0 }), info)):find("no grid point"))
+	-- samples: the middle and the full part's corners, on grid points
+	local samples = core.terrainSamples(H3, core.terrainGrid(b, info), b, info)
+	eq(samples[1].x, 0); eq(samples[1].y, 0); eq(samples[1].expected, 1); eq(samples[2].x, -12); eq(#samples, 5)
+end)
+
+test("core.terrainFunctions: type() of each path, nothing called; the needs missing", function()
+	local called = false
+	local root = { api = { engine = { terrain = { makeMapFromGame = function() called = true end } } } }
+	local f, missing = core.terrainFunctions(root)
+	eq(f["api.engine.terrain.makeMapFromGame"], "function"); eq(f["api.cmd.makeWorldReplaceTerrainCmd"], "nil")
+	eq(f["api.type.Map.new"], "nil"); eq(called, false)
+	truthy(#missing > 0 and missing[1] == "api.engine.terrain.getBoundingBox", missing[1])
+	eq(core.typeAt("a.b", { a = 5 }), "nil", "through a number")
+	local o = core.officialMods({ "ug_legacy_ships", "hummer_age_of_mobility", "ug_tgv_pse", "x_ug_y" })
+	eq(table.concat(o, ","), "ug_legacy_ships,ug_tgv_pse")
+	eq(#core.terrainRequests({ { id = 1, kind = "probe" }, { id = 2, kind = "apply", args = { rect = "0,0,1,1", flat = 1, blend = 0 } },
+		{ id = 3, kind = "apply", args = { rect = "0,0,1,1" } }, { kind = "probe" }, { id = 4, kind = "dig" } }), 2)
+end)
+
+-- a game with the speed control on screen and a 512 m map (installTerrain): heights 10, unless spec.height
+local function terrainGame(spec, opts)
+	local g = vehicleGame(opts)
+	fake.installTerrain(g, spec)
+	return g
+end
+local function terrainRun(g, id, argsLua, n)
+	send(g, id, "terrain", argsLua)
+	frames(g, n or FIRST + 20)
+	return final(g, id)
+end
+local function hAt(g, x, y)
+	local i, j = (x + 256) / 4, (y + 256) / 4
+	assert(i % 1 == 0 and j % 1 == 0, "not a grid point: " .. x .. "," .. y)
+	return g.heights[j * 129 + i + 1]
+end
+
+test("terrain flat: the rect's points at the height, the rest as it was; one replacement, no towns in it; read back", function()
+	local g = terrainGame({ height = function(x, y) return 10 + x / 100 end })
+	local before = {}
+	for k, v in ipairs(g.heights) do before[k] = v end
+	local a, n = terrainRun(g, 1001, '{ rect = "-100,-100,100,100", flat = 25 }')
+	eq(n, 1, "one final answer")
+	truthy(a.ok, a.error)
+	eq(a.via, "update"); eq(a.sent, true); eq(a.success, true); eq(a.keepAssets, true)
+	eq(#g.terrainCmds, 1); eq(#g.terrainCmds[1].towns, 0); eq(g.terrainCmds[1].keepAssets, true)
+	eq(#g.seedTexts, 1); eq(g.materialReloads, 1); eq(a.seedText, true); eq(a.reloadMaterials, true)
+	eq(a.grid.nx, 51); eq(a.grid.ny, 51); eq(a.grid.points, 2601); eq(a.map.w, 129); eq(a.map.minX, -256)
+	eq(a.target.min, 25); eq(a.target.max, 25); eq(a.written.max, 25); eq(a.blend, 16)
+	truthy(a.written.min >= 9 and a.written.min < 10, "the blend from the old heights: " .. a.written.min)
+	eq(hAt(g, 0, 0), 25); eq(hAt(g, -84, 84), 25, "16 m in: full")
+	eq(hAt(g, -100, 0), before[64 * 129 + 39 + 1], "the edge as it was (blend)")
+	-- outside: every point as it was
+	local diff = 0
+	for j = 0, 128 do for i = 0, 128 do
+		local x, y = -256 + 4 * i, -256 + 4 * j
+		if not (x >= -100 and x <= 100 and y >= -100 and y <= 100) and g.heights[j * 129 + i + 1] ~= before[j * 129 + i + 1] then diff = diff + 1 end
+	end end
+	eq(diff, 0, "nothing outside the rect changed")
+	eq(a.readBackOk, true); eq(a.samples[1].read, 25); eq(a.samples[1].expected, 25)
+	truthy(a.note:find("not checked in a game")); eq(a.mapEditor, false)
+	eq(a.functionsUpdate["api.engine.terrain.makeMapFromGame"], "function")
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("terrain slopeX / slopeY: 5 % and 10 % from base at the west / south edge, a sharp edge with blend 0", function()
+	local g = terrainGame()
+	local a = terrainRun(g, 1002, '{ rect = "0,0,200,100", slopeX = 5, base = 30, blend = 0 }')
+	truthy(a.ok, a.error)
+	eq(hAt(g, 0, 40), 30); eq(hAt(g, 4, 40), 30.2); eq(hAt(g, 200, 40), 40); eq(hAt(g, 100, 100), 35)
+	eq(hAt(g, -4, 40), 10, "west of the rect"); eq(hAt(g, 204, 40), 10, "east of it")
+	eq(a.target.min, 30); eq(a.target.max, 40); eq(a.changed, 51 * 26)
+	local b = terrainRun(g, 1003, '{ rect = "-200,-200,-100,0", slopeY = 10, base = 50, blend = 0 }')
+	truthy(b.ok, b.error)
+	eq(hAt(g, -152, -200), 50); eq(hAt(g, -152, -196), 50.4); eq(hAt(g, -152, 0), 70); eq(hAt(g, -200, -100), hAt(g, -100, -100))
+	eq(hAt(g, -152, 4), 10, "north of it")
+	eq(hAt(g, 100, 40), 35, "the first one stays")
+end)
+
+test("terrain: over the limit, off the map or bad values: refused, nothing sent", function()
+	local g = terrainGame()
+	local a = terrainRun(g, 1004, '{ rect = "-250,-250,850,0", flat = 5 }')
+	truthy(a.error and a.error:find("at most 1024"), a.error)
+	local b = terrainRun(g, 1005, '{ rect = "200,0,400,100", flat = 5 }')
+	truthy(b.error and b.error:find("not inside the map"), b.error)
+	local c = terrainRun(g, 1006, '{ rect = "0,0,10,10", slopeX = 5 }')
+	truthy(c.error and c.error:find("give base"), c.error)
+	eq(#g.terrainCmds, 0); eq(hAt(g, 0, 0), 10)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("terrain: a road, a construction or a town in or by the rect: refused, nothing sent (the dry run too)", function()
+	local g = terrainGame({ entities = { [7001] = { kind = "BASE_EDGE", x = 50, y = 50 },
+		[7002] = { kind = "CONSTRUCTION", x = 104, y = 0 }, [7003] = { kind = "BASE_EDGE", x = 150, y = 0 } } },
+		{ entities = { TOWN = { 11 } }, names = { [11] = "Emsworth" }, positions = { [11] = { -400, 0 } } })
+	local a = terrainRun(g, 1010, '{ rect = "0,0,100,100", flat = 5 }')
+	eq(a.ok, false)
+	truthy(a.error:find("nothing sent") and a.error:find("1 roads (7001)", 1, true) and a.error:find("1 constructions (7002)", 1, true), a.error)
+	truthy(not a.error:find("7003"), "150 m away is not in the way")
+	eq(a.blockers.roads[1], 7001); eq(a.blockers.towns, nil, "the town's box is 600 m away")
+	local b = terrainRun(g, 1011, '{ rect = "0,0,100,100", flat = 5, dryRun = true }')
+	eq(b.ok, false); truthy(b.error:find("nothing sent"))
+	-- a town whose box comes within 200 m
+	local c = terrainRun(g, 1012, '{ rect = "-250,-250,-220,-50", flat = 5 }')
+	eq(c.ok, false); truthy(c.error:find("1 towns (Emsworth (11))", 1, true), c.error)
+	eq(c.blockers.towns[1].name, "Emsworth")
+	eq(#g.terrainCmds, 0); eq(hAt(g, 40, 40), 10)
+	-- clear ground: goes through
+	local d = terrainRun(g, 1013, '{ rect = "0,-200,100,-100", flat = 5 }')
+	truthy(d.ok, d.error); eq(#g.terrainCmds, 1)
+end)
+
+test("terrain --dry-run: the numbers, nothing sent, nothing changed", function()
+	local g = terrainGame()
+	local a = terrainRun(g, 1020, '{ rect = "0,0,100,100", slopeX = 10, base = 0, blend = 0, dryRun = true }')
+	truthy(a.ok, a.error)
+	eq(a.dryRun, true); eq(a.sent, false); eq(a.success, nil); eq(a.readBackOk, nil)
+	eq(a.grid.points, 26 * 26); eq(a.written.min, 0); eq(a.written.max, 10); eq(a.before.min, 10); eq(a.changed, 26 * 25, "the x1 column was 10 already")
+	eq(#g.terrainCmds, 0); eq(#g.seedTexts, 0); eq(hAt(g, 100, 0), 10)
+end)
+
+test("terrain via gui: where only the recipe's state has the functions (auto), the recipe replaces it; via update refused", function()
+	local g = terrainGame({ reactOnly = true })
+	local a = terrainRun(g, 1030, '{ rect = "-100,-100,100,100", flat = 25 }')
+	truthy(a.ok, a.error)
+	eq(a.via, "gui"); eq(a.sent, true); eq(a.success, true); eq(a.readBackOk, true)
+	eq(a.functionsUpdate["api.engine.terrain.makeMapFromGame"], "nil"); eq(a.functionsGui["api.engine.terrain.makeMapFromGame"], "function")
+	eq(#g.terrainCmds, 1); eq(hAt(g, 0, 0), 25); eq(#g.seedTexts, 1)
+	-- the request is taken back: the GUI save data lists none
+	eq(#(fake.guiSave.hummer_remote_probe.terrain or {}), 0)
+	local d = terrainRun(g, 1031, '{ rect = "-100,-100,100,100", flat = 30, dryRun = true }')
+	truthy(d.ok, d.error); eq(d.via, "gui"); eq(d.sent, false); eq(#g.terrainCmds, 1); eq(d.written.max, 30)
+	local b = terrainRun(g, 1032, '{ rect = "-100,-100,100,100", flat = 25, via = "update" }')
+	eq(b.ok, false); truthy(b.error:find("missing in the guiUpdate state: api.engine.terrain.makeMapFromGame"), b.error)
+	-- the speed control gone: no pickup, an error after a while
+	g.speedControlOff = true
+	local c = terrainRun(g, 1033, '{ rect = "-100,-100,100,100", flat = 25, via = "gui" }', FIRST + 700)
+	eq(c.ok, false); truthy(c.error:find("did not take it up"), c.error)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("terrainApi: what each state has (type only), the recipe's from its report; without the recipe a note", function()
+	local g = terrainGame({ reactOnly = true })
+	send(g, 1040, "terrainApi")
+	frames(g, FIRST + 10)
+	local a = final(g, 1040)
+	truthy(a and a.ok, a and a.error)
+	eq(a.update["api.engine.terrain.makeMapFromGame"], "nil"); eq(a.gui["api.engine.terrain.makeMapFromGame"], "function")
+	eq(a.gui["api.gui.map.setMapSeedText"], "function"); eq(a.gui["api.engine.mapgen.createTowns"], "function")
+	eq(a.update["api.type.Map.new"], "function"); eq(a.needs[1], "api.engine.terrain.makeMapFromGame")
+	eq(#g.terrainCmds, 0); eq(#g.seedTexts, 0, "nothing called")
+	g.speedControlOff = true
+	send(g, 1041, "terrainApi")
+	frames(g, FIRST + 400)
+	local b = final(g, 1041)
+	truthy(b.ok and b.gui == nil and b.guiNote:find("did not answer"), b.guiNote)
+end)
+
+test("terrain: a refused replacement, a map that lists towns, an engine vector of heights", function()
+	local g = terrainGame({ replaceFails = true })
+	local a = terrainRun(g, 1050, '{ rect = "0,0,100,100", flat = 5 }')
+	eq(a.ok, false); truthy(a.error:find("refused"), a.error); eq(hAt(g, 52, 52), 10)
+	local t = terrainGame({ townsInMap = true })
+	local b = terrainRun(t, 1051, '{ rect = "0,0,100,100", flat = 5 }')
+	eq(b.ok, false); truthy(b.error:find("lists towns"), b.error); eq(#t.terrainCmds, 0)
+	truthy(not t.crashed, t.crashed)
+	local v = terrainGame({ vectorHeights = true })
+	local c = terrainRun(v, 1052, '{ rect = "0,0,100,100", flat = 5 }')
+	truthy(c.ok, c.error); eq(hAt(v, 52, 52), 5)
+	local m = newGame({ saves = SAVES, menu = true })
+	frames(m, 2)
+	send(m, 1053, "terrain", '{ rect = "0,0,10,10", flat = 1 }')
+	frames(m, FIRST)
+	truthy((answerText(m, 1053, "error") or ""):find("needs a running game"))
+end)
+
+test("newgame editor: isMapEditor, the official mods and the probe only (not the running game's); status says so", function()
+	local g = newGame({ saves = SAVES, mods = { "hummer_age_of_mobility", "hummer_remote_probe" },
+		modParams = { hummer_age_of_mobility = { x = 2 } },
+		installed = { "hummer_age_of_mobility", "ug_tgv_pse", "ug_legacy_ships", "hummer_remote_probe" } })
+	frames(g, 2)
+	send(g, 1060, "newgame", '{ size = "tiny", editor = true, dryRun = true }')
+	frames(g, FIRST)
+	local d = final(g, 1060)
+	eq(d.plan.editor, true); eq(table.concat(d.plan.mods, ","), "ug_legacy_ships,ug_tgv_pse,hummer_remote_probe")
+	eq(d.plan.modParams.hummer_age_of_mobility, nil, "no params of the game's mods")
+	send(g, 1061, "newgame", '{ size = "tiny", editor = true, unsafe = true, mods = { add = { "extra" } } }')
+	frames(g, FIRST)
+	eq(#g.started, 1)
+	eq(g.started[1].isMapEditor, true)
+	eq(table.concat(g.started[1].mods, ","), "ug_legacy_ships,ug_tgv_pse,extra,hummer_remote_probe")
+	frames(g, 3)
+	send(g, 1062, "status")
+	frames(g, FIRST)
+	local s = final(g, 1062)
+	eq(s.mapEditor.gui, true)
+	-- the menu way too
+	local m = newGame({ saves = SAVES, menu = true, installed = { "ug_tgv_pse" } })
+	frames(m, 2)
+	send(m, 1063, "newgame", '{ size = "tiny", editor = true }')
+	frames(m, FIRST)
+	eq(m.started[1].isMapEditor, true); eq(table.concat(m.started[1].mods, ","), "ug_tgv_pse,hummer_remote_probe")
+	-- without editor: as before
+	local n = newGame({ saves = SAVES })
+	frames(n, 2)
+	send(n, 1064, "newgame", '{ size = "tiny", unsafe = true }')
+	frames(n, FIRST)
+	eq(n.started[1].isMapEditor, false)
+	send(n, 1065, "status")
+	frames(n, FIRST + 5)
+	local s2 = final(n, 1065)
+	eq(s2.mapEditor.gui, false)
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)
