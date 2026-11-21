@@ -1704,6 +1704,11 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(tf3ctl.stations_args(ns(name=None, near=None, radius=None)), {})
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.stations_args(ns(name=None, near=None, radius=5.0))
+        # --catchment: one id, alone; read only
+        self.assertEqual(tf3ctl.stations_args(ns(name=None, near=None, radius=None, catchment=47)), {"catchment": 47})
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.stations_args(ns(name="Port", near=None, radius=None, catchment=47))
+        self.assertEqual(tf3ctl.make_parser().parse_args(["stations", "--catchment", "47"]).catchment, 47)
         # argparse: create needs --stops, update and delete the line id
         for bad in (["line"], ["line", "create"], ["line", "update"], ["line", "delete"], ["line", "create", "--stops",
                     "A,B", "--via", "react"], ["line", "delete", "21", "--stops", "A,B"], ["stations", "--near", "x"],

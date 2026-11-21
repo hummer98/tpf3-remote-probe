@@ -916,7 +916,29 @@ function M.new(dir, opts)
 					table.sort(ids)
 					return ids
 				end },
-				townBuildingSystem = { getTown2personCapacitiesMap = function() return copy(opts.townCapacities or {}) end },
+				townBuildingSystem = { getTown2personCapacitiesMap = function() return copy(opts.townCapacities or {}) end,
+					getPersonCapacity2townBuildingMap = function()
+						local m = {}
+						for b, t in pairs(opts.townBuildings or {}) do m[t.personCapacity or b] = b end
+						return m
+					end,
+					getTown2BuildingMap = function()
+						g.town2BuildingAsked = (g.town2BuildingAsked or 0) + 1
+						local m = {}
+						for b, t in pairs(opts.townBuildings or {}) do
+							local town = t.town or -1
+							m[town] = m[town] or {}
+							table.insert(m[town], b)
+						end
+						return m
+					end },
+				-- opts.catchables = { [station] = { passengers = { entities }, cargo = { entities } } }; a station the
+				-- engine does not have: its assertion
+				catchmentAreaSystem = { getStationCatchables = function(st, cargo)
+					if not stationOf[st] then g.crashed = "ASSERT: no station " .. tostring(st); error(g.crashed) end
+					local c = (opts.catchables or {})[st] or {}
+					return copy((cargo and c.cargo) or (not cargo and c.passengers) or {})
+				end },
 				lineSystem = {
 					getLinesForPlayer = function()
 						local ids = copy((opts.entities or {}).LINE or {})
@@ -997,6 +1019,18 @@ function M.new(dir, opts)
 				if kind == "GAME_SCRIPT" and e == WORKERS_ENTITY then
 					if opts.workersScript == "nostate" then return {} end
 					return { state_native = native(copy(opts.workersState or {})) }
+				end
+				-- town buildings (stations --catchment): opts.townBuildings = { [building] = { town, kind = "RESIDENTIAL",
+				-- capacity, personCapacity (its PersonCapacity entity, default the building), stockList } }
+				local tb = (opts.townBuildings or {})[e]
+				if kind == "TOWN_BUILDING" and tb then
+					return { town = tb.town or -1, personCapacity = tb.personCapacity or e, stockList = tb.stockList or -1 }
+				end
+				if kind == "PERSON_CAPACITY" and tb then
+					return { type = api.type.enum.LandUseType[tb.kind or "RESIDENTIAL"], capacity = tb.capacity or 0 }
+				end
+				if kind == "INDUSTRY" and industries[e] then
+					return { stockList = industries[e].stockList or -1, construction = industries[e].construction or -1 }
 				end
 				if kind == "PERSON_CAPACITY" then
 					local i = industries[e]
@@ -1145,7 +1179,7 @@ function M.new(dir, opts)
 			Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
 			Vec5f = { new = function(x, y, z, w, q) return { x = x, y = y, z = z, w = w, q = q } end },
 			ComponentType = { VEHICLE_DEPOT = "VEHICLE_DEPOT", GAME_TIME = "GAME_TIME", GAME_SPEED = "GAME_SPEED", TOWN = "TOWN", TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE",
-				STATION_GROUP = "STATION_GROUP", INDUSTRY = "INDUSTRY", NAME = "NAME", STATION = "STATION", LINE = "LINE",
+				STATION_GROUP = "STATION_GROUP", INDUSTRY = "INDUSTRY", TOWN_BUILDING = "TOWN_BUILDING", NAME = "NAME", STATION = "STATION", LINE = "LINE",
 				PLAYER_OWNED = "PLAYER_OWNED", BOUNDING_VOLUME = "BOUNDING_VOLUME", GAME_SCRIPT = "GAME_SCRIPT",
 				PERSON_CAPACITY = "PERSON_CAPACITY", STOCK_LIST = "STOCK_LIST", CONSTRUCTION = "CONSTRUCTION",
 				TRANSPORT_NETWORK = "TRANSPORT_NETWORK", SIM_PERSON = "SIM_PERSON", SIM_PERSON_AT_VEHICLE = "SIM_PERSON_AT_VEHICLE",

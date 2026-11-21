@@ -215,6 +215,7 @@ python3 tools/tf3ctl.py replace --vehicle 601 --model bus_1920
 python3 tools/tf3ctl.py sell --vehicle 601
 python3 tools/tf3ctl.py money --set 10000000 | --add -5000
 python3 tools/tf3ctl.py stations [--name cent] [--near 11 --radius 800]
+python3 tools/tf3ctl.py stations --catchment 47   # 駅 (かグループ) の範囲: 町の建物、産業
 python3 tools/tf3ctl.py lines [--name probe]
 python3 tools/tf3ctl.py lines --problems [--line 23]   # 経路の問題、ホームの transportModes、路線の mode の和
 python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--cargo coal] [--via gui|cmd]
@@ -779,6 +780,14 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   と `loadSpeedModifier`)、`carriers` (`getCarriers(group, station, terminal)`)、`transportModes` (有効なものの名前。
   バニラの大型船着場は SHIP と SMALL_SHIP、小型船着場は SMALL_SHIP だけ)、`capacity`。読めない項目は出しません (nil)。
   桟橋の terminal は vehicle node から作られるので、`position` は出ないことがあります (未確認)。
+- `stations --catchment <id>` (読むだけ。駅グループか駅1つ) は、その駅の範囲に入っているものを、エンジンが持つとおりに
+  返します: 範囲のシステムの `getStationCatchables(station, cargo)` (本体も line_util.tl・cargo_util.tl で同じように
+  聞く)。`passengers` (PersonCapacity を持つもの) と `cargo` (StockList を持つもの) のそれぞれに、`entities` (数)、
+  `towns` (町ごとの `town`・`name`・`buildings`、`residential` / `commercial` / `industrial` の数と種類ごとの
+  `capacity`。種類は建物の PERSON_CAPACITY の type を LandUseType と比べる。本体の町の窓と同じ)、`industries`
+  (`id`・`name`。産業そのものの id か、INDUSTRY の stockList から)、`other` (何か分からなかった id)。グループなら
+  その駅すべての和。ゲーム内では未確認です: エンジンが返すのがどれか (建物そのもの、その PersonCapacity、その
+  StockList の entity。3つとも引く) と、種類の数がその enum と合うか。
 - `lines` は自社の路線を返します: 停車駅 (駅グループ、駅とホーム、0 始まり、`loadMode`: 0 available、1 満載
   (どれか)、2 満載 (全部))、車両、乗り物の種類、`customFilters`、`loads` (どこかの停車駅で積む貨物)、`vehicleCargo`
   (路線の車両が積める貨物)。`--line N` でその路線だけを返します (自社の路線でなければエラー)。

@@ -35,6 +35,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # each answers with via, balance before/after, spent, the model's store price, parts' purchaseTime
   tf3ctl.py money --set 10000000 | --add -5000   # the balance, as the sandbox money editor (a journal entry)
   tf3ctl.py stations [--name cent] [--near 11 --radius 800]   # station groups: id, platforms, carriers, distance
+  tf3ctl.py stations --catchment 47         # town buildings (per town and kind) and industries a station reaches
   tf3ctl.py lines [--name probe]            # lines: stops (platforms), vehicles, cargo loaded and carried
   tf3ctl.py lines --problems [--line 23]    # + each stop's path problems, platform modes, the line's mode union
   tf3ctl.py industry-workers [--entity 51]  # industries: capacity, sims headed there, last visitors (boost), town
@@ -2296,6 +2297,11 @@ def industry_stocks_args(ns):
 
 
 def stations_args(ns):
+    catchment = getattr(ns, "catchment", None)
+    if catchment is not None:
+        if ns.name or ns.near is not None or ns.radius is not None:
+            raise ToolError("--catchment goes alone (one station or station group)")
+        return {"catchment": catchment}
     args = {}
     if ns.name:
         args["name"] = ns.name
@@ -2913,6 +2919,9 @@ def make_parser():
     sg.add_argument("--name", help="a part of the name, any case")
     sg.add_argument("--near", type=int, help="only those within --radius of this entity (a town, industry, ...)")
     sg.add_argument("--radius", type=float, help="metres around --near (default 1000)")
+    sg.add_argument("--catchment", type=int, metavar="ID",
+                    help="what this station or station group reaches (read only): town buildings per town "
+                         "(residential, commercial, industrial) and industries, for passengers and for cargo")
     iw = sub.add_parser("industry-workers", help="industries (read only): capacity, sims with it as destination, "
                                                   "last visitors of the base's workers script, productivity, nearest town")
     iw.add_argument("--entity", type=int, help="one industry's id (entities --kind industry); none: all")

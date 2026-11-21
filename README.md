@@ -222,6 +222,7 @@ python3 tools/tf3ctl.py replace --vehicle 601 --model bus_1920
 python3 tools/tf3ctl.py sell --vehicle 601
 python3 tools/tf3ctl.py money --set 10000000 | --add -5000
 python3 tools/tf3ctl.py stations [--name cent] [--near 11 --radius 800]
+python3 tools/tf3ctl.py stations --catchment 47   # what a station (or group) reaches: town buildings, industries
 python3 tools/tf3ctl.py lines [--name probe]
 python3 tools/tf3ctl.py lines --problems [--line 23]   # path problems, platform modes, the line's mode union
 python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--cargo coal] [--via gui|cmd]
@@ -829,6 +830,15 @@ All unchecked in game. There is no command to build stations.
   (`getCarriers(group, station, terminal)`), `transportModes` (the modes that are on, by name: a vanilla large
   pier has SHIP and SMALL_SHIP, a small one SMALL_SHIP only) and `capacity`. What cannot be read is left out
   (nil); `position` may well be missing at piers, whose terminals are made from a vehicle node (unverified).
+- `stations --catchment <id>` (read only; a station group, or one station) lists what its catchment reaches, as
+  the engine keeps it: `getStationCatchables(station, cargo)` of the catchment area system, which the base asks the
+  same way (line_util.tl, cargo_util.tl). `passengers` (entities with a PersonCapacity) and `cargo` (entities
+  with a StockList) each give `entities` (how many), `towns` (per town: `town`, `name`, `buildings`,
+  `residential` / `commercial` / `industrial` counts and `capacity` per kind; the kind is the building's
+  PERSON_CAPACITY type against the LandUseType enum, as the base town window compares it), `industries` (`id`,
+  `name`; by the industry's own id or its INDUSTRY stockList) and `other` (ids it could not place). For a group,
+  the union of its stations. Not checked in game: which entities the engine gives (a building itself, its
+  PersonCapacity or its StockList entity; all three are looked up) and whether the kind's numbers match the enum.
 - `lines` lists the company's lines: stops (station group, station and terminal, 0-based, and `loadMode`: 0
   available, 1 full load any, 2 full load all), vehicles, carriers, `customFilters`, `loads` (cargo some stop
   loads) and `vehicleCargo` (cargo the line's vehicles can carry). `--line N` lists that line only (an error when

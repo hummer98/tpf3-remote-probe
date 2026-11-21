@@ -3769,6 +3769,66 @@ test("lines --problems: an engine call that raises is reported, the rest still r
 	eq(table.concat(a.lines[1].stops[1].transportModes, ","), "SHIP,SMALL_SHIP")
 end)
 
+-- stations --catchment: Port A (47, station 471) reaches three buildings of Town 1 (two residential, one
+-- commercial, which also takes cargo through its stock list), one of Town 2, the mine (its own id for workers,
+-- its stock list for cargo) and an entity the probe cannot place
+local function catchmentWorld()
+	return portWorld({
+		names = { [801] = "Town 1", [802] = "Town 2" },
+		industries = { [51] = { name = "Coal mine", capacity = 20, stockList = 5101 } },
+		townBuildings = { [7001] = { town = 801, kind = "RESIDENTIAL", capacity = 10 },
+			[7002] = { town = 801, kind = "RESIDENTIAL", capacity = 6, personCapacity = 7102 },
+			[7003] = { town = 801, kind = "COMMERCIAL", capacity = 4, stockList = 7203 },
+			[7004] = { town = 802, kind = "INDUSTRIAL", capacity = 8 } },
+		catchables = { [471] = { passengers = { 7001, 7102, 7003, 7004, 51, 7001 }, cargo = { 5101, 7203, 9999 } },
+			[481] = { passengers = { 7004 } } },
+	})
+end
+
+test("stations --catchment: town buildings per town and kind, industries, for passengers and cargo", function()
+	local g = catchmentWorld()
+	send(g, 775, "stations", "{ catchment = 47 }")
+	frames(g, FIRST)
+	local a = final(g, 775)
+	eq(a.ok, true, tostring(a.error))
+	local c = a.catchment
+	eq(c.id, 47); eq(c.stationGroup, 47); eq(c.name, "Port A"); eq(c.stations[1], 471)
+	local p = c.passengers
+	eq(p.entities, 5, "each entity once")
+	eq(#p.towns, 2)
+	local t1, t2 = p.towns[1], p.towns[2]
+	eq(t1.name, "Town 1"); eq(t1.town, 801); eq(t1.buildings, 3); eq(t1.residential, 2); eq(t1.commercial, 1); eq(t1.industrial, 0)
+	eq(t1.capacity.residential, 16, "a building found through its PersonCapacity entity counts too"); eq(t1.capacity.commercial, 4)
+	eq(t2.name, "Town 2"); eq(t2.industrial, 1); eq(t2.capacity.industrial, 8)
+	eq(#p.industries, 1); eq(p.industries[1].id, 51); eq(p.industries[1].name, "Coal mine")
+	eq(#p.other, 0)
+	local k = c.cargo
+	eq(k.entities, 3)
+	eq(#k.industries, 1); eq(k.industries[1].id, 51, "the mine by its stock list")
+	eq(#k.towns, 1); eq(k.towns[1].commercial, 1, "the shop by its stock list")
+	eq(#k.other, 1); eq(k.other[1], 9999)
+	-- a station alone: its own catchment, and its group named
+	send(g, 776, "stations", "{ catchment = 481 }")
+	frames(g, 10)
+	local b = final(g, 776)
+	eq(b.ok, true, tostring(b.error))
+	eq(b.catchment.stationGroup, 48); eq(b.catchment.passengers.towns[1].name, "Town 2")
+	eq(b.catchment.cargo.entities, 0); eq(#b.catchment.cargo.towns, 0)
+	eq(g.crashed, nil, "only stations the engine has were asked about")
+end)
+
+test("stations --catchment: an id that is no station or group, or no id, is refused before the engine is asked", function()
+	local g = catchmentWorld()
+	send(g, 777, "stations", "{ catchment = 12345 }")
+	frames(g, FIRST)
+	local a = final(g, 777)
+	eq(a.ok, false); truthy(tostring(a.error):find("no station group or station", 1, true), tostring(a.error))
+	send(g, 778, "stations", '{ catchment = "47" }')
+	frames(g, 10)
+	eq(final(g, 778).ok, false)
+	eq(g.crashed, nil)
+end)
+
 test("line update --terminals: a line with vehicles whose first stop's carriers cannot be read is refused", function()
 	local g = portWorld({ lines = { [23] = { name = "Ship 1", stops = { { stationGroup = 47, station = 0, terminal = 1 },
 		{ stationGroup = 49, station = 0, terminal = 1 } } } }, fleet = { [601] = fleetOf(101, 5, 23) } })

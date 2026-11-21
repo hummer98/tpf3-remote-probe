@@ -771,7 +771,128 @@ function M.new(ctx)
 	-- lists
 
 	-- args: name (substring, any case), near (an entity: town, industry, station...), radius (m)
+	---------------------------------------------------------------------------------------------------------------
+	-- stations --catchment: what a station reaches (read only)
+
+	local LAND_USES = { "RESIDENTIAL", "COMMERCIAL", "INDUSTRIAL" }
+
+	-- The town buildings and industries in the catchment of a station, or of every station of a group: the
+	-- engine's getStationCatchables(station, cargo) (engine/system.d.tl CatchmentAreaSystem: the entities holding a
+	-- PersonCapacity, for cargo false, or a StockList, for cargo true), which the base reads the same way
+	-- (line_util.tl isReallyPassengerStop, cargo_util.tl getInputOutputStocksForStation). Each entity is named by
+	-- what holds it: an industry (its own id, or the stockList of an INDUSTRY), else a town building (the
+	-- townBuildingSystem's personCapacity map, a TOWN_BUILDING itself, or the stockList of one), else listed as
+	-- other. A building's kind: its PERSON_CAPACITY type against the LandUseType enum, as the base town window
+	-- compares it (town.tl).
+	local function catchment(id)
+		local stations, group
+		if comp(id, "STATION_GROUP") then
+			group = id
+			stations = core.toList(core.field(comp(id, "STATION_GROUP"), "stations"))
+		elseif comp(id, "STATION") then
+			stations = { id }
+			group = tonumber(try(function() return api.engine.system.stationGroupSystem.getStationGroup(id) end))
+		else
+			return nil, string.format("%s is no station group or station", tostring(id))
+		end
+		local LU = try(function() return api.type.enum.LandUseType end)
+		local function landUse(v)
+			if v == nil then return nil end
+			return core.enumName(LU or {}, LAND_USES, v):lower()
+		end
+		-- the industries: by id and by their stock list
+		local industry, byStock = {}, {}
+		for _, e in ipairs(core.toList(try(function() return api.engine.getEntitiesWithComponent(CT().INDUSTRY) end))) do
+			industry[e] = true
+			local sl = tonumber(core.field(comp(e, "INDUSTRY"), "stockList"))
+			if sl then byStock[sl] = e end
+		end
+		local pc2tb = try(function() return api.engine.system.townBuildingSystem.getPersonCapacity2townBuildingMap() end)
+		local stock2tb -- built only when a cargo entity is none of the above (every town building is read for it)
+		local function townBuildingOf(e, cargo)
+			local tb = pc2tb and tonumber(try(function() return pc2tb[e] end))
+			if tb then return tb end
+			if comp(e, "TOWN_BUILDING") then return e end
+			if not cargo then return nil end
+			if stock2tb == nil then
+				stock2tb = {}
+				local map = try(function() return api.engine.system.townBuildingSystem.getTown2BuildingMap() end)
+				pcall(function()
+					for _, list in pairs(map) do
+						for _, b in ipairs(core.toList(list)) do
+							local sl = tonumber(core.field(comp(b, "TOWN_BUILDING"), "stockList"))
+							if sl then stock2tb[sl] = b end
+						end
+					end
+				end)
+			end
+			return stock2tb[e]
+		end
+		local townNames = {}
+		local function townName(t)
+			if townNames[t] == nil then townNames[t] = nameOf(t) or false end
+			return townNames[t] or nil
+		end
+		local function side(cargo)
+			local seen, towns, townList, inds, other = {}, {}, {}, {}, {}
+			local total = 0
+			for _, st in ipairs(stations) do
+				for _, e in ipairs(core.toList(try(function()
+					return api.engine.system.catchmentAreaSystem.getStationCatchables(st, cargo)
+				end))) do
+					e = tonumber(e)
+					if e and not seen[e] then
+						seen[e] = true
+						total = total + 1
+						local ind = industry[e] and e or byStock[e]
+						local tb = not ind and townBuildingOf(e, cargo) or nil
+						if ind then
+							if not seen["i" .. ind] then
+								seen["i" .. ind] = true
+								inds[#inds + 1] = { id = ind, name = nameOf(ind) }
+							end
+						elseif tb and not seen["b" .. tb] then
+							seen["b" .. tb] = true
+							local t = tonumber(core.field(comp(tb, "TOWN_BUILDING"), "town")) or -1
+							local row = towns[t]
+							if not row then
+								row = { town = t >= 0 and t or nil, name = t >= 0 and townName(t) or nil, buildings = 0,
+									residential = 0, commercial = 0, industrial = 0, capacity = { residential = 0, commercial = 0, industrial = 0 } }
+								towns[t] = row
+								townList[#townList + 1] = row
+							end
+							row.buildings = row.buildings + 1
+							local pc = comp(tb, "PERSON_CAPACITY")
+							local kind = pc and landUse(core.field(pc, "type"))
+							if kind and row[kind] then
+								row[kind] = row[kind] + 1
+								row.capacity[kind] = row.capacity[kind] + (tonumber(core.field(pc, "capacity")) or 0)
+							else
+								row.unknownKind = (row.unknownKind or 0) + 1
+							end
+						elseif not tb then
+							other[#other + 1] = e
+						end
+					end
+				end
+			end
+			table.sort(townList, function(a, b) return (a.name or "") < (b.name or "") end)
+			table.sort(inds, function(a, b) return (a.name or "") < (b.name or "") end)
+			table.sort(other)
+			return { entities = total, towns = core.array(townList), industries = core.array(inds), other = core.array(other) }
+		end
+		return { id = id, stationGroup = group, name = group and nameOf(group) or nil, stations = core.array(stations),
+			passengers = side(false), cargo = side(true) }
+	end
+
 	function handlers.stations(c)
+		if c.args.catchment ~= nil then
+			local id = c.args.catchment
+			if type(id) ~= "number" or id ~= math.floor(id) then return fail(c.id, "catchment must be a station or station group id") end
+			local out, err = catchment(id)
+			if not out then return fail(c.id, err) end
+			return answer(c.id, { ok = true, catchment = out })
+		end
 		local near, radius, centre = c.args.near, nil, nil
 		if near ~= nil then
 			near = tonumber(near)
