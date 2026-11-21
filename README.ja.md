@@ -318,6 +318,23 @@ python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
 コマンド (`load`・`run`・`speed`・`save`・`buy`・`line` など) の前に stderr へ警告が出ます。拒否はしません
 (誰がゲームを使うかは、クライアント同士で決めます)。例外は `quit --kill` で、別の送り主が 10 分以内に使ったゲームは、`--force` が無ければ SIGKILL しません。
 
+### 誰がゲームを起動したか (`launched.json`)
+
+owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、動いているゲームを起動した owner と
+そのプロセス ID を小さなファイルに残します。同じマシンの別の道具のためです (たとえば、ゲームが動いている間ゲームを変える
+コマンドを止める見張りが、これを読んで、起動した owner の quit だけは通す)。人が Steam から起動したゲームにはありません。
+
+- 場所: `$XDG_RUNTIME_DIR/tf3ctl/launched.json`。`XDG_RUNTIME_DIR` が無ければ `/tmp/tf3ctl-<uid>/launched.json`。
+  フォルダは 0700、ファイルは 0600。同じフォルダの一時ファイルに書いてから置き換えるので、読む側が書きかけを見ることはありません。
+- 形: JSON 1 つ。`{"v": 1, "owner": "<owner>", "pid": <ゲームの pid>, "started_at": <epoch 秒>, "cmd": "launch"}`
+  (`restart` でも `cmd` は `launch`。`started_at` は probe が答えた時刻)。
+- 書く: `launch` / `restart` で、probe がメインメニューで答えたあと (`--load` / `--new` の前)。pid は動いている
+  `TransportFever3` のプロセス (複数あれば一番新しいもの)。owner が無ければ書かず、前のファイルを消します。
+- 消す: ゲームが止まったのを tf3ctl が見たとき。`quit` (`--kill` も、動いていなかったときも)、`restart` の中の quit、
+  ゲームが動いていないときの `launch`、起動の途中か、そのあとの `--load` / `--new` (単独の `load` / `newgame` も) の途中でゲームが終わったとき。
+- `launch` / `restart` / `quit` の答えの `launchedFile` に、何をしたかが出ます。書けない・消せないときは stderr に
+  警告を出すだけです。残ったファイル (クラッシュ、手で終了したとき) はそれだけで信じず、読む側で pid が生きていてゲームか確認してください。`/tmp` のときは、フォルダとファイルが自分のもので 0700 / 0600 かも確認してください (`/tmp/tf3ctl-<uid>` は誰でも先に作れます)。
+
 ### 環境変数
 
 - `TF3_REMOTE_DIR`: 交換フォルダ (既定: Steam の userdata のうち、hello ファイルが一番新しいもの。

@@ -337,6 +337,29 @@ when another owner changed the game in the last 10 minutes. Nothing is refused; 
 who uses the game. `quit --kill` is the exception: it will not SIGKILL a game another owner used in the last
 10 minutes unless `--force` is given.
 
+### Who launched the game (`launched.json`)
+
+`launch` and `restart` with an owner (`--owner` or `TF3CTL_OWNER`) leave a small record of which owner started the
+running game and its process id, for other tools on the same machine: a guard that holds back game-changing
+commands while the game runs can read it and still let the owner who started the game quit it. A game started by
+hand from Steam has no record.
+
+- Where: `$XDG_RUNTIME_DIR/tf3ctl/launched.json`, or `/tmp/tf3ctl-<uid>/launched.json` without `XDG_RUNTIME_DIR`.
+  The folder is 0700 and the file 0600; it is written to a temporary file in the same folder and renamed over the
+  old one, so a reader never sees half of it.
+- What: one JSON object, `{"v": 1, "owner": "<owner>", "pid": <the game's pid>, "started_at": <epoch seconds>,
+  "cmd": "launch"}` (`cmd` is `launch` for `restart` too; `started_at` is when the probe answered).
+- Written: after `launch` / `restart` once the probe answered in the main menu (before `--load` / `--new`). The pid
+  is the running `TransportFever3` process (the newest one if there are several). Without an owner nothing is
+  written, and an older record is removed.
+- Removed: whenever tf3ctl saw the game stopped: `quit` (also `--kill`, and when the game was not running), the quit
+  of `restart`, a `launch` that finds no game running, and a game that ended during the launch or during the
+  `--load` / `--new` that followed it (also with `load` / `newgame` on their own).
+- The answers of `launch` / `restart` / `quit` say what was done in `launchedFile`. Not being able to write or
+  remove the record is only a warning on stderr. A record left behind (a crash, a quit by hand) is not to be
+  trusted alone: readers should check that the pid is alive and is the game, and, under `/tmp`, that the folder
+  and the file belong to them and are 0700 / 0600 (anybody may have made `/tmp/tf3ctl-<uid>` first).
+
 ### Environment
 
 - `TF3_REMOTE_DIR`: the exchange folder (default: the one with the newest hello file under Steam's userdata,

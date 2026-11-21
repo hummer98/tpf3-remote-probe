@@ -52,7 +52,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is only shown (status:
 run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes; nothing
-is refused, since clients sharing the game agree among themselves who uses it.
+is refused, since clients sharing the game agree among themselves who uses it. launch / restart with an owner
+also leave $XDG_RUNTIME_DIR/tf3ctl/launched.json (/tmp/tf3ctl-<uid>/ without it): that owner and the game's pid,
+for tools that let the owner who started the game quit it; it goes when tf3ctl sees the game stopped.
 
 Several tool processes may run at once (e.g. a long run plus status calls): a lock makes them write the single
 command file one after another, each waiting until the mod has picked its command up.
@@ -79,8 +81,10 @@ import os
 import re
 import signal
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 PREFIX = "remote_probe__"
@@ -472,6 +476,7 @@ def wait_new_hello(folder, cid, after_stamp, timeout, why_slow=None):
             st = game_state(folder)
             gone = gone + 1 if st["state"] in ("closed", "crashed") else 0
             if gone >= 2:
+                remove_launched()  # the launched game is gone
                 raise GameNotReady(f"the game {'crashed' if st['state'] == 'crashed' else 'closed'} during the "
                                    "load: look at `log`", st)
         err = try_read(answer_path(folder, cid, "error"))
@@ -799,7 +804,99 @@ def recent_other_owner():
     return last if age <= RECENT_SEC else None
 
 
+# The launch record: which owner started the running game through tf3ctl, and its pid. Another tool (a guard that
+# holds back game-changing commands while the game runs) reads it to let the owner who started the game quit it; a
+# game started by hand from Steam has no record. Written once the probe answered after launch / restart, removed
+# whenever tf3ctl saw the game stopped. Failing to write or remove it is only a warning: the record must never stop
+# a launch or a quit. A record left behind is harmless to the reader, which checks the pid and its command line.
+
+LAUNCHED_NAME = "launched.json"
+
+
+def launched_path():
+    """$XDG_RUNTIME_DIR/tf3ctl/launched.json, or /tmp/tf3ctl-<uid>/launched.json without XDG_RUNTIME_DIR."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    folder = os.path.join(runtime, "tf3ctl") if runtime else "/tmp/tf3ctl-%d" % os.getuid()
+    return os.path.join(folder, LAUNCHED_NAME)
+
+
+def _own_private_dir(folder):
+    """Makes folder (0700) if missing and checks it is a real directory of this user: under /tmp anybody could have
+    made it first, or put a symlink there."""
+    try:
+        os.mkdir(folder, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(folder)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise OSError("%s is not a folder of this user" % folder)
+    if stat.S_IMODE(st.st_mode) != 0o700:
+        os.chmod(folder, 0o700)
+
+
+def remove_launched():
+    """Removes the launch record once the game is seen stopped. Returns {"removed": path} (None when there was
+    none); a failure is a warning."""
+    path = launched_path()
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        print("warning: could not remove the launch record %s: %s" % (path, e), file=sys.stderr)
+        return {"warning": "could not remove %s: %s" % (path, e)}
+    return {"removed": path}
+
+
+def write_launched(pid, owner=None, cmd="launch", now=None):
+    """Writes the launch record for pid started by owner, through a temporary file in the same folder and
+    os.replace (a reader never sees half a file). Without an owner there is nothing to record: an older record is
+    removed instead. Returns what was done for the command's answer; a failure is a warning."""
+    owner = OWNER if owner is None else owner
+    if not owner or pid is None:
+        gone = remove_launched()
+        return dict(gone or {}, written=False, why="no --owner" if not owner else "no game process found")
+    path = launched_path()
+    folder = os.path.dirname(path)
+    record = {"v": 1, "owner": owner, "pid": int(pid), "started_at": int(time.time() if now is None else now),
+              "cmd": cmd}
+    tmp = None
+    try:
+        _own_private_dir(folder)
+        fd, tmp = tempfile.mkstemp(prefix=".launched-", suffix=".tmp", dir=folder)  # 0600
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    except OSError as e:
+        print("warning: could not write the launch record %s: %s" % (path, e), file=sys.stderr)
+        return {"written": False, "warning": "could not write %s: %s" % (path, e)}
+    finally:
+        if tmp:
+            _remove_quietly(tmp)
+    return {"written": path, "owner": owner, "pid": int(pid)}
+
+
+def launched_pid():
+    """The pid to record: the game's process (game_pids); with several, the one started last (the one just
+    launched)."""
+    pids = game_pids()
+    if len(pids) <= 1:
+        return pids[0] if pids else None
+    return max(pids, key=lambda p: (process_start(p) or 0, p))
+
+
 def quit_game(timeout=QUIT_TIMEOUT_SEC, kill=False, force=False):
+    res = _quit_game(timeout, kill, force)
+    gone = remove_launched()  # only reached with the game seen stopped
+    if gone:
+        res["launchedFile"] = gone
+    return res
+
+
+def _quit_game(timeout=QUIT_TIMEOUT_SEC, kill=False, force=False):
     """app.quit through the probe; with kill, SIGKILL when that fails or the game is still there after timeout.
     SIGTERM is no use: the game only opens its quit menu ("Quit requested", 2026-11-16). SIGKILL loses what is
     not saved, so it is refused while another client used the game recently, unless force."""
@@ -1185,6 +1282,7 @@ def launch_game(timeout=LAUNCH_TIMEOUT_SEC):
     """Starts the game through Steam with startup.lua, and waits until the probe answers in the main menu."""
     if game_pids():
         raise ToolError("the game is already running: use restart (or quit first)")
+    remove_launched()  # a record of a game that is gone now (quit by hand, crashed)
     kept = keep_last_log()
     started = time.time()
     steam = os.environ.get("TF3_STEAM", "steam").split()
@@ -1209,6 +1307,7 @@ def launch_game(timeout=LAUNCH_TIMEOUT_SEC):
         running = bool(game_pids())
         seen = seen or running
         if (seen and not running) or (not seen and time.time() - started > LAUNCH_NO_PROCESS_SEC):
+            remove_launched()  # no game left to have a record of
             st = game_state()
             raise GameNotReady(("the game ended during startup: " if seen else "no game process %d s after the "
                                 "launch (a dialog in Steam?): " % LAUNCH_NO_PROCESS_SEC) + st["text"]
@@ -1280,6 +1379,8 @@ def cmd_start(ns, restart):
         out.update(ok=False, profileError=why)
         return out
     out["launch"] = launch_game(ns.launch_timeout)
+    # the probe answered in the main menu: this owner started the game (cmd is "launch" for restart too)
+    out["launchedFile"] = write_launched(launched_pid())
     if plan:
         res = replace_game(plan[0], plan[1], False, ns.timeout)
         out[plan[0]] = res

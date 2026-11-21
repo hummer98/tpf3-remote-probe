@@ -26,11 +26,16 @@ spec.loader.exec_module(tf3ctl)
 NO_PROFILE_DIR = tempfile.mkdtemp()
 os.environ["TF3_PROFILE"] = os.path.join(NO_PROFILE_DIR, "no_profile.lua")
 os.environ.pop("TF3CTL_OTHER_BACKUPS", None)
+# launch / restart / quit write and remove the launch record: never the real $XDG_RUNTIME_DIR here
+RUNTIME_DIR = tempfile.mkdtemp()
+os.environ["XDG_RUNTIME_DIR"] = RUNTIME_DIR
+os.environ.pop("TF3CTL_OWNER", None)
 
 
 
 def tearDownModule():
     shutil.rmtree(NO_PROFILE_DIR, ignore_errors=True)
+    shutil.rmtree(RUNTIME_DIR, ignore_errors=True)
 
 
 # what the mod makes of a command file: remote_core.readCommand over loadUserdata's table, as JSON
@@ -2077,6 +2082,268 @@ class LanguageTest(unittest.TestCase):
         self.assertEqual(self.launched, ["fr"])
 
 
+class LaunchedFileTest(unittest.TestCase):
+    """The launch record ($XDG_RUNTIME_DIR/tf3ctl/launched.json): written after launch / restart with an owner,
+    removed when the game is seen stopped, never in the way of either."""
+
+    def setUp(self):
+        self.saved = {k: getattr(tf3ctl, k) for k in ("game_pids", "send", "process_start", "OWNER", "launch_game",
+                                                       "replace_game")}
+        self.saved_env = {k: os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "TF3_REMOTE_DIR")}
+        self.run_dir = tempfile.mkdtemp()
+        os.environ["XDG_RUNTIME_DIR"] = self.run_dir
+        self.path = os.path.join(self.run_dir, "tf3ctl", "launched.json")
+        self.x = tempfile.mkdtemp()  # an exchange folder of its own (quit's activity check)
+        write(os.path.join(self.x, "remote_probe__hello_1_1.lua"), 'function data() return { json = "{}" } end')
+        os.environ["TF3_REMOTE_DIR"] = self.x
+        tf3ctl.OWNER = None
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(tf3ctl, k, v)
+        for k, v in self.saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        os.chmod(self.run_dir, 0o700)
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        shutil.rmtree(self.x, ignore_errors=True)
+
+    def quiet(self, fn, *a, **kw):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            res = fn(*a, **kw)
+        return res, err.getvalue()
+
+    def test_path_under_xdg_runtime_dir_or_tmp(self):
+        self.assertEqual(tf3ctl.launched_path(), self.path)
+        os.environ.pop("XDG_RUNTIME_DIR")
+        self.assertEqual(tf3ctl.launched_path(), "/tmp/tf3ctl-%d/launched.json" % os.getuid())
+        os.environ["XDG_RUNTIME_DIR"] = ""
+        self.assertEqual(tf3ctl.launched_path(), "/tmp/tf3ctl-%d/launched.json" % os.getuid(), "empty = not set")
+
+    def test_write_and_remove(self):
+        res = tf3ctl.write_launched(4242, owner="alice", now=1794890000.7)
+        self.assertEqual(res, {"written": self.path, "owner": "alice", "pid": 4242})
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"v": 1, "owner": "alice", "pid": 4242, "started_at": 1794890000,
+                                            "cmd": "launch"})
+        self.assertEqual(tf3ctl.remove_launched(), {"removed": self.path})
+        self.assertFalse(os.path.exists(self.path))
+        self.assertIsNone(tf3ctl.remove_launched(), "nothing to remove is no error")
+
+    def test_owner_comes_from_the_tools_owner(self):
+        tf3ctl.OWNER = "bob"  # main sets it from --owner, else TF3CTL_OWNER
+        tf3ctl.write_launched(7)
+        self.assertEqual(json.loads(read(self.path))["owner"], "bob")
+        self.assertEqual(tf3ctl.make_parser().parse_args(["--owner", "carol", "status"]).owner, "carol")
+        with unittest.mock.patch.dict(os.environ, {"TF3CTL_OWNER": "dave"}):
+            self.assertEqual(tf3ctl.make_parser().parse_args(["status"]).owner, "dave")
+
+    def test_no_owner_writes_nothing_and_removes_an_older_record(self):
+        tf3ctl.write_launched(1, owner="alice")
+        for owner in (None, ""):
+            tf3ctl.OWNER = owner
+            res = tf3ctl.write_launched(2)
+            self.assertFalse(res["written"])
+            self.assertFalse(os.path.exists(self.path), "the older owner's record is not left for this game")
+        self.assertEqual(os.listdir(os.path.dirname(self.path)), [], "no temporary file either")
+
+    def test_permissions(self):
+        tf3ctl.write_launched(3, owner="alice")
+        self.assertEqual(os.stat(os.path.dirname(self.path)).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+        os.chmod(os.path.dirname(self.path), 0o755)  # a folder made looser by someone: tightened again
+        tf3ctl.write_launched(3, owner="alice")
+        self.assertEqual(os.stat(os.path.dirname(self.path)).st_mode & 0o777, 0o700)
+
+    def test_replaced_through_a_temporary_file_in_the_same_folder(self):
+        tf3ctl.write_launched(1, owner="alice")
+        replaced = []
+        real = os.replace
+
+        def spy(src, dst):
+            replaced.append((src, dst))
+            self.assertEqual(json.loads(read(dst))["pid"], 1, "the old record whole until the rename")
+            return real(src, dst)
+        with unittest.mock.patch.object(tf3ctl.os, "replace", spy):
+            tf3ctl.write_launched(2, owner="alice")
+        self.assertEqual(len(replaced), 1)
+        self.assertEqual(os.path.dirname(replaced[0][0]), os.path.dirname(self.path))
+        self.assertEqual(replaced[0][1], self.path)
+        self.assertEqual(json.loads(read(self.path))["pid"], 2)
+        self.assertEqual(os.listdir(os.path.dirname(self.path)), ["launched.json"])
+
+    def test_a_failed_rename_leaves_no_temporary_file(self):
+        def boom(src, dst):
+            raise OSError("disk full")
+        with unittest.mock.patch.object(tf3ctl.os, "replace", boom):
+            res, err = self.quiet(tf3ctl.write_launched, 2, owner="alice")
+        self.assertFalse(res["written"])
+        self.assertIn("disk full", err)
+        self.assertEqual(os.listdir(os.path.dirname(self.path)), [])
+
+    def test_cannot_write_is_only_a_warning(self):
+        write(os.path.join(self.run_dir, "tf3ctl"), "a file where the folder should be")
+        res, err = self.quiet(tf3ctl.write_launched, 5, owner="alice")
+        self.assertFalse(res["written"])
+        self.assertIn("warning: could not write the launch record", err)
+        os.remove(os.path.join(self.run_dir, "tf3ctl"))
+        os.chmod(self.run_dir, 0o500)  # the folder cannot be made
+        if os.access(self.run_dir, os.W_OK):
+            self.skipTest("running as a user that writes anywhere")
+        res, err = self.quiet(tf3ctl.write_launched, 5, owner="alice")
+        self.assertFalse(res["written"])
+        self.assertIn("warning", err)
+
+    def test_cannot_remove_is_only_a_warning(self):
+        tf3ctl.write_launched(5, owner="alice")
+        os.chmod(os.path.dirname(self.path), 0o500)
+        try:
+            if os.access(os.path.dirname(self.path), os.W_OK):
+                self.skipTest("running as a user that writes anywhere")
+            res, err = self.quiet(tf3ctl.remove_launched)
+            self.assertIn("warning", res)
+            self.assertIn("could not remove the launch record", err)
+            # quit still answers that the game quit
+            tf3ctl.game_pids = lambda: []
+            res, err = self.quiet(tf3ctl.quit_game, timeout=1)
+            self.assertEqual(res["how"], "not running")
+            self.assertIn("warning", res["launchedFile"])
+        finally:
+            os.chmod(os.path.dirname(self.path), 0o700)
+
+    def test_a_folder_of_someone_else_or_a_symlink_is_not_used(self):
+        target = tempfile.mkdtemp()
+        try:
+            os.symlink(target, os.path.join(self.run_dir, "tf3ctl"))
+            res, err = self.quiet(tf3ctl.write_launched, 5, owner="alice")
+            self.assertFalse(res["written"])
+            self.assertEqual(os.listdir(target), [], "nothing written through the link")
+        finally:
+            shutil.rmtree(target, ignore_errors=True)
+
+    def test_every_quit_that_saw_the_game_stop_removes_it(self):
+        pids = []
+        tf3ctl.game_pids = lambda: list(pids)
+        # not running
+        tf3ctl.write_launched(1, owner="alice")
+        res = tf3ctl.quit_game(timeout=1)
+        self.assertEqual(res["launchedFile"], {"removed": self.path})
+        self.assertFalse(os.path.exists(self.path))
+        self.assertNotIn("launchedFile", tf3ctl.quit_game(timeout=1), "nothing to remove: no mark")
+        # app.quit
+        pids[:] = [1]
+        tf3ctl.write_launched(1, owner="alice")
+
+        def quits(*a, **kw):
+            pids.clear()
+            return {"ok": True}
+        tf3ctl.send = quits
+        self.assertEqual(tf3ctl.quit_game(timeout=2)["how"], "quit")
+        self.assertFalse(os.path.exists(self.path))
+        # SIGKILL
+        pids[:] = [1]
+        tf3ctl.write_launched(1, owner="alice")
+        tf3ctl.send = lambda *a, **kw: {"ok": False, "error": "busy"}
+        with unittest.mock.patch.object(tf3ctl.os, "kill", lambda pid, sig: pids.clear()):
+            self.assertEqual(tf3ctl.quit_game(timeout=0.3, kill=True)["how"], "kill")
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_a_quit_that_failed_keeps_it(self):
+        tf3ctl.game_pids = lambda: [1]
+        tf3ctl.send = lambda *a, **kw: {"ok": True}  # answers, but the game stays
+        tf3ctl.write_launched(1, owner="alice")
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.quit_game(timeout=0.3)
+        self.assertTrue(os.path.exists(self.path), "the game still runs: its record stays")
+
+    def test_launch_and_restart_write_it_after_the_probe_answered(self):
+        pids = []
+        tf3ctl.game_pids = lambda: list(pids)
+        seen = []
+
+        def fake_launch(timeout):
+            seen.append(os.path.exists(self.path))
+            pids[:] = [31337]
+            return {"ok": True, "menu": True}
+        tf3ctl.launch_game = fake_launch
+        tf3ctl.OWNER = "alice"
+        ns = tf3ctl.argparse.Namespace(load=None, new=False, lang=None, launch_timeout=1, timeout=1)
+        res = tf3ctl.cmd_start(ns, restart=False)
+        self.assertEqual(res["launchedFile"]["written"], self.path)
+        rec = json.loads(read(self.path))
+        self.assertEqual((rec["owner"], rec["pid"], rec["cmd"], rec["v"]), ("alice", 31337, "launch", 1))
+        self.assertLessEqual(abs(rec["started_at"] - time.time()), 5)
+
+        # restart: the quit removes it, the new launch writes the new pid
+        def quits(*a, **kw):
+            pids.clear()
+            return {"ok": True}
+        tf3ctl.send = quits
+        ns = tf3ctl.argparse.Namespace(load=None, new=False, lang=None, launch_timeout=1, timeout=1,
+                                       quit_timeout=2, no_kill=True, force=False)
+
+        def fake_launch2(timeout):
+            seen.append(os.path.exists(self.path))
+            pids[:] = [31338]
+            return {"ok": True, "menu": True}
+        tf3ctl.launch_game = fake_launch2
+        with unittest.mock.patch.object(tf3ctl, "RELAUNCH_PAUSE_SEC", 0):
+            res = tf3ctl.cmd_start(ns, restart=True)
+        self.assertEqual(seen, [False, False], "nothing before the probe answered")
+        self.assertEqual(res["quit"]["launchedFile"], {"removed": self.path})
+        self.assertEqual(json.loads(read(self.path))["pid"], 31338)
+        self.assertEqual(json.loads(read(self.path))["cmd"], "launch")
+
+    def test_launch_without_owner_leaves_no_record(self):
+        pids = []
+        tf3ctl.game_pids = lambda: list(pids)
+        tf3ctl.write_launched(1, owner="old")
+
+        def fake_launch(timeout):
+            pids[:] = [5]
+            return {"ok": True}
+        tf3ctl.launch_game = fake_launch
+        ns = tf3ctl.argparse.Namespace(load=None, new=False, lang=None, launch_timeout=1, timeout=1)
+        res = tf3ctl.cmd_start(ns, restart=False)
+        self.assertFalse(res["launchedFile"]["written"])
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_launch_game_removes_a_stale_record_and_one_of_a_game_that_ended(self):
+        tf3ctl.write_launched(1, owner="alice")
+        tf3ctl.game_pids = lambda: []
+        with unittest.mock.patch.dict(os.environ, {"TF3_STEAM": "/nonexistent/steam"}):
+            with self.assertRaises(tf3ctl.ToolError):
+                tf3ctl.launch_game(timeout=1)
+        self.assertFalse(os.path.exists(self.path), "no game was running: the record was stale")
+        tf3ctl.game_pids = lambda: [1]
+        tf3ctl.write_launched(1, owner="alice")
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.launch_game(timeout=1)
+        self.assertTrue(os.path.exists(self.path), "refused for a running game: its record stays")
+
+    def test_a_game_that_ends_during_the_load_removes_it(self):
+        tf3ctl.write_launched(1, owner="alice")
+        with unittest.mock.patch.object(tf3ctl, "game_state", lambda folder=None: {"state": "crashed", "text": "x"}), \
+                unittest.mock.patch.object(tf3ctl.time, "sleep", lambda s: None):
+            clock = iter(range(0, 1000, 3))
+            with unittest.mock.patch.object(tf3ctl.time, "time", lambda: next(clock)):
+                with self.assertRaises(tf3ctl.GameNotReady):
+                    tf3ctl.wait_new_hello(self.x, 9, "1_1", timeout=500)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_pid_of_several_is_the_newest(self):
+        tf3ctl.game_pids = lambda: [10, 20, 30]
+        tf3ctl.process_start = lambda p: {10: 100.0, 20: 300.0, 30: 200.0}[p]
+        self.assertEqual(tf3ctl.launched_pid(), 20)
+        tf3ctl.game_pids = lambda: [10]
+        self.assertEqual(tf3ctl.launched_pid(), 10)
+        tf3ctl.game_pids = lambda: []
+        self.assertIsNone(tf3ctl.launched_pid())
+
+
 class LaunchEndToEndTest(unittest.TestCase):
     """launch --new and restart --load against the fake game, started by a stand-in for steam."""
 
@@ -2118,9 +2385,13 @@ class LaunchEndToEndTest(unittest.TestCase):
         return code, json.loads(out.getvalue()) if out.getvalue().strip() else None
 
     def test_launch_new_then_restart_load(self):
-        code, res = self.ctl("launch", "--new", "--size", "tiny", "--year", "1930", "--add", "m9",
-                             "--launch-timeout", "30", "--timeout", "30")
+        record = os.path.join(os.environ["XDG_RUNTIME_DIR"], "tf3ctl", "launched.json")
+        code, res = self.ctl("--owner", "tester", "launch", "--new", "--size", "tiny", "--year", "1930", "--add",
+                             "m9", "--launch-timeout", "30", "--timeout", "30")
         self.assertEqual(code, 0, res)
+        self.assertEqual(res["launchedFile"]["written"], record)
+        self.assertEqual(json.loads(read(record))["pid"], tf3ctl.game_pids()[0], "the game started by steam")
+        self.assertEqual(json.loads(read(record))["owner"], "tester")
         self.assertIn("--script hummer_remote_probe::/startup.lua", read(os.path.join(self.root, "steam_args")))
         self.assertTrue(res["launch"]["hello"]["menu"])
         self.assertFalse(res["newgame"]["hello"]["menu"], "the new game's own probe")
@@ -2134,9 +2405,11 @@ class LaunchEndToEndTest(unittest.TestCase):
         self.assertEqual(res["quit"]["how"], "quit", "app.quit through the probe, no SIGKILL")
         self.assertTrue(res["load"]["ok"])
         self.assertIn("example_mod", res["load"]["plan"]["mods"])
+        self.assertFalse(os.path.exists(record), "restart without --owner: the old owner's record went")
         code, res = self.ctl("quit")
         self.assertEqual(code, 0, res)
         self.assertEqual(tf3ctl.game_pids(), [])
+        self.assertFalse(os.path.exists(record))
 
 
 
