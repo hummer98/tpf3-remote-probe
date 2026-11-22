@@ -2422,6 +2422,18 @@ class QuitLaunchTest(unittest.TestCase):
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.stations_args(ns(name="Port", near=None, radius=None, catchment=47))
         self.assertEqual(tf3ctl.make_parser().parse_args(["stations", "--catchment", "47"]).catchment, 47)
+        # with --catchment: --radius (the diagnosis' circle when the engine gives none) and --paths
+        self.assertEqual(tf3ctl.stations_args(ns(name=None, near=None, radius=150.0, catchment=47, paths=0)),
+                         {"catchment": 47, "radius": 150.0, "paths": 0})
+        for bad in (dict(radius=0.0), dict(radius=2001.0), dict(paths=-1), dict(paths=51)):
+            kw = dict(name=None, near=None, radius=None, catchment=47, paths=None)
+            kw.update(bad)
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.stations_args(ns(**kw))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.stations_args(ns(name=None, near=None, radius=None, catchment=None, paths=3))
+        a = tf3ctl.make_parser().parse_args(["stations", "--catchment", "47", "--paths", "5", "--radius", "150"])
+        self.assertEqual((a.paths, a.radius), (5, 150.0))
         # argparse: create needs --stops, update and delete the line id
         for bad in (["line"], ["line", "create"], ["line", "update"], ["line", "delete"], ["line", "create", "--stops",
                     "A,B", "--via", "react"], ["line", "delete", "21", "--stops", "A,B"], ["stations", "--near", "x"],

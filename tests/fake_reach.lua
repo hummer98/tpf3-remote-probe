@@ -13,7 +13,8 @@
 -- spec.graph = { walk = { ["a:0"] = { "a:1", ... } }, drive = { ... } }: directed links per mode (PERSON: walk, CAR:
 --   drive); findPathNodeToNode does a breadth-first search and gives the edges as { { { entity = tn, index = k },
 --   true } ... } (the tn of the node it reached);
--- spec.stations = { [st] = { terminals = { { personNodes = { "a:0" }, vehicleNode = "a:1" } } } };
+-- spec.stations = { [st] = { terminals = { { personNodes = { "a:0" }, vehicleNode = "a:1" } }, catchmentAreas =
+--   { { x, y, radius } } } };
 -- spec.circle = { { x, y, node = "a:0" } }: the nodes findTransportNetworkNodesInCircle finds;
 -- spec.positions = { [e] = { x, y } } (BOUNDING_VOLUME);
 -- spec.problems = { { towns = { 11, 12 }, problem = "Disconnected" } };
@@ -110,7 +111,14 @@ function M.install(g, spec)
 				for j, s in ipairs(t.personNodes or {}) do pn[j] = node(s) end
 				ts[i] = wrap({ personNodes = wrap(pn), vehicleNodeId = t.vehicleNode and node(t.vehicleNode) or nil })
 			end
-			return wrap({ terminals = wrap(ts), cargo = false })
+			-- catchmentAreas = { { x, y, r } }: CatchmentArea { position (a Vec3f; spec.areaShape "list": { x, y, z }),
+			-- radius }
+			local areas = {}
+			for i, a in ipairs(stations[e].catchmentAreas or {}) do
+				local pos = spec.areaShape == "list" and wrap({ a[1], a[2], 0 }) or wrap({ x = a[1], y = a[2], z = 0 })
+				areas[i] = wrap({ position = pos, radius = a[3] })
+			end
+			return wrap({ terminals = wrap(ts), cargo = false, catchmentAreas = wrap(areas) })
 		end
 		if kind == "TRANSPORT_NETWORK" and tn[e] then
 			local edges = {}

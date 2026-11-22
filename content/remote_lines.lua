@@ -36,6 +36,7 @@ function M.new(ctx)
 	local req = ctx.require or ug_require or require
 	local MOD = ctx.mod or core.MOD_ID
 	local lc = req(MOD .. "::/line_configs.lua")
+	local catchmentDiag = req(MOD .. "::/remote_catchment.lua")
 	local REPORT_KEY = MOD .. ".lines"
 	local publishUi = ctx.publishUi or function() end
 	local L = { jobs = {}, frames = 0, requests = {}, claimed = {} }
@@ -813,7 +814,8 @@ function M.new(ctx)
 	-- townBuildingSystem's personCapacity map, a TOWN_BUILDING itself, or the stockList of one), else listed as
 	-- other. A building's kind: its PERSON_CAPACITY type against the LandUseType enum, as the base town window
 	-- compares it (town.tl).
-	local function catchment(id)
+	-- opts: radius (m, for the diagnosis when the engine gives no circle), paths (its walking searches)
+	local function catchment(id, opts)
 		local stations, group
 		if comp(id, "STATION_GROUP") then
 			group = id
@@ -862,6 +864,7 @@ function M.new(ctx)
 			if townNames[t] == nil then townNames[t] = nameOf(t) or false end
 			return townNames[t] or nil
 		end
+		local caught = {} -- the town buildings of the passenger side (the diagnosis)
 		local function side(cargo)
 			local seen, towns, townList, inds, other = {}, {}, {}, {}, {}
 			local total = 0
@@ -882,6 +885,7 @@ function M.new(ctx)
 							end
 						elseif tb and not seen["b" .. tb] then
 							seen["b" .. tb] = true
+							if not cargo then caught[tb] = true end
 							local t = tonumber(core.field(comp(tb, "TOWN_BUILDING"), "town")) or -1
 							local row = towns[t]
 							if not row then
@@ -910,15 +914,43 @@ function M.new(ctx)
 			table.sort(other)
 			return { entities = total, towns = core.array(townList), industries = core.array(inds), other = core.array(other) }
 		end
-		return { id = id, stationGroup = group, name = group and nameOf(group) or nil, stations = core.array(stations),
+		local out = { id = id, stationGroup = group, name = group and nameOf(group) or nil, stations = core.array(stations),
 			passengers = side(false), cargo = side(true) }
+		-- why it catches what it does: the circles, the buildings near them, walking (remote_catchment.lua); its own
+		-- failure leaves the counts above as they are
+		local ok, d = pcall(function()
+			return catchmentDiag.new({ core = core, try = try, comp = comp, posOf = posOf, nameOf = nameOf,
+				appTime = appTime, say = say, walk = function() return L.walkBetween end })
+				.diagnose(stations, caught, { radius = opts and opts.radius, paths = opts and opts.paths, target = id })
+		end)
+		if ok then
+			out.diagnosis, out.radiusSource, out.circles = d.diagnosis, d.radiusSource, d.circles
+			d.diagnosis, d.radiusSource, d.circles = nil, nil, nil
+			out.near = d
+		else
+			out.diagnosis = "the diagnosis failed: " .. tostring(d)
+		end
+		return out
 	end
 
 	function handlers.stations(c)
 		if c.args.catchment ~= nil then
 			local id = c.args.catchment
 			if type(id) ~= "number" or id ~= math.floor(id) then return fail(c.id, "catchment must be a station or station group id") end
-			local out, err = catchment(id)
+			local opts = {}
+			if c.args.radius ~= nil then
+				local r = tonumber(c.args.radius)
+				if r == nil or r ~= r or r <= 0 or r > 2000 then return fail(c.id, "radius must be a number of metres above 0, at most 2000") end
+				opts.radius = r
+			end
+			if c.args.paths ~= nil then
+				local n = tonumber(c.args.paths)
+				if n == nil or n ~= math.floor(n) or n < 0 or n > catchmentDiag.PATHS_MAX then
+					return fail(c.id, "paths must be a whole number from 0 to " .. catchmentDiag.PATHS_MAX)
+				end
+				opts.paths = n
+			end
+			local out, err = catchment(id, opts)
 			if not out then return fail(c.id, err) end
 			return answer(c.id, { ok = true, catchment = out })
 		end

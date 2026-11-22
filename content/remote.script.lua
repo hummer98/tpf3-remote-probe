@@ -1200,6 +1200,7 @@ for k, fn in pairs(modhub.handlers) do handlers[k] = fn end
 local reach = (ug_require or require)(MOD .. "::/remote_reach.lua").new({ core = core, answer = answer, fail = fail,
 	try = try, appTime = appTime, say = say, posOf = function(e) return lines.posOf(e) end })
 handlers.reach = reach.handle
+lines.walkBetween = reach.walkBetween -- (stations --catchment: whether a building can be walked to its station)
 
 -- args: entity (one industry; none: all). Read only. Per industry: its capacity (PERSON_CAPACITY), the sims that
 -- have it as their destination (what the base window shows as n/capacity, entity_window_util.tl
