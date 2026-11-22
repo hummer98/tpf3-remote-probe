@@ -3965,6 +3965,42 @@ test("line update --force-unload: set and cleared per stop, the rest of the stop
 	end
 end)
 
+test("line update --force-unload with --stops, with --cargo; the stop's maxLoad and destroy flags kept (gui and cmd)", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = shipLine()
+		local cfg1 = g.lines[23].stops[1].stopConfig
+		cfg1.maxLoad[2], cfg1.destroyForConfigChange, cfg1.destroyForRefresh = 0.5, true, true
+		-- --force-unload alone: only forceUnload changes on the stop's config
+		send(g, 800, "line", string.format('{ action = "update", line = 23, forceUnload = { 1, 0 }, via = %q }', via))
+		frames(g, FIRST)
+		local a = final(g, 800)
+		eq(a.ok, true, via .. " " .. tostring(a.error))
+		local held = g.lines[23].stops[1].stopConfig
+		eq(held.forceUnload, true, via); eq(held.maxLoad[2], 0.5, via .. ": maxLoad kept")
+		eq(held.destroyForConfigChange, true, via); eq(held.destroyForRefresh, true, via)
+		eq(held.load[2], true, via .. ": the loads kept")
+		eq(a.stops[1].destroyForRefresh, true, via .. ": read back"); eq(a.stops[1].stopLoads[1].maxLoad, 0.5, via)
+		-- with --stops: a kept stop keeps its config, a new one gets the base's, each with the forceUnload asked
+		send(g, 801, "line", string.format('{ action = "update", line = 23, stops = { 47, 49, 48 }, ' ..
+			'forceUnload = { 0, 1, 1 }, via = %q }', via))
+		frames(g, 10)
+		local b = final(g, 801)
+		eq(b.ok, true, via .. " " .. tostring(b.error)); eq(#b.stops, 3, via); eq(b.stops[3].stationGroup, 48, via)
+		eq(b.stops[1].forceUnload, false, via); eq(b.stops[2].forceUnload, true, via); eq(b.stops[3].forceUnload, true, via)
+		local s1 = g.lines[23].stops[1].stopConfig
+		eq(s1.maxLoad[2], 0.5, via .. ": the kept stop's maxLoad"); eq(s1.destroyForRefresh, true, via)
+		eq(g.lines[23].stops[3].stopConfig.forceUnload, true, via .. ": the new stop")
+		-- with --cargo: the cargo filter's loads and maxLoad, and the forceUnload asked
+		send(g, 802, "line", string.format('{ action = "update", line = 23, cargo = "coal", forceUnload = { 1, 0, 1 }, via = %q }', via))
+		frames(g, 10)
+		local c = final(g, 802)
+		eq(c.ok, true, via .. " " .. tostring(c.error)); eq(c.loads[1], "COAL", via); eq(c.customFilters, true, via)
+		eq(c.stops[1].forceUnload, true, via); eq(c.stops[2].forceUnload, false, via); eq(c.stops[3].forceUnload, true, via)
+		eq(g.lines[23].stops[1].stopConfig.destroyForRefresh, true, via .. ": --cargo keeps the destroy flags too")
+		eq(g.crashed, nil, via)
+	end
+end)
+
 test("line update --force-unload: another company's line is refused; create sets it on new stops (gui and cmd)", function()
 	local g = shipLine()
 	g.lines[77] = { name = "theirs", stops = {} }
@@ -5518,7 +5554,7 @@ test("vehicles --state --at-terminal: only the vehicles in port, each answer wit
 	send(g, 735, "vehicles", "{ state = true, atTerminal = true }")
 	frames(g, FIRST)
 	local a = final(g, 735)
-	eq(a.ok, true, tostring(a.error)); eq(a.atTerminal, true); eq(a.gameTime, 130000)
+	eq(a.ok, true, tostring(a.error)); eq(a.atTerminal, true); eq(a.gameTime, 130000); eq(a.stateUnknown, 0)
 	eq(a.total, 1, "total counts only those at a terminal"); eq(#a.vehicles, 1); eq(a.vehicles[1].entity, 601)
 	eq(a.vehicles[1].state.state, "AT_TERMINAL")
 	-- with entities: one not in port is neither listed nor missing; a gone one is still missing
@@ -5531,7 +5567,7 @@ test("vehicles --state --at-terminal: only the vehicles in port, each answer wit
 	send(g, 737, "vehicles", "{ state = true, entities = { 601 } }")
 	frames(g, 20)
 	a = final(g, 737)
-	eq(a.atTerminal, nil, "not asked: no key"); eq(a.total, 1)
+	eq(a.atTerminal, nil, "not asked: no key"); eq(a.stateUnknown, nil); eq(a.total, 1)
 	truthy(a.gameTime >= 131500, "the game time of this read, not the last one: " .. tostring(a.gameTime))
 	eq(a.vehicles[1].state.sinceDoors, a.gameTime - 120000, "sinceDoors from the same game time")
 	-- nobody in port: an empty list
@@ -5559,6 +5595,7 @@ test("vehicles --at-terminal: a state that cannot be read leaves the vehicle out
 	local a = final(g, 745)
 	api.type.enum.TransportVehicleState = real
 	eq(a.ok, true, tostring(a.error)); eq(a.total, 0, "cannot be told: not listed as in port")
+	eq(a.stateUnknown, 1, "and counted, so an empty list is not read as nobody in port")
 end)
 
 ---------------------------------------------------------------------------------------------------------------------

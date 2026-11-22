@@ -285,10 +285,12 @@ function M.checkTerminals(stops, terminals, need)
 	return common
 end
 
--- a copy of cfg (a StopConfig) with forceUnload set, as the cargo filter window makes a new StopConfig and sets
--- forceUnload on it (cargofilter_window.tl makeCmd); the copy keeps load, maxLoad and the destroy flags. A copy
--- rather than cfg.forceUnload = on: the stop's StopConfig is the engine's, and whether a write into it holds is not
--- known (applyCargo copies the same way).
+-- a copy of cfg (a StopConfig) with forceUnload set: StopConfig.new(old) and one field changed on the copy, as the
+-- base copies a stop's config (line_util.tl getReactLineFromGameState, manager_window.tl's passenger toggle); the
+-- copy keeps load, maxLoad and the destroy flags. A copy rather than cfg.forceUnload = on: the stop's StopConfig is
+-- the engine's, and whether a write into it holds is not known (applyCargo copies the same way). forceUnload
+-- (engine.d.tl): unload at a compatible input stock even when it has no space, the cargo being destroyed; it does
+-- not make a stop without a compatible input stock unload.
 function M.withForceUnload(cfg, on)
 	local out = api.type.Line.StopConfig.new(cfg)
 	out.forceUnload = on

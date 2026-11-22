@@ -51,7 +51,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py line create --stops Central,Harbour [--name "[probe] A"] [--cargo grain] [--via gui|cmd]
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
   tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 --load-mode all,available   # piers picked, full load
-  tf3ctl.py line update 23 --force-unload 0,1   # per stop: unload all on arrival even into a full stock (lines shows it)
+  tf3ctl.py line update 23 --force-unload 0,1   # per stop: unload into a matching input stock even when full
+            # (that cargo is lost); no matching input stock: no unloading either way (lines shows it)
   tf3ctl.py connect --from 5123 --to Harbour [--build]   # a track between two free ends (needs Track Connector)
   tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con --at 1200,800 [--angle 1.57] \
             [--params '{"rbr_height": 8}'] [--name N] [--dry-run]   # one construction (.con), no click: test saves
@@ -2349,12 +2350,12 @@ def vehicles_every(ns, out=None, sleep=time.sleep, clock=time.time):
 
 def sample_every(cmd, args, ns, out=None, sleep=time.sleep, clock=time.time):
     """--every of a read-only command (persons, vehicles): samples on a fixed grid of ns.every seconds from the
-    start (a slow answer does not drift the times), each as one compact JSON line with sample (its slot on the grid, 1-based) and unixTime (when the tool sent it)
-    added, until ns.count samples or Ctrl-C. A sample that ran past later slots does not make up for them in a
-    burst: those slots are skipped (the next line says how many, under skipped) and the loop waits for the next
-    one. Read only, as one call is. An answer that is not ok, or a game that cannot answer (menu, closed), ends
-    the loop as a last line with ok false; its exit code is the loop's. No answer is a line with noAnswer and
-    reason, and the loop goes on (exit code 2 at the end)."""
+    start (a slow answer does not drift the times), each as one compact JSON line with sample (its slot on the
+    grid, 1-based) and unixTime (when the tool sent it) added, until ns.count samples or Ctrl-C. A sample that ran
+    past later slots does not make up for them in a burst: those slots are skipped (the next line says how many,
+    under skipped) and the loop waits for the next one. Read only, as one call is. An answer that is not ok, or a
+    game that cannot answer (menu, closed), ends the loop as a last line with ok false; its exit code is the
+    loop's. No answer is a line with noAnswer and reason, and the loop goes on (exit code 2 at the end)."""
     out = out or sys.stdout
     start = clock()
     slot = taken = gaps = skipped = 0
@@ -3139,8 +3140,9 @@ def make_parser():
                             help="available, any (full load, any cargo) or all (full load, all cargo): one for every "
                                  "stop, or one per stop in order (Line.Stop.loadMode)")
             la.add_argument("--force-unload", metavar="0|1,...",
-                            help="0 or 1 for every stop, in order: unload all cargo on arrival even when the stock is "
-                                 "full (Line.Stop.stopConfig.forceUnload, the line window's cargo filter)")
+                            help="0 or 1 for every stop, in order: unload at a matching input stock even when it is "
+                                 "full, the cargo being lost (\"Unload Even if Stocks Are Full\"); without a matching "
+                                 "input stock nothing is unloaded either way (Line.Stop.stopConfig.forceUnload)")
             la.add_argument("--via", choices=["gui", "cmd"], default="gui",
                             help="gui: the base's line_util (in the speed control); cmd: stops built by the probe")
         else:
