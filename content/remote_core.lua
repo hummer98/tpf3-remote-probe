@@ -612,6 +612,85 @@ function M.newGamePlan(args, ctx)
 	}
 end
 
+-- What the base new-game page derives from the base params (new_game_or_map_settings_page.tl makeMapPreviewInputs
+-- and startGame2): the town and industry densities through difficulty_util.getScale, the start time and clouds
+-- from new_game_react_util's tables. Copies of those tables (base build 40444), used when difficulty_util cannot
+-- be loaded: StartGameParams left without them keeps BaseConfig.Locations.new()'s values, which are not the menu's.
+M.DIFFICULTY_UTIL = "/base/difficulty_util.tl"
+M.DENSITY_SCALES = {
+	["locations.towns.frequency"] = { 0.2, 0.3, 0.4, 0.65, 1.0 }, -- level2TownFrequencyFactor
+	["locations.towns.populationDensity"] = { 0.5, 0.75, 1.0, 1.5, 2.0 }, -- level2IndustryProductivityFactor
+	["locations.industry.initialIndustryDensity"] = { 2 / 3, 5 / 6, 1.0, 6 / 5, 3 / 2 }, -- level2IndustryDensityFactor
+}
+-- the base mod.json's default for all three (defaultIndex 2, so 3 in the game's 1-based form), for a missing param
+M.DENSITY_DEFAULT_LEVEL = 3
+M.START_HOURS = { 14, 14, 14, 7, 14, 18, 23 } -- by gameTimeConfig.timeOfDayMode (getInitialTimeOfDayValues)
+M.START_CLOUDS = { 0.0, 0.0, 0.25, 0.5 } -- by weatherConfig.dynamicWeather (getInitialCloudCoverageValues)
+
+-- a base param's 1-based level; a missing one is taken as the menu's default (the menu always has one), one
+-- outside the range is nil (the base's getScale then gives 1.0)
+local function startLevel(base, key, default, count, warnings)
+	local v = type(base) == "table" and base[key] or nil
+	if v == nil then
+		warnings[#warnings + 1] = string.format("base param %s missing: taken as the menu default %d", key, default)
+		return default
+	end
+	if type(v) ~= "number" or v % 1 ~= 0 or v < 1 or v > count then
+		warnings[#warnings + 1] = string.format("base param %s = %s is outside 1-%d", key, tostring(v), count)
+		return nil
+	end
+	return v
+end
+
+-- base: the plan's modParams[""]; du: the loaded difficulty_util or nil, duError: why it did not load.
+-- Returns { locations = { values for BaseConfig.Locations }, timeOfDaySeconds, cloudCoverage, levels, source },
+-- and the warnings (a list, empty when everything came out as in the menu).
+function M.newGameStart(base, du, duError)
+	local warnings = {}
+	local source = "difficulty_util"
+	if type(du) ~= "table" or type(du.getScale) ~= "function" then
+		du = nil
+		source = "copy"
+		warnings[#warnings + 1] = "difficulty_util not available (" .. tostring(duError or "no getScale")
+			.. "): town and industry densities from remote_probe's copy of its tables"
+	end
+	local levels, scales = {}, {}
+	-- a fixed order, so the warnings come in the same order each time (the load failure first)
+	for _, key in ipairs({ "locations.towns.frequency", "locations.towns.populationDensity",
+		"locations.industry.initialIndustryDensity" }) do
+		local list = M.DENSITY_SCALES[key]
+		local l = startLevel(base, key, M.DENSITY_DEFAULT_LEVEL, #list, warnings)
+		levels[key] = l
+		local s
+		if du and l then
+			local ok, v = pcall(du.getScale, key, l)
+			if ok and type(v) == "number" then s = v else
+				source = "copy"
+				warnings[#warnings + 1] = string.format("difficulty_util.getScale(%s, %d) failed (%s): the copy used",
+					key, l, tostring(ok and type(v) or v))
+			end
+		end
+		scales[key] = s or (l and list[l]) or 1.0
+	end
+	local hours = startLevel(base, "gameTimeConfig.timeOfDayMode", 1, #M.START_HOURS, warnings)
+	local clouds = startLevel(base, "weatherConfig.dynamicWeather", 1, #M.START_CLOUDS, warnings)
+	levels["gameTimeConfig.timeOfDayMode"], levels["weatherConfig.dynamicWeather"] = hours, clouds
+	return {
+		locations = {
+			townFrequency = scales["locations.towns.frequency"],
+			populationDensity = scales["locations.towns.populationDensity"],
+			-- the base page's initialIndustryDensityFactor (1.0) times the scale
+			industryDensity = 1.0 * scales["locations.industry.initialIndustryDensity"],
+			maxNumberPerArea = 0.2, allowInRoughTerrain = false, absoluteMinimum = 24, industryProductivity = 1,
+			makeInitialStreets = true,
+		},
+		-- an out-of-range mode: the first entry (the menu would pass nil)
+		timeOfDaySeconds = M.START_HOURS[hours or 1] * 3600,
+		cloudCoverage = M.START_CLOUDS[clouds or 1],
+		levels = levels, source = source,
+	}, warnings
+end
+
 ---------------------------------------------------------------------------------------------------------------------
 -- towns, lines, vehicles, stations and industries by name (for the window command)
 

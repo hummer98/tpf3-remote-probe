@@ -107,6 +107,19 @@ their default settings. `status` answers `mapEditor` (`gui`: `api.gui.game.isMap
 `isMapEditor`). **Not checked in game yet** (written 2026-11-22): whether the editor opens this way, and whether
 the probe answers inside it.
 
+A new game gets the town and industry placement the base new-game page computes from the base settings
+(`locations.towns.frequency`, `locations.towns.populationDensity`, `locations.industry.initialIndustryDensity`,
+1-based levels, default 3): `townFrequency`, `populationDensity` and `industryDensity` through the base's
+`difficulty_util.getScale` (0.4, 1.0 and 1.0 at the defaults), so `--param :locations.towns.frequency=5` works as
+in the menu. If `difficulty_util` cannot be loaded, the mod uses its copy of the same tables (base build 40444) and
+the answer carries `warnings` (also printed by the tool). A base setting that is missing is taken as the menu's
+default; one out of range gives 1.0, as the base's `getScale` does (the start time and clouds: the first entry);
+both with a warning. The start time and clouds follow `gameTimeConfig.timeOfDayMode` and `weatherConfig.dynamicWeather` as in the
+menu: 14:00 and clear by default (before 2026-11-23: always 12:00, and the densities were left at the engine's
+`Locations.new()` values). `newgame --dry-run` shows them in the plan: `locations` (what is sent as
+`locationsConfig`), `startLevels`, `locationsSource` (`difficulty_util` or `copy`), `timeOfDaySeconds`,
+`cloudCoverage`.
+
 The base's company progression (company rank, perks, ticket price multiplier) starts from the world's town
 population when the game starts: on the start event `initNewGameFromMap` the base's company script stores it as
 `basePopulation`, and company_growth does nothing while it is 0. A game started with no town population

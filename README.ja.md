@@ -105,6 +105,18 @@ python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-indust
 初期値。`status` は `mapEditor` を答えます (`gui`: `api.gui.game.isMapEditor()`、`modParams`: 本体の `isMapEditor`)。
 **ゲーム内では未確認** (2026-11-22 に書いたもの): この形でエディタが開くか、エディタの中で probe が答えるか。
 
+新しいゲームの町と産業の置き方は、本体の新しいゲームのページと同じく、本体の設定
+(`locations.towns.frequency`・`locations.towns.populationDensity`・`locations.industry.initialIndustryDensity`、
+1 始まりの段、初期設定 3) から決めます: `townFrequency`・`populationDensity`・`industryDensity` を本体の
+`difficulty_util.getScale` で求めます (初期設定で 0.4・1.0・1.0)。`--param :locations.towns.frequency=5` もメニューと
+同じように効きます。`difficulty_util` を読めないときは MOD の中の同じ表の写し (本体のビルド 40444) を使い、答えに
+`warnings` を付けます (ツールも表示します)。本体の設定が無いときはメニューの初期設定とみなし、範囲の外の段は本体の
+`getScale` と同じく 1.0 (時刻と雲は最初の値) にします。どちらも警告を付けます。始めの時刻と雲は、
+メニューと同じく `gameTimeConfig.timeOfDayMode` と `weatherConfig.dynamicWeather` から決め、初期設定では 14 時・晴れ
+です (2026-11-23 より前は、いつも 12 時で、密度はエンジンの `Locations.new()` の値のままでした)。`newgame --dry-run`
+の計画に出ます: `locations` (`locationsConfig` として送る値)・`startLevels`・`locationsSource` (`difficulty_util` か
+`copy`)・`timeOfDaySeconds`・`cloudCoverage`。
+
 本体の会社の成長 (会社のランク・特典・運賃の倍率) は、ゲームが始まったときの町の人口から始まります。始まりの出来事
 `initNewGameFromMap` で本体の会社のスクリプトがそれを `basePopulation` に入れ、company_growth はそれが 0 の間は何も
 しません。町の人口が無い始まり (`--no-towns`、平らな土台に後から町を置いたもの) では `basePopulation` が 0 のままで、
