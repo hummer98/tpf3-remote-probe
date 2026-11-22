@@ -1120,6 +1120,22 @@ class EndToEndTest(unittest.TestCase):
         self.assertTrue(res["path"].endswith("_0.png"), res)
         self.assertTrue(os.path.exists(res["path"]))
 
+    def test_8_town_connections_and_connect(self):
+        code, res = self.ctl("town", "connections")
+        self.assertEqual(code, 0, res)
+        self.assertEqual([t["id"] for t in res["towns"]], [11, 12])
+        self.assertEqual(res["towns"][0]["industries"][0]["id"], 51, "the coal mine's closest town")
+        self.assertEqual(res["connections"], [])
+        code, res = self.ctl("--owner", "t", "town", "connect", "--build", "--default", "--dry-run")
+        self.assertEqual(code, 0, res)
+        self.assertIs(res["sent"], False)
+        self.assertEqual(res["connectionsSent"], [[0, 1]])
+        code, res = self.ctl("--owner", "t", "town", "connect", "--build", "--default")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["after"]["towns"][0]["connectedTowns"][0]["id"], 12)
+        code, res = self.ctl("town", "connections", "--entity", "51")
+        self.assertEqual(code, 1, "an industry is no town")
+
     def test_9z_newgame_list_dry_run_and_start(self):  # runs last: it replaces the game
         self._newgame()
 
@@ -1896,6 +1912,30 @@ class QuitLaunchTest(unittest.TestCase):
             self.assertTrue(res["ok"], "the game started either way")
             self.assertFalse(res["companyInit"]["ok"])
             self.assertIn("company init failed (nope)", err.getvalue())
+
+    def test_town_connect_args(self):
+        p = tf3ctl.make_parser()
+
+        def args(*argv):
+            return tf3ctl.town_grow_args(p.parse_args(["town"] + list(argv)))
+        self.assertEqual(args("connections"), ("townConnections", {}))
+        self.assertEqual(args("connections", "--entity", "801"), ("townConnections", {"entity": 801}))
+        self.assertEqual(args("connect", "--auto", "--entity", "801,802"),
+                         ("townConnect", {"auto": True, "entities": [801, 802]}))
+        self.assertEqual(args("connect", "--build", "--pairs", "801:802,802:803", "--default", "--no-keep",
+                              "--index-base", "1", "--dry-run"),
+                         ("townConnect", {"build": True, "pairs": [[801, 802], [802, 803]], "default": True,
+                                          "keep": False, "indexBase": 1, "dryRun": True}))
+        self.assertEqual(args("connect", "--build"), ("townConnect", {"build": True}), "keep left to the mod")
+        for bad in (["connect", "--auto", "--pairs", "1:2"], ["connect", "--auto", "--no-keep"],
+                    ["connect", "--build", "--pairs", "1:1"], ["connect", "--build", "--pairs", "1-2"],
+                    ["connect", "--build", "--entity", "1,1"], ["connect", "--build", "--entity", "x"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                args(*bad)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            p.parse_args(["town", "connect"])  # --auto or --build is required
+        self.assertIn("townConnect", tf3ctl.CHANGES_GAME)
+        self.assertNotIn("townConnections", tf3ctl.CHANGES_GAME)
 
     def test_company_commands_parse(self):
         p = tf3ctl.make_parser()

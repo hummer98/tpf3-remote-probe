@@ -544,6 +544,32 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   外で効くか、`landUse2CargoNeeds` が効くか、需要のコマンド、道路や建物のある場所にエンジンがどう答えるか、
   作った直後の人口。
 
+### 町のつながり (`town connections`・`town connect`: 試験用のセーブだけ)
+
+```
+python3 tools/tf3ctl.py town connections [--entity 801]                 # 読むだけ
+python3 tools/tf3ctl.py town connect --auto [--entity 801,802] [--dry-run]
+python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802] [--default] [--no-keep] [--dry-run]
+```
+
+- エンジンにあるもの (api の型と本体のマップエディタの Connections のタブ、2026-11-23 に読んだ): つながりは町と町の間で、
+  町と産業の間ではありません。地図の `townConnections` (`api.engine.terrain.makeMapFromGame(false, true, false, false)`
+  から。エディタと同じ読み方) は、地図の町の一覧の番号の組です。産業の町は一番近い町です (産業の construction の
+  `streetConnectorSystem.getConstructionClosestTown`)。
+- `town connections` は町ごとに (`id`・`name`・`mapIndex`・`connectedTowns`・`industries`: その町が一番近い産業)、
+  `industriesWithoutTown`、生の `connections` とそれが指す町、`indexBase` (0 か 1: エンジンが町に振る番号の始まり。
+  地図の組から分かるとき) を答えます。
+- `town connect --auto` は `api.cmd.makeTownAutoDetectConnectionsCmd(町)` を送ります (エディタの「Auto-detect connections」:
+  今ある道路でのつながりを見つける。何も建てません)。
+- `town connect --build` は `api.cmd.makeTownConnectWithIndustriesCmd(町, つながり, keep)` を送ります (エディタの
+  「Generate」): つながった町の間と、**すべての**産業へ道路を作ります。産業の一覧は渡せません。つながりは地図のものに、
+  `--default` でエンジンの初期のつながり (エディタの「Propose Default Connections」)、`--pairs` (町の id) を足し、送る町に合わせて
+  番号を振り直します。keep は入り、`--no-keep` で今ある道路のつながりを消します。地図から番号の始まりが分からない
+  ときは `--index-base 0|1` が要ります。
+- どちらも `before`・`after` (`town connections` と同じ形) を答え、エンジンの callback を最長 120 秒待ちます。
+- **ゲーム内では未確認** (2026-11-23 に書いたもの): マップエディタの外のゲームで動くか、番号の振り方、`--build` が
+  今ある道路に何をするか。
+
 ### 町を1か所で育てる (`town develop`・`town size`: 試験用のセーブだけ)
 
 ```sh
@@ -929,6 +955,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - gui で買った車両を MOD が自分で路線に送ることと、断られたときの理由。`lines --problems`。`stations --catchment`。
 - `terrain`・`terrain --probe-api`・`newgame --editor` は全部 (「長方形の範囲の地面」を参照)。
 - `town` は全部 (「町を1つ」を参照)。
+- `town connections` と `town connect` は全部 (「町のつながり」を参照)。
 - `company` と `company init` は全部 (「セーブと新しいゲーム」の会社の成長)。
 - `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
 - `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。

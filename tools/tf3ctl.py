@@ -44,6 +44,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py lines --problems [--line 23]    # + each stop's path problems, platform modes, the line's mode union
   tf3ctl.py industry-workers [--entity 51]  # industries: capacity, sims headed there, last visitors (boost), town
   tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # stocks, rules, construction params
+  tf3ctl.py town connections [--entity 801]   # read only: towns the engine counts as connected, each industry's
+            # town (the closest one)
+  tf3ctl.py town connect --auto | --build [--entity 801,802] [--pairs 801:802] [--default] [--no-keep] [--dry-run]
+            # test saves only: the map editor's Auto-detect connections / Generate (streets to all industries)
   tf3ctl.py company                         # read only: the base's company progression (basePopulation, level,
             # ticket price multiplier) and what is missing
   tf3ctl.py company init [--dry-run]        # test saves only: the base's new-game event (initNewGameFromMap) sent
@@ -159,7 +163,7 @@ RECENT_SEC = 600  # another owner's game-changing command this recent gets a war
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
-                "stockSet", "steps", "townDevelop", "townSize", "companyInit"}  # window: what the player sees  # poll: only the mod's file reads
+                "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -1886,6 +1890,10 @@ def town_grow_args(ns):
     if given:
         raise ToolError("town %s: put its options after the word (%s given before it)"
                         % (ns.town_action, ", ".join("--" + o.replace("_", "-") for o in given)))
+    if ns.town_action == "connections":
+        return "townConnections", ({"entity": ns.conn_entity} if ns.conn_entity is not None else {})
+    if ns.town_action == "connect":
+        return town_connect_args(ns)
     if ns.town_action == "develop":
         try:
             at = [float(x) for x in ns.grow_at.split(",")]
@@ -1921,6 +1929,47 @@ def town_grow_args(ns):
     if ns.grow_dry_run:
         args["dryRun"] = True
     return "townSize", args
+
+
+TOWN_CONNECT_TIMEOUT_SEC = 150  # the mod waits 120 s for the engine's callback (a street network to build)
+
+
+def town_connect_args(ns):
+    """town connect --auto | --build: checked here as the mod checks them. -> ("townConnect", args)"""
+    if ns.conn_auto == ns.conn_build:
+        raise ToolError("give --auto (detect the connections over the roads there are) or --build (streets)")
+    args = {"auto": True} if ns.conn_auto else {"build": True}
+    if ns.conn_entities is not None:
+        try:
+            ids = [int(x) for x in ns.conn_entities.split(",")]
+        except ValueError:
+            raise ToolError("--entity must be town ids separated by commas (entities --kind town)")
+        if not ids or any(i < 0 for i in ids) or len(set(ids)) != len(ids):
+            raise ToolError("--entity must be distinct town ids (0 or more)")
+        args["entities"] = ids
+    if ns.conn_auto and (ns.conn_pairs or ns.conn_default or ns.conn_no_keep or ns.conn_index_base is not None):
+        raise ToolError("--pairs, --default, --no-keep and --index-base go with --build (--auto builds nothing)")
+    if ns.conn_pairs:
+        pairs = []
+        for part in ns.conn_pairs.split(","):
+            a, sep, b = part.partition(":")
+            try:
+                pair = [int(a), int(b)]
+            except ValueError:
+                raise ToolError("--pairs must be town:town,... (town ids, e.g. 801:802)")
+            if not sep or pair[0] == pair[1] or min(pair) < 0:
+                raise ToolError("--pairs must be town:town,... with two different towns (e.g. 801:802)")
+            pairs.append(pair)
+        args["pairs"] = pairs
+    if ns.conn_default:
+        args["default"] = True
+    if ns.conn_no_keep:
+        args["keep"] = False
+    if ns.conn_index_base is not None:
+        args["indexBase"] = ns.conn_index_base
+    if ns.conn_dry_run:
+        args["dryRun"] = True
+    return "townConnect", args
 
 
 def town_grow_timeout(cmd, args):
@@ -3690,7 +3739,7 @@ def make_parser():
                     "--in-game, the engine's proposal for the place")
     # town develop / town size: their own options (other dests, so an option given before the word is caught in
     # town_grow_args instead of being dropped)
-    tws = tw.add_subparsers(dest="town_action", required=False, metavar="{develop,size}")
+    tws = tw.add_subparsers(dest="town_action", required=False, metavar="{develop,size,connections,connect}")
     td = tws.add_parser("develop", help="test saves only: new buildings or street segments at a point "
                         "(api.cmd.makeTownDevelopAtCmd), N times one after another; not checked in a game yet")
     td.add_argument("--at", dest="grow_at", required=True, metavar="X,Y",
@@ -3710,6 +3759,27 @@ def make_parser():
     tz.add_argument("--update-all", dest="grow_update_all", action="store_true",
                     help="take every building to its target capacity")
     tz.add_argument("--dry-run", dest="grow_dry_run", action="store_true", help="the town as it is, nothing sent")
+    tcs = tws.add_parser("connections", help="read only: the towns the engine counts as connected (the map's "
+                         "townConnections, between towns) and each industry's town (the closest one)")
+    tcs.add_argument("--entity", dest="conn_entity", type=int, help="one town (entities --kind town)")
+    tcn = tws.add_parser("connect", help="test saves only: the map editor's connection commands; --auto detects "
+                         "the connections over the roads there are (builds nothing), --build makes streets between "
+                         "the connected towns and to all industries; not checked in a game yet")
+    tcm = tcn.add_mutually_exclusive_group(required=True)
+    tcm.add_argument("--auto", dest="conn_auto", action="store_true",
+                     help="api.cmd.makeTownAutoDetectConnectionsCmd (the editor's Auto-detect connections)")
+    tcm.add_argument("--build", dest="conn_build", action="store_true",
+                     help="api.cmd.makeTownConnectWithIndustriesCmd (the editor's Generate): the map's connections, "
+                     "--default and --pairs, and streets to every industry (no list of industries goes in)")
+    tcn.add_argument("--entity", dest="conn_entities", metavar="TOWN,...", help="these towns only (default: all)")
+    tcn.add_argument("--pairs", dest="conn_pairs", metavar="A:B,...", help="--build: town pairs to connect (town ids)")
+    tcn.add_argument("--default", dest="conn_default", action="store_true",
+                     help="--build: add the engine's default connections (the editor's Propose Default Connections)")
+    tcn.add_argument("--no-keep", dest="conn_no_keep", action="store_true",
+                     help="--build: remove the street connections there are (keep is the default)")
+    tcn.add_argument("--index-base", dest="conn_index_base", type=int, choices=(0, 1),
+                     help="--build: how the engine numbers towns in its connections, when the map does not tell")
+    tcn.add_argument("--dry-run", dest="conn_dry_run", action="store_true", help="what would be sent, nothing sent")
     wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
                                        "terrain's height (to find a shore for a harbour)")
     wg = wa.add_mutually_exclusive_group(required=True)
@@ -4116,7 +4186,10 @@ def main(argv=None):
                 res = send("terrain", terrain_args(ns), timeout=TERRAIN_TIMEOUT_SEC)
         elif ns.cmd == "town" and ns.town_action:
             gcmd, gargs = town_grow_args(ns)
-            res = send(gcmd, gargs, timeout=town_grow_timeout(gcmd, gargs))
+            if gcmd == "townConnect":
+                res = send(gcmd, gargs, timeout=TOWN_CONNECT_TIMEOUT_SEC)
+            else:
+                res = send(gcmd, gargs, timeout=town_grow_timeout(gcmd, gargs))
         elif ns.cmd == "town":
             res = send("town", town_args(ns), timeout=TOWN_TIMEOUT_SEC)
         elif ns.cmd == "tool":

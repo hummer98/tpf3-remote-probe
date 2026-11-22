@@ -1181,6 +1181,12 @@ local company = (ug_require or require)(MOD .. "::/remote_company.lua").new({ co
 		return m.gui == true or m.modParams == true
 	end })
 for k, fn in pairs(company.handlers) do handlers[k] = fn end
+-- town connections / town connect (remote_town_connect.lua): the towns' connections and the industries' towns read,
+-- and the map editor's auto-detect and Generate
+local townConnect = (ug_require or require)(MOD .. "::/remote_town_connect.lua").new({ core = core, answer = answer,
+	fail = fail, appTime = appTime, try = try, say = say, towns = function() return entitiesOf("town") end,
+	industries = function() return entitiesOf("industry") end })
+for k, fn in pairs(townConnect.handlers) do handlers[k] = fn end
 -- parcels (remote_parcels.lua): read only, the town building parcels on each side of a road piece
 local parcels = (ug_require or require)(MOD .. "::/remote_parcels.lua").new({ core = core, answer = answer, fail = fail,
 	try = try, say = say })
@@ -1415,6 +1421,7 @@ local function init()
 		town.reset()
 		townGrow.reset()
 		company.reset()
+		townConnect.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1533,6 +1540,7 @@ local function step()
 	debugCmds.step()
 	townGrow.step()
 	company.step()
+	townConnect.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()

@@ -20,7 +20,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
 	modhubValidate = true, modhubPublish = true, water = true, road = true, terrain = true, terrainApi = true,
 	town = true, stockList = true, stockSet = true, steps = true, townDevelop = true, townSize = true, parcels = true,
-	company = true, companyInit = true }
+	company = true, companyInit = true, townConnections = true, townConnect = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -38,7 +38,10 @@ M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame =
 	-- town develop / town size (remote_town_grow.lua): test saves only; their dry runs too, as build's
 	townDevelop = true, townSize = true,
 	-- company init (remote_company.lua): test saves only, the base's new-game event sent by hand (company only reads)
-	companyInit = true }
+	companyInit = true,
+	-- town connect (remote_town_connect.lua): test saves only; its dry run too (it copies the map from the game, as
+	-- town's dry run asks for a proposal). town connections only reads
+	townConnect = true }
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true,
@@ -3136,6 +3139,204 @@ function M.companyInitRefusal(s)
 	if s.mission then return "not in a mission: its start event is the mission's own (initMission)" end
 	if not s.company.running then return "the base's company script (" .. tostring(s.company.script) .. ") is not running" end
 	return nil
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- town connections / town connect (remote_town_connect.lua)
+
+M.TOWN_CONNECT_MAX_TOWNS = 64
+M.TOWN_CONNECT_MAX_PAIRS = 256
+
+-- a list of entity ids: "1,2" or { 1, 2 }. -> list, or nil and why
+local function entityIds(v, what, most)
+	local parts = {}
+	if type(v) == "string" then
+		for part in (v .. ","):gmatch("([^,]*),") do parts[#parts + 1] = part end
+	elseif type(v) == "number" then
+		parts[1] = v
+	elseif type(v) == "table" then
+		for i = 1, #v do parts[i] = v[i] end
+	else
+		return nil, what .. ": give entity ids separated by commas"
+	end
+	if #parts == 0 then return nil, what .. ": empty" end
+	if #parts > most then return nil, what .. ": at most " .. most end
+	local out, seen = {}, {}
+	for _, x in ipairs(parts) do
+		local e = wholeNumber(x)
+		if e == nil or e < 0 or e > M.MAX_ENTITY_ID then return nil, what .. ": not an entity id: " .. tostring(x) end
+		if seen[e] then return nil, what .. ": " .. e .. " twice" end
+		seen[e] = true
+		out[#out + 1] = e
+	end
+	return out
+end
+
+-- "801:802,802:803" or { { 801, 802 }, ... } (town entity ids) -> list of { a, b }, or nil and why
+local function townPairs(v)
+	local list = {}
+	if type(v) == "string" then
+		for part in (v .. ","):gmatch("([^,]*),") do
+			local a, b = part:match("^%s*([^:]+):([^:]+)%s*$")
+			if not a then return nil, "pairs: write town:town, e.g. 801:802 (not " .. part .. ")" end
+			list[#list + 1] = { a, b }
+		end
+	elseif type(v) == "table" then
+		for i = 1, #v do
+			if type(v[i]) ~= "table" then return nil, "pairs: each a pair { town, town }" end
+			list[i] = { v[i][1], v[i][2] }
+		end
+	else
+		return nil, "pairs: write town:town,town:town"
+	end
+	if #list == 0 then return nil, "pairs: empty" end
+	if #list > M.TOWN_CONNECT_MAX_PAIRS then return nil, "pairs: at most " .. M.TOWN_CONNECT_MAX_PAIRS end
+	local out = {}
+	for _, p in ipairs(list) do
+		local a, b = wholeNumber(p[1]), wholeNumber(p[2])
+		if not (a and b and a >= 0 and b >= 0 and a <= M.MAX_ENTITY_ID and b <= M.MAX_ENTITY_ID) then
+			return nil, "pairs: not town ids: " .. tostring(p[1]) .. ":" .. tostring(p[2])
+		end
+		if a == b then return nil, "pairs: a town with itself (" .. a .. ")" end
+		out[#out + 1] = { a, b }
+	end
+	return out
+end
+
+-- townConnections: entity (one town, optional). -> the request, or nil and why
+function M.townConnectionsRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.entity == nil then return {} end
+	local e = wholeNumber(args.entity)
+	if e == nil or e < 0 or e > M.MAX_ENTITY_ID then return nil, "entity: a town's id (entities --kind town)" end
+	return { entity = e }
+end
+
+-- townConnect: auto (makeTownAutoDetectConnectionsCmd: detect connections over the roads there are) or build
+-- (makeTownConnectWithIndustriesCmd: streets between the towns of the connections, and to all industries, as the
+-- map editor's Generate). entities (towns; nil: all), pairs (build: town:town to add), default (build: add the
+-- engine's default connections, as the editor's Propose Default Connections), keep (build: keep the street
+-- connections there are; default true, false removes them), indexBase (0 or 1: how the engine numbers the towns
+-- in its connections, when the map does not tell), dryRun. -> the request, or nil and why
+function M.townConnectRequest(args)
+	args = type(args) == "table" and args or {}
+	local r = {}
+	for _, k in ipairs({ "auto", "build", "default", "dryRun" }) do
+		local v, err = flagArg(args, k)
+		if v == nil then return nil, err end
+		r[k] = v
+	end
+	if r.auto == r.build then return nil, "give auto (detect the connections over the roads) or build (streets), one of them" end
+	if args.keep ~= nil and type(args.keep) ~= "boolean" then return nil, "keep must be true or false" end
+	r.keep = args.keep ~= false
+	if args.entities ~= nil then
+		local list, err = entityIds(args.entities, "entities", M.TOWN_CONNECT_MAX_TOWNS)
+		if not list then return nil, err end
+		r.entities = list
+	end
+	if args.pairs ~= nil then
+		local list, err = townPairs(args.pairs)
+		if not list then return nil, err end
+		r.pairs = list
+	end
+	if args.indexBase ~= nil then
+		if args.indexBase ~= 0 and args.indexBase ~= 1 then return nil, "indexBase must be 0 or 1" end
+		r.indexBase = args.indexBase
+	end
+	if r.auto and (r.pairs or r.default or args.keep ~= nil) then
+		return nil, "pairs, default and keep go with build (auto only detects, it builds nothing)"
+	end
+	return r
+end
+
+-- how the engine numbers towns in a map's townConnections: 0 when an index 0 is there, 1 when the index n (the
+-- number of towns) is, else nil (not told by these lists)
+function M.townIndexBase(lists, n)
+	local zero, top = false, false
+	for _, list in ipairs(lists) do
+		for _, p in ipairs(list or {}) do
+			for _, i in ipairs({ tonumber(M.at(p, 1)), tonumber(M.at(p, 2)) }) do
+				if i == 0 then zero = true end
+				if i == n then top = true end
+			end
+		end
+	end
+	if zero and not top then return 0 end
+	if top and not zero then return 1 end
+	return nil
+end
+
+-- index pairs -> { { from, to } } of town entities (towns: the map's list in its order, each { entity, name }).
+-- base nil: pairs left unresolved. An index out of range is kept with its entity nil
+function M.townPairsResolved(raw, towns, base)
+	local out = {}
+	for _, p in ipairs(raw or {}) do
+		local a, b = tonumber(M.at(p, 1)), tonumber(M.at(p, 2))
+		local row = { index = { a, b } }
+		if base ~= nil and a and b then
+			local ta, tb = towns[a + 1 - base], towns[b + 1 - base]
+			row.from = ta and ta.entity or nil
+			row.to = tb and tb.entity or nil
+			row.fromName = ta and ta.name or nil
+			row.toName = tb and tb.name or nil
+		end
+		out[#out + 1] = row
+	end
+	return out
+end
+
+-- what build sends: the towns (the chosen ones, in the map's order) and the connections as index pairs into that
+-- list in the engine's numbering. mapTowns: { { entity, name } } in the map's order; existing / defaults: the map's
+-- townConnections and the engine's default ones (index pairs); base: the engine's numbering (nil: not known).
+-- -> { townEntities, connections, pairs (as entity pairs), dropped }, or nil and why
+function M.townConnectPlan(r, mapTowns, existing, defaults, base)
+	local pos = {}
+	for i, t in ipairs(mapTowns) do pos[t.entity] = i end
+	local chosen = {}
+	if r.entities then
+		for _, e in ipairs(r.entities) do
+			if not pos[e] then return nil, "entity " .. e .. " is no town of this map (town connections lists them)" end
+			chosen[e] = true
+		end
+	else
+		for _, t in ipairs(mapTowns) do chosen[t.entity] = true end
+	end
+	local list = {}
+	for _, t in ipairs(mapTowns) do if chosen[t.entity] then list[#list + 1] = t.entity end end
+	local newIndex = {}
+	for i, e in ipairs(list) do newIndex[e] = i end
+	local wanted, seen, dropped = {}, {}, 0
+	local function add(a, b)
+		if a == nil or b == nil or a == b then dropped = dropped + 1; return end
+		if not (newIndex[a] and newIndex[b]) then dropped = dropped + 1; return end
+		local k = math.min(a, b) .. ":" .. math.max(a, b)
+		if seen[k] then return end
+		seen[k] = true
+		wanted[#wanted + 1] = { a, b }
+	end
+	local fromMap = {}
+	for _, p in ipairs(existing or {}) do fromMap[#fromMap + 1] = p end
+	if r.default then for _, p in ipairs(defaults or {}) do fromMap[#fromMap + 1] = p end end
+	if #fromMap > 0 and base == nil then
+		return nil, "how the engine numbers the towns in its connections is not known on this map (no index 0 or "
+			.. #mapTowns .. " in them): give indexBase 0 or 1"
+	end
+	for _, row in ipairs(M.townPairsResolved(fromMap, mapTowns, base)) do add(row.from, row.to) end
+	for _, p in ipairs(r.pairs or {}) do
+		if not (pos[p[1]] and pos[p[2]]) then
+			return nil, "pairs: " .. p[1] .. ":" .. p[2] .. " is not two towns of this map"
+		end
+		if not (newIndex[p[1]] and newIndex[p[2]]) then
+			return nil, "pairs: " .. p[1] .. ":" .. p[2] .. " has a town that is not among entities"
+		end
+		add(p[1], p[2])
+	end
+	if #wanted > 0 and base == nil then
+		return nil, "how the engine numbers the towns in its connections is not known on this map: give indexBase 0 or 1"
+	end
+	local conns = {}
+	for i, p in ipairs(wanted) do conns[i] = { newIndex[p[1]] - 1 + base, newIndex[p[2]] - 1 + base } end
+	return { townEntities = list, connections = conns, pairs = wanted, dropped = dropped }
 end
 
 return M

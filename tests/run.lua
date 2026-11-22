@@ -9526,5 +9526,175 @@ test("company init after a newgame: the new game has no state; init gives it its
 	truthy(not g.crashed, g.crashed)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- town connections / town connect (remote_town_connect.lua)
+
+test("core.townConnectRequest / townIndexBase / townPairsResolved / townConnectPlan", function()
+	local r = core.townConnectRequest({ build = true, entities = "801,802", pairs = "801:802", default = true })
+	eq(r.build, true); eq(r.auto, false); eq(r.keep, true, "keep by default"); eq(#r.entities, 2); eq(r.pairs[1][2], 802)
+	eq(core.townConnectRequest({ build = true, keep = false }).keep, false)
+	eq(core.townConnectRequest({ auto = true }).auto, true)
+	for _, bad in ipairs({ {}, { auto = true, build = true }, { auto = true, pairs = "1:2" }, { auto = true, keep = true },
+		{ build = true, entities = "" }, { build = true, entities = "1,1" }, { build = true, entities = "x" },
+		{ build = true, pairs = "1:1" }, { build = true, pairs = "1-2" }, { build = true, pairs = "" },
+		{ build = true, indexBase = 2 }, { build = true, keep = "yes" }, { auto = 1 } }) do
+		local ok, err = core.townConnectRequest(bad)
+		eq(ok, nil); truthy(type(err) == "string" and err ~= "")
+	end
+	eq(core.townConnectionsRequest({}).entity, nil); eq(core.townConnectionsRequest({ entity = 801 }).entity, 801)
+	eq(core.townConnectionsRequest({ entity = -1 }), nil)
+	eq(core.townIndexBase({ { { 0, 1 } } }, 3), 0); eq(core.townIndexBase({ { { 2, 3 } } }, 3), 1)
+	eq(core.townIndexBase({ { { 1, 2 } } }, 3), nil); eq(core.townIndexBase({ {} }, 2), nil)
+	eq(core.townIndexBase({ { { 0, 2 } } }, 2), nil, "0 and n both: not told")
+	local towns = { { entity = 801, name = "A" }, { entity = 802, name = "B" }, { entity = 803, name = "C" } }
+	local res = core.townPairsResolved({ { 0, 2 }, { 1, 9 } }, towns, 0)
+	eq(res[1].from, 801); eq(res[1].to, 803); eq(res[1].toName, "C"); eq(res[2].to, nil, "out of range")
+	eq(core.townPairsResolved({ { 1, 2 } }, towns, nil)[1].from, nil)
+	-- the plan: the map's pairs, the defaults and the given ones, re-indexed into the chosen towns
+	local p = core.townConnectPlan({ entities = { 801, 803 }, pairs = { { 803, 801 } } }, towns, { { 0, 1 } }, nil, 0)
+	eq(#p.townEntities, 2); eq(p.townEntities[2], 803); eq(#p.connections, 1)
+	eq(p.connections[1][1], 1); eq(p.connections[1][2], 0); eq(p.dropped, 1, "801:802 has a town not chosen")
+	local q = core.townConnectPlan({ default = true }, towns, { { 1, 2 } }, { { 2, 1 }, { 2, 3 } }, 1)
+	eq(#q.connections, 2, "a pair twice counts once"); eq(q.connections[1][1], 1); eq(q.connections[2][2], 3)
+	eq(#core.townConnectPlan({}, towns, {}, nil, nil).connections, 0, "nothing to number: no base needed")
+	for _, bad in ipairs({ { { entities = { 999 } }, {}, 0 }, { { pairs = { { 801, 999 } } }, {}, 0 },
+		{ { entities = { 801 }, pairs = { { 801, 802 } } }, {}, 0 }, { {}, { { 1, 2 } }, nil },
+		{ { pairs = { { 801, 802 } } }, {}, nil } }) do
+		local ok, err = core.townConnectPlan(bad[1], towns, bad[2], nil, bad[3])
+		eq(ok, nil); truthy(type(err) == "string", tostring(err))
+	end
+	eq(core.COMMANDS.townConnections, true); eq(core.COMMANDS.townConnect, true)
+	eq(core.CHANGES_GAME.townConnections, nil); eq(core.CHANGES_GAME.townConnect, true)
+	eq(core.MENU_COMMANDS.townConnect, nil)
+end)
+
+-- three towns 801 Alby, 802 Bram, 803 Cove (the map's order), Alby and Bram connected; industries 51 (by Alby) and
+-- 52 (nobody's)
+local function townConnectGame(spec, opts)
+	opts = opts or {}
+	opts.entities = opts.entities or { TOWN = { 801, 802, 803 } }
+	opts.names = opts.names or { [801] = "Alby", [802] = "Bram", [803] = "Cove" }
+	opts.industries = opts.industries or { [51] = { name = "Clay pit", construction = 5100 },
+		[52] = { name = "Quarry", construction = 5200 } }
+	local g = vehicleGame(opts)
+	spec = spec or {}
+	spec.towns = spec.towns or { { entity = 801, name = "Alby", x = 0, y = 0 }, { entity = 802, name = "Bram", x = 900, y = 0 },
+		{ entity = 803, name = "Cove", x = 0, y = 900 } }
+	if spec.connections == nil then spec.connections = { { 0, 1 } } end
+	spec.closest = spec.closest or { [5100] = 801 }
+	fake.installTownConnect(g, opts, spec)
+	return g
+end
+
+test("town connections: towns with their connected towns and industries; one town; not a town", function()
+	local g = townConnectGame()
+	local a = companyRun(g, 2601, "townConnections")
+	truthy(a.ok, a.error); eq(a.indexBase, 0); eq(a.indexBaseFrom, "map"); eq(#a.towns, 3)
+	local alby = a.towns[1]
+	eq(alby.id, 801); eq(alby.mapIndex, 1); eq(alby.connectedTowns[1].id, 802); eq(alby.industries[1].id, 51)
+	eq(#a.towns[3].connectedTowns, 0); eq(#a.towns[3].industries, 0)
+	eq(#a.industriesWithoutTown, 1); eq(a.industriesWithoutTown[1].id, 52)
+	eq(a.connections[1].from, 801); eq(a.connections[1].to, 802)
+	local b = companyRun(g, 2602, "townConnections", "{ entity = 802 }")
+	truthy(b.ok, b.error); eq(#b.towns, 1); eq(b.towns[1].connectedTowns[1].name, "Alby"); eq(b.industriesWithoutTown, nil)
+	local x = companyRun(g, 2603, "townConnections", "{ entity = 51 }")
+	eq(x.ok, false); truthy(x.error:find("no town"), x.error)
+	eq(#g.townConnectCmds, 0)
+	-- no map copy (nil): the towns still listed, without connections
+	local m = townConnectGame({ missing = { map = true } })
+	local c = companyRun(m, 2604, "townConnections")
+	truthy(c.ok, c.error); truthy(c.mapError); eq(#c.towns, 3); eq(#c.connections, 0); eq(c.functions.map, false)
+	-- an empty map: no towns, no industries' town
+	local e = townConnectGame({ towns = {}, connections = {} }, { entities = { TOWN = {} }, industries = {} })
+	local d = companyRun(e, 2605, "townConnections")
+	truthy(d.ok, d.error); eq(#d.towns, 0); eq(#d.connections, 0); eq(#d.industriesWithoutTown, 0)
+	for _, gg in ipairs({ g, m, e }) do truthy(not gg.crashed, gg.crashed) end
+end)
+
+test("town connect auto: the map's towns (or the given ones) sent; connections before and after", function()
+	local g = townConnectGame({ detect = { { 0, 1 }, { 1, 2 } } })
+	local a = companyRun(g, 2611, "townConnect", "{ auto = true }")
+	truthy(a.ok, a.error); eq(a.mode, "auto"); eq(a.sent, true); eq(#g.townConnectCmds, 1)
+	local c = g.townConnectCmds[1]
+	eq(c.kind, "townAutoDetect"); eq(#c.townEntities, 3); eq(c.townEntities[3], 803)
+	eq(#a.before.connections, 1); eq(#a.after.connections, 2); eq(a.after.towns[3].connectedTowns[1].id, 802)
+	local b = companyRun(g, 2612, "townConnect", '{ auto = true, entities = "803,801" }')
+	truthy(b.ok, b.error); eq(g.townConnectCmds[2].townEntities[1], 803)
+	local x = companyRun(g, 2613, "townConnect", '{ auto = true, entities = "51" }')
+	eq(x.ok, false); truthy(x.error:find("no town of this map"), x.error); eq(#g.townConnectCmds, 2)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("town connect build: the map's pairs, the defaults and given ones, re-indexed; keep; dry run", function()
+	local g = townConnectGame({ defaults = { { 1, 2 } } })
+	local d = companyRun(g, 2621, "townConnect", '{ build = true, default = true, pairs = "803:801", dryRun = true }')
+	truthy(d.ok, d.error); eq(d.sent, false); eq(#g.townConnectCmds, 0); eq(#d.connectionsSent, 3); eq(d.keep, true)
+	eq(d.defaults[1].from, 802)
+	local a = companyRun(g, 2622, "townConnect", '{ build = true, default = true, pairs = "803:801" }')
+	truthy(a.ok, a.error); eq(a.sent, true)
+	local c = g.townConnectCmds[1]
+	eq(c.kind, "townConnectBuild"); eq(c.keep, true); eq(#c.townEntities, 3); eq(#c.connections, 3)
+	eq(c.connections[3][1], 2); eq(c.connections[3][2], 0)
+	eq(#a.after.connections, 4, "kept the one there and added three (the fake adds, it does not merge)")
+	-- some towns only, keep false
+	local b = companyRun(g, 2623, "townConnect", '{ build = true, entities = "801,803", pairs = "801:803", keep = false }')
+	truthy(b.ok, b.error); local c2 = g.townConnectCmds[2]
+	-- 801:803 given and 803:801 from the map: one pair, in the new list's numbers
+	eq(#c2.townEntities, 2); eq(c2.keep, false); eq(#c2.connections, 1)
+	eq(c2.connections[1][1] + c2.connections[1][2], 1)
+	truthy(b.dropped and b.dropped > 0, "the map's pairs with Bram left out")
+	-- no pairs at all: still sent (it connects the industries), with no connections
+	local n = townConnectGame({ connections = {} })
+	local e = companyRun(n, 2624, "townConnect", "{ build = true }")
+	truthy(e.ok, e.error); eq(#n.townConnectCmds[1].connections, 0)
+	for _, gg in ipairs({ g, n }) do truthy(not gg.crashed, gg.crashed) end
+end)
+
+test("town connect build: the numbering 1-based from the map, unknown without indexBase, given", function()
+	local one = townConnectGame({ base = 1, connections = { { 2, 3 } } })
+	local a = companyRun(one, 2631, "townConnect", '{ build = true, pairs = "801:802" }')
+	truthy(a.ok, a.error); eq(a.indexBase, 1); eq(one.townConnectCmds[1].connections[1][1], 2)
+	eq(one.townConnectCmds[1].connections[2][1], 1)
+	local unk = townConnectGame({ connections = { { 1, 2 } } })
+	local b = companyRun(unk, 2632, "townConnect", "{ build = true }")
+	eq(b.ok, false); truthy(b.error:find("indexBase"), b.error); eq(#unk.townConnectCmds, 0)
+	local c = companyRun(unk, 2633, "townConnect", "{ build = true, indexBase = 0 }")
+	truthy(c.ok, c.error); eq(unk.townConnectCmds[1].connections[1][2], 2)
+	for _, gg in ipairs({ one, unk }) do truthy(not gg.crashed, gg.crashed) end
+end)
+
+test("town connect: missing functions, refused, no callback, busy, bad pairs", function()
+	local m = townConnectGame({ missing = { build = true } })
+	local dm = companyRun(m, 2641, "townConnect", "{ build = true, dryRun = true }")
+	truthy(dm.ok, "a dry run still answers"); eq(dm.before.functions.build, false)
+	local a = companyRun(m, 2642, "townConnect", "{ build = true }")
+	eq(a.ok, false); truthy(a.error:find("not there"), a.error)
+	local nm = townConnectGame({ missing = { map = true } })
+	local b = companyRun(nm, 2643, "townConnect", "{ auto = true }")
+	eq(b.ok, false); truthy(b.error:find("could not be copied"), b.error)
+	local nd = townConnectGame({ missing = { defaults = true } })
+	local d = companyRun(nd, 2648, "townConnect", "{ build = true, default = true }")
+	eq(d.ok, false); truthy(d.error:find("getDefaultTownConnections"), d.error)
+	local rf = townConnectGame({ refuse = true })
+	local r = companyRun(rf, 2644, "townConnect", "{ auto = true }")
+	eq(r.ok, false); truthy(r.error:find("refused"), r.error)
+	local nc = townConnectGame({ noCallback = true })
+	send(nc, 2645, "townConnect", "{ auto = true }")
+	frames(nc, FIRST + 10)
+	send(nc, 2646, "townConnect", "{ auto = true }")
+	frames(nc, FIRST)
+	local busy = final(nc, 2646)
+	eq(busy.ok, false); truthy(busy.error:find("still running"), busy.error)
+	frames(nc, 1300, 0.1)
+	local t = final(nc, 2645)
+	eq(t.ok, false); truthy(t.error:find("no callback"), t.error)
+	-- (a new fake game replaces the global api: a fresh one)
+	local bp = townConnectGame()
+	local x = companyRun(bp, 2647, "townConnect", '{ build = true, pairs = "801:999" }')
+	eq(x.ok, false); truthy(x.error:find("not two towns"), x.error)
+	eq(#bp.townConnectCmds, 0)
+	for _, gg in ipairs({ m, nm, nd, rf, nc, bp }) do truthy(not gg.crashed, gg.crashed) end
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it
