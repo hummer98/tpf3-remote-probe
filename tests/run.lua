@@ -6829,6 +6829,22 @@ unpinnedTest("modhub core: an update needs update = true and the mod.io id; a fi
 	truthy(why({ folder = FU, public = true, firstUpload = false, update = true, modioId = FU_ID, changelog = "x" }):find("firstUpload is true"))
 	truthy(why({ folder = FU, public = true, update = true, modioId = FU_ID }):find("changelog"))
 	truthy(why({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = " " }):find("changelog"))
+	-- updateMetadata: an update sends it only when asked; a first upload always (false refused there)
+	eq(a.updateMetadata, true, "a first upload")
+	eq(core.modhubPublishArgs({ folder = FU, public = true, firstUpload = true, changelog = "x",
+		updateMetadata = true }).updateMetadata, true)
+	eq(core.modhubPublishArgs({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = "x" }).updateMetadata,
+		false, "an update, not given")
+	eq(core.modhubPublishArgs({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = "x",
+		updateMetadata = false }).updateMetadata, false)
+	eq(core.modhubPublishArgs({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = "x",
+		updateMetadata = true }).updateMetadata, true)
+	for _, bad in ipairs({ "true", 1, "yes" }) do
+		truthy(why({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = "x",
+			updateMetadata = bad }):find("updateMetadata is true or false"), tostring(bad))
+	end
+	truthy(why({ folder = FU, public = true, firstUpload = true, changelog = "x",
+		updateMetadata = false }):find("only for an update"))
 	-- the folder list holds for an update too
 	truthy(why({ folder = "example_mod_1", public = true, update = true, modioId = "6500003",
 		changelog = "x" }):find("only these staging folders"))
@@ -6929,8 +6945,14 @@ test("modhub publish update dry run: the mod.io id, mod.io's name and version, t
 	eq(a.checks.expectedModioId, FU_ID); eq(a.checks.hasModhubDetails, true)
 	eq(a.checks.modio.title, "Auto Force Unload at Drop-off Stops"); eq(a.checks.modio.version, "10001")
 	eq(a.checks.modio.visible, true); eq(a.checks.modio.modId, FU_ID)
-	eq(a.settings.setPublic, true); eq(a.settings.updateMetadata, true); eq(a.settings.changeLog, "Wording.")
+	-- an update keeps the mod.io page's name, summary and description unless asked (updateMetadata = true)
+	eq(a.settings.setPublic, true); eq(a.settings.updateMetadata, false); eq(a.settings.changeLog, "Wording.")
 	eq(#g.validateCalls, 1, "validated first, as the page does")
+	noUploads(g)
+	send(g, 1459, "modhubPublish", updateCmd({ "dryRun = true", "updateMetadata = true" }))
+	frames(g, 60)
+	a = final(g, 1459)
+	eq(a.ok, true, a.error); eq(a.settings.updateMetadata, true)
 	noUploads(g)
 end)
 
@@ -6994,7 +7016,7 @@ test("modhub publish update: one publish call with the page's Update settings; t
 	eq(#g.publishCalls, 1, "publish called once")
 	local call = g.publishCalls[1]
 	eq(call.value, FU); eq(call.state, "Ready")
-	eq(call.settings.setPublic, true); eq(call.settings.updateMetadata, true); eq(call.settings.changeLog, "Wording.")
+	eq(call.settings.setPublic, true); eq(call.settings.updateMetadata, false); eq(call.settings.changeLog, "Wording.")
 	eq(call.settings.isSavegame, false); eq(call.settings.issuesConfirmed, false)
 	frames(g, 30)
 	local a = final(g, 1455)
@@ -7004,6 +7026,13 @@ test("modhub publish update: one publish call with the page's Update settings; t
 	frames(g, 10)
 	truthy(final(g, 1456).error:find("already sent in this launch"), "once per launch")
 	eq(#g.publishCalls, 1)
+	-- updateMetadata = true asked for: the publish call sends it (the page's fields replace mod.io's)
+	g = modhubGame({ staging = fuOnModio() })
+	send(g, 1454, "modhubPublish", updateCmd({ "updateMetadata = true" }))
+	frames(g, FIRST + 90)
+	eq(#g.publishCalls, 1)
+	eq(g.publishCalls[1].settings.updateMetadata, true)
+	eq(final(g, 1454).ok, true)
 	-- the game answered another mod.io id: not a success (a new page may have been made)
 	g = modhubGame({ staging = fuOnModio({ publish = { modId = "7000077" } }) })
 	send(g, 1457, "modhubPublish", updateCmd())

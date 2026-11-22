@@ -97,9 +97,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py modhub status [--folder F] | modhub validate F   # My Mods in the main menu (read; re-validate)
   tf3ctl.py modhub publish F --public yes --changelog "..." --first-upload [--version X.Y.Z] [--dry-run]   # one new mod to mod.io
             # (an allowed folder not on mod.io; no fileid yet; a mark in $XDG_STATE_HOME/tf3ctl/ until the fileid appears)
-  tf3ctl.py modhub publish F --public yes --changelog "..." [--version X.Y.Z] [--dry-run]   # update the mod.io page of its fileid
+  tf3ctl.py modhub publish F --public yes --changelog "..." [--version X.Y.Z] [--update-metadata] [--dry-run]   # update the mod.io page of its fileid
             # (the fileid there; mod.json's revision above the last one uploaded, from publish_history.jsonl or,
-            # when that has none, --previous-revision N)
+            # when that has none, --previous-revision N; the page's name, summary and description are kept unless
+            # --update-metadata, which replaces them with modinfo.json's)
   tf3ctl.py modhub publish-clear --yes       # remove that mark, after looking at mod.io
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is shown (status:
@@ -2612,14 +2613,22 @@ def modhub_publish_args(ns):
         raise ToolError("give --changelog TEXT")
     if ns.previous_revision is not None and ns.first_upload:
         raise ToolError("--previous-revision is only for an update (without --first-upload)")
+    if ns.update_metadata and ns.first_upload:
+        raise ToolError("--update-metadata is only for an update (without --first-upload): a first upload always "
+                        "sends modinfo.json's name, summary and description")
     if ns.version is not None:
         version_revision(ns.version)  # the form; against mod.json's revision in publish_local_checks
     # firstUpload or update: which one also needs the staging files (cmd_modhub_publish adds modioId for an update)
     args = {"folder": ns.folder, "public": ns.public == "yes", "changelog": ns.changelog}
+    # updateMetadata: a first upload always sends the page's fields; an update only with --update-metadata, since
+    # they replace mod.io's name, summary and description (a description written on mod.io, e.g. HTML through its
+    # API, went back to modinfo.json's plain text when an update sent them, 2026-11-23)
     if ns.first_upload:
         args["firstUpload"] = True
+        args["updateMetadata"] = True
     else:
         args["update"] = True
+        args["updateMetadata"] = bool(ns.update_metadata)
     if ns.timeout is not None:
         args["timeout"] = ns.timeout
     if ns.messages is not None:
@@ -2680,7 +2689,13 @@ def cmd_modhub_publish(ns):
     if not first:
         pre["update"] = update_summary(local, pre)
     pre["additionalMetadata"] = additional_metadata(pre)
-    if pre.get("ok") and pre["additionalMetadata"] != local.get("additionalMetadata"):
+    metadata_answer(pre, args, first)
+    if pre.get("ok") and sent_update_metadata(pre) is not args["updateMetadata"]:
+        # a mod older than updateMetadata always sends true: an update would overwrite the page's description
+        pre["ok"] = False
+        pre["error"] = ("the mod would send updateMetadata %s, not %s (an older remote_probe in the game?); "
+                        "nothing was sent" % (json.dumps(sent_update_metadata(pre)), json.dumps(args["updateMetadata"])))
+    elif pre.get("ok") and pre["additionalMetadata"] != local.get("additionalMetadata"):
         # a mod older than --version drops the version without a word: then it would go up without it
         pre["ok"] = False
         pre["error"] = ("the mod would send additionalMetadata %s, not %s (an older remote_probe in the game?); "
@@ -2697,6 +2712,7 @@ def cmd_modhub_publish(ns):
         raise ToolError("a publish mark appeared meanwhile (%s); nothing was sent" % pending_path())
     path = write_pending({"v": 1, "folder": args["folder"], "owner": OWNER, "public": args["public"],
                           "firstUpload": first, "update": not first, "modioId": args.get("modioId"),
+                          "updateMetadata": args["updateMetadata"],
                           "revision": local.get("revision"), "version": local.get("version"), "at": int(time.time()),
                           "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     def history(outcome, res=None, fileid=None):
@@ -2705,7 +2721,7 @@ def cmd_modhub_publish(ns):
         got = append_history({"v": 1, "at": int(time.time()), "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "owner": OWNER, "folder": args["folder"], "public": args["public"], "outcome": outcome,
                               "mode": "firstUpload" if first else "update", "modioId": args.get("modioId"),
-                              "revision": local.get("revision"), "version": local.get("version"),
+                              "updateMetadata": args["updateMetadata"], "revision": local.get("revision"), "version": local.get("version"),
                               "publishCalled": res.get("publishCalled"), "modId": res.get("modId"), "fileid": fileid,
                               "error": res.get("error")})
         if got:
@@ -2722,6 +2738,7 @@ def cmd_modhub_publish(ns):
     if not first:
         res["update"] = update_summary(local, res)
     res["additionalMetadata"] = additional_metadata(res)
+    metadata_answer(res, args, first)
     res["preflight"] = {"ok": True, "validation": pre.get("validation")}
     res["pendingMark"] = path
     result = res.get("result") if isinstance(res.get("result"), dict) else {}
@@ -2771,6 +2788,39 @@ def additional_metadata(answer):
     """The additionalMetadata the mod's settings say it sends (or sent): None when it sends none."""
     settings = answer.get("settings") if isinstance(answer.get("settings"), dict) else {}
     return settings.get("additionalMetadata")
+
+
+def sent_update_metadata(answer):
+    """The updateMetadata the mod's settings say it sends (or sent): None when the answer has no settings."""
+    settings = answer.get("settings") if isinstance(answer.get("settings"), dict) else {}
+    return settings.get("updateMetadata")
+
+
+UPDATE_METADATA_WARNING = (
+    "updateMetadata is sent: the mod.io page's name, summary and description are replaced with "
+    "_metadata/modinfo.json's (plain text). A description written on mod.io by other means (e.g. HTML through "
+    "mod.io's API) is overwritten and has to be put back after the update.")
+
+
+def metadata_answer(answer, args, first):
+    """Says in the answer whether the page's fields go up (updateMetadata, as the tool asked for it) and what that
+    does to the mod.io page: a warning for an update with --update-metadata, a note for one without it."""
+    um = args["updateMetadata"]
+    answer["updateMetadata"] = um
+    if first:
+        answer["updateMetadataNote"] = ("a first upload sends modinfo.json's name, summary and description (the "
+                                        "page's own setting; --update-metadata is only for an update)")
+        return
+    if um:
+        answer["updateMetadataWarning"] = UPDATE_METADATA_WARNING
+        return
+    note = ("updateMetadata is not sent: the mod.io page's name, summary and description stay as they are; "
+            "modinfo.json's are not sent (--update-metadata sends them, and overwrites the page's description)")
+    up = answer.get("update") if isinstance(answer.get("update"), dict) else {}
+    name, title = up.get("name"), up.get("modioTitle")
+    if isinstance(name, str) and isinstance(title, str) and name != title:
+        note += "; modinfo.json's name %s is not mod.io's title %s, which stays" % (json.dumps(name), json.dumps(title))
+    answer["updateMetadataNote"] = note
 
 
 def update_summary(local, answer):
@@ -3873,6 +3923,9 @@ def make_parser():
                      "revision for that mod.io mod: the revision now on mod.io (mod.json's must be above it)")
     mpu.add_argument("--version", help="X.Y.Z, sent as PublishSettings.additionalMetadata {version = X.Y.Z} (a "
                      "trial); must be mod.json's revision X*10000+Y*100+Z")
+    mpu.add_argument("--update-metadata", action="store_true", help="an update only: send modinfo.json's name, "
+                     "summary and description too (they replace the mod.io page's; a description written on mod.io "
+                     "is overwritten). Without it an update keeps the page's; a first upload always sends them")
     mpu.add_argument("--dry-run", action="store_true", help="check and validate, answer the settings; no upload")
     mpu.add_argument("--timeout", type=float, help="seconds for the mod's whole command (default 900, at most 3600); "
                                                    "past it the upload is not aborted and its outcome is unknown")
