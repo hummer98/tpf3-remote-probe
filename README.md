@@ -70,7 +70,8 @@ The game log then shows `[remote_probe] ready`.
 
 All commands print one JSON object. Exit codes: 0 ok, 1 the game answered with an error, 2 no answer or a tool
 error, 3 the game cannot answer where it is (a menu, loading, the main menu without the probe, closed; the
-`gameState` field says which).
+`gameState` field says which), 4 refused: the running game is not this `--owner`'s (nothing was sent; see
+"Only the owner who started the game changes it").
 
 ### Time and speed
 
@@ -765,16 +766,40 @@ Several tool processes may run at once (a long `run` plus `status` calls, say): 
 command file one after another. When more than one person or script shares a game, give each a name with
 `--owner NAME` (or `TF3CTL_OWNER`). It is shown in `status` (`run.owner`, `lastAction`), and a client gets a
 warning on stderr before any command that changes the game (`load`, `run`, `speed`, `save`, `buy`, `line`, ...)
-when another owner changed the game in the last 10 minutes. Nothing is refused; clients agree among themselves
-who uses the game. `quit --kill` is the exception: it will not SIGKILL a game another owner used in the last
-10 minutes unless `--force` is given.
+when another owner changed the game in the last 10 minutes. `quit --kill` will not SIGKILL a game another owner
+used in the last 10 minutes unless `--force` is given.
+
+### Only the owner who started the game changes it
+
+While the game runs, a command that changes the game (everything counted as such: `save`, `quit`, `load`,
+`newgame`, `speed`, `run`, `build`, `line`, `event`, `window`, `modhub validate` / `publish`, ...; also the quit
+inside `restart`) is sent only when `launched.json` (below) names this `--owner` and its pid is the running game.
+Otherwise tf3ctl refuses it before writing anything for the game, with exit code 4 and `"refused": "owner"`:
+
+- the record names another owner (or the command has no `--owner`);
+- there is no record, or its pid is not the running game: the game was started outside tf3ctl, for example by a
+  person from Steam.
+
+`quit --kill` and `restart` never go on to SIGKILL a game they were refused, and SIGKILL only the processes the
+quit was sent to (not a game started meanwhile). `launch` / `restart` with `--load` / `--new` need `--owner`: without
+one they are refused before anything is quit or started, and when the record cannot be written the game is left
+in the main menu and the load is not sent. Commands that only read, a
+`--dry-run` / `--list` (except `modhub validate` / `publish`, whose dry run still runs the validator), and `camera`
+without arguments always go. When the game is not running at all, nothing is checked (`launch` and `restart`
+start one, also with `--load` / `--new`, and the new record names the owner who started it). A script left running after a crash
+therefore cannot change a game somebody else started meanwhile.
+
+`--other-owner-ok` (before the command) sends anyway, for a client the others agreed may use that game: stderr
+gets a warning, the answer an `otherOwnerOk` field (`launchedBy`: the record's owner, or `none` without a usable
+record; `why`; `owner`), and the game's log line for the command says `(--other-owner-ok: the game of ...)`, even at log level 1. With it,
+`quit --kill` may also kill that game.
 
 ### Who launched the game (`launched.json`)
 
 `launch` and `restart` with an owner (`--owner` or `TF3CTL_OWNER`) leave a small record of which owner started the
-running game and its process id, for other tools on the same machine: a guard that holds back game-changing
-commands while the game runs can read it and still let the owner who started the game quit it. A game started by
-hand from Steam has no record.
+running game and its process id. tf3ctl itself reads it before game-changing commands (above), and other tools
+on the same machine may too: a guard that holds back game-changing commands while the game runs can read it and
+still let the owner who started the game quit it. A game started by hand from Steam has no record.
 
 - Where: `$XDG_RUNTIME_DIR/tf3ctl/launched.json`, or `/tmp/tf3ctl-<uid>/launched.json` without `XDG_RUNTIME_DIR`.
   The folder is 0700 and the file 0600; it is written to a temporary file in the same folder and renamed over the

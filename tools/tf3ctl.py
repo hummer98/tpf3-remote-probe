@@ -99,17 +99,22 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # when that has none, --previous-revision N)
   tf3ctl.py modhub publish-clear --yes       # remove that mark, after looking at mod.io
 
---owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is only shown (status:
-run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes; nothing
-is refused, since clients sharing the game agree among themselves who uses it. launch / restart with an owner
-also leave $XDG_RUNTIME_DIR/tf3ctl/launched.json (/tmp/tf3ctl-<uid>/ without it): that owner and the game's pid,
-for tools that let the owner who started the game quit it; it goes when tf3ctl sees the game stopped.
+--owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is shown (status:
+run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes.
+launch / restart with an owner leave $XDG_RUNTIME_DIR/tf3ctl/launched.json (/tmp/tf3ctl-<uid>/ without it): that
+owner and the game's pid; it goes when tf3ctl sees the game stopped. While the game runs, a command that changes the
+game (save, quit, load, speed, build, ...; also restart's quit and quit --kill) goes only to the game this --owner
+started: it is refused (exit 4, nothing sent) when the record names another owner, when there is no --owner, and
+when there is no record or its pid is not the running game (a game started outside tf3ctl, e.g. by a person from
+Steam). Reading commands, --dry-run / --list and camera without arguments always go. --other-owner-ok sends anyway,
+for a client the others agreed may use that game; the answer (otherOwnerOk) and the game's log line say so.
 
 Several tool processes may run at once (e.g. a long run plus status calls): a lock makes them write the single
 command file one after another, each waiting until the mod has picked its command up.
 
 Exit codes: 0 ok, 1 the game answered with an error, 2 no answer / tool error, 3 the game cannot answer where it
-is (menu, loading, main menu, closed: gameState in the output says which).
+is (menu, loading, main menu, closed: gameState in the output says which), 4 refused: the running game is not this
+--owner's (see --owner above; nothing was sent).
 
 Environment: TF3_REMOTE_DIR = the exchange folder (default: the newest hello file under Steam's userdata),
 TF3_LOG = the game log, TF3_STEAM = the command that starts Steam, TF3CTL_OWNER = the default --owner,
@@ -163,6 +168,10 @@ io.write(type(t.json) == "string" and t.json or "null")
 
 class ToolError(Exception):
     pass
+
+
+class OwnerRefused(ToolError):
+    """A game-changing command for a game this --owner did not start; nothing was sent. Exit code 4."""
 
 
 class GameNotReady(ToolError):
@@ -482,13 +491,89 @@ def wait_pickup(folder, cid):
 
 
 OWNER = None  # set by main from --owner / TF3CTL_OWNER
+OTHER_OWNER_OK = False  # set by main from --other-owner-ok
+
+# commands in CHANGES_GAME whose --dry-run still does work in the game (the validator runs for minutes)
+DRY_RUN_CHANGES = {"modhubPublish", "modhubValidate"}
+
+
+def changes_game(cmd, args):
+    """Whether this command, with these args, changes the game: CHANGES_GAME, except a --dry-run / --list (the mod
+    only answers what it would do) and camera without arguments (only reads the camera)."""
+    if cmd not in CHANGES_GAME:
+        return False
+    args = args or {}
+    if cmd not in DRY_RUN_CHANGES and (args.get("dryRun") is True or args.get("list") is True):
+        return False
+    if cmd == "camera" and not args:
+        return False
+    return True
+
+
+def read_launched():
+    """(record, why): the launch record as written by write_launched, or (None, why it does not count)."""
+    path = launched_path()
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            return None, "the launch record %s is not a file of this user" % path
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+    except FileNotFoundError:
+        return None, "no launch record %s" % path
+    except (OSError, ValueError) as e:
+        return None, "cannot read the launch record %s: %s" % (path, e)
+    if not isinstance(rec, dict) or rec.get("v") != 1:
+        return None, "the launch record %s is not a version 1 object" % path
+    owner, pid = rec.get("owner"), rec.get("pid")
+    if not isinstance(owner, str) or not owner or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None, "the launch record %s has no owner and pid" % path
+    return rec, None
+
+
+def check_game_owner(cmd, args=None):
+    """Before a game-changing command: refuses it (OwnerRefused, nothing sent) unless the running game is the one
+    this --owner started through tf3ctl (2026-11-23: a script left running after a crash sent save and quit to the
+    game another client had started meanwhile). Returns None when it may go, or, with --other-owner-ok, a note of
+    whose game it went to. No game process: nothing to protect, and send says where the game is."""
+    if not changes_game(cmd, args):
+        return None
+    pids = game_pids()
+    if not pids:
+        return None
+    rec, why = read_launched()
+    if rec is None:
+        problem = ("%s: the running game (pid %s) was not started by tf3ctl with an --owner (started from Steam "
+                   "by a person?)" % (why, ", ".join(map(str, pids))))
+        whose = "none"
+    elif rec["pid"] not in pids:
+        problem = ("the launch record names pid %d (owner %s), but the running game is pid %s: it was started "
+                   "outside tf3ctl (from Steam by a person?)" % (rec["pid"], rec["owner"], ", ".join(map(str, pids))))
+        whose = "none"
+    elif not OWNER:
+        problem = "the running game was started by %s, and this command has no --owner" % rec["owner"]
+        whose = rec["owner"]
+    elif rec["owner"] != OWNER:
+        problem = "the running game was started by %s, not by %s" % (rec["owner"], OWNER)
+        whose = rec["owner"]
+    else:
+        return None
+    if OTHER_OWNER_OK:
+        note = {"launchedBy": whose, "why": problem, "owner": OWNER}
+        print("warning: --other-owner-ok: '%s' sent although %s" % (cmd, problem), file=sys.stderr)
+        return note
+    raise OwnerRefused("refused '%s', nothing sent: %s. Only the owner who started the game changes it; ask the "
+                       "client using it (--other-owner-ok sends anyway, when the clients agreed)" % (cmd, problem))
 
 
 def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
+    other = check_game_owner(cmd, args)  # before anything is written to the exchange folder
     folder = folder or exchange_dir()
     args = dict(args or {})
     if OWNER:
         args["_owner"] = OWNER
+    if other:
+        args["_otherOwnerOk"] = other["launchedBy"]  # the mod's log line says so
     with command_lock(folder):
         cleanup(folder)
         if cmd in CHANGES_GAME:
@@ -508,7 +593,10 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
             write_command(folder, 0, "none", {})
             raise
     try:
-        return wait_answer(folder, cid, timeout, final_tag, on_progress)
+        res = wait_answer(folder, cid, timeout, final_tag, on_progress)
+        if other and isinstance(res, dict):
+            res["otherOwnerOk"] = other
+        return res
     finally:
         if final_tag is None:
             remove(answer_files(folder, cid))
@@ -964,13 +1052,16 @@ def _quit_game(timeout=QUIT_TIMEOUT_SEC, kill=False, force=False):
     """app.quit through the probe; with kill, SIGKILL when that fails or the game is still there after timeout.
     SIGTERM is no use: the game only opens its quit menu ("Quit requested", 2026-11-16). SIGKILL loses what is
     not saved, so it is refused while another client used the game recently, unless force."""
-    if not game_pids():
+    asked = set(game_pids())  # SIGKILL goes only to these: the game the quit was checked and sent for
+    if not asked:
         return {"ok": True, "how": "not running"}
     err = None
     try:
         res = send("quit", timeout=20)
         if not res.get("ok"):
             err = res.get("error") or "the mod refused"
+    except OwnerRefused:
+        raise  # not this owner's game: never on to --kill
     except ToolError as e:  # GameNotReady too: loading, a menu without the probe, no hello at all
         err = str(e)
     if err is None and wait_exit(timeout):
@@ -993,7 +1084,7 @@ def _quit_game(timeout=QUIT_TIMEOUT_SEC, kill=False, force=False):
                         "the game (--force kills it anyway)" % (why, other.get("owner") or "someone without --owner",
                                                                  other.get("cmd"),
                                                                  (time.time() - float(other["time"])) // 60))
-    for pid in game_pids():
+    for pid in [p for p in game_pids() if p in asked]:  # not a game somebody started meanwhile
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -1421,6 +1512,11 @@ def start_args(ns):
 
 def cmd_start(ns, restart):
     plan = start_args(ns)  # refused before anything is quit
+    if plan and not OWNER and not OTHER_OWNER_OK:
+        # without an owner there is no launch record, so the --load / --new after the launch would be refused
+        raise OwnerRefused("refused '%s --%s', nothing started: give --owner, so that the %s after the launch goes "
+                           "to the game this owner started" % ("restart" if restart else "launch",
+                                                               "load" if plan[0] == "load" else "new", plan[0]))
     lang = getattr(ns, "lang", None)
     check_profile_start(lang)  # --lang '' too; before anything is quit
     out = {"ok": True}
@@ -1457,6 +1553,12 @@ def cmd_start(ns, restart):
     out["launch"] = launch_game(ns.launch_timeout)
     # the probe answered in the main menu: this owner started the game (cmd is "launch" for restart too)
     out["launchedFile"] = write_launched(launched_pid())
+    if plan and not out["launchedFile"].get("written") and not OTHER_OWNER_OK:
+        # the record says the game is this owner's; without it the load / newgame would be refused anyway
+        out.update(ok=False, error="the game started, but the launch record was not written (%s): the %s was not "
+                   "sent" % (out["launchedFile"].get("warning") or out["launchedFile"].get("why"), plan[0]))
+        print("error: " + out["error"], file=sys.stderr)
+        return out
     if plan:
         res = replace_game(plan[0], plan[1], False, ns.timeout)
         out[plan[0]] = res
@@ -2607,6 +2709,9 @@ def cmd_modhub_publish(ns):
             res["history"] = got
     try:
         res = send("modhubPublish", dict(args, dryRun=False), timeout=timeout, on_progress=progress, folder=folder)
+    except OwnerRefused:
+        clear_pending()  # refused before anything was written for the game: nothing was uploaded
+        raise
     except ToolError as e:
         history("no answer", {"error": str(e)})
         raise ToolError("%s; the outcome of the upload is not known, the publish mark stays (%s)" % (e, path))
@@ -3308,7 +3413,11 @@ def cmd_log(ns):
 def make_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--owner", default=os.environ.get("TF3CTL_OWNER"),
-                   help="name of the client sending commands (shown to others, never used to refuse)")
+                   help="name of the client sending commands; game-changing commands go only to the game this owner "
+                        "started (launch / restart)")
+    p.add_argument("--other-owner-ok", action="store_true",
+                   help="send game-changing commands to a game another owner (or a person from Steam) started; only "
+                        "when the clients sharing the game agreed. The answer and the game's log say so")
     sub = p.add_subparsers(dest="cmd", required=True)
     pl = sub.add_parser("poll", help="how often the mod reads the command file, until the next load")
     pl.add_argument("--idle", type=float)
@@ -3745,8 +3854,9 @@ def make_parser():
 
 def main(argv=None):
     ns = make_parser().parse_args(argv)
-    global OWNER
+    global OWNER, OTHER_OWNER_OK
     OWNER = ns.owner
+    OTHER_OWNER_OK = ns.other_owner_ok
 
     try:
         if ns.cmd == "log":
@@ -3920,6 +4030,10 @@ def main(argv=None):
             res = cmd_connect(ns)
         elif ns.cmd == "modhub":
             res = cmd_modhub(ns)
+    except OwnerRefused as e:
+        print("error: " + str(e), file=sys.stderr)
+        show({"ok": False, "error": str(e), "refused": "owner"})
+        return 4
     except GameNotReady as e:
         print("error: " + str(e), file=sys.stderr)
         out = {"ok": False, "error": str(e), "gameState": e.state}

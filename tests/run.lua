@@ -731,6 +731,11 @@ test("owner: a short string or nothing", function()
 	eq(core.owner({}), nil)
 	eq(core.owner({ _owner = 5 }), nil)
 	eq(#core.owner({ _owner = string.rep("x", 200) }), 64)
+	eq(core.otherOwnerOk({ _otherOwnerOk = "bob" }), "bob")
+	eq(core.otherOwnerOk({ _owner = "alice" }), nil)
+	eq(core.otherOwnerOk({ _otherOwnerOk = true }), nil)
+	eq(core.otherOwnerOk(nil), nil)
+	eq(#core.otherOwnerOk({ _otherOwnerOk = string.rep("x", 200) }), 64)
 end)
 
 local function withProbeParams(p) return { saves = SAVES, modParams = { hummer_remote_probe = p } } end

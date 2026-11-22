@@ -95,6 +95,14 @@ function M.owner(args)
 	return o:sub(1, 64)
 end
 
+-- tf3ctl --other-owner-ok: the client sent a game-changing command to a game another owner started (or one started
+-- outside tf3ctl). The tool refuses that without the option; with it, the log line says so, for whoever reads it later
+function M.otherOwnerOk(args)
+	local o = args and args._otherOwnerOk
+	if type(o) ~= "string" or o == "" then return nil end
+	return o:sub(1, 64)
+end
+
 ---------------------------------------------------------------------------------------------------------------------
 -- engine values: lists come back as userdata vectors or Lua tables depending on the call, so read both
 

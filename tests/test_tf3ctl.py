@@ -71,6 +71,19 @@ os.environ["XDG_RUNTIME_DIR"] = RUNTIME_DIR
 STATE_DIR = tempfile.mkdtemp()
 os.environ["XDG_STATE_HOME"] = STATE_DIR
 os.environ.pop("TF3CTL_OWNER", None)
+# the owner check looks at the real game's processes: a game running on this machine (another client's) must not
+# change what the other tests see, so it is only checked where a test stands in its own game_pids
+_REAL_GAME_PIDS = tf3ctl.game_pids
+_REAL_CHECK_GAME_OWNER = tf3ctl.check_game_owner
+
+
+def _check_game_owner_unless_real(cmd, args=None):
+    if tf3ctl.game_pids is _REAL_GAME_PIDS:
+        return None
+    return _REAL_CHECK_GAME_OWNER(cmd, args)
+
+
+tf3ctl.check_game_owner = _check_game_owner_unless_real
 
 
 
@@ -477,7 +490,10 @@ class WaitForStartTest(unittest.TestCase):
         ns = tf3ctl.argparse.Namespace(load="s", new=False, add=[], remove=[], set_mods=None, param=[],
                                        wait_for_start=True, lang=None, timeout=30, launch_timeout=30)
         self.assertEqual(tf3ctl.start_args(ns), ("load", {"save": "s", "waitForStart": True}))
+        # --load needs an owner whose launch record was written (the load goes to that owner's game)
         with unittest.mock.patch.object(tf3ctl, "game_pids", lambda: []), \
+                unittest.mock.patch.object(tf3ctl, "OWNER", "me"), \
+                unittest.mock.patch.object(tf3ctl, "write_launched", lambda pid: {"written": "x"}), \
                 unittest.mock.patch.object(tf3ctl, "launch_game", lambda t: {"ok": True, "menu": True}), \
                 unittest.mock.patch.object(tf3ctl, "wait_new_hello", lambda *a, **k: {"stamp": "2_2"}), \
                 contextlib.redirect_stderr(io.StringIO()):
@@ -3039,14 +3055,26 @@ class LaunchEndToEndTest(unittest.TestCase):
         code, res = self.ctl("status")
         self.assertEqual(code, 0, res)
         self.assertFalse(res["menu"])
-        code, res = self.ctl("restart", "--load", "probe", "--launch-timeout", "30", "--timeout", "30",
-                             "--quit-timeout", "10")
+        pid = tf3ctl.game_pids()
+        # another owner, or none, may not restart, save or quit tester's game: refused, nothing quit or killed
+        for argv in (["restart", "--load", "probe", "--quit-timeout", "10"],
+                     ["--owner", "other", "restart", "--load", "probe", "--quit-timeout", "10"],
+                     ["--owner", "other", "save", "x"], ["--owner", "other", "quit", "--kill", "--force"]):
+            code, res = self.ctl(*argv)
+            self.assertEqual(code, 4, (argv, res))
+            self.assertEqual(res["refused"], "owner")
+            self.assertEqual(tf3ctl.game_pids(), pid, "the game still runs")
+            self.assertEqual(json.loads(read(record))["owner"], "tester")
+        code, res = self.ctl("--owner", "other", "status")
+        self.assertEqual(code, 0, res)
+        code, res = self.ctl("--owner", "tester", "restart", "--load", "probe", "--launch-timeout", "30",
+                             "--timeout", "30", "--quit-timeout", "10")
         self.assertEqual(code, 0, res)
         self.assertEqual(res["quit"]["how"], "quit", "app.quit through the probe, no SIGKILL")
-        self.assertTrue(res["load"]["ok"])
+        self.assertTrue(res["load"]["ok"], "the load in tester's own main menu goes")
         self.assertIn("example_mod", res["load"]["plan"]["mods"])
-        self.assertFalse(os.path.exists(record), "restart without --owner: the old owner's record went")
-        code, res = self.ctl("quit")
+        self.assertEqual(json.loads(read(record))["pid"], tf3ctl.game_pids()[0], "the record names the new game")
+        code, res = self.ctl("--owner", "tester", "quit")
         self.assertEqual(code, 0, res)
         self.assertEqual(tf3ctl.game_pids(), [])
         self.assertFalse(os.path.exists(record))
@@ -4087,6 +4115,243 @@ class PointerTest(unittest.TestCase):
             tf3ctl.X11 = old
         self.assertEqual(code, 2)
         self.assertIn("X display", err.getvalue())
+
+
+class OwnerCheckTest(unittest.TestCase):
+    """Game-changing commands go only to the game this --owner started (launched.json), 2026-11-23: a script left
+    running after a crash sent save and quit to the game another client had started meanwhile."""
+
+    def setUp(self):
+        self.saved = {k: getattr(tf3ctl, k) for k in ("game_pids", "OWNER", "OTHER_OWNER_OK", "exchange_dir")}
+        self.saved_env = os.environ.get("XDG_RUNTIME_DIR")
+        self.run_dir = tempfile.mkdtemp()
+        os.environ["XDG_RUNTIME_DIR"] = self.run_dir
+        self.x = tempfile.mkdtemp()  # an exchange folder: a refused command must leave nothing in it
+        tf3ctl.exchange_dir = lambda: self.x
+        tf3ctl.game_pids = lambda: [4242]
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "alice", False
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(tf3ctl, k, v)
+        os.environ["XDG_RUNTIME_DIR"] = self.saved_env
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        shutil.rmtree(self.x, ignore_errors=True)
+
+    def record(self, owner, pid=4242):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(tf3ctl.write_launched(pid, owner=owner)["written"])
+
+    def refused(self, cmd, args=None):
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.send(cmd, args, timeout=0.1, folder=self.x)
+        self.assertEqual(os.listdir(self.x), [], "nothing written for the game")
+        return str(cm.exception)
+
+    def test_another_owners_game_refuses_every_game_changing_command(self):
+        self.record("bob")
+        for cmd in sorted(tf3ctl.CHANGES_GAME):
+            msg = self.refused(cmd, {"x": 1})
+            self.assertIn("started by bob, not by alice", msg, cmd)
+        self.assertIsInstance(tf3ctl.OwnerRefused("x"), tf3ctl.ToolError)
+
+    def test_no_record_refuses_a_game_started_from_steam(self):
+        self.assertIn("not started by tf3ctl", self.refused("save", {"name": "x"}))
+        self.assertIn("not started by tf3ctl", self.refused("quit"))
+        os.makedirs(os.path.join(self.run_dir, "tf3ctl"))
+        write(os.path.join(self.run_dir, "tf3ctl", "launched.json"), "not json")
+        self.assertIn("cannot read", self.refused("speed", {"speed": 1}))
+        write(os.path.join(self.run_dir, "tf3ctl", "launched.json"), '{"v": 1, "owner": "alice", "pid": true}')
+        self.assertIn("no owner and pid", self.refused("speed", {"speed": 1}))
+        write(os.path.join(self.run_dir, "tf3ctl", "launched.json"), '{"v": 2, "owner": "alice", "pid": 4242}')
+        self.assertIn("version 1", self.refused("speed", {"speed": 1}))
+        os.remove(os.path.join(self.run_dir, "tf3ctl", "launched.json"))
+        other = os.path.join(self.run_dir, "elsewhere.json")
+        write(other, '{"v": 1, "owner": "alice", "pid": 4242}')
+        os.symlink(other, os.path.join(self.run_dir, "tf3ctl", "launched.json"))
+        self.assertIn("not a file of this user", self.refused("speed", {"speed": 1}))
+
+    def test_a_record_of_another_pid_refuses(self):
+        self.record("alice", pid=1111)  # the launched game is gone; the running one came from Steam
+        msg = self.refused("save", {"name": "x"})
+        self.assertIn("pid 1111", msg)
+        self.assertIn("4242", msg)
+
+    def test_no_owner_refuses_even_the_launchers_game(self):
+        self.record("alice")
+        tf3ctl.OWNER = None
+        self.assertIn("no --owner", self.refused("quit"))
+
+    def test_reading_commands_dry_runs_and_camera_reading_go(self):
+        self.record("bob")
+        for cmd, args in (("status", None), ("stations", {}), ("industryStocks", {}), ("saves", None),
+                          ("load", {"save": "s", "dryRun": True}), ("newgame", {"list": True}),
+                          ("build", {"res": "x", "dryRun": True}), ("camera", {})):
+            self.assertIsNone(tf3ctl.check_game_owner(cmd, args), cmd)
+        with self.assertRaises(tf3ctl.OwnerRefused):
+            tf3ctl.check_game_owner("camera", {"set": "1,2,3,4,5"})
+        for cmd in ("modhubPublish", "modhubValidate"):  # their dry run still runs the validator
+            with self.assertRaises(tf3ctl.OwnerRefused):
+                tf3ctl.check_game_owner(cmd, {"folder": "f", "dryRun": True})
+
+    def test_no_game_running_lets_it_through_to_say_where_the_game_is(self):
+        tf3ctl.game_pids = lambda: []
+        self.assertIsNone(tf3ctl.check_game_owner("save", {"name": "x"}))
+
+    def test_own_record_goes_as_before(self):
+        self.record("alice")
+        self.assertIsNone(tf3ctl.check_game_owner("save", {"name": "x"}))
+        tf3ctl.game_pids = lambda: [4000, 4242]  # several processes: the recorded one among them
+        self.assertIsNone(tf3ctl.check_game_owner("quit"))
+
+    def test_other_owner_ok_sends_and_says_so(self):
+        self.record("bob")
+        tf3ctl.OTHER_OWNER_OK = True
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            note = tf3ctl.check_game_owner("save", {"name": "x"})
+        self.assertEqual(note["launchedBy"], "bob")
+        self.assertEqual(note["owner"], "alice")
+        self.assertIn("--other-owner-ok", err.getvalue())
+        # through send: the command file carries it for the mod's log line, and the answer has it
+        sent = {}
+
+        def fake_write(folder, cid, cmd, args):
+            sent.update(cmd=cmd, args=args)
+        with unittest.mock.patch.object(tf3ctl, "write_command", fake_write), \
+                unittest.mock.patch.object(tf3ctl, "cleanup", lambda f: None), \
+                unittest.mock.patch.object(tf3ctl, "note_activity", lambda *a: None), \
+                unittest.mock.patch.object(tf3ctl, "wait_pickup", lambda f, c: None), \
+                unittest.mock.patch.object(tf3ctl, "wait_answer", lambda *a: {"ok": True}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            res = tf3ctl.send("save", {"name": "x"}, folder=self.x)
+        self.assertEqual(sent["args"]["_otherOwnerOk"], "bob")
+        self.assertEqual(res["otherOwnerOk"]["launchedBy"], "bob")
+        os.remove(tf3ctl.launched_path())
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.check_game_owner("quit")["launchedBy"], "none", "a game from Steam")
+
+    def test_quit_kill_never_kills_a_game_it_may_not_quit(self):
+        self.record("bob")
+        kills = []
+        with unittest.mock.patch.object(tf3ctl.os, "kill", lambda pid, sig: kills.append(pid)), \
+                self.assertRaises(tf3ctl.OwnerRefused):
+            tf3ctl.quit_game(timeout=0.1, kill=True, force=True)
+        self.assertEqual(kills, [])
+        self.assertTrue(os.path.exists(tf3ctl.launched_path()), "bob's record stays")
+
+    def test_quit_kill_kills_only_the_processes_it_sent_the_quit_to(self):
+        self.record("alice")
+        calls = []
+
+        def pids():  # the game ends while the quit waits, and somebody starts another (pid 5555)
+            calls.append(1)
+            return [4242] if len(calls) <= 1 else [5555]
+        tf3ctl.game_pids = pids
+        kills = []
+        with unittest.mock.patch.object(tf3ctl, "send", lambda *a, **k: {"ok": False, "error": "no"}), \
+                unittest.mock.patch.object(tf3ctl.os, "kill", lambda pid, sig: kills.append(pid)), \
+                unittest.mock.patch.object(tf3ctl, "wait_exit", lambda t: False), \
+                contextlib.redirect_stderr(io.StringIO()):
+            try:
+                tf3ctl.quit_game(timeout=0.1, kill=True, force=True)
+            except tf3ctl.ToolError:
+                pass
+        self.assertEqual(kills, [], "pid 5555 was not there when the quit was sent")
+        tf3ctl.game_pids = lambda: [4242]  # still the same game: killed, as before
+        with unittest.mock.patch.object(tf3ctl, "send", lambda *a, **k: {"ok": False, "error": "no"}), \
+                unittest.mock.patch.object(tf3ctl.os, "kill", lambda pid, sig: kills.append(pid)), \
+                unittest.mock.patch.object(tf3ctl, "wait_exit", lambda t: False), \
+                contextlib.redirect_stderr(io.StringIO()):
+            try:
+                tf3ctl.quit_game(timeout=0.1, kill=True, force=True)
+            except tf3ctl.ToolError:
+                pass
+        self.assertEqual(kills, [4242])
+
+    def test_launch_load_without_owner_is_refused_before_starting(self):
+        tf3ctl.OWNER = None
+        tf3ctl.game_pids = lambda: []
+        ns = tf3ctl.argparse.Namespace(load="s", new=False, add=[], remove=[], set_mods=None, param=[],
+                                       wait_for_start=False, lang=None, launch_timeout=1, timeout=1)
+        with unittest.mock.patch.object(tf3ctl, "launch_game", lambda t: self.fail("launched")), \
+                self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.cmd_start(ns, restart=False)
+        self.assertIn("give --owner", str(cm.exception))
+        ns.load = None  # a plain launch without an owner still goes (no record, nothing to send after it)
+        with unittest.mock.patch.object(tf3ctl, "launch_game", lambda t: {"ok": True}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertIs(tf3ctl.cmd_start(ns, restart=False)["ok"], True)
+
+    def test_launch_load_stops_when_the_record_is_not_written(self):
+        tf3ctl.game_pids = lambda: []
+        ns = tf3ctl.argparse.Namespace(load="s", new=False, add=[], remove=[], set_mods=None, param=[],
+                                       wait_for_start=False, lang=None, launch_timeout=1, timeout=1)
+
+        def fake_launch(t):
+            tf3ctl.game_pids = lambda: [5555]
+            return {"ok": True}
+        with unittest.mock.patch.object(tf3ctl, "launch_game", fake_launch), \
+                unittest.mock.patch.object(tf3ctl, "write_launched", lambda pid: {"written": False, "warning": "x"}), \
+                unittest.mock.patch.object(tf3ctl, "replace_game", lambda *a: self.fail("load sent")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            out = tf3ctl.cmd_start(ns, restart=False)
+        self.assertIs(out["ok"], False)
+        self.assertIn("not written", out["error"])
+
+    def test_run_does_not_pause_another_owners_game_after_its_refusal(self):
+        self.record("bob")
+        ns = tf3ctl.argparse.Namespace(months=1, days=None, until_date=None, speed=4, force=False, timeout=1)
+        sent = []
+        real_send = tf3ctl.send
+
+        def counting_send(cmd, *a, **k):
+            sent.append(cmd)
+            return real_send(cmd, *a, **k)
+        with unittest.mock.patch.object(tf3ctl, "capped_speed", lambda *a: (4, None, {})), \
+                unittest.mock.patch.object(tf3ctl, "send", counting_send), \
+                self.assertRaises(tf3ctl.OwnerRefused), contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.cmd_run(ns)
+        self.assertEqual(sent, ["run", "speed"], "the pause after the refusal was tried, and refused too")
+        self.assertEqual(os.listdir(self.x), [], "neither run nor its speed 0 reached the game")
+
+    def test_restart_of_another_owners_game_quits_nothing(self):
+        self.record("bob")
+        ns = tf3ctl.argparse.Namespace(load=None, new=False, lang=None, quit_timeout=0.1, no_kill=False,
+                                       force=False, launch_timeout=1, timeout=1)
+        with unittest.mock.patch.object(tf3ctl, "launch_game", lambda t: self.fail("launched")), \
+                self.assertRaises(tf3ctl.OwnerRefused):
+            tf3ctl.cmd_start(ns, restart=True)
+
+    def test_main_exits_4_for_save_and_quit_of_another_owners_game(self):
+        self.record("bob")
+        for argv in (["--owner", "alice", "save", "x"], ["--owner", "alice", "quit"],
+                     ["--owner", "alice", "quit", "--kill"], ["save", "x"]):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(tf3ctl.main(argv), 4, argv)
+            self.assertEqual(json.loads(out.getvalue())["refused"], "owner")
+            self.assertIn("refused", err.getvalue())
+        self.assertEqual(os.listdir(self.x), [])
+
+    def test_launch_by_a_new_owner_rewrites_the_record(self):
+        self.record("bob", pid=1111)  # bob's game crashed; carol starts one
+        tf3ctl.OWNER = "carol"
+        tf3ctl.game_pids = lambda: []
+        ns = tf3ctl.argparse.Namespace(load=None, new=False, lang=None, launch_timeout=1, timeout=1)
+
+        def fake_launch(t):
+            tf3ctl.game_pids = lambda: [5555]
+            return {"ok": True, "menu": True}
+        with unittest.mock.patch.object(tf3ctl, "launch_game", fake_launch), \
+                contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.cmd_start(ns, restart=False)
+        rec, why = tf3ctl.read_launched()
+        self.assertEqual((rec["owner"], rec["pid"]), ("carol", 5555))
+        self.assertIsNone(tf3ctl.check_game_owner("load", {"save": "s"}), "carol's load in her main menu goes")
+        tf3ctl.OWNER = "bob"
+        with self.assertRaises(tf3ctl.OwnerRefused):
+            tf3ctl.check_game_owner("save", {"name": "x"})
 
 
 if __name__ == "__main__":
