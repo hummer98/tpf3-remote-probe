@@ -1033,6 +1033,10 @@ function M.new(ctx)
 		p.targetOrAtEntity = entityNum(core.field(sp, "targetOrAtEntity"))
 		p.destinations = numbers(core.field(sp, "destinations")) -- residence, shopping, work (-1: none)
 		p.lastMoveMode = tonumber(core.field(sp, "lastMoveMode"))
+		-- how many destinations of each land use the person reaches walking or driving, and by lines (engine.d.tl
+		-- SimPerson; which land use each place is, the tealdef does not say: core.reachSummary)
+		local rw, rl = core.field(sp, "landUse2ReachableWalkDrive"), core.field(sp, "landUse2ReachableLines")
+		if rw ~= nil or rl ~= nil then p.reachable = { walkDrive = numbers(rw), lines = numbers(rl) } end
 		local good = try(function() return api.engine.util.cargo.isGoodQuality(e) end)
 		if type(good) == "boolean" then p.good = good end
 		local spav = personComp(e, "SIM_PERSON_AT_VEHICLE")
@@ -1087,6 +1091,54 @@ function M.new(ctx)
 		return out
 	end
 
+	-- persons --town / --destination: who lives in a town (the people with one of its residential buildings as a
+	-- destination, simPersonSystem.getSimPersonsForDestination of each, as industry-workers asks an industry), or
+	-- who has an entity as a destination. Only an entity with a PERSON_CAPACITY is asked (what the engine does for
+	-- one without is unknown, and an assertion is past pcall); a town only when the engine lists it as one. -> the
+	-- ids (no doubles) or nil and why
+	local function residentsOrVisitors(a)
+		local function existsE(e) return try(function() return api.engine.entityExists(e) end) == true end
+		local function forDestination(e)
+			if not existsE(e) then return nil end
+			if try(function() return api.engine.getComponent(e, CT().PERSON_CAPACITY) end) == nil then return nil end
+			return core.toList(try(function() return api.engine.system.simPersonSystem.getSimPersonsForDestination(e) end))
+		end
+		if a.destination then
+			if not existsE(a.destination) then return nil, "no such entity: " .. a.destination end
+			local list = forDestination(a.destination)
+			if list == nil then
+				return nil, "entity " .. a.destination .. " has no person capacity (no one can have it as a destination)"
+			end
+			return list
+		end
+		local isTown = false
+		for _, t in ipairs(core.toList(try(function() return api.engine.getEntitiesWithComponent(CT().TOWN) end))) do
+			if tonumber(t) == a.town then isTown = true end
+		end
+		if not isTown then return nil, "entity " .. a.town .. " is no town (entities --kind town lists them)" end
+		local map = try(function() return api.engine.system.townBuildingSystem.getTown2BuildingMap() end)
+		local LU = try(function() return api.type.enum.LandUseType end)
+		local RES = LU and core.field(LU, "RESIDENTIAL")
+		local seen, out = {}, {}
+		for _, b in ipairs(core.toList(map ~= nil and try(function() return map[a.town] end) or nil)) do
+			b = tonumber(b)
+			local tb = b and existsE(b) and try(function() return api.engine.getComponent(b, CT().TOWN_BUILDING) end)
+			local pcE = tb and tonumber(core.field(tb, "personCapacity"))
+			-- the building itself, else its PersonCapacity entity (stations --catchment finds them both ways)
+			for _, e in ipairs({ b, pcE }) do
+				local pc = e and e >= 0 and existsE(e) and try(function() return api.engine.getComponent(e, CT().PERSON_CAPACITY) end)
+				if pc and RES ~= nil and core.field(pc, "type") == RES then
+					for _, p in ipairs(forDestination(e) or {}) do
+						p = tonumber(p)
+						if p and not seen[p] then seen[p] = true; out[#out + 1] = p end
+					end
+					break
+				end
+			end
+		end
+		return out
+	end
+
 	-- args: vehicle (the company's) or line (the company's), limit. Read only. A vehicle that is gone or not the
 	-- company's is answered with missing = true and no persons (not an error), so a poll sees a ship sold.
 	function handlers.persons(c)
@@ -1122,6 +1174,12 @@ function M.new(ctx)
 			res.quality = { vehicle = core.qualityOf(try(function()
 				return api.engine.util.cargo.getCargoQualityDataForVehicle(a.vehicle, pax)
 			end)) }
+		elseif a.town or a.destination then
+			local err2
+			ids, err2 = residentsOrVisitors(a)
+			if not ids then return fail(c.id, err2) end
+			res.town, res.destination = a.town, a.destination
+			res.quality = {}
 		else
 			local own = false
 			for _, l in ipairs(core.toList(try(function() return api.engine.system.lineSystem.getLinesForPlayer(player()) end))) do

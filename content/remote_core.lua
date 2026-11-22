@@ -45,6 +45,9 @@ M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newga
 -- expected to have it, and the base has no My Mods page there either
 M.MENU_ONLY = { modhubStatus = true, modhubValidate = true, modhubPublish = true }
 
+-- reach (remote_reach.lua): read only, in a game (kept apart from the table above, which other branches change)
+M.COMMANDS.reach = true
+
 ---------------------------------------------------------------------------------------------------------------------
 -- mod settings (mod.json params): each arrives as a 1-based index into these lists
 
@@ -2454,22 +2457,27 @@ M.UNHAPPY_BELOW = 0.5
 -- 1000 * 2 * 60)
 M.TERMINAL_GRACE_MS = 2 * 60 * 1000
 
--- args: vehicle or line (one of them: an entity id), limit (persons listed, 1..PERSONS_MAX). Returns them or nil
--- and why.
+-- args: vehicle, line, town (its residents: the people whose home is one of its buildings) or destination (the
+-- people with that entity as one of their destinations: home, shop or work), one of them: an entity id; limit
+-- (persons listed, 1..PERSONS_MAX). Returns them or nil and why.
+M.PERSONS_FROM = { vehicle = "the vehicles", line = "the lines", town = "entities --kind town",
+	destination = "industry-workers, stations --catchment" }
 function M.personsArgs(args)
 	args = type(args) == "table" and args or {}
 	local out = { limit = M.PERSONS_LIMIT }
-	for _, k in ipairs({ "vehicle", "line" }) do
+	local given = {}
+	for _, k in ipairs({ "vehicle", "line", "town", "destination" }) do
 		if args[k] ~= nil then
 			local n = tonumber(args[k])
 			if n == nil or n ~= math.floor(n) or n < 0 or n > M.MAX_ENTITY_ID then
-				return nil, k .. " must be an entity id (" .. (k == "vehicle" and "the vehicles" or "the lines") .. " command lists them)"
+				return nil, k .. " must be an entity id (" .. M.PERSONS_FROM[k] .. " lists them)"
 			end
 			out[k] = n
+			given[#given + 1] = k
 		end
 	end
-	if out.vehicle and out.line then return nil, "give vehicle or line, not both" end
-	if not (out.vehicle or out.line) then return nil, "give the vehicle (or a line): its entity id" end
+	if #given > 1 then return nil, "give one of vehicle, line, town, destination, not both (" .. table.concat(given, " and ") .. ")" end
+	if #given == 0 then return nil, "give the vehicle (or a line, a town, a destination): its entity id" end
 	if args.limit ~= nil then
 		local n = tonumber(args.limit)
 		if n == nil or n ~= math.floor(n) or n < 1 or n > M.PERSONS_MAX then
@@ -2513,6 +2521,32 @@ function M.personSummary(persons)
 		if type(p.atTerminal) == "table" and p.atTerminal.late == true then out.lateWaiting = out.lateWaiting + 1 end
 	end
 	if out.withHappiness > 0 then out.meanHappiness = sum / out.withHappiness end
+	out.reach = M.reachSummary(persons)
+	return out
+end
+
+-- over persons { reachable = { walkDrive = { n... }, lines = { n... } } }: how many have the counts, and per place
+-- of the engine's list (landUse2ReachableWalkDrive / Lines, {integer, integer} in the tealdef: which land use each
+-- is, it does not say) how many reach at least one such destination; none: reaching nothing either way. nil when
+-- no person has them.
+function M.reachSummary(persons)
+	local out = { persons = 0, walkDrive = {}, lines = {}, none = 0 }
+	for _, p in ipairs(persons or {}) do
+		local r = type(p.reachable) == "table" and p.reachable or nil
+		if r then
+			out.persons = out.persons + 1
+			local any = false
+			for _, k in ipairs({ "walkDrive", "lines" }) do
+				for i, n in ipairs(type(r[k]) == "table" and r[k] or {}) do
+					out[k][i] = out[k][i] or 0
+					if tonumber(n) and n > 0 then out[k][i] = out[k][i] + 1; any = true end
+				end
+			end
+			if not any then out.none = out.none + 1 end
+		end
+	end
+	if out.persons == 0 then return nil end
+	M.array(out.walkDrive); M.array(out.lines)
 	return out
 end
 
