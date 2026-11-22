@@ -533,14 +533,16 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   エンジンに無い entity。答え: `before`、`after` (callback の数フレーム後に読む)、`success`、`engineResult` (callback が
   返したもの)、`stockList` (送った先の entity)。`--dry-run` は何も送らず、`before` と `functionPresent` を答えます。
 - `steps N` (1〜10000) は `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)` を送ります。1 歩はゲームの時間で
-  200 なので、20 歩でゲームの 1 日です。1000 歩は約 15 秒かかりました (2026-11-22 に一時停止中に計測)。エンジンの
+  200 なので、20 歩でゲームの 1 日です。1000 歩は約 15 秒かかりました (2026-11-22 に一時停止中、小さな試験用のセーブで計測)。エンジンの
   callback は全部の歩数が進む前に来る (歩数は何フレームにも分かれて進む) ので、答えは `updateCount` が N 増えるか、
   `gameTime` が N × 200 進むまで待ちます (どちらで決まったかは `doneBy`)。待つのは最長 `waitSec` (N / 10000 × 200 秒、
   最低 30 秒。tf3ctl はさらに 30 秒待つ) です。答え: `before` と `after` (`gameTime`・`updateCount`・`tickCount`・
   `date`)、`gameTimeDelta`、`updateCountDelta`、`gameTimePerStep`、`callbackSec`、`waitedSec`、`timedOut`、
-  `speedup`、`success`、`engineResult`。時間切れはエラーで (`timedOut` が true)、それまでに進んだ分を入れます。
+  `stepsPerSec`、`speedup`、`success`、`engineResult`。時間切れはエラーで (`timedOut` が true)、それまでに進んだ分を
+  入れます。エンジンは残りの歩数をそのまま進めるので、それがまだ進んでいるかもしれない間 (と、別の `steps` が待って
+  いる間) の `steps` は、終わるまで断ります。
 - **先に一時停止してください** (`speed 0`)。ゲームが進んでいると、同じ数字がひとりでに進むので、待ちが早く終わり、
-  差が歩数の分ではなくなります。ゲームが進んでいるときの `steps` は断ります。`--allow-running` を付けると送り、
+  差が歩数の分ではなくなります。ゲームが進んでいるときの `steps` は断ります (`--dry-run` は断らず `warning` を付けます)。`--allow-running` を付けると送り、
   答えに `warning` が付きます。
 - ゲームに無い (nil の) debug の関数は呼びません。答えにそう出ます (`functionPresent` が false、`sent` が false)。
   エンジンが断ったとき (`success` が false)、命令を作る・送るときのエラー、30 秒 (`steps` は `waitSec`) callback が

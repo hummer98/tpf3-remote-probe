@@ -20,11 +20,16 @@ local RESULT_SEC = 30 -- for a stock command's callback
 local SETTLE_FRAMES = 2 -- after a callback, before the stock or the game time is read again
 
 local NOTE = "debug command, not checked in a game yet: test saves only"
+local STEPS_NOTE = "debug command, test saves only: the game runs it (checked 2026-11-22); this wait for all the "
+	.. "steps is not checked in a game yet"
 
 -- ctx: core, answer(id, payload, tag), fail(id, msg), appTime(), try(fn), say(msg, level)
 function M.new(ctx)
 	local core, answer, fail, appTime, try, say = ctx.core, ctx.answer, ctx.fail, ctx.appTime, ctx.try, ctx.say
 	local jobs = {}
+	-- the last steps that timed out: the engine runs the rest on all the same, so a steps sent meanwhile would count
+	-- them as its own. { before, count, untilTime }
+	local leftover = nil
 
 	local function CT() return api.type.ComponentType end
 	local function comp(e, kind)
@@ -290,18 +295,45 @@ function M.new(ctx)
 		local path = core.DEBUG_FUNCTIONS.steps
 		local out = { ok = true, cmd = "steps", dryRun = r.dryRun or nil, count = r.count, before = clock(),
 			functionPresent = core.debugFunction(path) ~= nil, speedup = speedup(), waitSec = core.stepsWaitSec(r.count),
-			note = NOTE }
+			note = STEPS_NOTE }
+		-- steps still running on (an earlier one waiting, or one that timed out) move the same counts: refused
+		local busy = nil
+		for _, j in ipairs(jobs) do
+			if j.kind == "steps" then busy = "steps command " .. j.id .. " is still waiting for its steps" end
+		end
+		if not busy and leftover then
+			if appTime() < leftover.untilTime and core.stepsDone(leftover.before, out.before, leftover.count) == false then
+				busy = "the " .. leftover.count .. " steps of command " .. leftover.id .. " timed out and may still be "
+					.. "running on"
+			else
+				leftover = nil
+			end
+		end
+		if busy and not r.dryRun then
+			out.ok, out.sent = false, false
+			out.error = busy .. ": send steps again once they are done"
+			return answer(c.id, out, "error")
+		elseif busy then
+			out.warning = busy
+		end
+		if out.speedup == nil then
+			out.warning = (out.warning and out.warning .. "; " or "") .. "the game speed could not be read: if the "
+				.. "game runs, the deltas are not the steps' alone"
+		end
 		-- a running game moves the update count and the game time on by itself: the marks the answer waits for
 		-- would come early, so the count would not be the steps'
 		if out.speedup and out.speedup > 0 then
-			if not r.allowRunning then
+			-- a dry run sends nothing: it says so in its warning instead
+			if not r.allowRunning and not r.dryRun then
 				out.ok, out.sent = false, false
 				out.error = "the game is running (speed " .. out.speedup .. "): pause it first (speed 0), or allow "
 					.. "it (allowRunning) and take the counts as the steps' and the game's own together"
 				return answer(c.id, out, "error")
 			end
-			out.warning = "sent while the game ran (speed " .. out.speedup .. "): the deltas are the steps' and the "
-				.. "game's own together, and the wait may end before all the steps ran"
+			out.warning = (out.warning and out.warning .. "; " or "") .. (r.allowRunning
+				and "sent while the game ran (speed " .. out.speedup .. "): the deltas are the steps' and the game's "
+					.. "own together, and the wait may end before all the steps ran"
+				or "the game is running (speed " .. out.speedup .. "): steps would be refused; pause it first (speed 0)")
 		end
 		if r.dryRun then
 			out.sent = false
@@ -319,6 +351,20 @@ function M.new(ctx)
 		jobs[#jobs + 1] = job
 	end
 
+	-- a steps answer's after, deltas, the seconds waited and (with the steps done) steps a second
+	local function stepsDeltas(job, now)
+		local out = job.out
+		out.after = now or clock()
+		local b, a = out.before, out.after
+		if a.gameTime and b.gameTime then out.gameTimeDelta = a.gameTime - b.gameTime end
+		if a.updateCount and b.updateCount then out.updateCountDelta = a.updateCount - b.updateCount end
+		if out.gameTimeDelta then out.gameTimePerStep = out.gameTimeDelta / job.r.count end
+		out.waitedSec = job.sentAt and appTime() - job.sentAt or nil
+		if out.timedOut == nil then out.timedOut = false end
+		local ran = out.updateCountDelta or (out.gameTimeDelta and out.gameTimeDelta / core.STEP_GAME_TIME)
+		if ran and out.waitedSec and out.waitedSec > 0 then out.stepsPerSec = ran / out.waitedSec end
+	end
+
 	local function finish(job, now)
 		local out = job.out
 		out.success, out.engineResult = job.success, job.result
@@ -330,14 +376,9 @@ function M.new(ctx)
 				out.warning = "the stock reads back " .. out.after .. ", not " .. job.r.amount
 			end
 		else
-			out.after = now or clock()
-			local b, a = out.before, out.after
-			if a.gameTime and b.gameTime then out.gameTimeDelta = a.gameTime - b.gameTime end
-			if a.updateCount and b.updateCount then out.updateCountDelta = a.updateCount - b.updateCount end
-			if out.gameTimeDelta then out.gameTimePerStep = out.gameTimeDelta / job.r.count end
-			out.waitedSec = job.sentAt and appTime() - job.sentAt or nil
-			if out.timedOut == nil then out.timedOut = false end
+			stepsDeltas(job, now)
 			if out.timedOut and job.success == true then
+				leftover = { id = job.id, before = out.before, count = job.r.count, untilTime = appTime() + out.waitSec }
 				out.ok = false
 				out.error = "the steps had not all run in " .. out.waitSec .. " s: update count +"
 					.. tostring(out.updateCountDelta) .. ", game time +" .. tostring(out.gameTimeDelta) .. " of "
@@ -402,7 +443,11 @@ function M.new(ctx)
 				out.ok = false
 				out.error = "no callback from the engine in " .. (job.kind == "steps" and out.waitSec or RESULT_SEC)
 					.. " s (sent; whether it ran is not known)"
-				if job.kind == "steps" then out.after, out.timedOut = clock(), true
+				if job.kind == "steps" then
+					out.timedOut = true
+					stepsDeltas(job)
+					-- it may have been sent and run all the same
+					leftover = { id = job.id, before = out.before, count = job.r.count, untilTime = appTime() + out.waitSec }
 				else out.after = countIn(holderOf(job.r.entity), job.r) end
 				answer(job.id, out, "error")
 			else

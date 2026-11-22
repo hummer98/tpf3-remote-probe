@@ -568,15 +568,17 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   `after` (read a couple of frames after the callback), `success`, `engineResult` (what the callback handed back),
   `stockList` (the entity it went to); `--dry-run` sends nothing and answers `before` and `functionPresent`.
 - `steps N` (1-10000) sends `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)`. One step is 200 of game time,
-  so 20 steps make a game day; 1000 steps took about 15 s (measured 2026-11-22, paused). The engine's callback
+  so 20 steps make a game day; 1000 steps took about 15 s (measured 2026-11-22, paused, on a small test save). The engine's callback
   comes before the steps have all run (they run on over many frames), so the answer waits until `updateCount`
   is up by N or `gameTime` by N x 200 (`doneBy` says which), at most `waitSec` (N / 10000 x 200 s, at least
   30 s; tf3ctl waits 30 s more). The answer: `before` and `after` (`gameTime`, `updateCount`, `tickCount`,
   `date`), `gameTimeDelta`, `updateCountDelta`, `gameTimePerStep`, `callbackSec`, `waitedSec`, `timedOut`,
-  `speedup`, `success`, `engineResult`. A wait that runs out is an error (`timedOut` true) with what ran by then.
+  `stepsPerSec`, `speedup`, `success`, `engineResult`. A wait that runs out is an error (`timedOut` true) with
+  what ran by then; the engine runs the rest on all the same, so a `steps` sent while they may still run (or while
+  another `steps` waits) is refused until they are done.
 - **Pause first** (`speed 0`): while the game runs, its own running moves the same counts, so the wait would end
-  early and the deltas would not be the steps'. `steps` is refused while the game runs; `--allow-running` sends
-  anyway and the answer carries a `warning`.
+  early and the deltas would not be the steps'. `steps` is refused while the game runs (its `--dry-run` answers
+  with a `warning` instead); `--allow-running` sends anyway and the answer carries a `warning`.
 - A debug function the game does not have (nil) is not called: the answer says so (`functionPresent` false,
   `sent` false). The engine's refusal (`success` false), an error raised while making or sending the command, and
   no callback in 30 s (`steps`: its `waitSec`) are errors with the engine's own words where it gives any.

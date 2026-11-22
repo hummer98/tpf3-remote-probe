@@ -8415,7 +8415,15 @@ test("steps: a game that stops part way answers at the deadline with what ran an
 	eq(count, 1, "one answer"); eq(a.ok, false); eq(a.timedOut, true); eq(a.success, true)
 	eq(a.updateCountDelta, 40); eq(a.gameTimeDelta, 40 * 200)
 	truthy(a.error:find("had not all run in 30 s", 1, true), a.error)
-	truthy(a.waitedSec >= 30, tostring(a.waitedSec))
+	truthy(a.waitedSec >= 30, tostring(a.waitedSec)); truthy(a.stepsPerSec > 0)
+	-- the engine runs the rest on: a steps sent meanwhile is refused (it would count them as its own)
+	local l = debugRun(g, 2284, "steps", "{ count = 5 }")
+	eq(l.ok, false); truthy(l.error:find("timed out and may still be running on", 1, true), l.error)
+	eq(#g.debugCmds, 1, "not sent")
+	g.debugSpec.stepsStall = nil
+	frames(g, 20) -- the rest runs on: then steps are taken again
+	local m = debugRun(g, 2285, "steps", "{ count = 5 }")
+	truthy(m.ok, m.error); eq(m.updateCountDelta, 5)
 	-- no callback at all: the same deadline, timedOut too
 	local n = debugGame({ noCallback = true })
 	send(n, 2283, "steps", "{ count = 5 }")
@@ -8424,6 +8432,34 @@ test("steps: a game that stops part way answers at the deadline with what ran an
 	frames(n, 31 * 30, 1 / 30)
 	local b = final(n, 2283)
 	eq(b.ok, false); eq(b.timedOut, true); truthy(b.error:find("no callback from the engine in 30 s", 1, true), b.error)
+	eq(b.updateCountDelta, 5, "what ran by then"); truthy(b.waitedSec >= 30)
+end)
+
+test("steps: a second steps while the first waits is refused; the game time mark alone; no speed read", function()
+	local g = debugGame({ stepsPerFrame = 3 })
+	send(g, 2301, "steps", "{ count = 600 }")
+	frames(g, FIRST + 2)
+	eq(select(2, final(g, 2301)), 0, "the first still waits")
+	send(g, 2302, "steps", "{ count = 5 }")
+	frames(g, 10)
+	local b = final(g, 2302)
+	eq(b.ok, false); truthy(b.error:find("command 2301 is still waiting", 1, true), b.error); eq(#g.debugCmds, 1)
+	frames(g, 300)
+	local a = final(g, 2301)
+	truthy(a.ok, a.error); eq(a.updateCountDelta, 600)
+	-- the update count unreadable: the game time decides
+	local h = debugGame({ stepsPerFrame = 4 })
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		local t = getComponent(e, kind)
+		if kind == "GAME_TIME" and t then t.updateCount = nil end
+		if kind == "GAME_SPEED" then return nil end
+		return t
+	end
+	local c = debugRun(h, 2303, "steps", "{ count = 40 }", FIRST + 30)
+	api.engine.getComponent = getComponent
+	truthy(c.ok, c.error); eq(c.doneBy, "gameTime"); eq(c.gameTimeDelta, 40 * 200); eq(c.speedup, nil)
+	truthy(c.warning:find("speed could not be read", 1, true), c.warning)
 end)
 
 test("steps: refused while the game runs unless allowed; allowed, the answer warns", function()
@@ -8432,7 +8468,8 @@ test("steps: refused while the game runs unless allowed; allowed, the answer war
 	local a = debugRun(g, 2291, "steps", "{ count = 10 }")
 	eq(a.ok, false); eq(a.sent, false); truthy(a.error:find("pause it first", 1, true), a.error); eq(#g.debugCmds, 0)
 	local d = debugRun(g, 2292, "steps", "{ count = 10, dryRun = true }")
-	eq(d.ok, false, "the dry run says so too"); eq(#g.debugCmds, 0)
+	truthy(d.ok, d.error); eq(d.sent, false); truthy(d.warning:find("would be refused", 1, true), d.warning)
+	eq(#g.debugCmds, 0)
 	local b = debugRun(g, 2293, "steps", "{ count = 10, allowRunning = true }")
 	truthy(b.ok, b.error); eq(b.sent, true); eq(b.speedup, 1); truthy(b.warning:find("while the game ran", 1, true), b.warning)
 	truthy(b.updateCountDelta >= 10)

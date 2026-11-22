@@ -2771,7 +2771,7 @@ end
 -- ran on at about 65 steps a second), so the answer waits for the steps' own marks.
 M.STEP_GAME_TIME = 200
 M.STEPS_WAIT_MIN_SEC = 30
-M.STEPS_WAIT_SEC_PER_10000 = 200 -- 10000 steps measured at about 150 s: some room over that
+M.STEPS_WAIT_SEC_PER_10000 = 200 -- 1000 steps took about 15 s on a small test save: 10000 at that pace, ~150 s
 
 -- how long a steps command may take, from the send to the last step: at least STEPS_WAIT_MIN_SEC
 function M.stepsWaitSec(count)
