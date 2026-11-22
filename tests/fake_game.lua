@@ -1654,7 +1654,9 @@ end
 -- road pieces, relative to where it stands, unturned); spec.height(x, y): the terrain (0 without);
 -- spec.blocked(x, y): something in the way there (an entity id, refused as a collision); spec.lostCallback: the
 -- build runs, no callback comes; spec.raiseInCallback: reading the callback's data raises;
--- spec.sendRaises: sendCommand raises (this text).
+-- spec.sendRaises: sendCommand raises (this text). A cons entry's scriptFails / otherResult: the engine says
+-- success and builds nothing (no entities / only one that is no construction), as a failing update script does;
+-- notInResult: built, but left out of the result's entities.
 -- spec.modules = { [resName] = { metadata = {...}, updateScript = { fileName, params } } }: moduleRep (find, get,
 -- getAll); a construction's stations = n with terminals = n, or a function(params) -> n per station (a harbour's
 -- terminals counted from its modules under whole-number keys only: one under a text key sits on no slot).
@@ -1951,6 +1953,19 @@ function M.installBuild(g, spec)
 	local function apply(cmd)
 		local data, adds, removes = evaluate(cmd.proposal)
 		if data.errorState.critical and not cmd.ignoreErrors then return false, data, {} end
+		-- a construction whose own script fails its check (scriptFails): the engine logs "Error during construction
+		-- update" and still says success, with no errors, no entities, nothing paid and nothing built (2026-11-22, a
+		-- harbour); otherResult: success with only another entity (a node) and no construction among them
+		for _, ce in ipairs(adds) do
+			local c = cons[ce.fileName]
+			if c.scriptFails or c.otherResult then
+				local empty = { errorState = { critical = false, messages = {}, warnings = {} },
+					collisionInfo = { collisionEntities = {} }, costs = 0 }
+				local results = {}
+				if c.otherResult then g.nextEntity = g.nextEntity + 1; results[1] = { g.nextEntity, 1 } end
+				return true, empty, results
+			end
+		end
 		g.balance = g.balance - data.costs
 		local results = {}
 		for _, e in ipairs(removes) do
@@ -2005,7 +2020,7 @@ function M.installBuild(g, spec)
 				player = ce.playerEntity, autoFillSlots = ce.autoFillSlots, frozenEdges = edgeIds, depots = depots,
 				stations = stations }
 			if ce.name ~= "" then names[e] = ce.name end
-			results[#results + 1] = { e, 1 }
+			if not c.notInResult then results[#results + 1] = { e, 1 } end
 		end
 		return true, data, results
 	end

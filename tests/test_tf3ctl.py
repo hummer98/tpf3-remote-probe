@@ -1358,13 +1358,89 @@ class QuitLaunchTest(unittest.TestCase):
 
         def fake_send(cmd, args=None, timeout=20, **kw):
             sent.append((cmd, args, timeout))
-            return {"ok": True}
+            return {"ok": True, "entity": 5}  # a place is ok only with its construction
         tf3ctl.send = fake_send
         with contextlib.redirect_stdout(io.StringIO()):
             code = tf3ctl.main(["build", "--res", "m::/r.con", "--at=-100,50", "--angle", "0.5"])
         self.assertEqual(code, 0)
         self.assertEqual(sent, [("build", {"res": "m::/r.con", "at": [-100.0, 50.0], "angle": 0.5},
                                  tf3ctl.BUILD_TIMEOUT_SEC)])
+
+    def test_build_silent_failure_is_not_ok_and_brings_the_log_errors(self):
+        # measured 2026-11-22: the mod answered ok for a harbour the engine had not built; the reason was only in
+        # the log, an Exception entry and an ERROR entry with their continuation lines
+        log = os.path.join(self.x, "stdout.txt")
+        before = "[2026-11-22 08:09:30Z - ERROR    - Main Thread      - Main           ]  an older error\n"
+        mine = ("[2026-11-22 08:09:36Z - MESSAGE  - Main Thread      - Main           ]  [remote_probe] command 1: build\n"
+                "[2026-11-22 08:09:36Z - VERBOSE  - Main Thread      - Main           ]+ Exception type: Unknown error\n"
+                "    | Details:\n"
+                "    | Error message: Terminal 2 of station in subconstruction 2 has transport modes not supported "
+                "by the vehicle node: SHIP\n"
+                "    + In function: ValidateConstructionResult\n"
+                "[2026-11-22 08:09:36Z - VERBOSE  - Main Thread      - Main           ]  something else\n"
+                "    | not an error\n"
+                "[2026-11-22 08:09:36Z - ERROR    - Main Thread      - Main           ]+ Error during construction update\n"
+                "    | DetailMessage: file='::/stations/water/harbor_modular.con'\n"
+                "    + Location: proposal_util.cpp(176): operator()\n")
+        write(log, before)
+        start = tf3ctl.log_size(log)
+        with open(log, "a") as f:
+            f.write(mine)
+        errs = tf3ctl.log_errors_since(log, start)
+        self.assertEqual(len(errs), 2, errs)
+        self.assertIn("Error message: Terminal 2 of station", errs[0])
+        self.assertTrue(errs[0].startswith("2026-11-22 08:09:36Z VERBOSE: Exception type"), errs[0])
+        self.assertNotIn("Details:", errs[0])
+        self.assertIn("Error during construction update | DetailMessage: file='::/stations/water/harbor_modular.con'",
+                      errs[1])
+        # other mods' game scripts fill the Simulation Thread with errors in the same second: left out, and the
+        # first ones are kept (measured 2026-11-22: company_growth, about 15 a second)
+        noise = ("[2026-11-22 08:09:36Z - ERROR    - Simulation Thread - Main           ]+ Error while running game "
+                 "script\n    | company_growth.script@handleEvent\n") * 15
+        write(log, before)
+        with open(log, "a") as f:
+            f.write(mine + noise + "[2026-11-22 08:09:37Z - ERROR    - Main Thread      - Main           ]  "
+                    "x\n" * 12)
+        errs2 = tf3ctl.log_errors_since(log, start)
+        self.assertEqual(len(errs2), tf3ctl.LOG_ERRORS_MAX)
+        self.assertEqual(errs2[:2], errs, "the harbour's two first, the noise left out")
+        self.assertFalse(any("company_growth" in e for e in errs2))
+        self.assertEqual(tf3ctl.log_errors_since(log, 10 ** 9), [], "a log rewritten by a new start says nothing")
+        self.assertEqual(tf3ctl.log_errors_since(None, 0), [])
+        self.assertEqual(tf3ctl.log_errors_since(os.path.join(self.x, "none.txt"), 0), [])
+        self.assertIsNone(tf3ctl.log_size(os.path.join(self.x, "none.txt")))
+        # an older mod's answer: ok with no construction -> not ok, whatever it said
+        answer = {"ok": True, "entities": [], "errors": [], "warnings": [], "cost": 0, "spent": 0,
+                  "why": "built, but no construction came back among the result's entities", "name": "probe-build 3"}
+        got = tf3ctl.check_build_answer({"res": "h.con", "at": [1.0, 2.0]}, answer)
+        self.assertIs(got["ok"], False)
+        self.assertIn("nothing was built", got["error"])
+        self.assertNotIn("logErrors", got)
+        ok = tf3ctl.check_build_answer({"res": "h.con", "at": [1.0, 2.0]}, {"ok": True, "entity": 5}, log, start)
+        self.assertIs(ok["ok"], True)
+        self.assertNotIn("logErrors", ok, "a build that is ok gets no errors of the same seconds")
+        self.assertIs(tf3ctl.check_build_answer({"res": "h.con", "at": [1, 2], "dryRun": True}, {"ok": True})["ok"], True,
+                      "a dry run names no construction")
+        self.assertIs(tf3ctl.check_build_answer({"remove": [5]}, {"ok": True, "removed": [5]})["ok"], True)
+        # main: the exit code is not 0 and the log's errors written while the command ran come with the answer
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            with open(log, "a") as f:
+                f.write(mine)
+            return dict(answer)
+        tf3ctl.send = fake_send
+        write(log, before)
+        os.environ["TF3_LOG"] = log
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = tf3ctl.main(["build", "--res", "h.con", "--at", "1,2"])
+        finally:
+            os.environ.pop("TF3_LOG")
+        self.assertEqual(code, 1)
+        shown = json.loads(out.getvalue())
+        self.assertIs(shown["ok"], False)
+        self.assertEqual(len(shown["logErrors"]), 2, "the older error before the command is left out")
+        self.assertIn("SHIP", shown["logErrors"][0])
 
     def test_build_modules_owner_and_water_args(self):
         def ns(**kw):

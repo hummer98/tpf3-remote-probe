@@ -6802,6 +6802,42 @@ test("build: refused by the engine (collision, money): nothing built, the messag
 	eq(g.balance, 100)
 end)
 
+test("build: the engine says success and builds nothing (a construction's script failed): not ok, says why", function()
+	local HARBOUR = "::/stations/water/harbor_modular.con"
+	local g = buildWorld({ cons = {
+		[HARBOUR] = { cost = 90000, scriptFails = true },
+		["::/odd.con"] = { cost = 10, otherResult = true },
+		["::/free.con"] = { cost = 0 },
+		["::/hidden.con"] = { cost = 30, notInResult = true },
+	} })
+	local bal = g.balance
+	local a, n = buildRun(g, 925, string.format('{ res = %q, at = "0,0" }', HARBOUR))
+	eq(n, 1, "one final answer")
+	eq(a.ok, false, "measured 2026-11-22: ok true came back for a harbour that was not there")
+	truthy(a.error:find("nothing was built") and a.error:find("no entities") and a.error:find("nothing was paid")
+		and a.error:find("Error during construction update"), a.error)
+	eq(a.entity, nil); eq(a.construction, nil); eq(#a.entities, 0); eq(a.cost, 0); eq(a.spent, 0)
+	eq(a.why, nil, "no 'built, but' text")
+	eq(next(g.built), nil, "nothing built"); eq(g.balance, bal)
+	local logged = false
+	for _, l in ipairs(g.logs) do if tostring(l):find("build place %(command 925%): nothing built") then logged = true end end
+	truthy(logged, "logged")
+	truthy(buildRun(g, 926, "{ removeAll = true }").error:find("built nothing"), "nothing listed as the probe's")
+	-- an entity that is no construction
+	local b = buildRun(g, 927, '{ res = "::/odd.con", at = "0,0" }')
+	eq(b.ok, false); truthy(b.error:find("no construction is among"), b.error); eq(#b.entities, 1)
+	-- one that stands but cost nothing (a no-costs mod): ok, with a warning
+	local c = buildRun(g, 928, '{ res = "::/free.con", at = "0,0" }')
+	truthy(c.ok, c.error); truthy(g.built[c.entity], "built")
+	truthy(c.warnings[#c.warnings]:find("cost nothing"), tostring(c.warnings[#c.warnings]))
+	-- built but not among the result's entities: found by its name near the point, ok and listed as the probe's
+	local h = buildRun(g, 929, '{ res = "::/hidden.con", at = "300,0" }')
+	truthy(h.ok, h.error); truthy(g.built[h.entity], "built"); truthy(h.why:find("found by its name"), h.why)
+	local rm = buildRun(g, 931, "{ removeAll = true }").removed
+	eq(#rm, 2, "the free one and this one"); eq(rm[2], h.entity, "removeAll takes it")
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("build: an unknown name is refused before anything is sent, with names like it", function()
 	local g = buildWorld()
 	local a = buildRun(g, 930, '{ res = "road_bridge_ramp::/ramp.con", at = "0,0" }')

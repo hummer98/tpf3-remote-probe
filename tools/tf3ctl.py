@@ -1747,6 +1747,73 @@ TERRAIN_TIMEOUT_SEC = 180  # the mod waits 120 s for the replacement's callback
 WATER_MAX_POINTS = 400  # the mod's core.WATER_MAX_POINTS
 WATER_MIN_STEP = 0.1  # core.WATER_MIN_STEP: a smaller step overflows the point count before the limit is checked
 BUILD_TIMEOUT_SEC = 60  # the mod waits 30 s for the engine's callback
+LOG_ERRORS_MAX = 10  # entries of the game's log added to a build's answer
+LOG_ERROR_CHARS = 600
+
+
+def log_size(path):
+    """The log's size now (where a command's own lines will start), None without a log."""
+    try:
+        return os.path.getsize(path) if path else None
+    except OSError:
+        return None
+
+
+def log_errors_since(path, start):
+    """The game log's Main Thread errors written from byte start on: each ERROR line, and each VERBOSE "Exception type" entry
+    (where the engine puts its own message), with their "    |" / "    +" lines, joined into one string. A log
+    shorter than start was rewritten by a new start of the game: nothing is said then."""
+    if not path or start is None:
+        return []
+    try:
+        if os.path.getsize(path) < start:
+            return []
+        with open(path, "rb") as f:
+            f.seek(start)
+            data = f.read(4_000_000)
+    except OSError:
+        return []
+    out, cur = [], None
+    for line in data.decode("utf-8", "replace").splitlines():
+        if line.startswith("["):
+            if cur:
+                out.append(cur)
+            head = line.split("]", 1)
+            fields = [f.strip() for f in head[0].split(" - ")]
+            level = fields[1] if len(fields) > 1 else ""
+            thread = fields[2] if len(fields) > 2 else ""
+            body = head[1].lstrip("+ ").strip() if len(head) > 1 else line
+            cur = None
+            # the Main Thread only: a build is checked there, while game scripts of other mods may fill the
+            # Simulation Thread with errors of their own in the same second (2026-11-22: company_growth, 15 a second)
+            if thread == "Main Thread" and (level == "ERROR" or (level == "VERBOSE" and body.startswith("Exception type"))):
+                cur = head[0][1:21] + " " + level + ": " + body
+        elif cur is not None and line.startswith("    "):
+            part = line.strip().lstrip("|+").strip()
+            if part and part != "Details:":
+                cur += " | " + part
+    if cur:
+        out.append(cur)
+    # the first ones: those right after the command are nearest to its cause
+    return [e[:LOG_ERROR_CHARS] for e in out[:LOG_ERRORS_MAX]]
+
+
+def check_build_answer(args, res, log_path=None, log_start=None):
+    """A place the mod says is built must name its construction: an engine that says success and builds nothing
+    (2026-11-22, a harbour whose update script failed) is no success, whatever an older mod answered. The game
+    log's errors from the command on are added (logErrors): the engine's reason is only there."""
+    if not isinstance(res, dict):
+        return res
+    placing = "res" in args and not args.get("dryRun")
+    if placing and res.get("ok") and res.get("entity") is None:
+        res = dict(res, ok=False, error="nothing was built: the answer names no construction (entities: %s)"
+                   % (res.get("entities") or "none"))
+    # only for a build that is not ok: on one that is, errors of the same seconds belong to something else
+    errs = log_errors_since(log_path, log_start) if not res.get("ok") and not args.get("dryRun") else []
+    if errs:
+        res = dict(res, logErrors=errs, logErrorsNote="the game log's Main Thread errors written while the "
+                   "command ran: likely its reason, not certainly")
+    return res
 
 
 # Tools whose base button passes more than gameCtx, so a plain push breaks the GUI; their button listens to an
@@ -3396,7 +3463,10 @@ def main(argv=None):
         elif ns.cmd == "rename":
             res = send("rename", rename_args(ns))
         elif ns.cmd == "build":
-            res = send("build", build_args(ns), timeout=BUILD_TIMEOUT_SEC)
+            args = build_args(ns)
+            log_path = game_log_path()
+            log_start = log_size(log_path)
+            res = check_build_answer(args, send("build", args, timeout=BUILD_TIMEOUT_SEC), log_path, log_start)
         elif ns.cmd == "road":
             res = send("road", road_args(ns), timeout=BUILD_TIMEOUT_SEC)
         elif ns.cmd == "water":

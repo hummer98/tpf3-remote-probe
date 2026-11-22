@@ -351,6 +351,11 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
 - No answer from the engine in 30 s: a build is then looked for by its name (each gets its own, `probe-build N`)
   and file within 60 m of the point, and if found answered as built (`why` says so). Otherwise the error names
   what to look for: if it shows up later, it carries that name and the mark, so `build --remove <id>` takes it.
+- The engine can answer success and build nothing (measured 2026-11-22: a harbour whose own script failed its check;
+  the log says `Error during construction update`). A build is ok only when its construction is read back (among
+  the result's entities, or by its name near the point); otherwise `ok: false`, `error` says why, and tf3ctl exits
+  with 1 and adds the game log's Main Thread errors written while the command ran (`logErrors`, the first 10). A
+  construction that stands but cost nothing (cost and spent 0: a no-costs mod) is ok with a line in `warnings`.
 - It changes the game (as `line` and `connect`), so other clients get the usual warning; one build at a time is
   enough (each waits up to 30 s for the engine's answer).
 - **Not checked in game yet** (written 2026-11-22): in particular whether the engine takes the default params, the
