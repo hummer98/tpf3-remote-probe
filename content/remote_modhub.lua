@@ -3,19 +3,23 @@
 -- through one C++ object, api.type.modhub.ModPublishHelper (mod_manager_page.tl makes it,
 -- mod_manager_react_util.tl calls its methods; no event is fired). This file makes its own one: it reads the
 -- staging mods with their state and what mod.io holds of them, validates as the page's Re-Validate button, and
--- uploads one new mod as the page's Upload button (ModUploadForm).
+-- uploads one mod as the page's Upload / Update button (ModUploadForm): a new mod, or an update of one already on
+-- mod.io. Both are the same call (ModPublishHelper.publish); the page only names the button "Update" when mod.io
+-- holds details of the mod (mod_manager_react_util.tl 1813).
 --
 -- The upload is the only thing here that writes to mod.io, and it is kept to one place in this file (between the
 -- "publish path" markers; tests/run.lua checks that no other code names publish, abortPublish or PublishSettings).
 -- Nothing calls setRemoteModId, refreshMod or any setter. An upload can make a second mod page or a public mod,
--- neither undone from the game, so publish takes one allowed folder, a first upload only (the mod has no mod.io
--- id), a visibility given every time, a validation without issues, and one upload per launch. tools/tf3ctl.py
--- adds the checks Lua cannot make (no io here): no _metadata/mod.io_fileid.txt, a cover image, and its own mark
--- on disk written before it sends the command.
+-- neither undone from the game, so publish takes one allowed folder, says every time which of the two it is (a
+-- first upload: the mod has no mod.io id and mod.io holds nothing of it; an update: the mod's mod.io id is the one
+-- the tool read from _metadata/mod.io_fileid.txt and mod.io holds that mod), a visibility given every time, a
+-- validation without issues, and one upload per launch. tools/tf3ctl.py adds the checks Lua cannot make (no io
+-- here): the fileid file there or not, the revision, a cover image, and its own mark on disk written before it
+-- sends the command.
 --
 -- Only in the main menu (startup.lua). ModPublishHelper.new is marked "privileged api, not available to mods"
--- (type/modhub.d.tl); it was made there in game (2026-11-22) and validate worked. The upload itself was never
--- tried in game.
+-- (type/modhub.d.tl); it was made there in game (2026-11-22), validate worked, and a first upload went up
+-- (mod.io 6543965). An update was not tried in game yet.
 --
 -- Making the helper syncs every staging mod with mod.io (StagingModData.state is Sync meanwhile): read requests
 -- to mod.io, no writes. The base page makes another helper of its own when a person opens My Mods; the two are
@@ -440,15 +444,19 @@ function M.new(ctx)
 	end
 
 	---------------------------------------------------------------------------------------------------------------
-	-- publish: one new mod to mod.io, as the page's Upload button (ModUploadForm, mod_manager_react_util.tl
-	-- 1806-1881). The phases: ready (mod.io), sync (the mod leaves Sync), check (new mod, logged in, cover; a busy
-	-- mod.io is waited for), validating (a fresh validation, as the page validates before it enables the button,
-	-- 1478-1481), check again, then the dry run's answer, or publish and its wait (publishing) up to HasResult.
+	-- publish: one mod to mod.io, new or an update, as the page's Upload / Update button (ModUploadForm,
+	-- mod_manager_react_util.tl 1806-1881: one publish call for both). The phases: ready (mod.io), sync (the mod
+	-- leaves Sync), check (new or the expected update, logged in, cover; a busy mod.io is waited for), validating (a
+	-- fresh validation, as the page validates before it enables the button, 1478-1481), check again, then the dry
+	-- run's answer, or publish and its wait (publishing) up to HasResult.
 
 	-- the settings as the page builds them for a mod of the My Mods tab (no params.publishSettings there): new(),
 	-- then setPublic = (modhubDetails ~= nil and modhubDetails.modInfo.visible), false for a new mod, which the
-	-- "Set Public" check box changes (1466-1471, 1591-1596); updateMetadata = true (1470; the box is disabled for
-	-- a new mod, 1598-1603); changeLog from the text field (1605-1609); at the button isSavegame =
+	-- "Set Public" check box changes while the mod is not public on mod.io (1466-1471, 1474, 1591-1596; the box is
+	-- disabled for a public one, so an update of a public mod stays public: publishChecks refuses public = false
+	-- there); updateMetadata = true (1470; the box is disabled for a new mod, 1598-1603; an update keeps the
+	-- default, so modinfo.json's name, summary and description go up again); changeLog from the text field
+	-- (1605-1609); at the button isSavegame =
 	-- params.disableValidator, nil on My Mods (5734-5743), and issuesConfirmed = false when no "Proceed Anyway"
 	-- was asked (1822-1826, 1868). additionalMetadata is only for savegames: not set.
 	local function plannedSettings(args)
@@ -458,7 +466,7 @@ function M.new(ctx)
 
 	local function publishPayload(job)
 		return { folder = job.args.folder, value = job.value, phase = job.phase, seconds = appTime() - job.started,
-			dryRun = job.args.dryRun, publishCalled = job.publishCalled == true, settings = plannedSettings(job.args),
+			mode = job.args.update and "update" or "firstUpload", modioId = job.args.modioId, dryRun = job.args.dryRun, publishCalled = job.publishCalled == true, settings = plannedSettings(job.args),
 			checks = job.checks, validation = job.result }
 	end
 
@@ -484,27 +492,57 @@ function M.new(ctx)
 		answer(job.id, out, "p" .. job.progressN)
 	end
 
-	-- what must hold just before publish (and for the dry run): the mod is Ready and new to mod.io, mod.io lets
-	-- this user upload, and the cover is there. Returns the checks and the refusal (nil: it may go); a refusal for
-	-- a login also names the user action the page would ask for (doRequiredUserAction, 3268-3280).
+	-- what must hold just before publish (and for the dry run): the mod is Ready; for a first upload it is new to
+	-- mod.io (no valid mod.io id, no details); for an update its mod.io id is the one asked for and mod.io holds
+	-- that mod (the page's "Update" case: modhubDetails there; without them the page warns the mod got deleted on
+	-- mod.io and a new one would be made, which an update must never do); mod.io lets this user upload, and the
+	-- cover is there. Returns the checks and the refusal (nil: it may go); a refusal for a login also names the
+	-- user action the page would ask for (doRequiredUserAction, 3268-3280).
 	local function publishChecks(job)
 		local r, notReady = readiness(job.b.publish)
 		local d = try(function() return H.helper:getStagingModData(job.mid) end)
 		local mid = core.field(d, "modhubId")
-		local c = { state = stateName(core.field(d, "state")), loggedIn = r.loggedIn, allowModUpload = r.allowModUpload,
+		local remote = details(core.field(d, "modhubDetails"))
+		local c = { mode = job.args.update and "update" or "firstUpload", state = stateName(core.field(d, "state")),
+			loggedIn = r.loggedIn, allowModUpload = r.allowModUpload,
 			initialized = r.initialized, busy = r.management and r.management.busy,
 			uploading = r.management and r.management.uploading,
 			modhubIdValid = bool(try(function() return mid:isValid() end)), modhubIdValue = str(core.field(mid, "value")),
-			hasModhubDetails = core.field(d, "modhubDetails") ~= nil }
+			hasModhubDetails = remote ~= nil, modio = remote }
 		local logo = core.field(core.field(core.field(d, "localModhubDetails"), "modInfo"), "logoImage")
 		c.logoImage = type(logo) == "string" and (logo ~= "" and "set" or "empty") or "unreadable"
 		if d == nil then return c, "getStagingModData cannot be read" end
 		if c.state ~= "Ready" then return c, "the staging mod is " .. tostring(c.state) .. ", not Ready" end
-		if c.modhubIdValid ~= false then
-			return c, c.modhubIdValid and ("the staging mod already has a mod.io id (" .. tostring(c.modhubIdValue)
-				.. "): publish makes only a new mod, not an update") or "the staging mod's mod.io id cannot be read"
+		if job.args.update then
+			local want = job.args.modioId
+			c.expectedModioId = want
+			if c.modhubIdValid ~= true then
+				return c, c.modhubIdValid == false and ("the staging mod has no mod.io id, but an update of mod.io mod "
+					.. want .. " was asked for: the game would make a new mod page") or "the staging mod's mod.io id cannot be read"
+			end
+			if c.modhubIdValue ~= want then
+				return c, "the staging mod's mod.io id is " .. tostring(c.modhubIdValue) .. ", not " .. want
+					.. " (_metadata/mod.io_fileid.txt): not updated"
+			end
+			if remote == nil or remote.found == false then
+				return c, "mod.io holds no details of mod " .. want .. " (deleted on mod.io, or not synced): the game "
+					.. "would make a new mod page; not updated"
+			end
+			if remote.modId ~= nil and remote.modId ~= want then
+				return c, "mod.io's details are of mod " .. remote.modId .. ", not " .. want .. ": not updated"
+			end
+			if remote.visible == true and job.args.public == false then
+				return c, "mod " .. want .. " is public on mod.io, and the page cannot make it hidden (its Set Public "
+					.. "box is disabled then): give public = true"
+			end
+		else
+			if c.modhubIdValid ~= false then
+				return c, c.modhubIdValid and ("the staging mod already has a mod.io id (" .. tostring(c.modhubIdValue)
+					.. "): a first upload makes only a new mod; an update is asked without firstUpload")
+					or "the staging mod's mod.io id cannot be read"
+			end
+			if c.hasModhubDetails then return c, "mod.io has details for this staging mod: it is not new" end
 		end
-		if c.hasModhubDetails then return c, "mod.io has details for this staging mod: it is not new" end
 		-- mod.io busy (e.g. syncing the other staging mods) passes: waited for, not refused
 		if notReady then return c, notReady, nil, true end
 		if r.initialized ~= true then return c, "mod.io is not initialized" end
@@ -559,6 +597,12 @@ function M.new(ctx)
 				local res = out.result or {}
 				out.modId = res.modId
 				if res.success == true then
+					if job.args.update and res.modId ~= job.args.modioId then
+						-- an update answered with another mod.io id: a new page may have been made
+						out.outcome = "other id"
+						return endPublish(job, out, "the update of mod.io mod " .. job.args.modioId .. " came back as mod.io mod "
+							.. tostring(res.modId) .. ": look at the account's mods on mod.io")
+					end
 					local partial = res.partialErrors or {}
 					if #partial > 0 then
 						out.outcome = "partial"
@@ -654,8 +698,8 @@ function M.new(ctx)
 				out.outcome = "failed"
 				return endPublish(job, out, "publish raised: " .. tostring(err) .. " (whether anything reached mod.io is not known)")
 			end
-			say("publishing staging mod " .. job.args.folder .. " (new mod, public " .. tostring(job.args.public)
-				.. ") for command " .. job.id)
+			say("publishing staging mod " .. job.args.folder .. " (" .. (job.args.update and ("update of mod.io mod "
+				.. job.args.modioId) or "new mod") .. ", public " .. tostring(job.args.public) .. ") for command " .. job.id)
 			job.phase = "publishing"
 			job.nextProgress = appTime() -- a progress answer at once: the tool sees that publish was called
 			return publishProgress(job)

@@ -2602,8 +2602,10 @@ function M.modhubValidateArgs(args)
 end
 
 -- args: folder (required, from MODHUB_PUBLISH_FOLDERS), public (true / false, required: no default visibility),
--- firstUpload (must be true: only a new mod is made, never an update), changelog (text, required), dryRun,
--- timeout (s, the whole command), messages (validator messages listed)
+-- one of firstUpload = true (a new mod page) or update = true with modioId (the mod.io id tools/tf3ctl.py read from
+-- the staging folder's _metadata/mod.io_fileid.txt: the update goes only to that page), changelog (text, required),
+-- dryRun, timeout (s, the whole command), messages (validator messages listed). Both or neither of firstUpload and
+-- update is refused: a new page and an update must never be taken for each other.
 function M.modhubPublishArgs(args)
 	args = type(args) == "table" and args or {}
 	local f, err = M.stagingFolderArg(args.folder)
@@ -2614,8 +2616,22 @@ function M.modhubPublishArgs(args)
 		table.sort(names)
 		return nil, "publish takes only these staging folders: " .. table.concat(names, ", ") .. " (not " .. f .. ")"
 	end
-	if args.firstUpload ~= true then
-		return nil, "publish makes only a new mod: give firstUpload = true (an update of a mod on mod.io is not offered)"
+	if args.firstUpload ~= nil and args.firstUpload ~= true then return nil, "firstUpload is true or not given" end
+	if args.update ~= nil and args.update ~= true then return nil, "update is true or not given" end
+	if args.firstUpload and args.update then
+		return nil, "give firstUpload = true (a new mod) or update = true (a mod already on mod.io), not both"
+	end
+	if not args.firstUpload and not args.update then
+		return nil, "give firstUpload = true (a new mod) or update = true with modioId (a mod already on mod.io)"
+	end
+	local modioId
+	if args.update then
+		modioId = args.modioId
+		if type(modioId) ~= "string" or not modioId:find("^%d+$") or #modioId > 20 then
+			return nil, "an update needs modioId, the mod.io id (digits) of _metadata/mod.io_fileid.txt"
+		end
+	elseif args.modioId ~= nil then
+		return nil, "modioId is only for an update: a first upload has no mod.io id yet"
 	end
 	if type(args.public) ~= "boolean" then
 		return nil, "give public = true or false: there is no default visibility"
@@ -2637,8 +2653,8 @@ function M.modhubPublishArgs(args)
 			return nil, "messages must be a whole number 0-" .. M.MODHUB_MESSAGES.max
 		end
 	end
-	return { folder = f, public = args.public, firstUpload = true, changelog = args.changelog,
-		dryRun = args.dryRun == true, timeout = t, messages = n }
+	return { folder = f, public = args.public, firstUpload = args.firstUpload == true, update = args.update == true,
+		modioId = modioId, changelog = args.changelog, dryRun = args.dryRun == true, timeout = t, messages = n }
 end
 
 -- whether a finished validation lets the upload go without a person. The base's Upload button needs a result

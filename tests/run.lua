@@ -6724,6 +6724,135 @@ test("modhub publish: refused inside a save; quit while it validates cancels it 
 	noUploads(g)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- modhub publish, an update: the mod.io page of the fileid, as the page's Update button (the same publish call)
+
+local FU_ID = "6543965"
+local function fuOnModio(extra)
+	local e = { modhubId = FU_ID, details = { visible = true, title = "Auto Force Unload at Drop-off Stops", modId = FU_ID,
+		version = "10001" }, publish = { modId = FU_ID } }
+	for k, v in pairs(extra or {}) do e[k] = v end
+	return fuStaging(e)
+end
+local function updateCmd(extra)
+	local t = { string.format("folder = %q", FU), "public = true", "update = true", string.format("modioId = %q", FU_ID),
+		string.format("changelog = %q", "Wording.") }
+	for _, x in ipairs(extra or {}) do t[#t + 1] = x end
+	return "{ " .. table.concat(t, ", ") .. " }"
+end
+
+test("modhub core: an update needs update = true and the mod.io id; a first upload and an update are never both or neither", function()
+	local a = core.modhubPublishArgs({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = "x" })
+	eq(a.update, true); eq(a.firstUpload, false); eq(a.modioId, FU_ID)
+	a = core.modhubPublishArgs({ folder = FU, public = true, firstUpload = true, changelog = "x" })
+	eq(a.firstUpload, true); eq(a.update, false); eq(a.modioId, nil)
+	local function why(t) return select(2, core.modhubPublishArgs(t)) end
+	truthy(why({ folder = FU, public = true, firstUpload = true, update = true, modioId = FU_ID, changelog = "x" }):find("not both"))
+	truthy(why({ folder = FU, public = true, changelog = "x" }):find("firstUpload = true %(a new mod%) or update = true"))
+	truthy(why({ folder = FU, public = true, update = true, changelog = "x" }):find("needs modioId"))
+	for _, bad in ipairs({ "", "65x3965", "6543965 ", 6543965, "123456789012345678901" }) do
+		truthy(why({ folder = FU, public = true, update = true, modioId = bad, changelog = "x" }):find("needs modioId"), tostring(bad))
+	end
+	truthy(why({ folder = FU, public = true, firstUpload = true, modioId = FU_ID, changelog = "x" }):find("only for an update"))
+	truthy(why({ folder = FU, public = true, update = "yes", modioId = FU_ID, changelog = "x" }):find("update is true"))
+	truthy(why({ folder = FU, public = true, firstUpload = false, update = true, modioId = FU_ID, changelog = "x" }):find("firstUpload is true"))
+	truthy(why({ folder = FU, public = true, update = true, modioId = FU_ID }):find("changelog"))
+	truthy(why({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = " " }):find("changelog"))
+	-- the folder list holds for an update too
+	truthy(why({ folder = "hummer_industry_pollution_display_1", public = true, update = true, modioId = "6500003",
+		changelog = "x" }):find("only these staging folders"))
+end)
+
+test("modhub publish update dry run: the mod.io id, mod.io's name and version, the settings; publish never called", function()
+	local g = modhubGame({ staging = fuOnModio() })
+	send(g, 1450, "modhubPublish", updateCmd({ "dryRun = true" }))
+	frames(g, FIRST + 60)
+	local a = final(g, 1450)
+	truthy(a, "answered")
+	eq(a.ok, true, a.error); eq(a.wouldPublish, true); eq(a.publishCalled, false); eq(a.mode, "update"); eq(a.modioId, FU_ID)
+	eq(a.checks.mode, "update"); eq(a.checks.modhubIdValid, true); eq(a.checks.modhubIdValue, FU_ID)
+	eq(a.checks.expectedModioId, FU_ID); eq(a.checks.hasModhubDetails, true)
+	eq(a.checks.modio.title, "Auto Force Unload at Drop-off Stops"); eq(a.checks.modio.version, "10001")
+	eq(a.checks.modio.visible, true); eq(a.checks.modio.modId, FU_ID)
+	eq(a.settings.setPublic, true); eq(a.settings.updateMetadata, true); eq(a.settings.changeLog, "Wording.")
+	eq(#g.validateCalls, 1, "validated first, as the page does")
+	noUploads(g)
+end)
+
+test("modhub publish update refuses another mod.io id, a mod without one, one mod.io lacks, and hiding a public mod", function()
+	local cases = {
+		{ fuOnModio({ modhubId = "7000009", details = { visible = true, modId = "7000009" } }), nil,
+			"mod.io id is 7000009, not 6543965" },
+		{ fuStaging(), nil, "has no mod.io id, but an update" }, -- a new mod: the game would make a page
+		{ fuOnModio({ details = false }), nil, "holds no details of mod 6543965" }, -- deleted on mod.io (remoteMissing)
+		{ fuOnModio({ details = { visible = true, modId = FU_ID, found = false } }), nil, "holds no details" },
+		{ fuOnModio({ details = { visible = true, modId = "7000002" } }), nil, "details are of mod 7000002" },
+		{ fuOnModio(), { "public = false" }, "cannot make it hidden" },
+		{ fuOnModio({ logo = false }), nil, "no valid cover image" },
+	}
+	for i, c in ipairs(cases) do
+		if c[1][1].details == false then c[1][1].details = nil end
+		for _, dry in ipairs({ true, false }) do
+			local g = modhubGame({ staging = c[1] })
+			local extra = { dry and "dryRun = true" or "timeout = 900" }
+			local cmd = updateCmd(extra)
+			if c[2] then cmd = cmd:gsub("public = true", c[2][1]) end
+			send(g, 1451, "modhubPublish", cmd)
+			frames(g, FIRST + 60)
+			local a = final(g, 1451)
+			eq(a.ok, false, i .. ": " .. c[3]); truthy(a.error:find(c[3]), i .. ": " .. a.error)
+			truthy(a.error:find("not updated") or a.error:find("nothing was uploaded"), a.error)
+			eq(a.publishCalled, false); eq(a.mode, "update")
+			noUploads(g)
+		end
+	end
+	-- a first upload of a mod already on mod.io is refused as before, and names the update
+	local g = modhubGame({ staging = fuOnModio() })
+	send(g, 1452, "modhubPublish", publishCmd())
+	frames(g, FIRST + 60)
+	local a = final(g, 1452)
+	eq(a.ok, false); truthy(a.error:find("already has a mod.io id %(6543965%)"), a.error); eq(a.mode, "firstUpload")
+	noUploads(g)
+	-- a hidden mod on mod.io may stay hidden or turn public
+	for _, pub in ipairs({ "public = false", "public = true" }) do
+		g = modhubGame({ staging = fuOnModio({ details = { visible = false, modId = FU_ID } }) })
+		send(g, 1453, "modhubPublish", (updateCmd({ "dryRun = true" }):gsub("public = true", pub)))
+		frames(g, FIRST + 60)
+		a = final(g, 1453)
+		eq(a.ok, true, a.error); eq(a.settings.setPublic, pub == "public = true")
+		noUploads(g)
+	end
+end)
+
+test("modhub publish update: one publish call with the page's Update settings; the same mod.io id back; once per launch", function()
+	local g = modhubGame({ staging = fuOnModio() })
+	send(g, 1455, "modhubPublish", updateCmd())
+	frames(g, FIRST + 60)
+	eq(#g.publishCalls, 1, "publish called once")
+	local call = g.publishCalls[1]
+	eq(call.value, FU); eq(call.state, "Ready")
+	eq(call.settings.setPublic, true); eq(call.settings.updateMetadata, true); eq(call.settings.changeLog, "Wording.")
+	eq(call.settings.isSavegame, false); eq(call.settings.issuesConfirmed, false)
+	frames(g, 30)
+	local a = final(g, 1455)
+	eq(a.ok, true, a.error); eq(a.modId, FU_ID); eq(a.mode, "update"); eq(a.cleanedUp, true)
+	eq(#g.forbidden, 0, table.concat(g.forbidden, ", "))
+	send(g, 1456, "modhubPublish", updateCmd())
+	frames(g, 10)
+	truthy(final(g, 1456).error:find("already sent in this launch"), "once per launch")
+	eq(#g.publishCalls, 1)
+	-- the game answered another mod.io id: not a success (a new page may have been made)
+	g = modhubGame({ staging = fuOnModio({ publish = { modId = "7000077" } }) })
+	send(g, 1457, "modhubPublish", updateCmd())
+	frames(g, FIRST + 90)
+	a = final(g, 1457)
+	eq(a.ok, false); eq(a.outcome, "other id"); eq(a.modId, "7000077")
+	truthy(a.error:find("update of mod.io mod 6543965 came back as mod.io mod 7000077"), a.error)
+	send(g, 1458, "modhubStatus", '{ wait = 0 }')
+	frames(g, 10)
+	eq(final(g, 1458).publishedThisLaunch.outcome, "other id")
+end)
+
 test("modhub status --folder waits for that mod's sync only; validate waits for its own mod too", function()
 	-- in game (2026-11-22) another staging mod stayed in Sync for 120 s and status --folder timed out on it
 	local staging = { { folder = "hummer_industry_pollution_display_1", modhubId = "6500003", syncFrames = 30,

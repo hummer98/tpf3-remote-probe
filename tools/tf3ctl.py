@@ -88,6 +88,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py modhub status [--folder F] | modhub validate F   # My Mods in the main menu (read; re-validate)
   tf3ctl.py modhub publish F --public yes --changelog "..." --first-upload [--dry-run]   # one new mod to mod.io
             # (one allowed folder; no fileid yet; a mark in $XDG_STATE_HOME/tf3ctl/ until the fileid appears)
+  tf3ctl.py modhub publish F --public yes --changelog "..." [--dry-run]   # update the mod.io page of its fileid
+            # (the fileid there; mod.json's revision above the last one uploaded, from publish_history.jsonl or,
+            # when that has none, --previous-revision N)
   tf3ctl.py modhub publish-clear --yes       # remove that mark, after looking at mod.io
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is only shown (status:
@@ -2079,11 +2082,16 @@ def modhub_validate_args(ns):
     return args
 
 
-# modhub publish: one new mod uploaded from My Mods' staging area, as the page's Upload button. The mod checks what
-# the game knows (the mod is new to mod.io, logged in, the validation); this side checks what only files show, as
-# Lua has no io: no _metadata/mod.io_fileid.txt (the file that makes the next upload update the same mod.io page;
-# with it, a "first upload" would make a second page), a cover image (_metadata/0.png), and the lengths of the
-# mod.io fields (_metadata/modinfo.json, --changelog: mod.io refuses a long name only after the upload began).
+# modhub publish: one mod uploaded from My Mods' staging area, as the page's Upload / Update button (one publish
+# call for both; the page names it "Update" when mod.io holds the mod). Which of the two is never guessed: with
+# --first-upload the staging folder must have no _metadata/mod.io_fileid.txt (the file that makes the next upload
+# update the same mod.io page; with it, a "first upload" would make a second page); without it the file must be
+# there, and its id goes to the mod, which updates only a mod whose mod.io id is that one and that mod.io holds. An
+# update also needs mod.json's revision above the last one uploaded to that page (publish_history.jsonl, or
+# --previous-revision when the history has none). The mod checks what the game knows (new or that mod, logged in,
+# the validation); this side checks what only files show, as Lua has no io: the fileid file, the revision, a
+# cover image (_metadata/0.png), and the lengths of the mod.io fields (_metadata/modinfo.json, --changelog: mod.io
+# refuses a long name only after the upload began).
 # Before it sends the command it writes a mark (publish_pending.json): an upload that timed out, failed half-way
 # or lost its game may still have made a mod on mod.io, and a second one must not go until a person looked. The
 # mark goes only when the upload succeeded and the fileid file appeared with the same mod.io id, or by
@@ -2206,16 +2214,97 @@ def png_size(path):
     return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
 
 
-def publish_local_checks(name, folder=None, changelog=None):
-    """What only the files show. Returns the checks; ToolError when one fails (nothing is sent then)."""
+def read_fileid(name, meta):
+    """The mod.io id in _metadata/mod.io_fileid.txt: None when there is no such file; ToolError when it is there but
+    is not one id (digits)."""
+    path = os.path.join(meta, FILEID_NAME)
+    if not os.path.lexists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read().strip()
+    except (OSError, ValueError) as e:
+        raise ToolError("%s: cannot read _metadata/%s (%s); nothing was sent" % (name, FILEID_NAME, e))
+    if not re.fullmatch(r"[0-9]{1,20}", text):
+        raise ToolError("%s: _metadata/%s does not hold one mod.io id (%r); nothing was sent" % (name, FILEID_NAME, text[:40]))
+    return text
+
+
+def read_revision(name, mod_dir):
+    """mod.json's revision (a whole number), None when it has none or cannot be read as JSON with one."""
+    try:
+        with open(os.path.join(mod_dir, "mod.json"), encoding="utf-8") as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        return None
+    rev = info.get("revision") if isinstance(info, dict) else None
+    return rev if isinstance(rev, int) and not isinstance(rev, bool) else None
+
+
+def uploaded_revision(name, modio_id):
+    """The highest revision publish_history.jsonl records as gone up to mod.io mod modio_id from this folder (an
+    upload mod.io answered with that id: success, partial errors, or a fileid that came late), None if none."""
+    best = None
+    try:
+        with open(history_path(), encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    for line in lines:
+        try:
+            h = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(h, dict) or h.get("folder") != name or str(h.get("modId")) != modio_id:
+            continue
+        rev = h.get("revision")
+        if isinstance(rev, int) and not isinstance(rev, bool) and (best is None or rev > best):
+            best = rev
+    return best
+
+
+def publish_update_checks(name, mod_dir, modio_id, changelog, previous=None):
+    """An update's own checks: mod.json's revision above the last one uploaded to that mod.io page. The last one is
+    the history's; --previous-revision (previous) stands in only when the history has none, and must agree with it
+    when it has one. Returns what the answer shows; ToolError when it fails (nothing is sent then)."""
+    rev = read_revision(name, mod_dir)
+    if rev is None:
+        raise ToolError("%s: mod.json has no whole-number revision: an update must raise it; nothing was sent" % name)
+    known = uploaded_revision(name, modio_id)
+    if known is not None and previous is not None and previous != known:
+        raise ToolError("%s: --previous-revision %d, but %s says revision %d went up to mod.io mod %s last; drop "
+                        "--previous-revision; nothing was sent" % (name, previous, HISTORY_NAME, known, modio_id))
+    last, source = (known, HISTORY_NAME) if known is not None else (previous, "--previous-revision")
+    if last is None:
+        raise ToolError("%s: %s records no revision uploaded to mod.io mod %s (uploads before the revision was "
+                        "recorded): give --previous-revision N, the revision now on mod.io; nothing was sent"
+                        % (name, HISTORY_NAME, modio_id))
+    if rev <= last:
+        raise ToolError("%s: mod.json's revision %d is not above %d, the last one uploaded to mod.io mod %s (%s): "
+                        "raise it; nothing was sent" % (name, rev, last, modio_id, source))
+    return {"modioId": modio_id, "revision": rev, "previousRevision": last, "previousFrom": source,
+            "changelog": changelog}
+
+
+def publish_local_checks(name, folder=None, changelog=None, first_upload=True, previous=None):
+    """What only the files show. Returns the checks; ToolError when one fails (nothing is sent then). first_upload:
+    a new mod (no fileid file may be there) or an update (the fileid file must be there; its id is answered as
+    fileid, the update's checks as update)."""
     mod_dir = os.path.join(staging_dir(folder), name)
     meta = os.path.join(mod_dir, "_metadata")
     if not os.path.isfile(os.path.join(mod_dir, "mod.json")):
         raise ToolError("no staging mod %s: %s has no mod.json" % (name, mod_dir))
-    fileid = os.path.join(meta, FILEID_NAME)
-    if os.path.lexists(fileid):
-        raise ToolError("%s has _metadata/%s: it was uploaded before, and publish makes only a new mod "
-                        "(an upload now would update or duplicate that mod.io page); nothing was sent" % (name, FILEID_NAME))
+    modio_id = read_fileid(name, meta)
+    if first_upload and modio_id is not None:
+        raise ToolError("%s has _metadata/%s (mod.io mod %s): it was uploaded before, and --first-upload makes only "
+                        "a new mod (a second mod.io page); leave out --first-upload to update that page; nothing "
+                        "was sent" % (name, FILEID_NAME, modio_id))
+    if not first_upload and modio_id is None:
+        raise ToolError("%s has no _metadata/%s: it was never uploaded, so there is no mod.io page to update; a new "
+                        "mod takes --first-upload; nothing was sent" % (name, FILEID_NAME))
+    if first_upload and previous is not None:
+        raise ToolError("--previous-revision is only for an update; nothing was sent")
+    update = None if first_upload else publish_update_checks(name, mod_dir, modio_id, changelog, previous)
     cover = os.path.join(meta, "0.png")
     if not os.path.isfile(cover):
         raise ToolError("%s has no _metadata/0.png: the page says \"No valid cover image found\"; nothing was sent" % name)
@@ -2228,8 +2317,15 @@ def publish_local_checks(name, folder=None, changelog=None):
     if dims[0] < COVER_MIN_SIZE[0] or dims[1] < COVER_MIN_SIZE[1]:
         raise ToolError("%s: _metadata/0.png is %dx%d, smaller than mod.io's %dx%d; nothing was sent"
                         % ((name,) + dims + COVER_MIN_SIZE))
-    return {"stagingFolder": name, "fileid": False, "cover": {"width": dims[0], "height": dims[1], "bytes": size},
-            "metadata": publish_metadata_checks(name, meta, changelog)}
+    metadata = publish_metadata_checks(name, meta, changelog)
+    out = {"stagingFolder": name, "mode": "firstUpload" if first_upload else "update", "fileid": modio_id or False,
+           "revision": read_revision(name, mod_dir),
+           "cover": {"width": dims[0], "height": dims[1], "bytes": size}, "metadata": metadata}
+    if update is not None:
+        update["name"] = metadata.get("nameText")
+        out["update"] = update
+    metadata.pop("nameText", None)
+    return out
 
 
 def publish_metadata_checks(name, meta, changelog=None):
@@ -2252,6 +2348,8 @@ def publish_metadata_checks(name, meta, changelog=None):
             bad.append("%s is missing, empty or not a string" % label)
             continue
         got[label.split(" ")[-1].lstrip("-")] = {"length": len(value), "max": limit}
+        if label == "modinfo.json name":
+            got["nameText"] = value  # for an update's answer (the caller takes it out of the lengths)
         if len(value) > limit:
             bad.append("%s is %d characters, more than %s %d" % (label, len(value), whose, limit))
     tags = info.get("tags")
@@ -2268,13 +2366,18 @@ def modhub_publish_args(ns):
     if ns.folder not in MODHUB_PUBLISH_FOLDERS:
         raise ToolError("publish takes only these staging folders: %s (not %s)" % (", ".join(MODHUB_PUBLISH_FOLDERS),
                                                                                     ns.folder))
-    if not ns.first_upload:
-        raise ToolError("publish makes only a new mod: give --first-upload (an update of a mod on mod.io is not offered)")
     if ns.public not in ("yes", "no"):
         raise ToolError("give --public yes or --public no: there is no default visibility")
     if not ns.changelog or not ns.changelog.strip():
         raise ToolError("give --changelog TEXT")
-    args = {"folder": ns.folder, "public": ns.public == "yes", "firstUpload": True, "changelog": ns.changelog}
+    if ns.previous_revision is not None and ns.first_upload:
+        raise ToolError("--previous-revision is only for an update (without --first-upload)")
+    # firstUpload or update: which one also needs the staging files (cmd_modhub_publish adds modioId for an update)
+    args = {"folder": ns.folder, "public": ns.public == "yes", "changelog": ns.changelog}
+    if ns.first_upload:
+        args["firstUpload"] = True
+    else:
+        args["update"] = True
     if ns.timeout is not None:
         args["timeout"] = ns.timeout
     if ns.messages is not None:
@@ -2302,7 +2405,18 @@ def wait_fileid(name, folder=None, wait=None):
 def cmd_modhub_publish(ns):
     args = modhub_publish_args(ns)
     folder = exchange_dir()
-    local = publish_local_checks(args["folder"], folder, args["changelog"])
+    first = args.get("firstUpload") is True
+    previous = ns.previous_revision
+
+    def local_checks():
+        got = publish_local_checks(args["folder"], folder, args["changelog"], first_upload=first, previous=previous)
+        if not first:
+            if "modioId" in args and args["modioId"] != got["fileid"]:
+                raise ToolError("%s changed meanwhile (%s, was %s); nothing was sent"
+                                % (FILEID_NAME, got["fileid"], args["modioId"]))
+            args["modioId"] = got["fileid"]
+        return got
+    local = local_checks()
     mark = read_pending()
     if mark is not None:
         raise ToolError("a publish mark is there (%s: %s): an earlier upload's outcome was not confirmed. Look at "
@@ -2317,22 +2431,28 @@ def cmd_modhub_publish(ns):
     # the dry run, and before a real upload the same run first: a refusal there leaves no mark behind
     pre = send("modhubPublish", dict(args, dryRun=True), timeout=timeout, on_progress=progress, folder=folder)
     pre["local"] = local
+    if not first:
+        pre["update"] = update_summary(local, pre)
     if ns.dry_run or not pre.get("ok"):
         if not ns.dry_run:
             pre["preflight"] = True
             pre["note"] = "the dry run before the upload refused it: nothing was uploaded and no mark was written"
         return pre
     # again just before: the dry run took a while
-    local = publish_local_checks(args["folder"], folder, args["changelog"])
+    local = local_checks()
     if read_pending() is not None:
         raise ToolError("a publish mark appeared meanwhile (%s); nothing was sent" % pending_path())
     path = write_pending({"v": 1, "folder": args["folder"], "owner": OWNER, "public": args["public"],
-                          "firstUpload": True, "at": int(time.time()),
+                          "firstUpload": first, "update": not first, "modioId": args.get("modioId"),
+                          "revision": local.get("revision"), "at": int(time.time()),
                           "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     def history(outcome, res=None, fileid=None):
         res = res or {}
+        # revision: what the next update compares with (uploaded_revision takes the records with a mod.io id)
         got = append_history({"v": 1, "at": int(time.time()), "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "owner": OWNER, "folder": args["folder"], "public": args["public"], "outcome": outcome,
+                              "mode": "firstUpload" if first else "update", "modioId": args.get("modioId"),
+                              "revision": local.get("revision"),
                               "publishCalled": res.get("publishCalled"), "modId": res.get("modId"), "fileid": fileid,
                               "error": res.get("error")})
         if got:
@@ -2343,6 +2463,8 @@ def cmd_modhub_publish(ns):
         history("no answer", {"error": str(e)})
         raise ToolError("%s; the outcome of the upload is not known, the publish mark stays (%s)" % (e, path))
     res["local"] = local
+    if not first:
+        res["update"] = update_summary(local, res)
     res["preflight"] = {"ok": True, "validation": pre.get("validation")}
     res["pendingMark"] = path
     result = res.get("result") if isinstance(res.get("result"), dict) else {}
@@ -2365,6 +2487,14 @@ def cmd_modhub_publish(ns):
         return res
     got = wait_fileid(args["folder"], folder)
     res["fileid"] = got
+    if not first and res.get("modId") != args["modioId"]:
+        # the mod refuses this too; kept here as well: an update that came back as another mod.io mod is a new page
+        res["pendingKept"] = True
+        res["ok"] = False
+        res["error"] = ("the update of mod.io mod %s came back as mod.io mod %s: the mark stays; look at the "
+                        "account's mods on mod.io before `modhub publish-clear`" % (args["modioId"], res.get("modId")))
+        history("success, other mod.io id", res, fileid=got)
+        return res
     if got is None or got != res.get("modId"):
         res["pendingKept"] = True
         res["ok"] = False
@@ -2378,6 +2508,18 @@ def cmd_modhub_publish(ns):
     clear_pending()
     res["pendingCleared"] = True
     return res
+
+
+def update_summary(local, answer):
+    """What an update is about to change (or changed), in one place: the mod.io id, the name (modinfo.json's, which
+    the update sends, and mod.io's title now), the revision against the last one uploaded, and the changelog."""
+    up = local.get("update") or {}
+    checks = answer.get("checks") if isinstance(answer.get("checks"), dict) else {}
+    modio = checks.get("modio") if isinstance(checks.get("modio"), dict) else {}
+    return {"modioId": up.get("modioId"), "name": up.get("name"), "modioTitle": modio.get("title"),
+            "modioVisible": modio.get("visible"), "modioVersion": modio.get("version"),
+            "revision": up.get("revision"), "previousRevision": up.get("previousRevision"),
+            "previousFrom": up.get("previousFrom"), "changelog": up.get("changelog")}
 
 
 def cmd_modhub_publish_clear(ns):
@@ -3372,7 +3514,7 @@ def make_parser():
     cn.add_argument("--clear", action="store_true", help="with --build: knock down town buildings in the way")
     cn.add_argument("--timeout", type=float, default=120, help="seconds for the whole command (10-1800)")
     mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate, publish "
-                                       "(one new mod)")
+                                       "(one new mod, or an update of one on mod.io)")
     msub = mh.add_subparsers(dest="action", required=True)
     mst = msub.add_parser("status", help="read only: whether the publish helper can be made, mod.io's state, and "
                                          "each staging mod (state, mod.io id, mod.io details and visibility)")
@@ -3385,12 +3527,16 @@ def make_parser():
     mva.add_argument("--timeout", type=float, help="seconds before the validation is aborted (default 300, at "
                                                    "most 1800)")
     mva.add_argument("--messages", type=int, help="validator messages listed (0-500, default 50; all are counted)")
-    mpu = msub.add_parser("publish", help="upload one new mod to mod.io as My Mods' Upload button (only the folders "
-                                          "both this tool and the mod allow; a first upload only)")
+    mpu = msub.add_parser("publish", help="upload one mod to mod.io as My Mods' Upload / Update button (only the "
+                                          "folders both this tool and the mod allow): a new mod with --first-upload, "
+                                          "else an update of the mod.io page in _metadata/" + FILEID_NAME)
     mpu.add_argument("folder", help="the staging folder name")
     mpu.add_argument("--public", help="yes or no (required: there is no default visibility)")
     mpu.add_argument("--changelog", help="the changelog text (required)")
-    mpu.add_argument("--first-upload", action="store_true", help="required: publish makes only a new mod")
+    mpu.add_argument("--first-upload", action="store_true", help="a new mod (refused when the folder has "
+                     + FILEID_NAME + "); without it, an update (refused when it has none)")
+    mpu.add_argument("--previous-revision", type=int, help="an update only, when " + HISTORY_NAME + " records no "
+                     "revision for that mod.io mod: the revision now on mod.io (mod.json's must be above it)")
     mpu.add_argument("--dry-run", action="store_true", help="check and validate, answer the settings; no upload")
     mpu.add_argument("--timeout", type=float, help="seconds for the mod's whole command (default 900, at most 3600); "
                                                    "past it the upload is not aborted and its outcome is unknown")
