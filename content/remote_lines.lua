@@ -307,13 +307,31 @@ function M.new(ctx)
 			local stationEntity = group and st and core.at(core.field(group, "stations"), st + 1) or nil
 			-- loadMode: a number as the base's cargo filter reads it (0 available, 1 any, 2 all); nil if not one
 			local lm = core.field(s, "loadMode")
-			stops[#stops + 1] = { stationGroup = sg, name = sg and nameOf(sg) or nil, station = st, terminal = te,
-				stationEntity = tonumber(stationEntity), loadMode = type(lm) == "number" and lm or nil }
 			local cfg = core.field(s, "stopConfig")
-			local load = core.toList(cfg and core.field(cfg, "load"))
-			for i, on in ipairs(load) do
-				if on == true and not loadSet[i - 1] then loadSet[i - 1] = true; loads[#loads + 1] = cargoName(i - 1, types) end
+			-- the stop's StopConfig flags and waiting times, as the cargo filter window reads them
+			-- (cargofilter_window.tl): a boolean or number, nil when the engine gives none
+			local function flag(k)
+				local v = cfg and core.field(cfg, k)
+				if type(v) == "boolean" then return v end
+				return nil
 			end
+			local function num(k) return tonumber(core.field(s, k)) end
+			local load = core.toList(cfg and core.field(cfg, "load"))
+			local maxLoad = core.toList(cfg and core.field(cfg, "maxLoad"))
+			-- this stop's loads: the cargo types it loads, with the fraction of the capacity (maxLoad, 0..1)
+			local stopLoads = {}
+			for i, on in ipairs(load) do
+				if on == true then
+					if not loadSet[i - 1] then loadSet[i - 1] = true; loads[#loads + 1] = cargoName(i - 1, types) end
+					stopLoads[#stopLoads + 1] = { cargoType = i - 1, cargo = cargoName(i - 1, types), maxLoad = tonumber(maxLoad[i]) }
+				end
+			end
+			stops[#stops + 1] = { stationGroup = sg, name = sg and nameOf(sg) or nil, station = st, terminal = te,
+				stationEntity = tonumber(stationEntity), loadMode = type(lm) == "number" and lm or nil,
+				forceUnload = flag("forceUnload"), destroyForConfigChange = flag("destroyForConfigChange"),
+				destroyForRefresh = flag("destroyForRefresh"), stopLoads = core.array(stopLoads),
+				minWaitingTime = num("minWaitingTime"), maxWaitingTime = num("maxWaitingTime"),
+				maxAdditionalWaitingTime = num("maxAdditionalWaitingTime") }
 		end
 		-- what the line's vehicles can carry: their capacities per cargo type (the base vehicle window reads
 		-- transportVehicle.config.capacities the same way)
@@ -498,13 +516,13 @@ function M.new(ctx)
 		return api.type.Vec3f.new(c[1], c[2], c[3])
 	end
 
-	-- the platforms and load modes of a request (perStop below) onto a request or cmdLine's argument
+	-- the platforms, load modes and force unload of a request (perStop below) onto a request or cmdLine's argument
 	local function withPerStop(r, per)
-		r.terminals, r.loadModes, r.carriers = per.terminals, per.loadModes, per.carriers
+		r.terminals, r.loadModes, r.carriers, r.forceUnload = per.terminals, per.loadModes, per.carriers, per.forceUnload
 		return r
 	end
 
-	-- the line's stops read back hold the platforms and load modes asked for: an error, or nil
+	-- the line's stops read back hold the platforms, load modes and force unload asked for: an error, or nil
 	local function perStopDiffers(stopsNow, per)
 		for i, s in ipairs(stopsNow or {}) do
 			local t = per.terminals and per.terminals[i]
@@ -515,6 +533,10 @@ function M.new(ctx)
 			local m = per.loadModes and per.loadModes[i]
 			if m and s.loadMode ~= nil and s.loadMode ~= m then
 				return string.format("stop %d has load mode %s, not %d as asked", i, tostring(s.loadMode), m)
+			end
+			local f = per.forceUnload and per.forceUnload[i]
+			if f ~= nil and s.forceUnload ~= f then
+				return string.format("stop %d has force unload %s, not %s as asked", i, tostring(s.forceUnload), tostring(f))
 			end
 		end
 		return nil
@@ -587,7 +609,7 @@ function M.new(ctx)
 		local job = newJob(c, a)
 		job.entity, job.before = a.line, before
 		job.wanted = stops and idsOf(stops) or nil
-		local rebuild = stops ~= nil or cargoId ~= nil or per.terminals ~= nil or per.loadModes ~= nil
+		local rebuild = stops ~= nil or cargoId ~= nil or per.terminals ~= nil or per.loadModes ~= nil or per.forceUnload ~= nil
 		job.check = function()
 			if job.reportError then return true end
 			if rebuild then
@@ -690,14 +712,14 @@ function M.new(ctx)
 		end)
 	end
 
-	-- the platforms (terminals) and load modes of a create or update, one per stop of the line as it will be (the
-	-- stops given, or the line's own), checked here so a refusal answers at once; line_configs checks the platforms
-	-- again in the Lua state that sends. On an update of a line with vehicles the platforms must serve the carrier
+	-- the platforms (terminals), load modes and force unload of a create or update, one per stop of the line as it
+	-- will be (the stops given, or the line's own), checked here so a refusal answers at once; line_configs checks
+	-- the platforms again in the Lua state that sends. On an update of a line with vehicles the platforms must serve the carrier
 	-- those run on, taken as the base's line_util.getLineCarriers does: from the first stop's platform. Returns
-	-- { terminals, loadModes, carriers } (each may be nil), or nil and why.
+	-- { terminals, loadModes, carriers, forceUnload } (each may be nil), or nil and why.
 	function perStop(a, stops)
 		local out = {}
-		if not (a.terminals or a.loadModes or a.loadModeAll) then return out end
+		if not (a.terminals or a.loadModes or a.loadModeAll or a.forceUnload) then return out end
 		local groups = {}
 		local before = a.action == "update" and lineInfo(a.line) or nil
 		for _, s in ipairs(stops or (before and before.stops) or {}) do groups[#groups + 1] = { stationGroup = s.id or s.stationGroup } end
@@ -714,6 +736,12 @@ function M.new(ctx)
 				return nil, string.format("give one load mode for every stop, or one for all (%d stops, %d load modes)", n, #a.loadModes)
 			end
 			out.loadModes = a.loadModes
+		end
+		if a.forceUnload then
+			if #a.forceUnload ~= n then
+				return nil, string.format("give one force unload value for every stop (%d stops, %d values)", n, #a.forceUnload)
+			end
+			out.forceUnload = a.forceUnload
 		end
 		if a.terminals then
 			local need
@@ -738,7 +766,8 @@ function M.new(ctx)
 		return out
 	end
 
-	-- args: action (create, update, delete), line, stops, name, cargo, sellVehicles, via, terminals, loadModes
+	-- args: action (create, update, delete), line, stops, name, cargo, sellVehicles, via, terminals, loadModes,
+	-- forceUnload
 	function handlers.line(c)
 		local a, err = core.lineArgs(c.args)
 		if not a then return fail(c.id, err) end

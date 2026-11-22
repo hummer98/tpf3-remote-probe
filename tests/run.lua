@@ -3006,7 +3006,7 @@ test("core.lineArgs: create, update, delete; empty, single, nil, userdata and ma
 		{ { action = "create", stops = { 41, 42 }, name = string.rep("x", 101) }, "longer than" },
 		{ { action = "create", stops = { 41, 42 }, cargo = true }, "cargo must be" },
 		{ { action = "update", stops = { 41, 42 } }, "give the line" },
-		{ { action = "update", line = 21 }, "give stops, name, cargo, terminals or load modes" },
+		{ { action = "update", line = 21 }, "give stops, name, cargo, terminals, load modes or force unload" },
 		{ { action = "update", line = "x", name = "a" }, "line must be an entity id" },
 		{ { action = "delete" }, "give the line" },
 		{ { action = "delete", line = 21, stops = { 41, 42 } }, "delete takes no" },
@@ -3872,6 +3872,198 @@ test("line update --terminals / --load-mode: the line's own stops, the vehicles'
 		eq(#sent(g, "lineUpdate"), 1, via .. ": only the good one sent")
 		eq(g.crashed, nil, via)
 	end
+end)
+
+-- forceUnload per stop (Line.Stop.stopConfig.forceUnload): set, cleared and read back; a count that does not match
+-- the line, another company's line and a builder that drops it are refused
+local function shipLine(extra)
+	local w = { lines = { [23] = { name = "Ship 1", stops = {
+		{ stationGroup = 47, station = 0, terminal = 1, forceUnload = false, loads = { [1] = true }, waypoints = { { tag = 1 } } },
+		{ stationGroup = 49, station = 0, terminal = 1, forceUnload = false } } } },
+		fleet = { [601] = fleetOf(101, 5, 23) } }
+	for k, v in pairs(extra or {}) do w[k] = v end
+	return portWorld(w)
+end
+
+test("core.lineArgs / lineRequests: forceUnload one 0/1 per stop, never one for all; malformed refused", function()
+	local a = core.lineArgs({ action = "update", line = 23, forceUnload = { 0, true, "1", false } })
+	eq(a.forceUnload[1], false); eq(a.forceUnload[2], true); eq(a.forceUnload[3], true); eq(a.forceUnload[4], false)
+	eq(core.lineArgs({ action = "create", stops = { 47, 48 }, forceUnload = { 1, 0 } }).forceUnload[1], true)
+	eq(core.lineArgs({ action = "update", line = 23, name = "x" }).forceUnload, nil, "not given: nil, as before")
+	for _, bad in ipairs({
+		{ { action = "update", line = 23, forceUnload = true }, "forceUnload must be a list" },
+		{ { action = "update", line = 23, forceUnload = 1 }, "forceUnload must be a list" },
+		{ { action = "update", line = 23, forceUnload = {} }, "forceUnload must be a list" },
+		{ { action = "update", line = 23, forceUnload = { a = 1 } }, "forceUnload must be a list" },
+		{ { action = "update", line = 23, forceUnload = { 0, 2 } }, "force unload 2 must be 0 or 1" },
+		{ { action = "update", line = 23, forceUnload = { 0, "yes" } }, "force unload 2 must be 0 or 1" },
+		{ { action = "update", line = 23, forceUnload = { newproxy(true), 0 } }, "got a userdata" },
+		{ { action = "create", stops = { 47, 48 }, forceUnload = { 1 } }, "one force unload value for every stop (2 stops, 1 values)" },
+		{ { action = "create", stops = { 47, 48 }, forceUnload = { 1, 0, 1 } }, "(2 stops, 3 values)" },
+		{ { action = "delete", line = 23, forceUnload = { 0, 1 } }, "delete takes no" },
+	}) do
+		local ok, err = core.lineArgs(bad[1])
+		eq(ok, nil, bad[2])
+		truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	local list = core.lineRequests({
+		{ id = 1, kind = "update", line = 23, forceUnload = { false, true } },
+		{ id = 2, kind = "update", line = 23, forceUnload = { 0, 1 } },
+		{ id = 3, kind = "create", stops = { { stationGroup = 47 }, { stationGroup = 48 } }, forceUnload = { true } },
+		{ id = 4, kind = "update", line = 23, forceUnload = {} },
+		{ id = 5, kind = "update", line = 23 },
+	})
+	eq(#list, 2, "the malformed ones are left out whole"); eq(list[1].id, 1); eq(list[1].forceUnload[2], true)
+	eq(list[1].forceUnload[1], false); eq(list[2].id, 5); eq(list[2].forceUnload, nil)
+end)
+
+test("line update --force-unload: set and cleared per stop, the rest of the stop kept, lines reads it (gui and cmd)", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = shipLine()
+		send(g, 770, "line", string.format('{ action = "update", line = 23, forceUnload = { false, true }, via = %q }', via))
+		frames(g, FIRST)
+		local a, n = final(g, 770)
+		eq(n, 1); eq(a.ok, true, via .. " " .. tostring(a.error))
+		eq(a.stops[1].forceUnload, false, via); eq(a.stops[2].forceUnload, true, via)
+		eq(a.before.stops[2].forceUnload, false, via .. ": before")
+		local held = g.lines[23].stops
+		eq(held[1].stopConfig.forceUnload, false, via .. ": what the engine holds")
+		eq(held[2].stopConfig.forceUnload, true, via)
+		eq(held[1].stopConfig.load[2], true, via .. ": the stop's loads are kept"); eq(held[2].stopConfig.load[2], false, via)
+		eq(held[1].terminal, 1, via .. ": the platform kept"); eq(held[2].loadMode, 0, via)
+		eq(g.lines[23].customFilters, false, via .. ": the cargo filter flag is not turned on by this alone")
+		if via == "cmd" then eq(#held[1].waypoints, 1, "the line's own stops keep their waypoints") end
+		eq(g.assignCalls, nil, via .. ": no platform assignment asked")
+		-- lines: forceUnload and the other StopConfig flags per stop, the stop's loads and waiting times
+		send(g, 771, "lines", "{ line = 23 }")
+		frames(g, 10)
+		local l = final(g, 771).lines[1]
+		eq(l.stops[2].forceUnload, true, via); eq(l.stops[1].forceUnload, false, via)
+		eq(l.stops[1].destroyForConfigChange, false); eq(l.stops[1].destroyForRefresh, false)
+		eq(#l.stops[1].stopLoads, 1); eq(l.stops[1].stopLoads[1].cargo, "COAL"); eq(l.stops[1].stopLoads[1].maxLoad, 1)
+		eq(#l.stops[2].stopLoads, 0); eq(l.stops[1].maxAdditionalWaitingTime, 60)
+		truthy(answerText(g, 771):find('"stopLoads":[]', 1, true), "a stop that loads nothing: []")
+		-- cleared again
+		send(g, 772, "line", string.format('{ action = "update", line = 23, forceUnload = { 0, 0 }, via = %q }', via))
+		frames(g, 10)
+		local b = final(g, 772)
+		eq(b.ok, true, via .. " " .. tostring(b.error)); eq(b.stops[2].forceUnload, false, via)
+		eq(g.lines[23].stops[2].stopConfig.forceUnload, false, via)
+		-- a count that does not match the line's stops: refused, nothing sent
+		send(g, 773, "line", string.format('{ action = "update", line = 23, forceUnload = { 1 }, via = %q }', via))
+		frames(g, 10)
+		truthy(tostring(final(g, 773).error):find("one force unload value for every stop (2 stops, 1 values)", 1, true))
+		send(g, 774, "line", string.format('{ action = "update", line = 23, forceUnload = { 1, 1, 1 }, via = %q }', via))
+		frames(g, 10)
+		truthy(tostring(final(g, 774).error):find("(2 stops, 3 values)", 1, true))
+		-- with new stops: the count is of those
+		send(g, 775, "line", string.format('{ action = "update", line = 23, stops = { 47, 49 }, forceUnload = { 1, 0, 0 }, via = %q }', via))
+		frames(g, 10)
+		truthy(tostring(final(g, 775).error):find("(2 stops, 3 values)", 1, true))
+		eq(#sent(g, "lineUpdate"), 2, via .. ": only the good ones sent")
+		eq(g.crashed, nil, via)
+	end
+end)
+
+test("line update --force-unload with --stops, with --cargo; the stop's maxLoad and destroy flags kept (gui and cmd)", function()
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local g = shipLine()
+		local cfg1 = g.lines[23].stops[1].stopConfig
+		cfg1.maxLoad[2], cfg1.destroyForConfigChange, cfg1.destroyForRefresh = 0.5, true, true
+		-- --force-unload alone: only forceUnload changes on the stop's config
+		send(g, 800, "line", string.format('{ action = "update", line = 23, forceUnload = { 1, 0 }, via = %q }', via))
+		frames(g, FIRST)
+		local a = final(g, 800)
+		eq(a.ok, true, via .. " " .. tostring(a.error))
+		local held = g.lines[23].stops[1].stopConfig
+		eq(held.forceUnload, true, via); eq(held.maxLoad[2], 0.5, via .. ": maxLoad kept")
+		eq(held.destroyForConfigChange, true, via); eq(held.destroyForRefresh, true, via)
+		eq(held.load[2], true, via .. ": the loads kept")
+		eq(a.stops[1].destroyForRefresh, true, via .. ": read back"); eq(a.stops[1].stopLoads[1].maxLoad, 0.5, via)
+		-- with --stops: a kept stop keeps its config, a new one gets the base's, each with the forceUnload asked
+		send(g, 801, "line", string.format('{ action = "update", line = 23, stops = { 47, 49, 48 }, ' ..
+			'forceUnload = { 0, 1, 1 }, via = %q }', via))
+		frames(g, 10)
+		local b = final(g, 801)
+		eq(b.ok, true, via .. " " .. tostring(b.error)); eq(#b.stops, 3, via); eq(b.stops[3].stationGroup, 48, via)
+		eq(b.stops[1].forceUnload, false, via); eq(b.stops[2].forceUnload, true, via); eq(b.stops[3].forceUnload, true, via)
+		local s1 = g.lines[23].stops[1].stopConfig
+		eq(s1.maxLoad[2], 0.5, via .. ": the kept stop's maxLoad"); eq(s1.destroyForRefresh, true, via)
+		eq(g.lines[23].stops[3].stopConfig.forceUnload, true, via .. ": the new stop")
+		-- with --cargo: the cargo filter's loads and maxLoad, and the forceUnload asked
+		send(g, 802, "line", string.format('{ action = "update", line = 23, cargo = "coal", forceUnload = { 1, 0, 1 }, via = %q }', via))
+		frames(g, 10)
+		local c = final(g, 802)
+		eq(c.ok, true, via .. " " .. tostring(c.error)); eq(c.loads[1], "COAL", via); eq(c.customFilters, true, via)
+		eq(c.stops[1].forceUnload, true, via); eq(c.stops[2].forceUnload, false, via); eq(c.stops[3].forceUnload, true, via)
+		eq(g.lines[23].stops[1].stopConfig.destroyForRefresh, true, via .. ": --cargo keeps the destroy flags too")
+		eq(g.crashed, nil, via)
+	end
+end)
+
+test("line update --force-unload: another company's line is refused; create sets it on new stops (gui and cmd)", function()
+	local g = shipLine()
+	g.lines[77] = { name = "theirs", stops = {} }
+	local real = api.engine.system.lineSystem.getLinesForPlayer
+	api.engine.system.lineSystem.getLinesForPlayer = function() return { 23 } end
+	send(g, 780, "line", '{ action = "update", line = 77, forceUnload = { 1, 1 } }')
+	frames(g, FIRST)
+	api.engine.system.lineSystem.getLinesForPlayer = real
+	g.lines[77] = nil
+	truthy(tostring(final(g, 780).error):find("is not the company's", 1, true))
+	eq(#sent(g, "lineUpdate"), 0)
+	for _, via in ipairs({ "gui", "cmd" }) do
+		local p = portWorld()
+		send(p, 781, "line", string.format('{ action = "create", stops = { 47, 48 }, terminals = { "0:2", "0:1" }, ' ..
+			'forceUnload = { 0, 1 }, via = %q }', via))
+		frames(p, FIRST)
+		local a = final(p, 781)
+		eq(a.ok, true, via .. " " .. tostring(a.error))
+		eq(a.stops[1].forceUnload, false, via); eq(a.stops[2].forceUnload, true, via)
+		eq(p.lines[a.line].stops[2].stopConfig.forceUnload, true, via)
+		-- without it: the base's makeNewStop's false, as before
+		send(p, 782, "line", string.format('{ action = "create", stops = { 47, 48 }, terminals = { "0:2", "0:1" }, via = %q }', via))
+		frames(p, 10)
+		local b = final(p, 782)
+		eq(b.ok, true, via .. " " .. tostring(b.error)); eq(b.stops[2].forceUnload, false, via)
+		eq(p.crashed, nil, via)
+	end
+end)
+
+test("line_configs: forceUnload goes on as a copy of the StopConfig; a builder that drops it does not send", function()
+	local g = shipLine()
+	local lc = require "hummer_remote_probe::/line_configs.lua"
+	local cfg = { load = { false, true }, maxLoad = { 1, 0.5 }, forceUnload = false, destroyForConfigChange = true, destroyForRefresh = false }
+	local c2 = lc.withForceUnload(cfg, true)
+	eq(c2.forceUnload, true); eq(cfg.forceUnload, false, "the one given is not written into")
+	eq(c2.maxLoad[2], 0.5); eq(c2.destroyForConfigChange, true)
+	local line = lc.cmdLine({ kind = "update", line = 23, forceUnload = { true, false } })
+	eq(line.stops[1].stopConfig.forceUnload, true); eq(line.stops[2].stopConfig.forceUnload, false)
+	eq(g.lines[23].stops[1].stopConfig.forceUnload, false, "nothing changed in the engine before the command")
+	local ok, err = pcall(lc.cmdLine, { kind = "update", line = 23, forceUnload = { true } })
+	eq(ok, false); truthy(tostring(err):find("a force unload value for every stop", 1, true), tostring(err))
+	local r = { forceUnload = { true, false } }
+	truthy(lc.checkRequested({ { stopConfig = { forceUnload = true } }, { stopConfig = { forceUnload = false } } }, r))
+	ok, err = lc.checkRequested({ { stopConfig = { forceUnload = true } }, { stopConfig = { forceUnload = true } } }, r)
+	eq(ok, nil); truthy(err:find("stop 2: built with force unload true, not false", 1, true), err)
+	ok, err = lc.checkRequested({ { stopConfig = { forceUnload = true } }, {} }, r)
+	eq(ok, nil); truthy(err:find("built with force unload nil", 1, true), err)
+	ok, err = lc.checkRequested({ { stopConfig = { forceUnload = true } } }, r)
+	eq(ok, nil); truthy(err:find("not one per stop", 1, true), err)
+	eq(g.crashed, nil)
+end)
+
+test("lines: a stop without a StopConfig or waiting times reads as nil, not an error", function()
+	local g = shipLine()
+	g.lines[23].stops[2].stopConfig = nil
+	g.lines[23].stops[2].maxAdditionalWaitingTime = nil
+	send(g, 790, "lines", "{ line = 23 }")
+	frames(g, FIRST)
+	local a = final(g, 790)
+	eq(a.ok, true, tostring(a.error))
+	local s = a.lines[1].stops[2]
+	eq(s.forceUnload, nil); eq(s.destroyForRefresh, nil); eq(#s.stopLoads, 0); eq(s.maxAdditionalWaitingTime, nil)
+	eq(a.lines[1].stops[1].forceUnload, false)
 end)
 
 test("stations: each platform with tag, position, load flags, transfer speeds and carriers; nil what cannot be read", function()
@@ -5352,6 +5544,58 @@ test("vehicles: without the new args the answer keeps its old shape; gone and fo
 	send(g, 734, "vehicles", '{ line = "x" }')
 	frames(g, 20)
 	truthy(final(g, 734).error:find("line must be an entity id"), "the old refusal as it was")
+end)
+
+test("vehicles --state --at-terminal: only the vehicles in port, each answer with the game time of its read", function()
+	local enRoute = shipFleet()
+	enRoute.live.fields.state = 1
+	local g = modelsGame({ fleet = { [601] = shipFleet(), [602] = enRoute, [603] = fleetOf(101, 6) } })
+	g.gameTime = 130000
+	send(g, 735, "vehicles", "{ state = true, atTerminal = true }")
+	frames(g, FIRST)
+	local a = final(g, 735)
+	eq(a.ok, true, tostring(a.error)); eq(a.atTerminal, true); eq(a.gameTime, 130000); eq(a.stateUnknown, 0)
+	eq(a.total, 1, "total counts only those at a terminal"); eq(#a.vehicles, 1); eq(a.vehicles[1].entity, 601)
+	eq(a.vehicles[1].state.state, "AT_TERMINAL")
+	-- with entities: one not in port is neither listed nor missing; a gone one is still missing
+	send(g, 736, "vehicles", "{ state = true, atTerminal = true, entities = { 601, 602, 999 } }")
+	frames(g, 20)
+	a = final(g, 736)
+	eq(a.total, 1); eq(a.vehicles[1].entity, 601); eq(#a.missing, 1); eq(a.missing[1], 999)
+	-- the game time moves between two reads: each answer has its own
+	g.gameTime = 131500
+	send(g, 737, "vehicles", "{ state = true, entities = { 601 } }")
+	frames(g, 20)
+	a = final(g, 737)
+	eq(a.atTerminal, nil, "not asked: no key"); eq(a.stateUnknown, nil); eq(a.total, 1)
+	truthy(a.gameTime >= 131500, "the game time of this read, not the last one: " .. tostring(a.gameTime))
+	eq(a.vehicles[1].state.sinceDoors, a.gameTime - 120000, "sinceDoors from the same game time")
+	-- nobody in port: an empty list
+	g.fleet[601].live.fields.state = 3
+	send(g, 738, "vehicles", "{ state = true, atTerminal = true }")
+	frames(g, 20)
+	a = final(g, 738)
+	eq(a.total, 0); truthy(answerText(g, 738):find('"vehicles":[]', 1, true))
+	-- atTerminal goes with state; not a boolean is refused
+	send(g, 739, "vehicles", "{ atTerminal = true }")
+	frames(g, 20)
+	truthy(tostring(final(g, 739).error):find("atTerminal goes with state", 1, true))
+	send(g, 740, "vehicles", '{ state = true, atTerminal = "yes" }')
+	frames(g, 20)
+	truthy(tostring(final(g, 740).error):find("atTerminal must be true or false", 1, true))
+	eq(#g.commands, 0, "read only")
+end)
+
+test("vehicles --at-terminal: a state that cannot be read leaves the vehicle out, not the answer", function()
+	local g = modelsGame({ fleet = { [601] = shipFleet() } })
+	local real = api.type.enum.TransportVehicleState
+	api.type.enum.TransportVehicleState = nil
+	send(g, 745, "vehicles", "{ state = true, atTerminal = true }")
+	frames(g, FIRST)
+	local a = final(g, 745)
+	api.type.enum.TransportVehicleState = real
+	eq(a.ok, true, tostring(a.error)); eq(a.total, 0, "cannot be told: not listed as in port")
+	eq(a.stateUnknown, 1, "and counted, so an empty list is not read as nobody in port")
 end)
 
 ---------------------------------------------------------------------------------------------------------------------

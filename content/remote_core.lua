@@ -1510,8 +1510,9 @@ end
 -- the vehicles command: line and limit as before (a limit that is no number is the default, as it always was),
 -- and the new ones: entities (only these vehicles; one that is gone is listed under missing, not an error, so a
 -- poll can see a ship sold or replaced), state (what the engine holds about the vehicle's stop and its money),
--- since (a game time: the vehicle's balance from then, with state). With line and entities both, a vehicle of
--- the company on another line is left out (neither listed nor missing). Returns them or nil and why.
+-- since (a game time: the vehicle's balance from then, with state), atTerminal (with state: only the vehicles
+-- whose state is AT_TERMINAL). With line and entities both, a vehicle of the company on another line is left out
+-- (neither listed nor missing). Returns them or nil and why.
 function M.vehicleListArgs(args)
 	args = type(args) == "table" and args or {}
 	local out = { limit = tonumber(args.limit) or 200 }
@@ -1538,6 +1539,11 @@ function M.vehicleListArgs(args)
 		if n == nil or n < 0 then return nil, "since must be a game time (a number >= 0)" end
 		if not out.state then return nil, "since goes with state" end
 		out.since = math.floor(n) -- calculateBalance takes an integer game time
+	end
+	if args.atTerminal ~= nil and type(args.atTerminal) ~= "boolean" then return nil, "atTerminal must be true or false" end
+	if args.atTerminal == true then
+		if not out.state then return nil, "atTerminal goes with state" end
+		out.atTerminal = true
 	end
 	return out
 end
@@ -1665,6 +1671,16 @@ local function loadModeArg(v, what)
 		"FULL_LOAD_ALL), got " .. (type(v) == "string" and string.format("%q", v) or "a " .. type(v))
 end
 
+-- one stop's forceUnload as given: true / false, 1 / 0 or "1" / "0" (the tool sends booleans). Returns the boolean,
+-- or nil and why.
+local function forceUnloadArg(v, i)
+	if type(v) == "boolean" then return v end
+	if v == 1 or v == "1" then return true end
+	if v == 0 or v == "0" then return false end
+	return nil, string.format("force unload %d must be 0 or 1 (true or false), got %s", i,
+		type(v) == "string" and string.format("%q", v) or "a " .. type(v))
+end
+
 -- one stop's platform as given: { station, terminal } (0-based, as the lines command shows them), a terminal
 -- number (station 0) or "station:terminal". Returns { station, terminal } or nil and why.
 local function terminalArg(v, i)
@@ -1695,8 +1711,9 @@ local function isList(t)
 end
 
 -- args: action, via, line, stops (a list), name, cargo, sellVehicles, terminals (one per stop), loadModes (one per
--- stop, or one for every stop). Returns { action, via, line, stops, name, cargo, sellVehicles, terminals,
--- loadModes (a list) or loadModeAll (a number) } or nil and why. A line needs two stops: the base makes a one-stop
+-- stop, or one for every stop), forceUnload (one per stop: Line.Stop.stopConfig.forceUnload). Returns { action,
+-- via, line, stops, name, cargo, sellVehicles, terminals, loadModes (a list) or loadModeAll (a number),
+-- forceUnload (a list of booleans) } or nil and why. A line needs two stops: the base makes a one-stop
 -- line only on the way to the second click, and nothing runs on it.
 -- terminals go for every stop or for none: when one stop has no platform the base's autoAssignTerminals takes the
 -- engine's assignment for every stop (allowing changes), so the platforms given to the others would not hold.
@@ -1775,17 +1792,34 @@ function M.lineArgs(args)
 			out.loadModeAll = m
 		end
 	end
-	local perStop = out.terminals or out.loadModes or out.loadModeAll
+	if args.forceUnload ~= nil then
+		-- one per stop and no "one for all": a count that does not match the line is refused, never spread
+		if not isList(args.forceUnload) or #args.forceUnload == 0 then
+			return nil, "forceUnload must be a list, one 0 or 1 per stop"
+		end
+		if #args.forceUnload > M.MAX_LINE_STOPS then return nil, "more than " .. M.MAX_LINE_STOPS .. " force unload values" end
+		out.forceUnload = {}
+		for i = 1, #args.forceUnload do
+			local b, err = forceUnloadArg(args.forceUnload[i], i)
+			if b == nil then return nil, err end
+			out.forceUnload[i] = b
+		end
+		if out.stops and #out.forceUnload ~= #out.stops then
+			return nil, string.format("give one force unload value for every stop (%d stops, %d values)",
+				#out.stops, #out.forceUnload)
+		end
+	end
+	local perStop = out.terminals or out.loadModes or out.loadModeAll or out.forceUnload
 	if out.action == "create" then
 		if out.line ~= nil then return nil, "create makes a new line: no line" end
 		if not out.stops then return nil, "give the stops" end
 	else
 		if out.line == nil then return nil, "give the line (the lines command lists them)" end
 		if out.action == "update" and not (out.stops or out.name or out.cargo or perStop) then
-			return nil, "give stops, name, cargo, terminals or load modes to change"
+			return nil, "give stops, name, cargo, terminals, load modes or force unload to change"
 		end
 		if out.action == "delete" and (out.stops or out.name or out.cargo or perStop) then
-			return nil, "delete takes no stops, name, cargo, terminals or load modes"
+			return nil, "delete takes no stops, name, cargo, terminals, load modes or force unload"
 		end
 	end
 	return out
@@ -1793,7 +1827,7 @@ end
 
 -- the line requests (gui way) the guiUpdate script hands the speed control: { { id, kind = "create" | "update",
 -- line, name, cargo, stops = { { stationGroup } }, terminals = { { station, terminal } }, loadModes = { n },
--- carriers = { n } } }, plain values only; malformed ones are left out
+-- forceUnload = { boolean }, carriers = { n } } }, plain values only; malformed ones are left out
 M.LINE_REQUEST_KINDS = { create = true, update = true }
 function M.lineRequests(list)
 	local out = {}
@@ -1833,6 +1867,15 @@ function M.lineRequests(list)
 				end
 				if #loadModes == 0 or (stops and #loadModes ~= #stops) then good = false end
 			end
+			local forceUnload
+			if good and r.forceUnload ~= nil then
+				forceUnload = {}
+				if not isList(r.forceUnload) then good = false end
+				for _, b in ipairs(good and r.forceUnload or {}) do
+					if type(b) == "boolean" then forceUnload[#forceUnload + 1] = b else good = false end
+				end
+				if #forceUnload == 0 or (stops and #forceUnload ~= #stops) then good = false end
+			end
 			if good and r.carriers ~= nil then
 				carriers = {}
 				if not isList(r.carriers) then good = false end
@@ -1843,7 +1886,7 @@ function M.lineRequests(list)
 			if good and (r.kind == "create" or tonumber(r.line)) then
 				out[#out + 1] = { id = tonumber(r.id), kind = r.kind, line = tonumber(r.line), stops = stops,
 					name = type(r.name) == "string" and r.name or nil, cargo = tonumber(r.cargo), terminals = terminals,
-					loadModes = loadModes, carriers = carriers }
+					loadModes = loadModes, forceUnload = forceUnload, carriers = carriers }
 			end
 		end
 	end
