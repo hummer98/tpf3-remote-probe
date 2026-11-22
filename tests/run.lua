@@ -5515,6 +5515,9 @@ test("connect --to a depot: its one free end is the end; two are named and refus
 	-- one no construction lists
 	a = connectRun(g, 1107, "{ from = 101, to = 355 }")
 	eq(a.ok, false); truthy(tostring(a.error):find("could not be found", 1, true), tostring(a.error))
+	-- the depot's construction (as depots names it): its ends as the depot's, the frozen inner node left out
+	a = connectRun(g, 1109, "{ from = 101, to = 360 }")
+	eq(a.ok, true, tostring(a.error)); eq(a.to.kind, "construction"); eq(a.to.node, 131); eq(a.to.freeEnds, nil)
 	-- a node still works as before (the depot's free end given by its id)
 	a = connectRun(g, 1108, "{ from = 101, to = 133 }")
 	eq(a.ok, true, tostring(a.error)); eq(a.to.kind, "node")
@@ -8648,6 +8651,14 @@ test("build: connectable lists track mouths and arms too (track true) beside roa
 	eq(tm.kind, "mouth"); eq(tm.track, true); eq(tm.edges, 2, "its frozen piece and the arm"); eq(tm.nodeConfig, nil, "no set-up asked of a track node")
 	eq(ta.kind, "arm"); eq(ta.track, true); eq(ta.edges, 1); eq(ta.from, tm.node)
 	eq(rm.kind, "mouth"); eq(rm.track, false); eq(rm.edges, 1); eq(rm.nodeConfig, true)
+	-- a track arm whose far end is not free (a line's node: two pieces there) is not listed
+	local DEPOT2 = "::/depots/rail/rail_depot_2.con"
+	g = roadWorld({ roads = { nodes = {}, edges = {} }, height = function() return 0 end,
+		cons = { [DEPOT2] = { cost = 0, shape = { nodes = { { 0, 0, 0 }, { 50, 0, 0 }, { 100, 0, 0 }, { 150, 0, 0 } },
+			edges = { { 1, 2, track = true } }, free = { { 2, 3, track = true }, { 3, 4, track = true } }, frozenNodes = { 1 } } } } })
+	b = buildRun(g, 1086, string.format('{ res = %q, at = "500,500" }', DEPOT2))
+	truthy(b.ok, b.error)
+	eq(#b.construction.connectable, 1, "the mouth only"); eq(b.construction.connectable[1].kind, "mouth")
 	truthy(not g.crashed, g.crashed)
 end)
 

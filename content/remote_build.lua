@@ -374,8 +374,13 @@ function M.new(ctx)
 					local n0, n1 = tonumber(be and core.field(be, "node0")), tonumber(be and core.field(be, "node1"))
 					local far = n0 == m.node and n1 or n0
 					if far and far ~= m.node and not seen[far] then
-						seen[far] = true
-						out[#out + 1] = nodeEntry(far, { kind = "arm", from = m.node, via = s }, m.track)
+						local entry = nodeEntry(far, { kind = "arm", from = m.node, via = s }, m.track)
+						-- (a track arm only when its far end is free: a station or depot built against a line has the
+						-- line's next node there, which connect would refuse as no free end)
+						if not m.track or entry.edges == 1 then
+							seen[far] = true
+							out[#out + 1] = entry
+						end
 					end
 				end
 			end

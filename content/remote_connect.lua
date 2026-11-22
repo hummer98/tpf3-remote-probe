@@ -447,6 +447,23 @@ function M.new(ctx)
 		return ends
 	end
 
+	-- a depot's construction's free ends, its frozen nodes left out: the track's inner end in a depot is one
+	-- piece's end too, and the construction keeps it (whether a depot's mouth is ever among its frozenNodes is not
+	-- measured)
+	local function depotConstructionEnds(con, road)
+		local frozenN = {}
+		local cc = comp(con, "CONSTRUCTION")
+		for _, n in ipairs(core.toList(cc and core.field(cc, "frozenNodes"))) do
+			n = tonumber(n)
+			if n then frozenN[n] = true end
+		end
+		local ends = {}
+		for _, fe in ipairs(constructionEnds(con, road)) do
+			if not frozenN[fe.node] then ends[#ends + 1] = fe end
+		end
+		return ends
+	end
+
 	local function stationGroups()
 		local out = {}
 		for _, e in ipairs(core.toList(try(function() return api.engine.getEntitiesWithComponent(CT().STATION_GROUP) end))) do
@@ -486,13 +503,7 @@ function M.new(ctx)
 			end
 			-- (its frozen nodes left out: the track's inner end in the depot is one piece's end too, and the
 			-- construction keeps it)
-			local frozenN = {}
-			local cc = comp(con, "CONSTRUCTION")
-			for _, n in ipairs(core.toList(cc and core.field(cc, "frozenNodes"))) do frozenN[tonumber(n)] = true end
-			local ends = {}
-			for _, fe in ipairs(constructionEnds(con, road)) do
-				if not frozenN[fe.node] then ends[#ends + 1] = fe end
-			end
+			local ends = depotConstructionEnds(con, road)
 			local label = string.format("depot %d (%s, construction %d)", id, nameOf(id) or "?", con)
 			if #ends == 0 then
 				return nil, string.format("%s: %s has no free %s end (its track may be joined to a line already: the " ..
@@ -515,6 +526,12 @@ function M.new(ctx)
 		elseif comp(id, "STATION") then
 			stations = { id }
 		elseif comp(id, "CONSTRUCTION") then
+			-- (a depot's construction, as the depots answer names it: its ends as the depot's, frozen nodes left out;
+			-- a station's are as before: whether its platform ends are among its frozenNodes is not measured)
+			local cc = comp(id, "CONSTRUCTION")
+			if #core.toList(cc and core.field(cc, "depots")) > 0 then
+				return out("construction", depotConstructionEnds(id, road))
+			end
 			return out("construction", constructionEnds(id, road))
 		else
 			return nil, string.format("%s: %s is no node, depot, station, station group or station construction", what, tostring(id))

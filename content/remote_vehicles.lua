@@ -687,7 +687,10 @@ function M.new(ctx)
 		street = street and try(function() return street.STREET end)
 		local frozen, order, kindOf, frozenN = {}, {}, {}, {}
 		-- (its frozen nodes are left out: the track's inner end in the depot is one piece's end too)
-		for _, n in ipairs(core.toList(core.field(c, "frozenNodes"))) do frozenN[tonumber(n)] = true end
+		for _, n in ipairs(core.toList(core.field(c, "frozenNodes"))) do
+			n = tonumber(n)
+			if n then frozenN[n] = true end
+		end
 		for _, edge in ipairs(core.toList(core.field(c, "frozenEdges"))) do
 			edge = tonumber(edge)
 			if edge then frozen[edge] = true end
@@ -748,7 +751,9 @@ function M.new(ctx)
 					carrier = d and carrierName(raw) or nil, carrierRaw = raw ~= nil and tostring(raw) or nil,
 					maintenancePool = d and tonumber(core.field(d, "maintenancePool")) or nil,
 					vehicles = core.size(try(function() return api.engine.system.transportVehicleSystem.getDepotVehicles(e) end)) }
-				local ends, why = depotEnds(e)
+				-- (guarded: a depot whose ends do not read answers why, the rest of the list still comes)
+				local okE, ends, why = pcall(depotEnds, e)
+				if not okE then ends, why = nil, "its ends could not be read: " .. tostring(ends) end
 				local o = out[#out]
 				if ends then
 					o.construction, o.freeEnds = ends.construction, core.array(ends.free)
