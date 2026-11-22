@@ -127,6 +127,14 @@ function M.new(ctx)
 		if why then e.parcelError = why end
 		local leftIds, rightIds, fields = core.parcelSides(pd)
 		e.fields = core.array(fields)
+		-- data there but none of the known field names: its keys (or what it prints as), so a wrong name does not
+		-- pass for "no parcels"
+		if pd ~= nil and #fields == 0 then
+			local keys = {}
+			pcall(function() for k in pairs(pd) do keys[#keys + 1] = tostring(k) end end)
+			table.sort(keys)
+			e.unreadParcelData = #keys > 0 and core.array(keys) or tostring(pd)
+		end
 		local lEntries, rEntries
 		e.left, lEntries = sideOf(maps, leftIds, list)
 		e.right, rEntries = sideOf(maps, rightIds, list)
@@ -187,7 +195,8 @@ function M.new(ctx)
 			return answer(c.id, head)
 		end
 		local ids = edgesIn(r.rect)
-		local out, totals = {}, { edges = 0, streets = 0, withParcels = 0, left = 0, right = 0, built = 0, inConstruction = 0 }
+		local out, totals = {}, { edges = 0, streets = 0, withParcels = 0, left = 0, right = 0, built = 0, inConstruction = 0,
+			unreadParcelData = 0 }
 		for _, id in ipairs(ids) do
 			local e = edgeEntry(maps, id, r.list)
 			-- tracks have no parcels: streets only (or every piece when the street kind cannot be told)
@@ -198,6 +207,7 @@ function M.new(ctx)
 				totals.left, totals.right = totals.left + e.left.count, totals.right + e.right.count
 				totals.built = totals.built + (e.left.built or 0) + (e.right.built or 0)
 				if e.inConstruction then totals.inConstruction = totals.inConstruction + 1 end
+				if e.unreadParcelData then totals.unreadParcelData = totals.unreadParcelData + 1 end
 				if #out < core.PARCELS_MAX_EDGES then out[#out + 1] = e end
 			end
 		end

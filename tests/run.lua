@@ -9064,7 +9064,9 @@ end
 
 test("parcels --edge: a town street's left and right parcels, their buildings, centres and areas; nothing sent", function()
 	local g = parcelGame()
+	local guiBefore = core.json(fake.guiSave)
 	local a = parcelRun(g, 2401, "{ edge = 10 }")
+	eq(core.json(fake.guiSave), guiBefore, "no GUI save data written")
 	truthy(a.ok, a.error); eq(a.source, "getSegment2ParcelData"); eq(a.parcelComponent, true); eq(a.buildingMap, true)
 	truthy(a.note:find("not checked in a game"), a.note)
 	eq(#a.edges, 1)
@@ -9144,10 +9146,18 @@ test("parcels: the engine's userdata, other field names, no map (getParcelData, 
 	truthy(d.ok, d.error); eq(d.parcelComponent, false); eq(d.buildingMap, false); eq(d.edges[1].left.count, 2)
 	eq(d.edges[1].left.area, nil); eq(d.edges[1].left.built, nil); eq(d.edges[1].left.parcels[1].x, nil)
 	eq(d.edges[1].left.parcels[1].id, 101)
+	-- ParcelData with names this does not know: its keys come back, and the rect counts the piece as unread
+	local odd = parcelGame({ fields = { left = "lp", right = "rp" } })
+	local o = parcelRun(odd, 2437, "{ edge = 10 }")
+	truthy(o.ok, o.error); eq(o.edges[1].left.count, 0); eq(o.edges[1].inParcelMap, true)
+	eq(table.concat(o.edges[1].unreadParcelData, ","), "lp,rp")
+	local or_ = parcelRun(odd, 2438, '{ rect = "-10,-10,350,10" }')
+	truthy(or_.ok, or_.error); eq(or_.totals.unreadParcelData, 1)
+	eq(a.edges[1].unreadParcelData, nil, "known names: nothing extra")
 	local sw = parcelGame({ swapSide = { [103] = true } })
 	local e = parcelRun(sw, 2436, "{ edge = 10 }")
 	truthy(e.ok, e.error); eq(e.edges[1].left.count, 3); eq(e.edges[1].sideMismatch, 1, "the flag disagrees with the list")
-	for _, gg in ipairs({ u, f, nm, np, sw }) do eq(#gg.commands, 0); truthy(not gg.crashed, gg.crashed) end
+	for _, gg in ipairs({ u, f, nm, np, sw, odd }) do eq(#gg.commands, 0); truthy(not gg.crashed, gg.crashed) end
 end)
 
 print(string.format("\n%d passed, %d failed", passes, failures))

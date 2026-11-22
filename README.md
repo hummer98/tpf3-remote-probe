@@ -647,7 +647,10 @@ python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # every street
 - `--rect x0,y0,x1,y1`: the street pieces the octree finds round the box with an end or their middle in it (a
   piece that only crosses the box is left out; tracks are left out), sorted, counts only unless `--list`, at most
   400 listed (`truncated`), and `totals` (`edges`, `withParcels`, `left`, `right`, `built`, `inConstruction`).
-  It also gives the edge ids for `--edge`.
+  It also gives the edge ids for `--edge`. With `--list` in a town's centre the answer can be large.
+- A piece whose `ParcelData` has none of the field names above has `unreadParcelData` (its keys, or what it
+  prints as) instead of passing for 0 and 0; `totals.unreadParcelData` counts them. Both maps are read whole for
+  each command, also for one `--edge`.
 - An id that is no entity, or no road piece, is refused; every engine call is in pcall and asked only about
   entities the engine says exist.
 - **Not checked in game yet** (written 2026-11-23): whether the map and the `PARCEL` component read in the GUI

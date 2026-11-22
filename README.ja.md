@@ -607,7 +607,9 @@ python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # 範囲の中
   (`parcelComponent`)。`sideMismatch` は、区画自身の `left` が入っている一覧と食い違う数です (欄の名前が正しければ 0)。
 - `--rect x0,y0,x1,y1`: octree で範囲の周りから見つけた道路の区間のうち、端か真ん中が範囲に入るもの (範囲を横切る
   だけの区間と線路は入りません)。番号順、`--list` が無ければ数だけ、一覧は 400 区間まで (`truncated`)、`totals`
-  (`edges`・`withParcels`・`left`・`right`・`built`・`inConstruction`)。`--edge` に渡す番号もここで分かります。
+  (`edges`・`withParcels`・`left`・`right`・`built`・`inConstruction`)。`--edge` に渡す番号もここで分かります。町の中心で `--list` を付けると、答えが大きくなることがあります。
+- `ParcelData` に上の欄の名前がどれも無い区間には、0 と 0 の代わりに `unreadParcelData` (そのキー、または表示の文字列) が
+  付きます。`totals.unreadParcelData` はその数です。2つの表は、`--edge` 1本でも命令ごとに全部読みます。
 - entity でない番号、道路の区間でない番号は断ります。エンジンの呼び出しはすべて pcall の中で、エンジンが「ある」と
   言った entity についてだけ聞きます。
 - **ゲーム内では未確認** (2026-11-23 に書いた): 表と `PARCEL` コンポーネントが GUI のスクリプトで読めるか、欄の名前、
