@@ -428,11 +428,41 @@ function M.new(ctx)
 				if d then cons[#cons + 1] = d end
 			end
 			out.entities = core.array(res.entities)
+			-- the engine can say success and build nothing: a construction whose update script fails its own check
+			-- (2026-11-22, a harbour: "Terminal 2 of station ... not supported by the vehicle node: SHIP" in the
+			-- log, "Error during construction update") comes back with success, no errors, no entities, cost 0.
+			-- Only a construction read back says it stands: one not among the entities is looked for by its name
+			-- near the point first, as after a lost callback
+			if res.success and not cons[1] then
+				for _, e in ipairs(constructionsNear(out.at.x, out.at.y, FIND_M)) do
+					local info = conInfo(e)
+					if info and info.name == out.name and info.fileName == out.res and not built[e] then
+						local d = describe(e)
+						if d then cons[1] = d; out.why = "not among the result's entities; found by its name near the point" end
+						break
+					end
+				end
+			end
+			if res.success and not cons[1] then
+				local why = #res.entities == 0 and "the engine said success but gave back no entities"
+					or "the engine said success but no construction is among the entities it gave back"
+				if (out.cost or 0) == 0 and (out.spent or 0) == 0 then why = why .. ", and nothing was paid" end
+				out.ok = false
+				out.error = "nothing was built: " .. why .. " (the construction's own script may have failed: look "
+					.. "for \"Error during construction update\" in the game's log)"
+				say("build place (command " .. job.id .. "): nothing built: " .. why, 1)
+				return answer(job.id, out, "error")
+			end
 			if res.success then
-				out.entity = cons[1] and cons[1].entity or nil
+				out.entity = cons[1].entity
 				out.construction = cons[1]
 				for _, d in ipairs(cons) do built[d.entity] = { res = out.res, x = out.at.x, y = out.at.y, z = out.at.z } end
-				if not cons[1] then out.why = "built, but no construction came back among the result's entities" end
+				if (out.cost or 0) == 0 and (out.spent or 0) == 0 then
+					-- it stands (read back), so it is ok; a free build is real with a no-costs mod, but say so
+					local w = out.warnings or core.array({})
+					w[#w + 1] = "built, but it cost nothing (cost 0, spent 0): a no-costs mod, or look at it"
+					out.warnings = w
+				end
 				-- a station construction (a harbour) with no terminal: its modules may be on no slot
 				local d = cons[1]
 				if d and d.stations then
