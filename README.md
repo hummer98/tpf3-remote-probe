@@ -418,7 +418,10 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road read
   node above the point is not taken) of an end of a road piece is that node, so the piece joins the road there.
   The pieces near the point are found in the octree (`api.engine.util.octree.findEntitiesInCircle` with
   BASE_EDGE, else the octree system's box), roads only (`roadType` STREET; one whose type does not read is left
-  out), and their `node0` / `node1` taken; no track node is asked about. The pieces at the joined node are then
+  out), and their `node0` / `node1` taken; no track node is asked about. The pieces are looked for 25 m beyond
+  `--snap` (a town road's seam node was missed from right on it with a snap of 3 m: the octree met neither piece
+  near the node); only their ends within `--snap` count. An end that becomes a new node says why in `snapNote`
+  (the nearest road node beyond `--snap` and its distance, or that no road piece was met). The pieces at the joined node are then
   read from the street system (`streetSystem.getNodeStreetSegments`; the answer's `piecesFrom: "streetSystem"`),
   and only when that is not there or raises from the octree within 1 m (`"octree"`): at an industry's T the
   octree met none of them. Otherwise the end is a new node; a new node right on an old one (within 0.1 m: with
@@ -458,8 +461,8 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road read
   piece is looked for between the two ends, leaving out the pieces that were there before it was sent; built with
   no new piece found gives a `warning`. A template or the `BaseEdgeType` / `RoadType` enum that does not read
   refuses the command before anything is sent.
-- `--dry-run` sends nothing: it makes the same proposal a build sends (set-ups included) and asks the engine
-  about it with `api.engine.util.proposal.makeProposalData` (proposal and context, else the proposal alone), in
+- `--dry-run` sends nothing: it makes the same proposal the road's build sends (set-ups included) and asks
+  the engine about it with `api.engine.util.proposal.makeProposalData` (the proposal alone, else with a context), in
   the guiUpdate (never in a recipe's body). The answer has `checked: true`, `engineCheck` (the form taken),
   `buildable`, the engine's `cost`, `errors`, `warnings`, `collisions`, `critical`, and `balance`; one the engine
   would refuse is `ok: false` with its messages in `error`. When `makeProposalData` is not there or raises both

@@ -1953,7 +1953,7 @@ def road_inspect_args(ns):
 def road_args(ns):
     """road: --from and --to as x,y[,z]; --type, --snap, --dry-run as given (the mod checks them again)."""
     args = {}
-    for key, text in (("from", ns.from_), ("to", ns.to)):
+    for text in (ns.from_, ns.to):
         if text is None:
             raise ToolError("road needs --from and --to (or --inspect-node ID alone)")
     for key, text in (("from", ns.from_), ("to", ns.to)):

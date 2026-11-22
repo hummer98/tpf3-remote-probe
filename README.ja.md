@@ -396,7 +396,10 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの nod
 - 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない。3次元で測るので、点の上にある橋の node は使わない)
   以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。点の近くの道路は octree
   (`api.engine.util.octree.findEntitiesInCircle` で BASE_EDGE、無ければ octree system の箱) から探し、道路だけ
-  (`roadType` が STREET。種類が読めないものは除く) の `node0` / `node1` を使います。線路の node については聞きません。
+  (`roadType` が STREET。種類が読めないものは除く) の `node0` / `node1` を使います。線路の node については聞きません。道路は `--snap` より 25 m 広く探し
+  (町の道路の継ぎ目の node を、その真上から snap 3 m で取りこぼした。octree が node の近くでどちらの道路にも当たらなかった)、
+  端のうち `--snap` の中のものだけを使います。新しい node になった端には、その訳を `snapNote` に書きます (`--snap` の外で
+  いちばん近い道路の node とその距離、または道路が1本も無かったこと)。
   つなぐ node にある道路は、そのあと street system (`streetSystem.getNodeStreetSegments`。答えの
   `piecesFrom: "streetSystem"`) から読みます。それが無いか、エラーになるときだけ、octree の 1 m の中から探します
   (`"octree"`)。産業の T 字では、octree はどれにも当たりませんでした。なければ新しい node です。新しい node が古い node の
@@ -431,8 +434,8 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの nod
   `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい
   道路が見つからないときは `warning` を付けます。template や `BaseEdgeType` / `RoadType` の enum が読めないときは、
   何も送らずに断ります。
-- `--dry-run` は何も送りません。build が送るのと同じ proposal (設定も含む) を作り、
-  `api.engine.util.proposal.makeProposalData` (proposal と context、だめなら proposal だけ) でエンジンに聞きます。
+- `--dry-run` は何も送りません。建てるときに送るのと同じ proposal (設定も含む) を作り、
+  `api.engine.util.proposal.makeProposalData` (proposal だけ、だめなら context も渡す) でエンジンに聞きます。
   呼ぶのは guiUpdate の中で、レシピの本体では呼びません。答えは `checked: true`、`engineCheck` (使った形)、`buildable`、
   エンジンの `cost`・`errors`・`warnings`・`collisions`・`critical`、`balance`。エンジンが断るものは `ok: false` で、文言が
   `error` に入ります。`makeProposalData` が無いか、どちらの形でもエラーになるときは、プローブの計画だけを返します

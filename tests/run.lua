@@ -8060,7 +8060,7 @@ test("road --dry-run: the engine's verdict (makeProposalData) on the proposal a 
 	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end })
 	local a = roadRun(g, 1010, '{ from = "102,1", to = "200,0", dryRun = true }')
 	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(a.cost, 1000, "the engine's cost")
-	truthy(a.engineCheck:find("SimpleProposal, Context", 1, true), a.engineCheck)
+	eq(a.engineCheck, "makeProposalData (SimpleProposal)", "the proposal alone first (Overpass Builder's form)")
 	eq(a.nodeConfigs, 2, "the set-ups planned, as a build's"); eq(a.newNodes, 1)
 	eq(#g.buildCmds, 0); eq(#g.streetCmds, 0, "nothing recorded as sent"); eq(g.balance, a.balance)
 	-- a collision: not buildable, an error, the collisions; nothing sent
@@ -8073,10 +8073,13 @@ test("road --dry-run: the engine's verdict (makeProposalData) on the proposal a 
 	a = roadRun(g, 1012, '{ from = "0,500", to = "0,600", dryRun = true }')
 	eq(a.ok, false); truthy(a.error:find("Not enough money", 1, true), a.error)
 	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 3)
-	-- a form with the proposal alone: taken after the two-argument one raises
-	g = roadWorld({ proposalDataOneArg = true })
+	-- the form with a Context: taken after the proposal alone raises; the proposal alone is never sent twice
+	g = roadWorld({ proposalDataTwoArgs = true })
 	a = roadRun(g, 1013, '{ from = "102,1", to = "200,0", dryRun = true }')
-	truthy(a.ok, a.error); eq(a.checked, true); eq(a.engineCheck, "makeProposalData (SimpleProposal)"); eq(g.proposalDataCalls, 2)
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.engineCheck, "makeProposalData (SimpleProposal, Context)"); eq(g.proposalDataCalls, 2)
+	g = roadWorld({ proposalDataOneArg = true })
+	a = roadRun(g, 1016, '{ from = "102,1", to = "200,0", dryRun = true }')
+	truthy(a.ok, a.error); eq(a.engineCheck, "makeProposalData (SimpleProposal)"); eq(g.proposalDataCalls, 1)
 	-- not to be had: the probe's own answer, and why
 	g = roadWorld({ noSimpleProposalData = true })
 	a = roadRun(g, 1014, '{ from = "102,1", to = "200,0", dryRun = true }')
@@ -8274,6 +8277,74 @@ test("the fake: a construction's node set-up taken off or added is an assertion;
 	truthy(ok, g.crashed); eq(res.success, true, "the mouth, its set-up untouched")
 end)
 
+test("road: whether a node is a construction's cannot be read either way: refused, nothing sent (review 2026-11-23)", function()
+	local g = roadWorld({ height = function() return 2 end })
+	local scs = api.engine.system.streetConnectorSystem
+	local fn, fe = scs.getConstructionEntityForNode, scs.getConstructionEntityForEdge
+	scs.getConstructionEntityForNode = function() error("no node owner") end
+	scs.getConstructionEntityForEdge = function() error("no edge owner") end
+	for i, dry in ipairs({ "false", "true" }) do
+		local a = roadRun(g, 1080 + i, '{ from = "102,1", to = "200,0", dryRun = ' .. dry .. ' }')
+		eq(a.ok, false, dry); truthy(tostring(a.error):find("is a construction's could not be read", 1, true), tostring(a.error))
+	end
+	-- the edge way answering is enough (the node way alone raising)
+	scs.getConstructionEntityForEdge = fe
+	local a = roadRun(g, 1083, '{ from = "102,1", to = "200,0" }')
+	scs.getConstructionEntityForNode = fn
+	truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.from.laneRules, 2)
+	eq(#g.buildCmds, 1); eq(g.proposalDataCalls, 0); truthy(not g.crashed, g.crashed)
+end)
+
+test("build: connectable leaves out a construction's track pieces (a station's), lists its road mouth", function()
+	local STATION = "::/station/rail/small.con"
+	local g = roadWorld({ roads = { nodes = {}, edges = {} }, height = function() return 0 end,
+		cons = { [STATION] = { cost = 0, shape = { nodes = { { 0, 0, 0 }, { 50, 0, 0 }, { 0, 10, 0 }, { 0, 30, 0 } },
+			edges = { { 1, 2, track = true }, { 3, 4 } }, frozenNodes = { 3 } } } } })
+	local b = buildRun(g, 1085, string.format('{ res = %q, at = "500,500" }', STATION))
+	truthy(b.ok, b.error)
+	local c = b.construction.connectable
+	eq(#c, 1, "the road's mouth only"); eq(c[1].kind, "mouth"); eq(c[1].y, 530)
+	truthy(not g.crashed, g.crashed)
+end)
+
+-- 2026-11-23 in a game: a town's own road node 4066 (-2339.064, -43.227), the seam of its pieces 1122 and 4256: a dry
+-- run from right on it with --snap 3 took no node (a new one on the terrain), and said nothing of why
+test("road snap: a town road's seam node the octree misses near it is found (pieces looked for beyond snap); a new end says why", function()
+	local function world(gap)
+		return roadWorld({ octreeGap = gap, height = function() return 0 end, roads = {
+			nodes = { [4066] = { x = -2339.064, y = -43.227, z = 0 }, [4001] = { x = -2400, y = -43.227, z = 0 },
+				[4002] = { x = -2280, y = -43.227, z = 0 } },
+			edges = { [1122] = { node0 = 4001, node1 = 4066 }, [4256] = { node0 = 4066, node1 = 4002 } } } })
+	end
+	-- the town's node has its set-up (the network's nodes have one, as a town's would: not read in a game)
+	local g = world(4)
+	local a = roadRun(g, 1090, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.node, 4066, "the seam node"); eq(a.from.snapped, 0); eq(a.from.passedOver, nil)
+	eq(a.from.laneRules, 4, "a junction of three"); eq(a.from.snapNote, nil); eq(a.checked, true)
+	a = roadRun(g, 1091, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3 }')
+	truthy(a.ok, a.error); eq(g.edges[a.edge].node0, 4066)
+	-- beyond snap even with the pieces met (a gap of 20 m: only the wider search meets them): the nearest named
+	g = world(20)
+	a = roadRun(g, 1092, '{ from = "-2335,-43.227", to = "-2348,45", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.node, nil); eq(a.from.zFrom, "terrain")
+	truthy(tostring(a.from.snapNote):find("the nearest, node 4066, is 4.06 m away", 1, true), tostring(a.from.snapNote))
+	-- no road at all near: said so
+	a = roadRun(g, 1095, '{ from = "0,500", to = "0,600", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); truthy(tostring(a.from.snapNote):find("no road piece met within 28 m", 1, true), tostring(a.from.snapNote))
+	-- the same seam right on the point with a gap of 20 m: still found
+	a = roadRun(g, 1096, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.node, 4066)
+	-- a node beyond snap: named, with its distance
+	g = world(0)
+	a = roadRun(g, 1093, '{ from = "-2330,-43.227", to = "-2348,45", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.node, nil)
+	truthy(tostring(a.from.snapNote):find("the nearest, node 4066, is 9.06 m away", 1, true), tostring(a.from.snapNote))
+	-- snap 0: no note (never joined)
+	a = roadRun(g, 1094, '{ from = "-2330,-43.227", to = "-2348,45", snap = 0, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.snapNote, nil)
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("road --inspect-node (roadInspect): pieces, construction, set-up, octree; read only; bad ids refused", function()
 	truthy(core.COMMANDS.roadInspect and not core.CHANGES_GAME.roadInspect, "a command that changes nothing")
 	eq(core.roadInspectRequest({ node = 5 }).node, 5)
@@ -8318,7 +8389,7 @@ test("road --inspect-node (roadInspect): pieces, construction, set-up, octree; r
 	send(g, 1064, "roadInspect", "{ node = 777777 }")
 	frames(g, FIRST + 2)
 	a = final(g, 1064)
-	eq(a.ok, false); truthy(a.error:find("is no node", 1, true), a.error)
+	eq(a.ok, false); truthy(a.error:find("777777 is no entity", 1, true), a.error)
 	eq(#g.buildCmds, 0, "nothing sent")
 	truthy(not g.crashed, g.crashed)
 end)

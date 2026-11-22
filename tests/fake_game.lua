@@ -1679,7 +1679,8 @@ end
 -- and makeProposalData takes a SimpleProposal alone or with a Context (Overpass Builder's notes: build 40408 takes a
 -- SimpleProposal on the GUI thread, though engine/util.d.tl:939 types it for a Proposal) and gives what a build's
 -- callback would, building nothing (g.proposalDataCalls); spec.noSimpleProposalData: it raises for a SimpleProposal
--- (as bus_loops' notes say it does); spec.proposalDataOneArg: it raises when a Context is given too.
+-- (as bus_loops' notes say it does); spec.proposalDataOneArg: it raises when a Context is given too;
+-- spec.proposalDataTwoArgs: it raises without a Context.
 -- The octree finds the constructions in g.built by their transf's position.
 -- A construction's shape may have free pieces (shape.free = { { i, j } }: an industry's arms, street_cross_01 / 02,
 -- not among its frozenEdges) and frozen nodes (shape.frozenNodes = { i }: CONSTRUCTION.frozenNodes, the inner end
@@ -1902,6 +1903,12 @@ function M.installBuild(g, spec)
 	end
 
 	g.conNode, g.conEdge, g.frozenNode = {}, {}, {}
+	-- (the road network's nodes and pieces and the constructions exist, as entityExists says)
+	local existsBefore = api.engine.entityExists
+	api.engine.entityExists = function(e)
+		if g.nodes[e] or g.edges[e] or g.built[e] then return true end
+		return existsBefore and existsBefore(e) or false
+	end
 	api.engine.system.streetConnectorSystem = api.engine.system.streetConnectorSystem or {}
 	local scs = api.engine.system.streetConnectorSystem
 	local conForEdge = scs.getConstructionEntityForEdge
@@ -2031,6 +2038,7 @@ function M.installBuild(g, spec)
 			error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)")
 		end
 		if spec.proposalDataOneArg and ctx ~= nil then error("bad argument #2 to 'makeProposalData' (no such overload)") end
+		if spec.proposalDataTwoArgs and ctx == nil then error("bad argument #2 to 'makeProposalData' (Context expected)") end
 		if type(p) ~= "userdata" then crash("makeProposalData: no proposal") end
 		-- (nothing built, nothing paid: plain values, as the engine's ProposalData reads)
 		return (evaluate(p, true))
@@ -2072,7 +2080,20 @@ function M.installBuild(g, spec)
 				if a and b then
 					local dx, dy = b.x - a.x, b.y - a.y
 					local l2 = dx * dx + dy * dy
-					local t = l2 > 0 and math.max(0, math.min(1, ((c.x - a.x) * dx + (c.y - a.y) * dy) / l2)) or 0
+					-- spec.octreeGap = m: a piece's shape drawn back m from a node where two or more pieces meet (a
+					-- town road's seam, an industry's T: what the octree met in the game, 2026-11-23, a guess at why)
+					local t0, t1 = 0, 1
+					if spec.octreeGap and l2 > 0 then
+						local function joined(n)
+							local k = 0
+							for _, o in pairs(g.edges) do if o.node0 == n or o.node1 == n then k = k + 1 end end
+							return k >= 2
+						end
+						local f = spec.octreeGap / math.sqrt(l2)
+						if joined(ed.node0) then t0 = math.min(0.5, f) end
+						if joined(ed.node1) then t1 = math.max(0.5, 1 - f) end
+					end
+					local t = l2 > 0 and math.max(t0, math.min(t1, ((c.x - a.x) * dx + (c.y - a.y) * dy) / l2)) or 0
 					local px, py = a.x + t * dx, a.y + t * dy
 					if (px - c.x) ^ 2 + (py - c.y) ^ 2 <= r * r then out[#out + 1] = e end
 				end
@@ -2154,7 +2175,8 @@ function M.installBuild(g, spec)
 			for _, ed in ipairs((c.shape or {}).edges or {}) do
 				g.nextEntity = g.nextEntity + 1
 				edgeIds[#edgeIds + 1] = g.nextEntity
-				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]] }
+				-- (ed.track: a track piece, as a station's)
+				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]], roadType = ed.track and "TRACK" or nil }
 				g.conEdge[g.nextEntity] = e
 				g.conNode[nodeIds[ed[1]]], g.conNode[nodeIds[ed[2]]] = e, e
 			end

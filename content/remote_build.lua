@@ -274,9 +274,11 @@ function M.new(ctx)
 		else
 			unread = "no streetConnectorSystem"
 		end
+		local edgeAsked = false
 		if owner == nil then
 			for _, e in ipairs(segs or {}) do
 				local ok, v = pcall(function() return sc.getConstructionEntityForEdge(e) end)
+				if ok then edgeAsked = true end
 				v = ok and tonumber(v) or nil
 				if v and v >= 0 then
 					local c = comp(v, "CONSTRUCTION")
@@ -285,7 +287,8 @@ function M.new(ctx)
 				end
 			end
 		end
-		if owner == nil then return nil, unread end
+		-- (unread only when neither way could be asked: the caller refuses then, as for an unread set-up)
+		if owner == nil then return nil, (not edgeAsked) and unread or nil end
 		local c = comp(owner, "CONSTRUCTION")
 		local frozenE = c and setOf(ids(core.field(c, "frozenEdges"))) or {}
 		local fn = c and core.field(c, "frozenNodes")
@@ -323,8 +326,12 @@ function M.new(ctx)
 		if fnRaw == nil then return nil, "the construction's frozenNodes could not be read" end
 		local frozenN, frozenE = setOf(ids(fnRaw)), setOf(fe)
 		local mouths, seen = {}, {}
+		local street = try(function() return api.type.enum.RoadType.STREET end)
 		for _, edge in ipairs(fe) do
 			local be = comp(edge, "BASE_EDGE")
+			-- (road pieces only: a station's or a depot's track nodes are never asked about)
+			local rt = be and core.field(be, "roadType")
+			if street == nil or rt == nil or rt ~= street then be = nil end
 			for _, k in ipairs({ "node0", "node1" }) do
 				local n = tonumber(be and core.field(be, k))
 				if n and not frozenN[n] and not seen[n] then seen[n] = true; mouths[#mouths + 1] = n end
@@ -772,43 +779,57 @@ function M.new(ctx)
 	-- (nodeConfigState false) is never taken: the next nearest is; the second value lists the ones passed over
 	-- (nearest first), so that a caller can refuse rather than put a new node beside one of them. A node whose
 	-- set-up cannot be read stops the search (third value): the game would die before any caution was read.
+	--
+	-- The pieces are looked for SEARCH_EXTRA_M beyond r: a town's road node where two of its pieces meet (a seam)
+	-- was not found from a point right on it with a snap of 3 m (2026-11-23, node 4066): the octree's circle met
+	-- neither piece there (their shapes drawing back from the node, as at an industry's T, is a guess). The
+	-- fourth value: the nearest road node beyond r (or nil), and the search radius, for the answer's snapNote.
+	local SEARCH_EXTRA_M = 25
 	local function streetNodeNear(x, y, z, r)
 		local dist, pieces = {}, {}
-		for _, e in ipairs(streetEdgesNear(x, y, r)) do
+		local nearest
+		local R = r + SEARCH_EXTRA_M
+		for _, e in ipairs(streetEdgesNear(x, y, R)) do
 			local be = comp(e, "BASE_EDGE")
 			for _, k in ipairs({ "node0", "node1" }) do
 				local n = tonumber(core.field(be, k))
 				local p = n and nodePos(n)
 				if p then
 					pieces[n] = (pieces[n] or 0) + 1
-					local d = math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2 + (z and (p.z - z) ^ 2 or 0))
-					if d <= r then dist[n] = d end
+					local flat = math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2)
+					local d = math.sqrt(flat ^ 2 + (z and (p.z - z) ^ 2 or 0))
+					if d <= r then
+						dist[n] = d
+					elseif not nearest or d < nearest.d then
+						nearest = { node = n, d = d, flat = flat }
+					end
 				end
 			end
 		end
+		local around = { nearest = nearest, radius = R }
 		local order = {}
 		for n in pairs(dist) do order[#order + 1] = n end
 		table.sort(order, function(a, b) if dist[a] ~= dist[b] then return dist[a] < dist[b] end return a < b end)
 		local passed = {}
 		for _, n in ipairs(order) do
 			local cfg = nodeConfigState(n)
-			if cfg == nil then return nil, passed, { node = n, snapped = dist[n] } end
+			if cfg == nil then return nil, passed, { node = n, snapped = dist[n] }, around end
 			if cfg == false then
 				passed[#passed + 1] = { node = n, snapped = dist[n], pieces = pieces[n] }
 			else
 				local p = nodePos(n)
 				local hit = { node = n, x = p.x, y = p.y, z = p.z, snapped = dist[n], pieces = pieces[n], nodeConfig = true }
 				if #passed > 0 then hit.passedOver = passed end
-				return hit, passed
+				return hit, passed, nil, around
 			end
 		end
-		return nil, passed
+		return nil, passed, nil, around
 	end
 
 	-- an existing road node within SAME_M of a point (in three dimensions), nearest first: { node, d } or nil.
 	-- Through the pieces met within NEAR_PIECE_M (the octree has no nodes)
 	-- (SAME_M: how near the engine counts as "on" is not known; this one takes a node right on another)
-	local SAME_M, NEAR_PIECE_M = 0.1, 5
+	local SAME_M, NEAR_PIECE_M = 0.1, 30
 	local function nodeOnPoint(x, y, z)
 		local best
 		for _, e in ipairs(streetEdgesNear(x, y, NEAR_PIECE_M)) do
@@ -831,8 +852,8 @@ function M.new(ctx)
 	local function roadEnd(pt, snap)
 		local z, zFrom = pt[3], "given"
 		if z == nil then z, zFrom = heightAt(pt[1], pt[2]), "terrain" end
-		local hit, passed, unread = nil, {}, nil
-		if snap > 0 then hit, passed, unread = streetNodeNear(pt[1], pt[2], z, snap) end
+		local hit, passed, unread, around = nil, {}, nil, nil
+		if snap > 0 then hit, passed, unread, around = streetNodeNear(pt[1], pt[2], z, snap) end
 		if unread then
 			return nil, string.format("whether road node %d (%.1f m away) has its junction set-up (BaseNodeConfig) " ..
 				"could not be read; joining a node without one killed the game: nothing sent", unread.node, unread.snapped)
@@ -857,7 +878,18 @@ function M.new(ctx)
 				"with a node on another (Construction Not Possible): nothing sent. Join that node (a snap above 0), or " ..
 				"move this end", same.node, same.d)
 		end
-		return { x = pt[1], y = pt[2], z = z, zFrom = zFrom }
+		-- a new node: why no road node was taken, never silently (the nearest one beyond snap, in 3 d and on the map)
+		local note
+		if snap > 0 then
+			local q = around and around.nearest
+			if q then
+				note = string.format("no road node within snap %g m: the nearest, node %d, is %.2f m away (%.2f m on the " ..
+					"map; heights differ when the point's z is the terrain's): a new node", snap, q.node, q.d, q.flat)
+			else
+				note = string.format("no road piece met within %g m: a new node", around and around.radius or snap)
+			end
+		end
+		return { x = pt[1], y = pt[2], z = z, zFrom = zFrom, snapNote = note }
 	end
 
 	-- an engine record type by name: api.type.X, else api.type.Proposal.X (type.d.tl declares NodeAndEntity and
@@ -1005,6 +1037,10 @@ function M.new(ctx)
 			end
 			return { keep = con, pieces = #others, via = via }
 		end
+		if conUnread then
+			return nil, "whether node " .. node .. " is a construction's could not be read (" .. conUnread .. "); its " ..
+				"set-up is not to be remade if it is"
+		end
 		local rules = newLaneRules(node, piece, others)
 		if rules == nil then return nil, "the lanes of the pieces at node " .. node .. " could not be read" end
 		local ok, old = pcall(function() return api.engine.getComponent(node, CT().BASE_NODE_CONFIG) end)
@@ -1035,7 +1071,7 @@ function M.new(ctx)
 			return nil, "the connections of node " .. node .. " number lanes otherwise than this command (" .. bad ..
 				" is no vehicle lane when all lanes are counted)"
 		end
-		return { rules = rules, old = old, via = via, conUnread = conUnread }
+		return { rules = rules, old = old, via = via }
 	end
 
 	-- the road pieces near either end and the middle, by id: taken before sending, so a piece found afterwards
@@ -1072,18 +1108,19 @@ function M.new(ctx)
 
 	-- what the engine says of a proposal without building it: api.engine.util.proposal.makeProposalData, called
 	-- here in the guiUpdate (the GUI thread: Overpass Builder calls it there with a SimpleProposal alone; Track
-	-- Connector calls it in its game script with the proposal and a Context). Never from a recipe's body (api.util /
+	-- Connector calls it in its game script with the proposal and a Context, tried second here). Never from a recipe's body (api.util /
 	-- api.gui there killed the game, BUG.md 2026-11-15). -> the verdict (as a build's) and the form taken, or nil and
 	-- why (not there, or it raised both ways)
 	local function engineCheck(sp)
 		local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
 		if mpd == nil then return nil, "api.engine.util.proposal.makeProposalData is not there" end
-		local ok, data = pcall(mpd, sp, context())
-		if ok and data ~= nil then return verdict(data), "SimpleProposal, Context" end
-		local first = ok and "nothing given back" or tostring(data)
-		ok, data = pcall(mpd, sp)
+		-- (the proposal alone first: the form Overpass Builder uses on the GUI thread; with a Context only after)
+		local ok, data = pcall(mpd, sp)
 		if ok and data ~= nil then return verdict(data), "SimpleProposal" end
-		return nil, "makeProposalData (proposal, context): " .. first .. "; (proposal): " ..
+		local first = ok and "nothing given back" or tostring(data)
+		ok, data = pcall(mpd, sp, context())
+		if ok and data ~= nil then return verdict(data), "SimpleProposal, Context" end
+		return nil, "makeProposalData (proposal): " .. first .. "; (proposal, context): " ..
 			(ok and "nothing given back" or tostring(data))
 	end
 
@@ -1246,6 +1283,9 @@ function M.new(ctx)
 		local r, err = core.roadInspectRequest(c.args)
 		if not r then return fail(c.id, err) end
 		local n = r.node
+		-- (whether it exists first, as Overpass Builder asks before getComponent; no entityExists: not asked)
+		local exists = try(function() return api.engine.entityExists(n) end)
+		if exists == false then return fail(c.id, string.format("%d is no entity", n)) end
 		local p = nodePos(n)
 		if not p then return fail(c.id, string.format("%d is no node (no BASE_NODE position)", n)) end
 		local out = { ok = true, node = n, x = p.x, y = p.y, z = p.z }
