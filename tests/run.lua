@@ -1866,6 +1866,23 @@ test("event: a request the speed control finds at its first read is skipped as o
 	fake.guiSave.hummer_remote_probe = nil
 end)
 
+test("event: a speed control mounted again (new refs) still runs what waits; a run one is not re-reported skipped", function()
+	local g = speedGame({ saves = SAVES })
+	frames(g, 2)
+	g.speedControlOff = true
+	send(g, 340, "event", '{ name = "after.remount" }')
+	frames(g, FIRST)
+	R.hooks = {} -- mounted again: every ref and state starts empty
+	g.speedControlOff = false
+	frames(g, 5)
+	local a = final(g, 340)
+	eq(a.ok, true, tostring(a.error)); eq(a.relayed, true)
+	eq(R.events[#R.events].name, "after.remount")
+	local rep = core.openReports({ done = { { seq = 5 }, { seq = 5, skipped = true } } })
+	eq(rep[5].skipped, false, "the first report on a seq stands")
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
 test("quit: answered first, app.quit on the next frame, a run cancelled", function()
 	local g = newGame({ saves = SAVES })
 	frames(g, 2)

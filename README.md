@@ -853,11 +853,14 @@ mod's code, and was checked against no running copy of it.
   `tool` and `build-tool`'s events go into a queue in the GUI save data (`opens`), and the recipe fires them one per
   read (every 0.5 s), oldest first. Until 2026-11-22 this was a single slot: of two events sent in the same second
   only the second was fired. The answer comes once the recipe has fired the event and said so (under
-  `<mod>.open`), with `"relayed": true` and `relayedInSec` (about 0.5-1 s), so a script that sends events one
+  `<mod>.open`), with `"relayed": true` and `relayedInSec` (about 0.5-1 s, plus 0.5 s for each request queued
+before it), so a script that sends events one
   after another gets them in that order. The answer is an error when the recipe's `fireEvent` raised
   (`"relayed": true`, "relayed, but ..."), when the recipe did not take it within 10 s (`"relayed": false`: no game
   on screen, the ESC menu or a dialog, or another mod's speed control in its place; it is then dropped and never
-  fires later), or when the recipe was built again after it was sent (a load). Relayed means fired, not that a
+  fires later; the 10 s count from when it was queued, so only about 19 can wait at once), or when it was left from
+before the recipe's first read (a load). A request still waiting when a game loads gets no answer: tf3ctl gives
+up after 20 s with "no answer". Relayed means fired, not that a
   listener acted on it: whether a window opened shows in `frame` or the log.
 - **`tool`** pushes the module's tool on the game's tool stack as the base buttons do
   (`gameCtx.toolStack:get():getApi().push(tool, nil, {gameCtx})`). Only tools a module returns can be opened:

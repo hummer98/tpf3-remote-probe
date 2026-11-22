@@ -660,7 +660,8 @@ function M.openReports(d)
 	for _, r in ipairs(d.done) do
 		local seq = type(r) == "table" and tonumber(r.seq) or nil
 		if seq then
-			out[seq] = { error = r.error ~= nil and tostring(r.error) or nil, skipped = r.skipped == true }
+			-- the first word on a request stands: a later "skipped" for one already run must not undo it
+			out[seq] = out[seq] or { error = r.error ~= nil and tostring(r.error) or nil, skipped = r.skipped == true }
 		end
 	end
 	return out

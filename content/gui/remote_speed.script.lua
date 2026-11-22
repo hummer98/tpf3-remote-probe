@@ -111,6 +111,10 @@ end
 -- the reports on the window, event and tool requests, newest last: { seq, error, skipped }. Kept for the life of
 -- this Lua state, as the channels' reports below; the guiUpdate script matches them by seq, which never repeats.
 local openReports = { list = {} }
+-- the highest seq taken: in this Lua state, not the recipe's refs, as the channels' handled sets below. A speed
+-- control mounted again (its refs new) would otherwise take the waiting requests for old ones and never run them.
+-- nil until the first read of this Lua state. seq only grows (os.time based), so a later game's requests are newer.
+local opensSeen = { seq = nil }
 
 -- main thread (join)
 local function reportOpens(entries, warnedRef)
@@ -122,24 +126,25 @@ local function reportOpens(entries, warnedRef)
 end
 
 -- main thread (join): the oldest request not yet run, one per read, so two requests sent close together both go,
--- in the order they were sent, each in a join of its own (as two clicks would). seenRef: the highest seq taken;
+-- in the order they were sent, each in a join of its own (as two clicks would). seenRef (opensSeen): the highest
+-- seq taken;
 -- nil until the first read, whose requests are taken as old (a loaded save may still hold the last game's) and
 -- reported as skipped rather than run.
 local function performOpens(opens, seenRef, gameCtx, warnedRef)
-	local seen = seenRef:get()
+	local seen = seenRef.seq
 	if seen == nil then
 		local top, skipped = false, {}
 		for _, o in ipairs(opens) do
 			if not top or o.seq > top then top = o.seq end
 			skipped[#skipped + 1] = { seq = o.seq, skipped = true }
 		end
-		seenRef:set(top)
+		seenRef.seq = top
 		if #skipped > 0 then reportOpens(skipped, warnedRef) end
 		return
 	end
 	for _, o in ipairs(opens) do -- oldest first (core.openRequests)
 		if seen == false or o.seq > seen then
-			seenRef:set(o.seq)
+			seenRef.seq = o.seq
 			local err = perform(o, gameCtx, warnedRef)
 			reportOpens({ { seq = o.seq, error = err } }, warnedRef)
 			return
@@ -248,9 +253,6 @@ end
 
 local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(params)
 	local state = react.useState({ label = "", tip = "", buttons = true })
-	-- the highest window/event/tool request taken; nil until the first read: a request already in the save data
-	-- when the game loads is old, not opened
-	local seenSeq = react.useRef(nil)
 	local warnedRef = react.useRef(nil)
 	-- the newest params, for the join (a timer registered on an earlier render would see old ones)
 	local paramsRef = react.useRef(nil)
@@ -269,7 +271,7 @@ local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(p
 				if not okV then warnOnce(warnedRef, name .. " " .. tostring(errV), ch.what .. " requests failed: " .. tostring(errV)) end
 			end
 			local p = paramsRef:get()
-			local okO, errO = pcall(performOpens, r.opens, seenSeq, type(p) == "table" and p.gameCtx or nil, warnedRef)
+			local okO, errO = pcall(performOpens, r.opens, opensSeen, type(p) == "table" and p.gameCtx or nil, warnedRef)
 			if not okO then warnOnce(warnedRef, "opens " .. tostring(errO), "window/event requests failed: " .. tostring(errO)) end
 		end, "HummerRemoteSpeedControl:read")
 	end, READ_SEC)

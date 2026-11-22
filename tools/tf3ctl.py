@@ -3484,7 +3484,7 @@ def main(argv=None):
             ev = tool_event(ns)
             if ev:
                 res = send("event", ev)
-                if isinstance(res, dict):
+                if isinstance(res, dict) and res.get("ok"):
                     res["note"] = ("sent the event " + ev["name"] + " instead of a tool push: this window's base "
                                    "button passes more than gameCtx, and a plain push makes the GUI reload")
             else:
