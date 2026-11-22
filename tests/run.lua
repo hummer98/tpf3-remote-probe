@@ -8323,6 +8323,55 @@ test("road --inspect-node (roadInspect): pieces, construction, set-up, octree; r
 	truthy(not g.crashed, g.crashed)
 end)
 
+-- 2026-11-23 in a game: a road's dead end (node 7311, one piece) that a growing town's road joined afterwards was
+-- refused three times ("no road piece was found at node 7311"): the octree's 1 m circle around it met nothing.
+-- The pieces now come from the street system: the node with two pieces is joined as a junction
+test("road: a dead end a town road joined afterwards (the octree missing it within 1 m) is joined through the street system", function()
+	local g = roadWorld({ roads = { nodes = {}, edges = {} }, height = function() return 0 end })
+	local a = roadRun(g, 1070, '{ from = "2417,-70", to = "2417,70" }')
+	truthy(a.ok, a.error)
+	local first, endNode = a.edge, a.nodes[2]
+	eq(g.edges[first].node1, endNode); eq(#g.nodeConns[endNode], 0, "a dead end")
+	-- the town grows a road to that end: a piece of its own (not this command's), its set-up made straight on by the
+	-- engine (as a town's road would be: lane 1 of our piece into the town piece's lane 2 and back)
+	g.nextEntity = g.nextEntity + 1
+	local townNode = g.nextEntity
+	g.nodes[townNode] = { x = 2417, y = 200, z = 0 }
+	g.nodeConfig[townNode] = true
+	g.nextEntity = g.nextEntity + 1
+	local townPiece = g.nextEntity
+	g.edges[townPiece] = { node0 = endNode, node1 = townNode }
+	g.nodeConns[endNode] = { { segment0 = first, lane0 = 1, segment1 = townPiece, lane1 = 2, withRoad = true },
+		{ segment0 = townPiece, lane0 = 1, segment1 = first, lane1 = 2, withRoad = true } }
+	-- the node's shape as in the game: no piece within 1 m of it in the octree
+	local find = api.engine.util.octree.findEntitiesInCircle
+	api.engine.util.octree.findEntitiesInCircle = function(c, r, kind)
+		if r <= 1 then return {} end
+		return find(c, r, kind)
+	end
+	local ok, res = pcall(roadRun, g, 1071, '{ from = "2417,70", to = "2500,90", snap = 20 }')
+	api.engine.util.octree.findEntitiesInCircle = find
+	truthy(ok, res); a = res
+	truthy(a.ok, a.error); eq(a.from.node, endNode); eq(a.from.piecesFrom, "streetSystem")
+	eq(a.from.laneRules, 4, "a junction of three: each arriving road lane to each leaving one of the other two")
+	eq(#g.nodeConns[endNode], 6, "the town's two kept, four added")
+	eq(g.edges[a.edge].node0, endNode)
+	-- the same without the street system: the old way, refused as in the game (nothing sent)
+	local sent = #g.buildCmds
+	local real = api.engine.system.streetSystem.getNodeStreetSegments
+	api.engine.system.streetSystem.getNodeStreetSegments = nil
+	api.engine.util.octree.findEntitiesInCircle = function(c, r, kind)
+		if r <= 1 then return {} end
+		return find(c, r, kind)
+	end
+	a = roadRun(g, 1072, '{ from = "2417,70", to = "2380,120", snap = 20 }')
+	api.engine.util.octree.findEntitiesInCircle = find
+	api.engine.system.streetSystem.getNodeStreetSegments = real
+	eq(a.ok, false); truthy(tostring(a.error):find("no road piece was found at node " .. endNode, 1, true), tostring(a.error))
+	eq(#g.buildCmds, sent)
+	truthy(not g.crashed, g.crashed)
+end)
+
 ---------------------------------------------------------------------------------------------------------------------
 -- terrain (a rectangle flat or a slope), terrainApi, newgame --editor
 
