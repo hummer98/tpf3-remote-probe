@@ -538,6 +538,42 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   whether it works outside the map editor, whether `landUse2CargoNeeds` takes, the needs command, how the engine
   answers a place with roads or buildings on it, the population right after.
 
+### Growing a town at a point (`town develop`, `town size`: test saves only)
+
+```sh
+python3 tools/tf3ctl.py town develop --at 120,-40 --count 30 [--streets] [--upgrade] [--radius 250] [--dry-run]
+python3 tools/tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] [--dry-run]
+```
+
+- **Use these on test saves only.** They add buildings no player could place, to give a harbour's or station's
+  circle its houses and shops without running years of `steps`. They warn other clients as game-changing commands
+  (their dry runs too). Options go after the word (`town develop --dry-run ...`): one of the plain `town`'s given
+  before it is refused, so a `--dry-run` there is never dropped.
+- `town develop` sends `api.cmd.makeTownDevelopAtCmd(api.type.Vec2f.new(x, y), streets, upgrade)` `--count` times
+  (1-200, default 1), one after another: the next goes a frame after the last one's callback. The type's words:
+  "new buildings or street segments are added at the given position"; `--streets` develops streets, `--upgrade`
+  upgrades buildings (both false by default).
+- `town size` sends `api.cmd.makeTownUpdateSizeCmd(town, { residential, commercial, industrial }, updateAll)`: the
+  town's size factors (each 0-5; a new town has 1), as the base's town growth script sends them. `--update-all`
+  takes every building to its target capacity. The town must be one the engine has, with a `TOWN` component. The
+  base's town growth script resends the size from the town's own factors as it grows (raising only), so factors
+  set lower than its own may be raised again.
+- The counts: the town buildings of every town (`townBuildingSystem.getTown2BuildingMap`), each one's kind from its
+  `PERSON_CAPACITY` type (`LandUseType`), as `stations --catchment` counts them: `buildings`, `residential`,
+  `commercial`, `industrial`, `unknownKind`, `capacity` per kind. `town develop` answers `before` / `after` /
+  `delta` for all towns together (`total`) and for the buildings whose bounding box centre is within `--radius`
+  (default 250 m, a harbour's circle) of the point (`near`), and `towns`: the towns whose counts changed, by id and
+  name. `town size` answers the town's `before` / `after` / `delta`, and `townBefore` / `townAfter`
+  (`sizeFactors`, `initialLandUseCapacities`, `developmentActive`, `personCapacities`). The counts are read 5
+  frames after the last callback: buildings that come later are not in them.
+- Also in the answer: `sent`, `succeeded`, `failed`, `failures` (index, success, engineResult; the first 20),
+  `engineResult` (what the first callback handed back), `waitedSec`, `functions` (which of the functions are
+  there). `--dry-run` sends nothing and answers the counts (a develop's: every town). A function the game does not
+  have (nil) is not called; an error raised while making or sending, no callback in 30 s, and every command refused
+  (`success` false) are errors. One `town develop` or `town size` at a time: another is refused while one runs.
+- **Not checked in game yet** (written 2026-11-22): whether the guiUpdate state has these functions and the engine
+  takes them in a game, what a develop builds where and how fast, whether `--update-all` builds at once.
+
 ### Stocks and simulation steps (`stock`, `steps`: debug commands, test saves only)
 
 ```sh
