@@ -4581,5 +4581,57 @@ class OwnerCheckTest(unittest.TestCase):
             tf3ctl.check_game_owner("save", {"name": "x"})
 
 
+class NoAbbrevTest(unittest.TestCase):
+    """Only whole option names: the game guard outside reads the flags as typed, so --eng must not mean --engine-check."""
+
+    def refused(self, argv):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            tf3ctl.make_parser().parse_args(argv)
+        self.assertEqual(cm.exception.code, 2, argv)
+        return err.getvalue()
+
+    def test_every_parser_is_strict(self):
+        seen = []
+
+        def walk(pr, path):
+            seen.append(path)
+            self.assertFalse(pr.allow_abbrev, path)
+            for a in pr._actions:
+                if isinstance(a, tf3ctl.argparse._SubParsersAction):
+                    for name, sp in a.choices.items():
+                        walk(sp, path + [name])
+        walk(tf3ctl.make_parser(), [])
+        for nested in (["town", "develop"], ["modhub", "publish"], ["line", "create"], ["stock", "set"]):
+            self.assertIn(nested, seen, "the nested parsers are walked too")
+
+    def test_abbreviations_are_refused(self):
+        for argv, short in ((["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--eng"], "--eng"),
+                            (["camera", "--se", "1,2"], "--se"),
+                            (["--own", "me", "status"], "--own"),
+                            (["--other", "speed", "1"], "--other"),
+                            (["town", "develop", "--at", "1,2", "--stre"], "--stre"),
+                            (["modhub", "publish", "f", "--public", "yes", "--changelog", "c", "--first"], "--first"),
+                            (["line", "create", "--stops", "1,2", "--force-un", "1"], "--force-un"),
+                            (["stock", "set", "--ent", "1", "--stock", "0", "--amount", "5"], "--ent")):
+            with self.subTest(argv=argv):
+                self.assertIn(short, self.refused(argv), argv)
+
+    def test_whole_names_still_parse(self):
+        p = tf3ctl.make_parser()
+        self.assertTrue(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--engine-check"]).engine_check)
+        self.assertEqual(p.parse_args(["camera", "--set", "1,2"]).set, "1,2")
+        self.assertEqual(p.parse_args(["camera", "--set=1,2"]).set, "1,2", "--name=value stays")
+        self.assertEqual(p.parse_args(["--owner", "me", "status"]).owner, "me")
+        ns = p.parse_args(["town", "develop", "--at", "1,2", "--streets"])
+        self.assertEqual((ns.town_action, ns.grow_streets), ("develop", True))
+        ns = p.parse_args(["modhub", "publish", "f", "--public", "yes", "--changelog", "c", "--first-upload"])
+        self.assertEqual((ns.action, ns.folder, ns.first_upload), ("publish", "f", True))
+        self.assertTrue(p.parse_args(["--other-owner-ok", "speed", "1"]).other_owner_ok)
+        ns = p.parse_args(["line", "create", "--stops", "1,2", "--force-unload", "1"])
+        self.assertEqual((ns.action, ns.force_unload), ("create", "1"))
+        self.assertEqual(p.parse_args(["stock", "set", "--entity", "1", "--stock", "0", "--amount", "5"]).entity, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
