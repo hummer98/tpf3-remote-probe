@@ -196,7 +196,7 @@ function M.describeRaw(v, core, depth)
 		d.meta = core.array(mk)
 		if type(mt.__name) == "string" then d.metaName = mt.__name end
 		-- an __index that is a table holds the names it answers to
-		local okI, idxT = pcall(function() return rawget and rawget(mt, "__index") or mt.__index end)
+		local okI, idxT = pcall(function() return mt.__index end)
 		if okI and type(idxT) == "table" then
 			local ik = {}
 			pcall(function() for k, x in pairs(idxT) do ik[#ik + 1] = tostring(k) .. ":" .. type(x) end end)
@@ -241,22 +241,54 @@ function M.fieldProbe(v, k)
 	local ok, x = pcall(function() return v[k] end)
 	if not ok then return nil, "error: " .. tostring(x) end
 	if x == nil then return nil, "nil" end
-	return x, type(x)
+	return x, M.kindText(x)
 end
 
--- the answer's targets: the field by name; a function there is called as a getter (with the object, then without)
--- -> the value or nil, and how each try went
+-- a value's type, and for a userdata or table also what it prints as (e.g. "userdata TargetData: 0x...")
+function M.kindText(x)
+	if type(x) ~= "userdata" and type(x) ~= "table" then return type(x) end
+	local ok, t = pcall(tostring, x)
+	return type(x) .. " " .. (ok and tostring(t):sub(1, 60) or "?")
+end
+
+-- the answer's targets: the field by name (a function there is called as a getter, with the object), all the values
+-- __index gives for it (a pair may come as two), else the metatable
+-- -> the value or nil, how each try went, and the values when more than one came
 local function targetsOf(raw)
 	local probe = {}
 	local top, st = M.fieldProbe(raw, "targets")
 	probe.targets = st
 	if type(top) == "function" then
+		-- with the object only: a member function called without it may read a null object, past pcall
 		local ok, x = pcall(top, raw)
-		probe.targetsCall = ok and (x == nil and "nil" or type(x)) or ("error: " .. tostring(x))
-		if not (ok and x ~= nil) then ok, x = pcall(top) end
+		probe.targetsCall = ok and (x == nil and "nil" or M.kindText(x)) or ("error: " .. tostring(x))
 		top = (ok and x ~= nil) and x or nil
 	end
-	if top == nil then
+	local multi
+	local okM0, mt0 = pcall(function() return getmetatable(raw) end)
+	if okM0 and type(mt0) == "table" then
+		local mt = mt0
+		-- __index called as v.targets calls it, every value kept: a pair may come as two values, of which v.targets
+		-- gives the first only
+		if type(mt.__index) == "function" then
+			local r = { pcall(mt.__index, raw, "targets") }
+			if r[1] then
+				local n, kinds = 0, {}
+				for i = 2, 6 do
+					if r[i] ~= nil then n = i - 1 end
+				end
+				for i = 2, n + 1 do kinds[#kinds + 1] = r[i] == nil and "nil" or M.kindText(r[i]) end
+				probe.indexCall = table.concat(kinds, ", ")
+				if n >= 2 then
+					multi = {}
+					for i = 2, n + 1 do if r[i] ~= nil then multi[#multi + 1] = r[i] end end
+				end
+			else
+				probe.indexCall = "error: " .. tostring(r[2])
+			end
+		end
+	end
+	if top == nil and not multi then
 		-- a binding may keep the field in the metatable (a getter, or the __index table): read it there
 		local okM, mt = pcall(function() return getmetatable(raw) end)
 		if okM and type(mt) == "table" then
@@ -268,7 +300,7 @@ local function targetsOf(raw)
 					probe["targetsIn" .. c[1]] = type(x)
 					if type(x) == "function" then
 						local ok, y = pcall(x, raw)
-						probe["targetsIn" .. c[1] .. "Call"] = ok and (y == nil and "nil" or type(y)) or ("error: " .. tostring(y))
+						probe["targetsIn" .. c[1] .. "Call"] = ok and (y == nil and "nil" or M.kindText(y)) or ("error: " .. tostring(y))
 						x = ok and y or nil
 					end
 					if x ~= nil then top = x; break end
@@ -276,18 +308,30 @@ local function targetsOf(raw)
 			end
 		end
 	end
-	return top, probe
+	if top == nil and not multi then
+		-- the next try's leads: other names, and the object read by number (it is no vector: a record type)
+		for _, k in ipairs({ "target", "getTargets", "targetsByLandUse", "data", "entries", 0, 1 }) do
+			local _, st = M.fieldProbe(raw, k)
+			probe["other_" .. tostring(k)] = st
+		end
+	end
+	return top, probe, multi
 end
 
 -- the two TargetData of a targets userdata that neither # nor pairs read (TargetsByLandUse.targets is
--- {TargetData, TargetData}, a pair): by number 0, 1 and 2, in pcall; something at 0 means it counts from 0 (0 and
--- 1), else from 1 (1 and 2). Only when # is not there at all: a vector whose # is 0 is empty, and reading it by
+-- {TargetData, TargetData}, a pair): by number 0 and 1, in pcall; something at 0 means it counts from 0 (0 and
+-- 1), else from 1 (1 and 2, 2 read only then). Only when # is not there at all: a vector whose # is 0 is empty, and reading it by
 -- number may be the engine's assertion.
 local function pairByNumber(top, probe)
 	local at = {}
-	for i = 0, 2 do
+	for i = 0, 1 do
 		local x, st = M.fieldProbe(top, i)
 		at[i], probe["at" .. i] = x, st
+	end
+	-- 2 only when nothing is at 0 (counting from 1): from 0, a pair ends at 1
+	if at[0] == nil then
+		local x, st = M.fieldProbe(top, 2)
+		at[2], probe.at2 = x, st
 	end
 	local base = at[0] ~= nil and 0 or (at[1] ~= nil and 1 or nil)
 	if base == nil then return nil end
@@ -302,7 +346,12 @@ end
 -- was read, and the tries (probe: what each field read gave)
 function M.targetLists(raw, core)
 	if raw == nil then return {}, "nothing", {} end
-	local top, probe = targetsOf(raw)
+	local top, probe, multi = targetsOf(raw)
+	if multi then
+		local out = {}
+		for i, x in ipairs(multi) do out[i] = { key = i, list = x } end
+		return out, "targets/values", probe
+	end
 	local how = top ~= nil and "targets" or "top"
 	if top == nil then top = raw end
 	local items, by = M.items(top, core)

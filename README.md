@@ -817,7 +817,9 @@ python3 tools/tf3ctl.py persons --destination 51          # those with the indus
   `targetsWhy` and gives no `notTarget`. `read` says how it was read (`targets` or `top`, then `index`, `pairs`,
   `index1` / `index0` for a `targets` pair that only reads by number, and `flat` for entries without a list round
   them; `targets` is read by name, else as a getter, else from the metatable, and `raw.probe` / `raw.fieldProbe`
-  say what each read gave: a type, nil, or the error); `targetLists[].read` how each list was; one that would not read
+  say what each read gave: a type (with what a userdata prints as), nil, or the error; `targets/values` when its
+  `__index` gives the pair as two values (`probe.indexCall` lists them); when nothing comes, `probe.other_*` has
+  other names and the object read by number, for the next look); `targetLists[].read` how each list was; one that would not read
   makes a missing entity's `found` null too. A construction stands for its industries, town buildings and stations, a
   town building also for its PersonCapacity entity (`candidates`). With the building's town (or the closest town
   of an industry's construction) come `townProblems` (`api.engine.util.town.getTownProblems`: `problem` and the

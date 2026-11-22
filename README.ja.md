@@ -766,7 +766,9 @@ python3 tools/tf3ctl.py persons --destination 51          # その産業を行�
   `reach --town` では `targetsWhy` にそう書き、`notTarget` は出しません。`read` は読み方 (`targets` か `top`、続いて
   `index`・`pairs`、番号でしか読めない `targets` の2つ組なら `index1` / `index0`、一覧に包まれていない entries なら
   `flat`。`targets` は名前で、だめなら getter として、それでもだめなら metatable から読み、`raw.probe` / `raw.fieldProbe`
-  にそれぞれの読みの結果 (型、nil、またはエラー) が出ます)、`targetLists[].read` は一覧ごとの読み方です。読めない
+  にそれぞれの読みの結果 (型と userdata の表示、nil、またはエラー) が出ます。`__index` が2つ組を2つの値で返すときは
+  `targets/values` (`probe.indexCall` にその並び)。何も来ないときは、次に見るために `probe.other_*` にほかの名前と
+  番号での読みの結果が出ます)、`targetLists[].read` は一覧ごとの読み方です。読めない
   一覧が1つでもあると、見つからなかった entity の `found` も null にします。construction はその産業・町の建物・駅を、
   町の建物はその PersonCapacity の entity も探します (`candidates`)。建物の町 (産業なら construction に一番近い町)
   が分かれば `townProblems` (`api.engine.util.town.getTownProblems`: `problem` と相手の町 `with`) も付きます。

@@ -22,7 +22,8 @@
 --   assertion, g.crashed);
 -- spec.targetsShape also "zeroBased" (Lua tables from 0, lists and entries), "byName" ({ COMMERCIAL = , INDUSTRIAL =
 -- }), "flat" (the entries in one list), "opaque" (a userdata with neither # nor pairs);
--- "indexOnly" / "indexOnly0" / "metaGetter" / "noBinding" (read by name only: see there);
+-- "indexOnly" / "indexOnly0" / "metaGetter" / "noBinding" / "getter" / "twoValues" / "pairNothing" (read by name
+-- only: see there);
 -- spec.buildings[b].personNodes = { "tn:i" }: its PERSON_CAPACITY's personNodes; spec.pathError: the search raises;
 -- spec.userdata: the engine's answers as userdata. Asking getComponent for an entity the engine does not have, or
 -- reading an engine vector past its end, is the engine's assertion (g.crashed).
@@ -210,8 +211,13 @@ function M.install(g, spec)
 			local function byName(t, extra)
 				local u = newproxy(true)
 				local m = getmetatable(u)
-				m.__index = function(_, k)
+				m.__index = function(self, k)
 					if spec.targetsShape == "noBinding" and k == "targets" then error("no Lua binding for targets") end
+					-- a pair from 0 read past its end: the engine's assertion
+					if spec.targetsShape == "indexOnly0" and type(k) == "number" and t.isPair and (k < 0 or k > 1) then
+						crash("ASSERT: pair read past its end: " .. k)
+					end
+					if spec.targetsShape == "twoValues" and k == "targets" then return t.first, t.second end
 					return t[k]
 				end
 				m.__tostring = function() return "TargetsByLandUse: 0x2" end
@@ -224,7 +230,30 @@ function M.install(g, spec)
 				for i, l in ipairs(lists) do
 					pair[i - 1 + base] = byName({ entries = asUserdata(l.entries), edges = asUserdata({}) })
 				end
+				pair.isPair = true
 				return byName({ targets = byName(pair) })
+			end
+			-- getter: targets a member function (called with the object only; without it, a null read: a crash);
+			-- twoValues: targets read gives the two TargetData as two values; pairNothing: a pair nothing reads by number
+			local function tds()
+				local o = {}
+				for i, l in ipairs(lists) do o[i] = byName({ entries = asUserdata(l.entries) }) end
+				return o
+			end
+			if spec.targetsShape == "getter" then
+				local root
+				root = byName({ targets = function(self)
+					if self ~= root then crash("ASSERT: member function called without its object") end
+					return byName(tds())
+				end })
+				return root
+			end
+			if spec.targetsShape == "twoValues" then
+				local o = tds()
+				return byName({ first = o[1], second = o[2] })
+			end
+			if spec.targetsShape == "pairNothing" then
+				return byName({ targets = byName({}) })
 			end
 			if spec.targetsShape == "metaGetter" then
 				local pair = {}
