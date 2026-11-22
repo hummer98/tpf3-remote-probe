@@ -81,7 +81,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]   # debug command: test saves
             # only; a vehicle's load: --stock -1 --cargo NAME. Answers before / after and the engine's success
   tf3ctl.py steps 500 [--dry-run]           # debug command: the simulation 1-10000 steps on; test saves only.
-            # Answers the game time and update count before and after
+            # Pause first (refused while running, unless --allow-running). Waits until all the steps ran
+            # (1 step = 200 game time, 20 a day; 1000 steps about 15 s), then answers before / after / waitedSec
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
@@ -1551,7 +1552,14 @@ def steps_args(ns):
     args = {"count": ns.count}
     if ns.dry_run:
         args["dryRun"] = True
+    if getattr(ns, "allow_running", False):
+        args["allowRunning"] = True
     return args
+
+
+def steps_timeout(count):
+    """How long tf3ctl waits for a steps answer: the mod's own wait for all the steps (core.stepsWaitSec) and room."""
+    return max(STEPS_WAIT_MIN_SEC, count / 10000.0 * STEPS_WAIT_SEC_PER_10000) + STEPS_TIMEOUT_MARGIN_SEC
 
 
 def build_args(ns):
@@ -1786,7 +1794,10 @@ WATER_MAX_POINTS = 400  # the mod's core.WATER_MAX_POINTS
 WATER_MIN_STEP = 0.1  # core.WATER_MIN_STEP: a smaller step overflows the point count before the limit is checked
 BUILD_TIMEOUT_SEC = 60  # the mod waits 30 s for the engine's callback
 STOCK_TIMEOUT_SEC = 60  # stock set: the mod waits 30 s for the engine's callback
-STEPS_TIMEOUT_SEC = 200  # steps: the mod waits 150 s for the engine's callback
+STEP_GAME_TIME = 200  # core.STEP_GAME_TIME: one step's game time (20 steps a day)
+STEPS_WAIT_MIN_SEC = 30  # core.STEPS_WAIT_MIN_SEC / STEPS_WAIT_SEC_PER_10000: the mod's wait for all the steps
+STEPS_WAIT_SEC_PER_10000 = 200
+STEPS_TIMEOUT_MARGIN_SEC = 30  # over the mod's wait: picking the command up and writing the answer
 STEPS_MAX = 10000  # as the mod's core.STEPS_MAX
 STOCK_MAX_AMOUNT = 100000  # as the mod's core.STOCK_MAX_AMOUNT
 LOG_ERRORS_MAX = 10  # entries of the game's log added to a build's answer
@@ -3258,10 +3269,14 @@ def make_parser():
     sks.add_argument("--cargo", help="a cargo type's name exactly as stock list shows it (its cargo field); a stock "
                                      "list's stock: optional")
     sks.add_argument("--dry-run", action="store_true", help="check and show the before, send nothing")
-    st = sub.add_parser("steps", help="run the simulation N steps on (api.cmd.debug.makeGamePerformSimulationStepsCmd): "
-                                      "test saves only, not checked in a game yet")
+    st = sub.add_parser("steps", help="run the simulation N steps on (api.cmd.debug.makeGamePerformSimulationStepsCmd) "
+                                      "and answer once they have all run; one step is 200 of game time (20 a day). "
+                                      "Pause first (speed 0). Test saves only")
     st.add_argument("count", type=int, help="1-%d" % STEPS_MAX)
     st.add_argument("--dry-run", action="store_true", help="check and show the game time, send nothing")
+    st.add_argument("--allow-running", action="store_true",
+                    help="send while the game is not paused (refused otherwise): the deltas then mix the steps with "
+                         "the game's own running, and the wait may end early")
     mo = sub.add_parser("money", help="set or change the company's balance (a journal entry of category OTHER, "
                                       "as the sandbox money editor)")
     mg = mo.add_mutually_exclusive_group(required=True)
@@ -3558,7 +3573,7 @@ def main(argv=None):
             else:
                 res = send("stockSet", stock_args(ns), timeout=STOCK_TIMEOUT_SEC)
         elif ns.cmd == "steps":
-            res = send("steps", steps_args(ns), timeout=STEPS_TIMEOUT_SEC)
+            res = send("steps", steps_args(ns), timeout=steps_timeout(ns.count))
         elif ns.cmd == "money":
             res = send("money", money_args(ns), timeout=VEHICLE_TIMEOUT_SEC)  # the mod's own wait is 60 s
         elif ns.cmd == "depots":

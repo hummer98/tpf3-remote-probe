@@ -1019,12 +1019,22 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("no stock 3", res["error"])
         code, res = self.ctl("stock", "set", "--entity", "51", "--stock", "0", "--amount", "37")  # back as it was
         self.assertEqual((code, res["after"]), (0, 37), res)
-        code, res = self.ctl("steps", "20", "--dry-run")
-        self.assertEqual((code, res["sent"], res["count"]), (0, False, 20), res)
-        code, res = self.ctl("steps", "20")
+        self.assertEqual(self.ctl("speed", "1")[0], 0)
+        code, res = self.ctl("steps", "20")  # the game runs: refused
+        self.assertEqual(code, 1, res)
+        self.assertIn("pause it first", res["error"])
+        code, res = self.ctl("speed", "0")
         self.assertEqual(code, 0, res)
-        self.assertEqual((res["sent"], res["success"], res["updateCountDelta"]), (True, True, 20), res)
-        self.assertGreaterEqual(res["gameTimeDelta"], 20 * 200, "the steps' game time, and what ran meanwhile")
+        try:
+            code, res = self.ctl("steps", "20", "--dry-run")
+            self.assertEqual((code, res["sent"], res["count"]), (0, False, 20), res)
+            code, res = self.ctl("steps", "200")  # the fake runs them on 5 a frame after the callback
+            self.assertEqual(code, 0, res)
+            self.assertEqual((res["sent"], res["success"], res["timedOut"], res["updateCountDelta"],
+                              res["gameTimeDelta"]), (True, True, False, 200, 200 * 200), res)
+            self.assertGreater(res["waitedSec"], 0, res)
+        finally:
+            self.ctl("speed", "1")
         code, res = self.ctl("stock", "list", "--entity", "999999")
         self.assertEqual(code, 1, res)
         self.assertIn("no such entity", res["error"])
@@ -1369,6 +1379,10 @@ class QuitLaunchTest(unittest.TestCase):
                 tf3ctl.stock_args(ns(**bad))
         sns = tf3ctl.argparse.Namespace
         self.assertEqual(tf3ctl.steps_args(sns(count=1, dry_run=False)), {"count": 1})
+        self.assertEqual(tf3ctl.steps_args(sns(count=1, dry_run=False, allow_running=True)),
+                         {"count": 1, "allowRunning": True})
+        self.assertEqual(tf3ctl.steps_timeout(1), 30 + tf3ctl.STEPS_TIMEOUT_MARGIN_SEC)
+        self.assertEqual(tf3ctl.steps_timeout(10000), 200 + tf3ctl.STEPS_TIMEOUT_MARGIN_SEC)
         self.assertEqual(tf3ctl.steps_args(sns(count=tf3ctl.STEPS_MAX, dry_run=True)),
                          {"count": tf3ctl.STEPS_MAX, "dryRun": True})
         for bad in (0, -1, tf3ctl.STEPS_MAX + 1):
@@ -1394,7 +1408,7 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(sent, [("stockList", {"entity": 47}, 20),
                                 ("stockSet", {"entity": 47, "stock": 1, "amount": 100, "cargo": "COAL"},
                                  tf3ctl.STOCK_TIMEOUT_SEC),
-                                ("steps", {"count": 500, "dryRun": True}, tf3ctl.STEPS_TIMEOUT_SEC)])
+                                ("steps", {"count": 500, "dryRun": True}, tf3ctl.steps_timeout(500))])
 
     def test_build_args_and_main(self):
         def ns(**kw):

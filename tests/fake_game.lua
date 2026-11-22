@@ -2476,7 +2476,9 @@ M.DAY_TICKS = DAY_TICKS
 -- (an owner whose own entity has no STOCK_LIST). spec.missing = { stockSet = true, steps = true }: that function nil;
 -- spec.callableApi / opaqueApi: the functions as callable tables (opaque: their metatable locked, as the engine's);
 -- spec.refuse = { stockSet = true, steps = true }: the callback says no success; spec.makeRaises / sendRaises: this
--- text raised; spec.noCallback: the callback never comes; spec.stepMs: game time per step (200).
+-- text raised; spec.noCallback: the callback never comes; spec.stepMs: game time per step (200);
+-- spec.stepsPerFrame: the steps run on after the callback, this many a frame (as the engine runs them on), and
+-- spec.stepsStall: no more of them run after that many (a game that stops part way).
 -- g.debugCmds: every debug command sent, as made (nargs: the arguments make got). A stock id or cargo the list does
 -- not have is the engine's assertion (g.crashed).
 function M.installDebug(g, spec)
@@ -2521,9 +2523,14 @@ function M.installDebug(g, spec)
 	end
 	local function apply(cmd)
 		if cmd.kind == "debugSteps" then
-			g.gameTime = g.gameTime + cmd.amount * (spec.stepMs or 200)
-			g.updateCount = g.updateCount + cmd.amount
-			return not (spec.refuse or {}).steps
+			if (spec.refuse or {}).steps then return false end
+			if spec.stepsPerFrame then
+				g.pendingSteps = (g.pendingSteps or 0) + cmd.amount
+			else
+				g.gameTime = g.gameTime + cmd.amount * (spec.stepMs or 200)
+				g.updateCount = g.updateCount + cmd.amount
+			end
+			return true
 		end
 		if (spec.refuse or {}).stockSet then return false end
 		if cmd.stock == -1 then
@@ -2555,6 +2562,20 @@ function M.installDebug(g, spec)
 			st.count = cmd.amount
 		end
 		return true
+	end
+	if spec.stepsPerFrame then
+		local step = g.step
+		g.stepsRun = 0
+		g.step = function(dt)
+			step(dt)
+			local n = math.min(g.pendingSteps or 0, spec.stepsPerFrame)
+			if spec.stepsStall then n = math.max(0, math.min(n, spec.stepsStall - g.stepsRun)) end
+			if n > 0 then
+				g.pendingSteps, g.stepsRun = g.pendingSteps - n, g.stepsRun + n
+				g.gameTime = g.gameTime + n * (spec.stepMs or 200)
+				g.updateCount = g.updateCount + n
+			end
+		end
 	end
 	local send = api.cmd.sendCommand
 	api.cmd.sendCommand = function(cmd, cb)
@@ -2664,7 +2685,7 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		streets = { ["::/infrastructure/street/town/town_old_medium.street_template"] = { yearTo = 1940, cost = 10 },
 			["::/infrastructure/street/town/town_new_medium.street_template"] = { yearFrom = 1940, cost = 20 } } })
 	-- the debug commands (stock set, steps): the industry's stocks, 200 ms of game time a step
-	M.installDebug(g, {})
+	M.installDebug(g, { stepsPerFrame = 5 })
 	local start = os.clock()
 	local wall = 0
 	local speedControl

@@ -544,7 +544,8 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
 python3 tools/tf3ctl.py stock list --entity 51                       # read only
 python3 tools/tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]
 python3 tools/tf3ctl.py stock set --entity 601 --stock -1 --amount 30 --cargo <cargo>   # a vehicle's load
-python3 tools/tf3ctl.py steps 500 [--dry-run]
+python3 tools/tf3ctl.py speed 0                                      # pause first
+python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
 ```
 
 - **Use these on test saves only.** They send the game's debug commands (`api.cmd.debug`), which change the game
@@ -566,16 +567,25 @@ python3 tools/tf3ctl.py steps 500 [--dry-run]
   take, an entity the engine does not have. The answer: `before`,
   `after` (read a couple of frames after the callback), `success`, `engineResult` (what the callback handed back),
   `stockList` (the entity it went to); `--dry-run` sends nothing and answers `before` and `functionPresent`.
-- `steps N` (1-10000) sends `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)`. The answer: `before` and
-  `after` (`gameTime`, `updateCount`, `tickCount`, `date`), `gameTimeDelta`, `updateCountDelta`,
-  `gameTimePerStep`, `callbackSec`, `success`, `engineResult`. The game time also moves on by itself between the
-  two reads when the game is not paused: pause it first (`pause`) for a clean count.
+- `steps N` (1-10000) sends `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)`. One step is 200 of game time,
+  so 20 steps make a game day; 1000 steps took about 15 s (measured 2026-11-22, paused, on a small test save). The engine's callback
+  comes before the steps have all run (they run on over many frames), so the answer waits until `updateCount`
+  is up by N or `gameTime` by N x 200 (`doneBy` says which), at most `waitSec` (N / 10000 x 200 s, at least
+  30 s; tf3ctl waits 30 s more). The answer: `before` and `after` (`gameTime`, `updateCount`, `tickCount`,
+  `date`), `gameTimeDelta`, `updateCountDelta`, `gameTimePerStep`, `callbackSec`, `waitedSec`, `timedOut`,
+  `stepsPerSec`, `speedup`, `success`, `engineResult`. A wait that runs out is an error (`timedOut` true) with
+  what ran by then; the engine runs the rest on all the same, so a `steps` sent while they may still run (or while
+  another `steps` waits) is refused until they are done.
+- **Pause first** (`speed 0`): while the game runs, its own running moves the same counts, so the wait would end
+  early and the deltas would not be the steps'. `steps` is refused while the game runs (its `--dry-run` answers
+  with a `warning` instead); `--allow-running` sends anyway and the answer carries a `warning`.
 - A debug function the game does not have (nil) is not called: the answer says so (`functionPresent` false,
   `sent` false). The engine's refusal (`success` false), an error raised while making or sending the command, and
-  no callback in 30 s (`steps`: 150 s) are errors with the engine's own words where it gives any.
-- **Not checked in game yet** (written 2026-11-22): whether a release build has these debug functions, whether it
-  runs them or refuses them, whether a station holds a stock list of its own, what one step is in game time, and
-  how long a large `steps` holds the game up.
+  no callback in 30 s (`steps`: its `waitSec`) are errors with the engine's own words where it gives any.
+- **Checked in game** (2026-11-22, paused): the release build runs `steps`; one step is 200 of game time
+  (`steps 1` / `10`: 200 / 2000, update count 1 / 10); 1000 steps ran on for about 15 s after an early callback.
+  **Not checked in game yet**: the waiting answer itself, `stock set`, whether a station holds a stock list of its
+  own.
 
 ### My Mods from the main menu (`modhub`)
 

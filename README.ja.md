@@ -512,7 +512,8 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
 python3 tools/tf3ctl.py stock list --entity 51                       # 読むだけ
 python3 tools/tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]
 python3 tools/tf3ctl.py stock set --entity 601 --stock -1 --amount 30 --cargo <cargo>   # 車両の積み荷
-python3 tools/tf3ctl.py steps 500 [--dry-run]
+python3 tools/tf3ctl.py speed 0                                      # 先に一時停止
+python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
 ```
 
 - **試験用のセーブだけで使ってください。** ゲームの debug の命令 (`api.cmd.debug`) を送り、プレイヤーにはできない形で
@@ -531,15 +532,24 @@ python3 tools/tf3ctl.py steps 500 [--dry-run]
   番号、stock の capacity (車両ならその貨物の capacity、ほかは 100000。混合の stock ではほかの貨物と合わせて) を超える量、乗客、stock や車両が受けない貨物、
   エンジンに無い entity。答え: `before`、`after` (callback の数フレーム後に読む)、`success`、`engineResult` (callback が
   返したもの)、`stockList` (送った先の entity)。`--dry-run` は何も送らず、`before` と `functionPresent` を答えます。
-- `steps N` (1〜10000) は `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)` を送ります。答え: `before` と `after`
-  (`gameTime`・`updateCount`・`tickCount`・`date`)、`gameTimeDelta`、`updateCountDelta`、`gameTimePerStep`、
-  `callbackSec`、`success`、`engineResult`。一時停止していないと、2 回の読みの間にゲームの時間がひとりでに進むので、
-  きれいに数えるには先に `pause` してください。
+- `steps N` (1〜10000) は `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)` を送ります。1 歩はゲームの時間で
+  200 なので、20 歩でゲームの 1 日です。1000 歩は約 15 秒かかりました (2026-11-22 に一時停止中、小さな試験用のセーブで計測)。エンジンの
+  callback は全部の歩数が進む前に来る (歩数は何フレームにも分かれて進む) ので、答えは `updateCount` が N 増えるか、
+  `gameTime` が N × 200 進むまで待ちます (どちらで決まったかは `doneBy`)。待つのは最長 `waitSec` (N / 10000 × 200 秒、
+  最低 30 秒。tf3ctl はさらに 30 秒待つ) です。答え: `before` と `after` (`gameTime`・`updateCount`・`tickCount`・
+  `date`)、`gameTimeDelta`、`updateCountDelta`、`gameTimePerStep`、`callbackSec`、`waitedSec`、`timedOut`、
+  `stepsPerSec`、`speedup`、`success`、`engineResult`。時間切れはエラーで (`timedOut` が true)、それまでに進んだ分を
+  入れます。エンジンは残りの歩数をそのまま進めるので、それがまだ進んでいるかもしれない間 (と、別の `steps` が待って
+  いる間) の `steps` は、終わるまで断ります。
+- **先に一時停止してください** (`speed 0`)。ゲームが進んでいると、同じ数字がひとりでに進むので、待ちが早く終わり、
+  差が歩数の分ではなくなります。ゲームが進んでいるときの `steps` は断ります (`--dry-run` は断らず `warning` を付けます)。`--allow-running` を付けると送り、
+  答えに `warning` が付きます。
 - ゲームに無い (nil の) debug の関数は呼びません。答えにそう出ます (`functionPresent` が false、`sent` が false)。
-  エンジンが断ったとき (`success` が false)、命令を作る・送るときのエラー、30 秒 (`steps` は 150 秒) callback が
+  エンジンが断ったとき (`success` が false)、命令を作る・送るときのエラー、30 秒 (`steps` は `waitSec`) callback が
   来ないときはエラーで、エンジンが文を返したときはそのまま入れます。
-- **ゲーム内では未確認** (2026-11-22 に書いたもの): 製品版にこの debug の関数があるか、実行するか断るか、駅が自分の
-  在庫の一覧を持つか、1 歩がゲームの時間でどれだけか、大きな `steps` がどれだけゲームを止めるか。
+- **ゲーム内で確認済み** (2026-11-22、一時停止中): 製品版は `steps` を実行します。1 歩はゲームの時間で 200
+  (`steps 1` / `10` で 200 / 2000、update count 1 / 10)。1000 歩は、早い callback のあと約 15 秒かけて進みました。
+  **ゲーム内では未確認**: 待つようにした答えそのもの、`stock set`、駅が自分の在庫の一覧を持つか。
 
 ### メインメニューからのマイMOD (`modhub`)
 
