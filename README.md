@@ -418,6 +418,12 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   `node0` / `node1` taken: nodes are not looked up by themselves, and no track node is asked about.
   A free end of a construction's own road (a harbour's entrance road: `construction.ends` in the `build` answer)
   is such a node. Otherwise the end is a new node.
+- A node without a junction set-up (`BaseNodeConfig`) is never joined: the next nearest node within `--snap` is
+  (the answer's `passedOver` names the ones left out), and with none the command is refused before anything is
+  sent. A road a script builds (this command's own pieces too) ends in such nodes, and a piece joined to one
+  killed the game (2026-11-23: `Engine.h:322 GetComponentDataIndex`, BaseNodeConfig). So two pieces of this
+  command cannot be chained end to end; join nodes of a construction's or a player's road. When the set-up cannot
+  be read at all, the node is joined and the answer carries a `caution` (`nodeConfig: "unread"` on that end).
 - `--type` is a street template's resName, or a base road's file name (`town_new_small`, `country_old_medium`)
   looked for under the base's town, country and highway roads; a track type, or one not to be had in the game's
   year, is refused. The default is the base medium town road of the year (old until 1940, new from then). The

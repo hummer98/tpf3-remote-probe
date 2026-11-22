@@ -1684,6 +1684,7 @@ function M.installBuild(g, spec)
 	local names = {}
 	local CT = api.type.ComponentType
 	CT.BASE_NODE, CT.BASE_EDGE, CT.CONSTRUCTION = "BASE_NODE", "BASE_EDGE", "CONSTRUCTION"
+	CT.BASE_NODE_CONFIG = not spec.noNodeConfigType and "BASE_NODE_CONFIG" or nil
 	CT.STATION, CT.TERRAIN = CT.STATION or "STATION", CT.TERRAIN or "TERRAIN"
 	g.buildStations = {}
 	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
@@ -1721,7 +1722,8 @@ function M.installBuild(g, spec)
 	api.type.SimpleProposal = { new = function()
 		-- streetProposal: a record of its own, reached through the proposal (its lists assigned whole, as above)
 		return record({ constructionsToAdd = {}, constructionsToRemove = {}, old2new = {},
-			streetProposal = record({ nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {} }) })
+			streetProposal = record({ nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
+				nodeConfigsToAdd = {}, nodeConfigsToRemove = {} }) })
 	end, ConstructionEntity = { new = function()
 		return record({ fileName = "", params = {}, transf = {}, name = "", playerEntity = -1, autoFillSlots = false })
 	end } }
@@ -1808,6 +1810,12 @@ function M.installBuild(g, spec)
 	-- spec.noStreetResults: the callback names no entity of a built road. A street proposal whose piece names a
 	-- node that neither exists nor is added, or a template the rep does not know, is an assertion; a piece without
 	-- lanes is refused. g.streetCmds: every piece sent, as plain values.
+	-- Junction set-ups (BASE_NODE_CONFIG): the network's nodes have one, but those in spec.roads.noConfig; a node a
+	-- street proposal adds has one only when its nodeConfigsToAdd names it (a script's road has none, as in the
+	-- game); a construction's own nodes have one (the engine adds them: "Added node config" in its proposal's log).
+	-- A piece joined to a node without one that already has two pieces is an assertion (2026-11-23 in the game:
+	-- Engine.h:322 GetComponentDataIndex, BaseNodeConfig). spec.nodeConfigRaises: reading one raises;
+	-- spec.noNodeConfigType: no BASE_NODE_CONFIG component type.
 	local streets = spec.streets or {}
 	local streetNames = {}
 	for name in pairs(streets) do streetNames[#streetNames + 1] = name end
@@ -1836,6 +1844,8 @@ function M.installBuild(g, spec)
 	g.streetCmds = {}
 	for id, n in pairs((spec.roads or {}).nodes or {}) do g.nodes[id] = copy(n) end
 	for id, e in pairs((spec.roads or {}).edges or {}) do g.edges[id] = copy(e) end
+	g.nodeConfig = {}
+	for id in pairs(g.nodes) do g.nodeConfig[id] = not ((spec.roads or {}).noConfig or {})[id] end
 	-- (over a street system installed before, Track Connector's fake: its nodes and lookups are kept)
 	local oldStreets = api.engine.system.streetSystem or {}
 	local streetSystem = {}
@@ -1866,6 +1876,11 @@ function M.installBuild(g, spec)
 			local c = e.comp
 			for _, k in ipairs({ "node0", "node1" }) do
 				if not (g.nodes[c[k]] or newNodes[c[k]]) then crash("street proposal: no node " .. tostring(c[k])) end
+				if g.nodes[c[k]] and not g.nodeConfig[c[k]] then
+					local n = 0
+					for _, ed in pairs(g.edges) do if ed.node0 == c[k] or ed.node1 == c[k] then n = n + 1 end end
+					if n >= 2 then crash("GetComponentDataIndex: node " .. tostring(c[k]) .. " has no BaseNodeConfig") end
+				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
 			g.streetCmds[#g.streetCmds + 1] = copy(e)
@@ -1985,11 +2000,13 @@ function M.installBuild(g, spec)
 		end
 		-- a street proposal: new nodes, then the pieces between them
 		local street = getmetatable(getmetatable(cmd.proposal).store.streetProposal).store
-		local idOf = {}
+		local idOf, configured = {}, {}
+		for _, nc in ipairs(street.nodeConfigsToAdd or {}) do configured[nc.entity] = true end
 		for _, n in ipairs(street.nodesToAdd or {}) do
 			g.nextEntity = g.nextEntity + 1
 			idOf[n.entity] = g.nextEntity
 			g.nodes[g.nextEntity] = copy(n.comp.position)
+			g.nodeConfig[g.nextEntity] = configured[n.entity] == true
 			if not spec.noStreetResults then results[#results + 1] = { g.nextEntity, 1 } end
 		end
 		for _, e in ipairs(street.edgesToAdd or {}) do
@@ -2009,6 +2026,7 @@ function M.installBuild(g, spec)
 				g.nextEntity = g.nextEntity + 1
 				nodeIds[i] = g.nextEntity
 				g.nodes[g.nextEntity] = { x = t[13] + cs * n[1] - sn * n[2], y = t[14] + sn * n[1] + cs * n[2], z = t[15] + (n[3] or 0) }
+				g.nodeConfig[g.nextEntity] = true
 			end
 			for _, ed in ipairs((c.shape or {}).edges or {}) do
 				g.nextEntity = g.nextEntity + 1
@@ -2074,6 +2092,12 @@ function M.installBuild(g, spec)
 			return be
 		end
 		if kind == "BASE_NODE" and g.nodes[e] then return { position = copy(g.nodes[e]) } end
+		if kind == "BASE_NODE_CONFIG" and g.nodes[e] then
+			g.nodeConfigReads = (g.nodeConfigReads or 0) + 1
+			if spec.nodeConfigRaises then error("getComponent: BASE_NODE_CONFIG") end
+			if g.nodeConfig[e] then return { laneConnections = {}, crosswalks = {}, doubleSlipSwitch = false } end
+			return nil
+		end
 		return getComponent(e, kind)
 	end
 	local getName = api.engine.util.getEntityName

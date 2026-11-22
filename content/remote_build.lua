@@ -632,11 +632,26 @@ function M.new(ctx)
 		return out
 	end
 
+	-- whether a road node carries its junction set-up (BaseNodeConfig: its lane connections, engine.d.tl): true or
+	-- false, nil when that cannot be told (no BASE_NODE_CONFIG component type, or the engine raises). A node a
+	-- script's street proposal made without nodeConfigsToAdd has none (Track Connector's tc_proposal says so of
+	-- roads a script built); a new piece joined to such a node killed the game (2026-11-23: Engine.h:322
+	-- GetComponentDataIndex, the node without BaseNodeConfig, right after a road snapped to an earlier road's node)
+	local function nodeConfigState(n)
+		local ct = try(function() return CT().BASE_NODE_CONFIG end)
+		if ct == nil then return nil end
+		local ok, v = pcall(function() return api.engine.getComponent(n, ct) end)
+		if not ok then return nil end
+		return v ~= nil
+	end
+
 	-- the nearest end of a road piece within r metres of x, y, z (in three dimensions: a node of a bridge or a
-	-- raised road above the point is not taken; no z: on the map's plane), or nil. Only the street pieces' own
-	-- nodes are looked at, so no track node is asked about.
+	-- raised road above the point is not taken; no z: on the map's plane) that may be joined, or nil. Only the
+	-- street pieces' own nodes are looked at, so no track node is asked about. A node without a junction set-up
+	-- (nodeConfigState false) is never taken: the next nearest is; the second value lists the ones passed over
+	-- (nearest first), so that a caller can refuse rather than put a new node beside one of them.
 	local function streetNodeNear(x, y, z, r)
-		local best, bestD, pieces = nil, nil, {}
+		local dist, pieces = {}, {}
 		for _, e in ipairs(streetEdgesNear(x, y, r)) do
 			local be = comp(e, "BASE_EDGE")
 			for _, k in ipairs({ "node0", "node1" }) do
@@ -645,21 +660,48 @@ function M.new(ctx)
 				if p then
 					pieces[n] = (pieces[n] or 0) + 1
 					local d = math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2 + (z and (p.z - z) ^ 2 or 0))
-					if d <= r and (bestD == nil or d < bestD or (d == bestD and n < best)) then best, bestD = n, d end
+					if d <= r then dist[n] = d end
 				end
 			end
 		end
-		if not best then return nil end
-		local p = nodePos(best)
-		return { node = best, x = p.x, y = p.y, z = p.z, snapped = bestD, pieces = pieces[best] }
+		local order = {}
+		for n in pairs(dist) do order[#order + 1] = n end
+		table.sort(order, function(a, b) if dist[a] ~= dist[b] then return dist[a] < dist[b] end return a < b end)
+		local passed = {}
+		for _, n in ipairs(order) do
+			local cfg = nodeConfigState(n)
+			if cfg == false then
+				passed[#passed + 1] = { node = n, snapped = dist[n], pieces = pieces[n] }
+			else
+				local p = nodePos(n)
+				local hit = { node = n, x = p.x, y = p.y, z = p.z, snapped = dist[n], pieces = pieces[n],
+					nodeConfig = cfg == true and true or "unread" }
+				if #passed > 0 then hit.passedOver = passed end
+				return hit, passed
+			end
+		end
+		return nil, passed
 	end
 
-	-- one end: a road node near it (snap), else a new node at the point (z given, or the terrain's)
+	-- one end: a road node near it (snap), else a new node at the point (z given, or the terrain's). Refused when
+	-- the only road nodes within snap have no junction set-up: joining one can kill the game, and a new node
+	-- there would sit on it.
 	local function roadEnd(pt, snap)
 		local z, zFrom = pt[3], "given"
 		if z == nil then z, zFrom = heightAt(pt[1], pt[2]), "terrain" end
-		local hit = snap > 0 and streetNodeNear(pt[1], pt[2], z, snap) or nil
+		local hit, passed = nil, {}
+		if snap > 0 then hit, passed = streetNodeNear(pt[1], pt[2], z, snap) end
 		if hit then return hit end
+		if #passed > 0 then
+			local names = {}
+			for _, q in ipairs(passed) do
+				names[#names + 1] = string.format("%d (%.1f m, %d piece%s)", q.node, q.snapped, q.pieces, q.pieces == 1 and "" or "s")
+			end
+			return nil, "the road node(s) within snap have no junction set-up (BaseNodeConfig): " .. table.concat(names, ", ") ..
+				". A road this command built ends in such nodes; joining one can kill the game (Engine.h " ..
+				"GetComponentDataIndex), and a new node there would sit on it: nothing sent. Join a node of a " ..
+				"construction's or a player's road, or build the piece from further away"
+		end
 		if z == nil then return nil, "the terrain's height could not be read: give z" end
 		return { x = pt[1], y = pt[2], z = z, zFrom = zFrom }
 	end
@@ -724,6 +766,13 @@ function M.new(ctx)
 			return fail(c.id, "api.type.enum.BaseEdgeType.NORMAL or RoadType.STREET could not be read: nothing sent")
 		end
 		local out = { from = a, to = b, template = tpl.name, length = length, year = year, snap = r.snap, note = NOTE_ROAD }
+		for _, q in ipairs({ { "from", a }, { "to", b } }) do
+			if q[2].nodeConfig == "unread" then
+				out.caution = (out.caution and out.caution .. "; " or "") .. string.format("%s: whether node %d has its " ..
+					"junction set-up (BaseNodeConfig) could not be read; joining a node without one can kill the game",
+					q[1], q[2].node)
+			end
+		end
 		if r.dryRun then
 			out.ok, out.dryRun, out.checked = true, true, false
 			out.why = "checked here: the template, the ends (a road node within snap, or the terrain's height) and the " ..
