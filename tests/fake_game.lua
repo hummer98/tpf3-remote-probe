@@ -1676,8 +1676,19 @@ end
 -- g.built[e] = { fileName, params, transf, name, player, frozenEdges, ... }; g.buildCmds: every proposal sent.
 -- Like the engine: a list element written into a proposal is lost (only a whole list assigned counts), an unknown
 -- file name or a transf that is no Mat4f is an assertion (the game would die), a refused proposal builds nothing,
--- and makeProposalData takes no SimpleProposal (engine/util.d.tl:939 types it for a Proposal; g.proposalDataCalls).
+-- and makeProposalData takes a SimpleProposal alone or with a Context (Overpass Builder's notes: build 40408 takes a
+-- SimpleProposal on the GUI thread, though engine/util.d.tl:939 types it for a Proposal) and gives what a build's
+-- callback would, building nothing (g.proposalDataCalls); spec.noSimpleProposalData: it raises for a SimpleProposal
+-- (as bus_loops' notes say it does); spec.proposalDataOneArg: it raises when a Context is given too.
 -- The octree finds the constructions in g.built by their transf's position.
+-- A construction's shape may have free pieces (shape.free = { { i, j } }: an industry's arms, street_cross_01 / 02,
+-- not among its frozenEdges) and frozen nodes (shape.frozenNodes = { i }: CONSTRUCTION.frozenNodes, the inner end
+-- of a stub). streetConnectorSystem.getConstructionEntityForNode gives the construction for the nodes of its frozen
+-- pieces (the mouth too) and -1 for the far ends of free pieces (spec.armEndsOwned: those too); spec.noNodeOwner:
+-- it is not there (the probe goes through getConstructionEntityForEdge: the construction for its frozen pieces, -1
+-- for its free ones). Like the engine (a guess from Overpass Builder's refusal and a forest in a game, 2026-11-23): a
+-- construction's node set-up removed or added is an assertion; a piece to a frozen node, or a new node on an old
+-- node (within 0.01 m), is refused (Construction not possible).
 function M.installBuild(g, spec)
 	spec = spec or {}
 	local cons = spec.cons or {}
@@ -1890,20 +1901,49 @@ function M.installBuild(g, spec)
 		return out
 	end
 
+	g.conNode, g.conEdge, g.frozenNode = {}, {}, {}
+	api.engine.system.streetConnectorSystem = api.engine.system.streetConnectorSystem or {}
+	local scs = api.engine.system.streetConnectorSystem
+	local conForEdge = scs.getConstructionEntityForEdge
+	scs.getConstructionEntityForEdge = function(e)
+		if g.conEdge[e] then return g.conEdge[e] end
+		if g.edges[e] then return -1 end
+		if conForEdge then return conForEdge(e) end
+		crash("getConstructionEntityForEdge: no edge " .. tostring(e))
+	end
+	if spec.noNodeOwner then
+		scs.getConstructionEntityForNode = nil
+	else
+		scs.getConstructionEntityForNode = function(n)
+			if not g.nodes[n] then crash("getConstructionEntityForNode: no node " .. tostring(n)) end
+			return g.conNode[n] or -1
+		end
+	end
+
 	-- what the engine makes of a proposal: errors, collisions, cost (and the constructions to add, as plain values)
-	local function evaluate(p)
+	local function evaluate(p, dry)
 		local st = getmetatable(p).store
 		local adds, removes = {}, copy(st.constructionsToRemove or {})
 		local data = { errorState = { critical = false, messages = {}, warnings = {} }, collisionInfo = { collisionEntities = {} },
 			costs = 0 }
 		local street = getmetatable(st.streetProposal).store
 		local newNodes = {}
-		for _, n in ipairs(street.nodesToAdd or {}) do newNodes[n.entity] = n.comp.position end
+		for _, n in ipairs(street.nodesToAdd or {}) do
+			newNodes[n.entity] = n.comp.position
+			local q = n.comp.position
+			for _, o in pairs(g.nodes) do
+				if (o.x - q.x) ^ 2 + (o.y - q.y) ^ 2 + (o.z - q.z) ^ 2 <= 0.0001 then
+					data.errorState.critical = true
+					table.insert(data.errorState.messages, "Construction not possible")
+				end
+			end
+		end
 		-- junction set-ups (as the engine might assert; the checks are a guess): a set-up removed must be there; one
 		-- added to a node that keeps one, twice, or to no node, dies; a connection must name a piece at that node and
 		-- a lane it has
 		local removing, adding = {}, {}
 		for _, n in ipairs(street.nodeConfigsToRemove or {}) do
+			if g.conNode[n] then crash("nodeConfigsToRemove: node " .. tostring(n) .. " is a construction's") end
 			if not (g.nodes[n] and g.nodeConfig[n]) then crash("nodeConfigsToRemove: node " .. tostring(n) .. " has no set-up") end
 			removing[n] = true
 		end
@@ -1913,6 +1953,7 @@ function M.installBuild(g, spec)
 			local n = nc.entity
 			if not (newNodes[n] or g.nodes[n]) then crash("nodeConfigsToAdd: no node " .. tostring(n)) end
 			if adding[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " twice") end
+			if g.conNode[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " is a construction's") end
 			if g.nodes[n] and g.nodeConfig[n] and not removing[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " keeps its set-up") end
 			adding[n] = true
 			for _, lc in ipairs((nc.comp or {}).laneConnections or {}) do
@@ -1939,7 +1980,13 @@ function M.installBuild(g, spec)
 				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
-			g.streetCmds[#g.streetCmds + 1] = copy(e)
+			if not dry then g.streetCmds[#g.streetCmds + 1] = copy(e) end
+			for _, k in ipairs({ "node0", "node1" }) do
+				if g.frozenNode[c[k]] then
+					data.errorState.critical = true
+					table.insert(data.errorState.messages, "Construction not possible")
+				end
+			end
 			if #(c.laneConfigs or {}) == 0 then
 				data.errorState.critical = true
 				table.insert(data.errorState.messages, "Invalid lane configuration")
@@ -1980,7 +2027,13 @@ function M.installBuild(g, spec)
 	g.proposalDataCalls = 0
 	api.engine.util.proposal = { makeProposalData = function(p, ctx)
 		g.proposalDataCalls = g.proposalDataCalls + 1
-		error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)")
+		if spec.noSimpleProposalData then
+			error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)")
+		end
+		if spec.proposalDataOneArg and ctx ~= nil then error("bad argument #2 to 'makeProposalData' (no such overload)") end
+		if type(p) ~= "userdata" then crash("makeProposalData: no proposal") end
+		-- (nothing built, nothing paid: plain values, as the engine's ProposalData reads)
+		return (evaluate(p, true))
 	end }
 	api.type.Box3 = { new = function(lo, hi) return { min = lo, max = hi } end }
 	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
@@ -2052,6 +2105,8 @@ function M.installBuild(g, spec)
 				local ed = g.edges[edge]
 				g.nodes[ed.node0], g.nodes[ed.node1], g.edges[edge] = nil, nil, nil
 			end
+			for _, edge in ipairs(g.built[e].freeEdges or {}) do g.edges[edge] = nil end
+			for _, n in ipairs(g.built[e].nodeIds or {}) do g.nodes[n], g.conNode[n], g.frozenNode[n] = nil, nil, nil end
 			g.built[e], names[e] = nil, nil
 		end
 		-- a street proposal: new nodes, then the pieces between them
@@ -2100,6 +2155,22 @@ function M.installBuild(g, spec)
 				g.nextEntity = g.nextEntity + 1
 				edgeIds[#edgeIds + 1] = g.nextEntity
 				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]] }
+				g.conEdge[g.nextEntity] = e
+				g.conNode[nodeIds[ed[1]]], g.conNode[nodeIds[ed[2]]] = e, e
+			end
+			local freeIds = {}
+			for _, ed in ipairs((c.shape or {}).free or {}) do
+				g.nextEntity = g.nextEntity + 1
+				freeIds[#freeIds + 1] = g.nextEntity
+				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]] }
+				if spec.armEndsOwned then
+					for _, k in ipairs({ 1, 2 }) do g.conNode[nodeIds[ed[k]]] = g.conNode[nodeIds[ed[k]]] or e end
+				end
+			end
+			local frozenNodes = {}
+			for _, i in ipairs((c.shape or {}).frozenNodes or {}) do
+				frozenNodes[#frozenNodes + 1] = nodeIds[i]
+				g.frozenNode[nodeIds[i]] = e
 			end
 			local depots = {}
 			for _ = 1, c.depots or 0 do g.nextEntity = g.nextEntity + 1; depots[#depots + 1] = g.nextEntity end
@@ -2112,6 +2183,7 @@ function M.installBuild(g, spec)
 			end
 			g.built[e] = { fileName = ce.fileName, params = copy(ce.params), transf = copy(t), name = ce.name,
 				player = ce.playerEntity, autoFillSlots = ce.autoFillSlots, frozenEdges = edgeIds, depots = depots,
+				freeEdges = freeIds, frozenNodes = frozenNodes, nodeIds = nodeIds,
 				stations = stations }
 			if ce.name ~= "" then names[e] = ce.name end
 			if not c.notInResult then results[#results + 1] = { e, 1 } end
@@ -2144,7 +2216,7 @@ function M.installBuild(g, spec)
 			local b = g.built[e]
 			local pn = copy(b.params)
 			return { fileName = b.fileName, params = copy(b.params), params_native = { asTable = function() return copy(pn) end },
-				transf = copy(b.transf), frozenEdges = copy(b.frozenEdges),
+				transf = copy(b.transf), frozenEdges = copy(b.frozenEdges), frozenNodes = (not spec.noFrozenNodes) and copy(b.frozenNodes or {}) or nil,
 				depots = copy(b.depots), stations = copy(b.stations or {}), industries = {} }
 		end
 		if kind == "STATION" and g.buildStations[e] then
