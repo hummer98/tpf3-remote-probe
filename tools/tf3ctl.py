@@ -1891,7 +1891,10 @@ def town_grow_args(ns):
         raise ToolError("town %s: put its options after the word (%s given before it)"
                         % (ns.town_action, ", ".join("--" + o.replace("_", "-") for o in given)))
     if ns.town_action == "connections":
-        return "townConnections", ({"entity": ns.conn_entity} if ns.conn_entity is not None else {})
+        args = {"entity": ns.conn_entity} if ns.conn_entity is not None else {}
+        if ns.conn_index_base is not None:
+            args["indexBase"] = ns.conn_index_base
+        return "townConnections", args
     if ns.town_action == "connect":
         return town_connect_args(ns)
     if ns.town_action == "develop":
@@ -1947,8 +1950,8 @@ def town_connect_args(ns):
         if not ids or any(i < 0 for i in ids) or len(set(ids)) != len(ids):
             raise ToolError("--entity must be distinct town ids (0 or more)")
         args["entities"] = ids
-    if ns.conn_auto and (ns.conn_pairs or ns.conn_default or ns.conn_no_keep or ns.conn_index_base is not None):
-        raise ToolError("--pairs, --default, --no-keep and --index-base go with --build (--auto builds nothing)")
+    if ns.conn_auto and (ns.conn_pairs or ns.conn_default or ns.conn_no_keep):
+        raise ToolError("--pairs, --default and --no-keep go with --build (--auto builds nothing)")
     if ns.conn_pairs:
         pairs = []
         for part in ns.conn_pairs.split(","):
@@ -3762,6 +3765,8 @@ def make_parser():
     tcs = tws.add_parser("connections", help="read only: the towns the engine counts as connected (the map's "
                          "townConnections, between towns) and each industry's town (the closest one)")
     tcs.add_argument("--entity", dest="conn_entity", type=int, help="one town (entities --kind town)")
+    tcs.add_argument("--index-base", dest="conn_index_base", type=int, choices=(0, 1),
+                     help="how the engine numbers towns in its connections, when the map does not tell")
     tcn = tws.add_parser("connect", help="test saves only: the map editor's connection commands; --auto detects "
                          "the connections over the roads there are (builds nothing), --build makes streets between "
                          "the connected towns and to all industries; not checked in a game yet")
@@ -3778,7 +3783,8 @@ def make_parser():
     tcn.add_argument("--no-keep", dest="conn_no_keep", action="store_true",
                      help="--build: remove the street connections there are (keep is the default)")
     tcn.add_argument("--index-base", dest="conn_index_base", type=int, choices=(0, 1),
-                     help="--build: how the engine numbers towns in its connections, when the map does not tell")
+                     help="how the engine numbers towns in its connections, when the map does not tell (--auto: "
+                     "for the answer's before / after only)")
     tcn.add_argument("--dry-run", dest="conn_dry_run", action="store_true", help="what would be sent, nothing sent")
     wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
                                        "terrain's height (to find a shore for a harbour)")

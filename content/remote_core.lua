@@ -3210,10 +3210,16 @@ end
 -- townConnections: entity (one town, optional). -> the request, or nil and why
 function M.townConnectionsRequest(args)
 	args = type(args) == "table" and args or {}
-	if args.entity == nil then return {} end
+	local r = {}
+	if args.indexBase ~= nil then
+		if args.indexBase ~= 0 and args.indexBase ~= 1 then return nil, "indexBase must be 0 or 1" end
+		r.indexBase = args.indexBase
+	end
+	if args.entity == nil then return r end
 	local e = wholeNumber(args.entity)
 	if e == nil or e < 0 or e > M.MAX_ENTITY_ID then return nil, "entity: a town's id (entities --kind town)" end
-	return { entity = e }
+	r.entity = e
+	return r
 end
 
 -- townConnect: auto (makeTownAutoDetectConnectionsCmd: detect connections over the roads there are) or build
@@ -3294,8 +3300,23 @@ end
 -- townConnections and the engine's default ones (index pairs); base: the engine's numbering (nil: not known).
 -- -> { townEntities, connections, pairs (as entity pairs), dropped }, or nil and why
 function M.townConnectPlan(r, mapTowns, existing, defaults, base)
+	-- nothing chosen and nothing added: the map's towns and pairs as they are, as the editor's Generate sends them
+	-- (no numbering needed then), when every town has its entity
+	if not r.entities and not r.pairs and not r.default then
+		local all, ents = true, {}
+		for i, t in ipairs(mapTowns) do
+			if t.entity == nil then all = false end
+			ents[i] = t.entity
+		end
+		if all then
+			local conns = {}
+			for i, p in ipairs(existing or {}) do conns[i] = { tonumber(M.at(p, 1)), tonumber(M.at(p, 2)) } end
+			return { townEntities = ents, connections = conns,
+				pairs = M.townPairsResolved(existing, mapTowns, base), dropped = 0, asMap = true }
+		end
+	end
 	local pos = {}
-	for i, t in ipairs(mapTowns) do pos[t.entity] = i end
+	for i, t in ipairs(mapTowns) do if t.entity ~= nil then pos[t.entity] = i end end
 	local chosen = {}
 	if r.entities then
 		for _, e in ipairs(r.entities) do
@@ -3303,10 +3324,10 @@ function M.townConnectPlan(r, mapTowns, existing, defaults, base)
 			chosen[e] = true
 		end
 	else
-		for _, t in ipairs(mapTowns) do chosen[t.entity] = true end
+		for _, t in ipairs(mapTowns) do if t.entity ~= nil then chosen[t.entity] = true end end
 	end
 	local list = {}
-	for _, t in ipairs(mapTowns) do if chosen[t.entity] then list[#list + 1] = t.entity end end
+	for _, t in ipairs(mapTowns) do if t.entity ~= nil and chosen[t.entity] then list[#list + 1] = t.entity end end
 	local newIndex = {}
 	for i, e in ipairs(list) do newIndex[e] = i end
 	local wanted, seen, dropped = {}, {}, 0
@@ -3318,7 +3339,7 @@ function M.townConnectPlan(r, mapTowns, existing, defaults, base)
 		seen[k] = true
 		wanted[#wanted + 1] = { a, b }
 	end
-	local fromMap = {}
+	local fromMap = {} -- (index pairs into mapTowns, all of it, towns without an entity too)
 	for _, p in ipairs(existing or {}) do fromMap[#fromMap + 1] = p end
 	if r.default then for _, p in ipairs(defaults or {}) do fromMap[#fromMap + 1] = p end end
 	if #fromMap > 0 and base == nil then

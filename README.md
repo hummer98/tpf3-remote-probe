@@ -587,7 +587,7 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
 ### Town connections (`town connections`, `town connect`: test saves only)
 
 ```
-python3 tools/tf3ctl.py town connections [--entity 801]                 # read only
+python3 tools/tf3ctl.py town connections [--entity 801] [--index-base 0|1]   # read only
 python3 tools/tf3ctl.py town connect --auto [--entity 801,802] [--dry-run]
 python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802] [--default] [--no-keep] [--dry-run]
 ```
@@ -606,7 +606,9 @@ python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802
   "Generate"): streets between the connected towns and to **all** industries; no list of industries goes in.
   The connections are the map's, plus the engine's default ones with `--default` (the editor's "Propose Default
   Connections"), plus `--pairs` (town ids), re-numbered for the towns sent. Keep is on; `--no-keep` removes the
-  street connections there are. When the map does not tell the numbering, `--index-base 0|1` is needed.
+  street connections there are. With none of `--entity`, `--default` and `--pairs` the map's towns and pairs go as
+  they are (`asMap`, as the editor sends them); otherwise, when the map does not tell the numbering,
+  `--index-base 0|1` is needed (also taken by `town connections` and `--auto`, for the pairs in the answer).
 - Both answer `before` / `after` (as `town connections`) and wait at most 120 s for the engine's callback.
 - **Not checked in game yet** (written 2026-11-23): whether these work in a game outside the map editor, the
   numbering, and what `--build` does to the roads there are.

@@ -9568,8 +9568,16 @@ test("core.townConnectRequest / townIndexBase / townPairsResolved / townConnectP
 	local q = core.townConnectPlan({ default = true }, towns, { { 1, 2 } }, { { 2, 1 }, { 2, 3 } }, 1)
 	eq(#q.connections, 2, "a pair twice counts once"); eq(q.connections[1][1], 1); eq(q.connections[2][2], 3)
 	eq(#core.townConnectPlan({}, towns, {}, nil, nil).connections, 0, "nothing to number: no base needed")
+	-- nothing chosen or added: the map's pairs as they are (as the editor's Generate), numbering not needed
+	local asMap = core.townConnectPlan({}, towns, { { 1, 2 } }, nil, nil)
+	eq(asMap.asMap, true); eq(asMap.connections[1][1], 1); eq(asMap.connections[1][2], 2); eq(#asMap.townEntities, 3)
+	-- a town without its entity: left out of the send, the map's numbers still go by the whole list
+	local holes = { { entity = 801 }, { name = "no entity" }, { entity = 803 } }
+	local h = core.townConnectPlan({}, holes, { { 0, 2 } }, nil, 0)
+	eq(h.asMap, nil); eq(#h.townEntities, 2); eq(h.connections[1][1], 0); eq(h.connections[1][2], 1)
+	eq(core.townConnectionsRequest({ indexBase = 1 }).indexBase, 1); eq(core.townConnectionsRequest({ indexBase = 3 }), nil)
 	for _, bad in ipairs({ { { entities = { 999 } }, {}, 0 }, { { pairs = { { 801, 999 } } }, {}, 0 },
-		{ { entities = { 801 }, pairs = { { 801, 802 } } }, {}, 0 }, { {}, { { 1, 2 } }, nil },
+		{ { entities = { 801 }, pairs = { { 801, 802 } } }, {}, 0 }, { { default = true }, { { 1, 2 } }, nil },
 		{ { pairs = { { 801, 802 } } }, {}, nil } }) do
 		local ok, err = core.townConnectPlan(bad[1], towns, bad[2], nil, bad[3])
 		eq(ok, nil); truthy(type(err) == "string", tostring(err))
@@ -9667,10 +9675,26 @@ test("town connect build: the numbering 1-based from the map, unknown without in
 	truthy(a.ok, a.error); eq(a.indexBase, 1); eq(one.townConnectCmds[1].connections[1][1], 2)
 	eq(one.townConnectCmds[1].connections[2][1], 1)
 	local unk = townConnectGame({ connections = { { 1, 2 } } })
+	-- nothing added: the map's pairs go as they are, no numbering needed
 	local b = companyRun(unk, 2632, "townConnect", "{ build = true }")
-	eq(b.ok, false); truthy(b.error:find("indexBase"), b.error); eq(#unk.townConnectCmds, 0)
-	local c = companyRun(unk, 2633, "townConnect", "{ build = true, indexBase = 0 }")
-	truthy(c.ok, c.error); eq(unk.townConnectCmds[1].connections[1][2], 2)
+	truthy(b.ok, b.error); eq(b.asMap, true); eq(unk.townConnectCmds[1].connections[1][1], 1)
+	-- the read too takes it: the pairs resolve to towns
+	local rd = companyRun(unk, 2636, "townConnections", "{ indexBase = 0 }")
+	truthy(rd.ok, rd.error); eq(rd.indexBaseFrom, "given"); eq(rd.connections[1].from, 802)
+	local b2 = companyRun(unk, 2635, "townConnect", '{ build = true, pairs = "801:803" }')
+	eq(b2.ok, false); truthy(b2.error:find("indexBase"), b2.error); eq(#unk.townConnectCmds, 1)
+	local c = companyRun(unk, 2633, "townConnect", '{ build = true, pairs = "801:803", indexBase = 0 }')
+	truthy(c.ok, c.error); eq(unk.townConnectCmds[2].connections[1][2], 2)
+	-- a blank map: the defaults alone tell the numbering, and the answer's defaults resolve with it
+	local bl = townConnectGame({ connections = {}, defaults = { { 0, 1 } } })
+	local d = companyRun(bl, 2637, "townConnect", "{ build = true, default = true, indexBase = 1, dryRun = true }")
+	truthy(d.ok, d.error); eq(d.indexBase, 0); eq(d.defaults[1].from, 801); eq(d.defaults[1].to, 802)
+	truthy(d.indexBaseNote and d.indexBaseNote:find("not used"), "the given one overridden: said")
+	-- auto on a map with no towns: refused, nothing sent
+	local none = townConnectGame({ towns = {}, connections = {} }, { entities = { TOWN = {} }, industries = {} })
+	local e = companyRun(none, 2638, "townConnect", "{ auto = true }")
+	eq(e.ok, false); truthy(e.error:find("no towns"), e.error); eq(#none.townConnectCmds, 0)
+	for _, gg in ipairs({ bl, none }) do truthy(not gg.crashed, gg.crashed) end
 	for _, gg in ipairs({ one, unk }) do truthy(not gg.crashed, gg.crashed) end
 end)
 

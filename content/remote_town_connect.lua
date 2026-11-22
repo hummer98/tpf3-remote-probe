@@ -135,7 +135,7 @@ function M.new(ctx)
 			for _, t in ipairs(ctx.towns()) do if t.id == r.entity then known = true end end
 			if not known then return fail(c.id, "entity " .. r.entity .. " is no town (entities --kind town)") end
 		end
-		local out = read(r.entity)
+		local out = read(r.entity, r.indexBase)
 		out.ok = true
 		out.note = "connections are between towns (the map's townConnections); an industry's town is the closest one "
 			.. "(getConstructionClosestTown)"
@@ -164,6 +164,7 @@ function M.new(ctx)
 			else
 				for _, t in ipairs(ms.towns) do if t.entity then list[#list + 1] = t.entity end end
 			end
+			if #list == 0 then return fail(c.id, "no towns on this map") end
 			out.townEntities = core.array(list)
 			need = "auto"
 			make = function() return api.cmd.makeTownAutoDetectConnectionsCmd(list) end
@@ -173,18 +174,23 @@ function M.new(ctx)
 				local d, derr = defaultPairs(ms)
 				if not d then return fail(c.id, "getDefaultTownConnections raised: " .. derr) end
 				defaults = d
-				out.defaults = core.array(core.townPairsResolved(d, ms.towns, before.indexBase))
 			end
-			local base = core.townIndexBase({ ms.connections, defaults or {} }, #ms.towns) or r.indexBase
-			local towns = {}
-			for _, t in ipairs(ms.towns) do if t.entity then towns[#towns + 1] = t end end
-			local plan, perr = core.townConnectPlan(r, towns, ms.connections, defaults, base)
+			local mapBase = core.townIndexBase({ ms.connections, defaults or {} }, #ms.towns)
+			local base = mapBase or r.indexBase
+			if mapBase ~= nil and r.indexBase ~= nil and mapBase ~= r.indexBase then
+				out.indexBaseNote = "the map's pairs number from " .. mapBase .. ": the given indexBase "
+					.. r.indexBase .. " is not used"
+			end
+			if defaults then out.defaults = core.array(core.townPairsResolved(defaults, ms.towns, base)) end
+			-- (the map's whole list: its pairs number into it; towns without an entity are left out of the send)
+			local plan, perr = core.townConnectPlan(r, ms.towns, ms.connections, defaults, base)
 			if not plan then return fail(c.id, perr) end
 			out.indexBase = base
 			out.townEntities = core.array(plan.townEntities)
 			out.connectionsSent = core.array(plan.connections)
 			out.pairs = core.array(plan.pairs)
 			out.dropped = plan.dropped > 0 and plan.dropped or nil
+			out.asMap = plan.asMap or nil
 			if #plan.townEntities == 0 then return fail(c.id, "no towns on this map") end
 			need = "build"
 			make = function()

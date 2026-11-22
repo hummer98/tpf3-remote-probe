@@ -1920,6 +1920,8 @@ class QuitLaunchTest(unittest.TestCase):
             return tf3ctl.town_grow_args(p.parse_args(["town"] + list(argv)))
         self.assertEqual(args("connections"), ("townConnections", {}))
         self.assertEqual(args("connections", "--entity", "801"), ("townConnections", {"entity": 801}))
+        self.assertEqual(args("connections", "--index-base", "1"), ("townConnections", {"indexBase": 1}))
+        self.assertEqual(args("connect", "--auto", "--index-base", "0"), ("townConnect", {"auto": True, "indexBase": 0}))
         self.assertEqual(args("connect", "--auto", "--entity", "801,802"),
                          ("townConnect", {"auto": True, "entities": [801, 802]}))
         self.assertEqual(args("connect", "--build", "--pairs", "801:802,802:803", "--default", "--no-keep",

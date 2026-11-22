@@ -550,7 +550,7 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
 ### 町のつながり (`town connections`・`town connect`: 試験用のセーブだけ)
 
 ```
-python3 tools/tf3ctl.py town connections [--entity 801]                 # 読むだけ
+python3 tools/tf3ctl.py town connections [--entity 801] [--index-base 0|1]   # 読むだけ
 python3 tools/tf3ctl.py town connect --auto [--entity 801,802] [--dry-run]
 python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802] [--default] [--no-keep] [--dry-run]
 ```
@@ -568,7 +568,9 @@ python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802
   「Generate」): つながった町の間と、**すべての**産業へ道路を作ります。産業の一覧は渡せません。つながりは地図のものに、
   `--default` でエンジンの初期のつながり (エディタの「Propose Default Connections」)、`--pairs` (町の id) を足し、送る町に合わせて
   番号を振り直します。keep は入り、`--no-keep` で今ある道路のつながりを消します。地図から番号の始まりが分からない
-  ときは `--index-base 0|1` が要ります。
+  ときは `--index-base 0|1` が要ります (`town connections` と `--auto` も、答えの組を町に直すために受けます)。
+  `--entity`・`--default`・`--pairs` のどれも無いときは、地図の町と組をそのまま送るので (`asMap`、エディタと同じ)、
+  番号の始まりは要りません。
 - どちらも `before`・`after` (`town connections` と同じ形) を答え、エンジンの callback を最長 120 秒待ちます。
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): マップエディタの外のゲームで動くか、番号の振り方、`--build` が
   今ある道路に何をするか。
