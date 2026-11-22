@@ -615,26 +615,63 @@ function M.matchEntity(list, query)
 	return nil, string.format("%d matches for %q: %s%s", #hits, query, table.concat(names, ", "), #hits > 10 and ", ..." or "")
 end
 
--- what the speed control's join reads from the GUI save data (api.gui.game.getGuiSaveData): plain values only
-function M.uiRequest(d)
-	if type(d) ~= "table" then return { label = "", tip = "", buttons = true } end
-	-- buttons: only an explicit false hides them (no word from the guiUpdate script yet: shown, as before)
-	local out = { label = tostring(d.label or ""), tip = tostring(d.tip or ""), buttons = d.buttons ~= false }
-	if type(d.open) == "table" and tonumber(d.open.seq) then
-		out.open = { seq = tonumber(d.open.seq), entity = tonumber(d.open.entity) }
-		-- manager: a line to open in the line manager (an entity id, so a whole positive number or nothing)
-		local m = tonumber(d.open.manager)
-		if m and m > 0 and m < 2 ^ 53 and m == math.floor(m) then out.open.manager = m end
-		local ev = d.open.event
-		if type(ev) == "table" and type(ev.name) == "string" and ev.name ~= "" then
-			out.open.event = { name = ev.name, param = ev.param }
-		end
-		local tool = d.open.tool
-		if type(tool) == "table" and type(tool.module) == "string" and tool.module ~= "" then
-			out.open.tool = { module = tool.module, field = type(tool.field) == "string" and tool.field or nil,
-				close = tool.close == true }
+-- one window, event or tool request (an entry of opens): { seq, entity, manager, event, tool }, plain values only;
+-- nil for one without a request number
+function M.openRequest(o)
+	if type(o) ~= "table" or not tonumber(o.seq) then return nil end
+	local out = { seq = tonumber(o.seq), entity = tonumber(o.entity) }
+	-- manager: a line to open in the line manager (an entity id, so a whole positive number or nothing)
+	local m = tonumber(o.manager)
+	if m and m > 0 and m < 2 ^ 53 and m == math.floor(m) then out.manager = m end
+	local ev = o.event
+	if type(ev) == "table" and type(ev.name) == "string" and ev.name ~= "" then
+		out.event = { name = ev.name, param = ev.param }
+	end
+	local tool = o.tool
+	if type(tool) == "table" and type(tool.module) == "string" and tool.module ~= "" then
+		out.tool = { module = tool.module, field = type(tool.field) == "string" and tool.field or nil,
+			close = tool.close == true }
+	end
+	return out
+end
+
+-- the window, event and tool requests still waiting, oldest (lowest seq) first. A list, not one slot: two
+-- requests within one read of the speed control (every 0.5 s) both go, in order, where a single slot kept only
+-- the newer (2026-11-22: of two events sent in the same second, only the second reached the other mod)
+function M.openRequests(list)
+	local out = {}
+	if type(list) ~= "table" then return out end
+	for _, o in ipairs(list) do
+		local r = M.openRequest(o)
+		if r then out[#out + 1] = r end
+	end
+	table.sort(out, function(a, b) return a.seq < b.seq end)
+	return out
+end
+
+M.OPEN_RELAY_SEC = 10 -- a request the speed control has not taken by then is dropped and answered as not relayed
+M.OPEN_REPORTS_KEPT = 20 -- what the speed control did with the last requests, under MOD .. ".open"
+
+-- the speed control's reports (getGuiSaveData(MOD .. ".open")): seq -> { error = text or nil, skipped = bool }.
+-- skipped: in the list at the speed control's first read, so taken as left over from the last game, not run
+function M.openReports(d)
+	local out = {}
+	if type(d) ~= "table" or type(d.done) ~= "table" then return out end
+	for _, r in ipairs(d.done) do
+		local seq = type(r) == "table" and tonumber(r.seq) or nil
+		if seq then
+			out[seq] = { error = r.error ~= nil and tostring(r.error) or nil, skipped = r.skipped == true }
 		end
 	end
+	return out
+end
+
+-- what the speed control's join reads from the GUI save data (api.gui.game.getGuiSaveData): plain values only
+function M.uiRequest(d)
+	if type(d) ~= "table" then return { label = "", tip = "", buttons = true, opens = {} } end
+	-- buttons: only an explicit false hides them (no word from the guiUpdate script yet: shown, as before)
+	local out = { label = tostring(d.label or ""), tip = tostring(d.tip or ""), buttons = d.buttons ~= false }
+	out.opens = M.openRequests(d.opens)
 	out.vehicles = M.vehicleRequests(d.vehicles)
 	out.lines = M.lineRequests(d.lines)
 	out.terrain = M.terrainRequests(d.terrain)
@@ -738,7 +775,7 @@ end
 
 -- build tool: the menu filter tag of a construction (construction.tl: resName, or resName@N with a template)
 M.BUILD_TOOL_SEC = { default = 60, max = 600 }
-M.BUILD_TOOL_GAP = 1.5 -- s between the events: the speed control reads every 0.5 s and keeps only the newest
+M.BUILD_TOOL_GAP = 1.5 -- s between the events: time for the menu to open and draw before the next one (each goes in turn)
 -- the toolbar's own events (game_bar.tl eventName): each opens one construction menu tab and picks its first item,
 -- which is how the placing tool comes up without a click; the filter alone left the menu closed (2026-11-18)
 M.BUILD_MENUS = { road = "openRoad", rail = "openRail", water = "openWater", air = "openAir",

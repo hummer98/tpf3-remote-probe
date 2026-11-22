@@ -98,6 +98,58 @@ local function uiReadBack()
 	return core.plain(d)
 end
 
+---------------------------------------------------------------------------------------------------------------------
+-- window, event and tool requests: queued in the GUI save data (opens), run by the speed control one per read in
+-- the order sent, and answered once its report (OPEN_REPORT_KEY) says it ran. One slot used to hold them, so a
+-- second request within the same read wrote over the first (2026-11-22 18:30 JST: of hints_set and hint_reset sent
+-- in the same second, only hint_reset reached AoM), and the answer said ok before anything had run.
+
+local OPEN_REPORT_KEY = MOD .. ".open"
+
+local function publishOpens()
+	local list = {}
+	for i, p in ipairs(G.opens or {}) do list[i] = p.open end
+	publishUi({ opens = list })
+end
+
+-- open: { entity / manager / event / tool }. done(report, waited) with report nil when the speed control did not
+-- take it within core.OPEN_RELAY_SEC (else { error, skipped }); nil done: nobody waits (the build tool's events).
+-- Returns the request number.
+local function queueOpen(open, done)
+	G.uiSeq = (G.uiSeq or (os.time and os.time() or 0) * 1000) + 1
+	open.seq = G.uiSeq
+	G.opens = G.opens or {}
+	G.opens[#G.opens + 1] = { open = open, done = done, at = appTime(), deadline = appTime() + core.OPEN_RELAY_SEC }
+	publishOpens()
+	return open.seq
+end
+
+-- each frame: the requests the speed control has reported on, or that waited too long, leave the queue and are
+-- answered (a dropped one is not run later, so the answer stays true)
+local function stepOpens()
+	if not G.opens or #G.opens == 0 then return end
+	local reports = core.openReports(try(function() return api.gui.game.getGuiSaveData(OPEN_REPORT_KEY) end))
+	local t, keep, changed = appTime(), {}, false
+	for _, p in ipairs(G.opens) do
+		local r = reports[p.open.seq]
+		if r or t >= p.deadline then
+			changed = true
+			if not r then say("window/event request " .. p.open.seq .. ": the speed control did not take it in "
+				.. core.OPEN_RELAY_SEC .. " s; dropped", 1) end
+			if p.done then
+				local ok, err = pcall(p.done, r, t - p.at)
+				if not ok then say("window/event answer: " .. tostring(err)) end
+			end
+		else
+			keep[#keep + 1] = p
+		end
+	end
+	if changed then
+		G.opens = keep
+		publishOpens()
+	end
+end
+
 local function fail(id, msg)
 	G.failedId = id
 	say("command " .. tostring(id) .. " failed: " .. tostring(msg))
@@ -479,6 +531,31 @@ function handlers.entities(c)
 	answer(c.id, { ok = true, kind = kind, total = #list, entities = out })
 end
 
+-- a window, event or tool request queued for the speed control, answered once it ran: payload (ok = true) with
+-- relayed = true, or an error answer saying why it did not run (relayed = false) or what failed when it did
+local function queueAnswered(c, open, payload)
+	local seq
+	seq = queueOpen(open, function(r, waited)
+		payload.seq = seq
+		if r == nil or r.skipped then
+			payload.ok, payload.relayed, payload.note = false, false, nil
+			payload.error = r == nil and ("the speed control did not take it in " .. core.OPEN_RELAY_SEC .. " s (no game on "
+				.. "screen, the ESC menu or a dialog, or another mod's speed control in place of this one); not run, and "
+				.. "it will not run later")
+				or "the speed control was built again after it was sent (a load?) and took it as old; not run"
+			return answer(c.id, payload, "error")
+		end
+		payload.relayed, payload.relayedInSec = true, waited
+		if r.error then
+			payload.ok, payload.note = false, nil
+			payload.error = "relayed, but " .. r.error
+			return answer(c.id, payload, "error")
+		end
+		answer(c.id, payload)
+	end)
+	return seq
+end
+
 -- args: kind + name, or entity (id); focus (camera); closeAll; manager (a line, opened in the line manager
 -- instead of its own window). The window itself is opened by the speed control (gui/remote_speed.script.lua) with
 -- react.fireEvent(nil, "selectEntity", ...), as the base statistics and line windows do, or "openVehicleManager"
@@ -508,20 +585,14 @@ function handlers.window(c)
 		end
 		if name == nil then return fail(c.id, "entity " .. tostring(entity) .. " is not one of the company's lines (tf3ctl lines)") end
 	end
-	G.uiSeq = (G.uiSeq or (os.time and os.time() or 0) * 1000) + 1
-	if manager then
-		publishUi({ open = { seq = G.uiSeq, manager = entity } })
-	else
-		publishUi({ open = { seq = G.uiSeq, entity = entity } })
-	end
+	-- answered once the speed control has fired the event that opens it (within about a second)
+	local payload = { ok = true, entity = entity, name = name, focused = c.args.focus == true, manager = manager or nil,
+		note = manager and "whether the manager selected the line shows only on the screen" or nil }
+	queueAnswered(c, manager and { manager = entity } or { entity = entity }, payload)
 	if c.args.focus then
 		local okF, errF = pcall(function() api.gui.camera.focusEntity(entity) end)
 		if not okF then say("focusEntity: " .. tostring(errF)) end
 	end
-	answer(c.id, { ok = true, entity = entity, name = name, seq = G.uiSeq, focused = c.args.focus == true,
-		manager = manager or nil,
-		note = "the speed control opens it within about a second; it needs the speed label setting on"
-			.. (manager and " (whether the manager selected the line shows only on the screen)" or "") })
 end
 
 -- args: name (react event), param. Fired by the speed control (a react context), like the window command:
@@ -529,10 +600,8 @@ end
 function handlers.event(c)
 	local ev, err = core.eventRequest(c.args)
 	if not ev then return fail(c.id, err) end
-	G.uiSeq = (G.uiSeq or (os.time and os.time() or 0) * 1000) + 1
-	publishUi({ open = { seq = G.uiSeq, event = ev } })
-	answer(c.id, { ok = true, event = ev.name, seq = G.uiSeq,
-		note = "the speed control fires it within about a second (not checked: look at the screen or the log)" })
+	queueAnswered(c, { event = ev }, { ok = true, event = ev.name,
+		note = "fired by the speed control (relayed); whether a listener acted on it shows only on the screen or in the log" })
 end
 
 -- args: id, name, param. Sent to the game scripts at once (a command, as a mod's button sends it), not through
@@ -572,10 +641,8 @@ end
 function handlers.tool(c)
 	local t, err = core.toolRequest(c.args)
 	if not t then return fail(c.id, err) end
-	G.uiSeq = (G.uiSeq or (os.time and os.time() or 0) * 1000) + 1
-	publishUi({ open = { seq = G.uiSeq, tool = t } })
-	answer(c.id, { ok = true, module = t.module, field = t.field, close = t.close, seq = G.uiSeq,
-		note = "the speed control opens it within about a second (not checked: look at the screen or the log)" })
+	queueAnswered(c, { tool = t }, { ok = true, module = t.module, field = t.field, close = t.close,
+		note = "pushed (or popped) by the speed control (relayed); whether the window shows is on the screen only" })
 end
 
 -- camera: x, y, distance, angle, pitch (getCameraData's Vec5f) and the height above the terrain
@@ -623,8 +690,7 @@ end
 -- The filter is the construction menu's (game.tl setMenuFilter); it is undone here on time, so a tool that died
 -- midway does not leave the menu showing one building. A load or a quit builds a new GUI, without the filter.
 local function sendEvent(name, param)
-	G.uiSeq = (G.uiSeq or (os.time and os.time() or 0) * 1000) + 1
-	publishUi({ open = { seq = G.uiSeq, event = { name = name, param = param } } })
+	queueOpen({ event = { name = name, param = param } }, nil)
 end
 
 local function clearBuildFilter(why)
@@ -633,8 +699,8 @@ local function clearBuildFilter(why)
 	G.buildTool = nil
 end
 
--- G.buildTool.queue: the events still to send, each at its own time (one per GAP: the speed control keeps only the
--- newest); clearAt: when the filter goes, if one was set
+-- G.buildTool.queue: the events still to send, each at its own time (one per GAP, so the menu opens before the
+-- next); clearAt: when the filter goes, if one was set
 local function stepBuildTool()
 	local b = G.buildTool
 	if not b then return end
@@ -1313,12 +1379,14 @@ local function init()
 	readOptions()
 	publishRun(nil) -- a run of the previous game does not carry over
 	G.ui, G.uiSent = nil, nil
+	G.opens = {} -- a new GUI: requests of the last game are not this one's
 	G.buildTool = nil -- a new GUI: no filter left to clear
 	-- the save may hold the last game's label and requests; buttons now, not at the first label step, so a game
 	-- set to hide them never shows them
-	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {}, terrain = {}, town = {},
+	publishUi({ label = "", tip = "", open = false, opens = {}, vehicles = {}, lines = {}, terrain = {}, town = {},
 		buttons = G.options.speedButtons ~= false })
 	if not G.menu then
+		pcall(function() api.gui.game.setGuiSaveData(OPEN_REPORT_KEY, { done = {} }) end)
 		vehicles.reset()
 		lines.reset()
 		connect.reset()
@@ -1439,6 +1507,7 @@ local function step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()
+	stepOpens()
 	stepLabel()
 end
 

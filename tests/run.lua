@@ -222,6 +222,65 @@ local function answerText(g, id, tag)
 	return readJson(g.x, name)
 end
 
+-- a small JSON reader for the answers (strings, numbers, booleans, null, arrays, objects)
+local function decode(text)
+	local i = 1
+	local function ws() i = text:find("[^ \t\r\n]", i) or #text + 1 end
+	local value
+	local function str()
+		local out = {}
+		i = i + 1
+		while true do
+			local c = text:sub(i, i)
+			if c == '"' then i = i + 1; return table.concat(out) end
+			if c == "\\" then
+				local n = text:sub(i + 1, i + 1)
+				if n == "u" then out[#out + 1] = string.char(tonumber(text:sub(i + 2, i + 5), 16) % 256); i = i + 6
+				else out[#out + 1] = ({ n = "\n", t = "\t", r = "\r", b = "\b", f = "\f" })[n] or n; i = i + 2 end
+			else out[#out + 1] = c; i = i + 1 end
+		end
+	end
+	function value()
+		ws()
+		local c = text:sub(i, i)
+		if c == "{" then
+			local t = {}
+			i = i + 1; ws()
+			if text:sub(i, i) == "}" then i = i + 1; return t end
+			while true do
+				ws(); local k = str(); ws(); i = i + 1 -- ':'
+				t[k] = value(); ws()
+				local d = text:sub(i, i); i = i + 1
+				if d == "}" then return t end
+			end
+		elseif c == "[" then
+			local t = {}
+			i = i + 1; ws()
+			if text:sub(i, i) == "]" then i = i + 1; return t end
+			while true do
+				t[#t + 1] = value(); ws()
+				local d = text:sub(i, i); i = i + 1
+				if d == "]" then return t end
+			end
+		elseif c == '"' then return str()
+		elseif text:sub(i, i + 3) == "true" then i = i + 4; return true
+		elseif text:sub(i, i + 4) == "false" then i = i + 5; return false
+		elseif text:sub(i, i + 3) == "null" then i = i + 4; return nil
+		else
+			local num = text:match("^-?[%d%.eE+-]+", i)
+			i = i + #num
+			return tonumber(num)
+		end
+	end
+	return value()
+end
+
+-- the one final answer of a command (plain or _error), decoded, and how many final answers there are
+local function final(g, id)
+	local a, e = answerText(g, id), answerText(g, id, "error")
+	return decode(a or e or "null"), (a and 1 or 0) + (e and 1 or 0)
+end
+
 local SAVES = {
 	{ saveName = "probe", path = "/s/probe.sav", timestamp = 2, size = 1, mods = { "m1", "hummer_remote_probe" },
 		modParams = { m1 = { a = 1 }, [""] = { ["map.size"] = 4 } } },
@@ -840,7 +899,10 @@ local function loadSpeedScript(_, _, previous)
 		onStepTimer = function(fn) R.timers[1] = fn end,
 		onStep = function(fn) R.steps[1] = fn end,
 		enqueueJoin = function(fn) R.joins[#R.joins + 1] = fn end,
-		fireEvent = function(target, name, param) R.events[#R.events + 1] = { name = name, param = param } end,
+		fireEvent = function(target, name, param)
+			if R.failEvent == name then error("no listener took it") end
+			R.events[#R.events + 1] = { name = name, param = param }
+		end,
 	} end
 	package.preload["::/gui/main/builtin.lua"] = function() return {
 		TextView = function(t) return { kind = "text", t = t } end,
@@ -882,6 +944,26 @@ end
 
 local function publish(t) fake.guiSave.hummer_remote_probe = t end
 
+-- a game with the speed control on screen: each frame the guiUpdate script, then the recipe (render, step timer,
+-- join), so window, event and tool requests run and their commands get answered. g.speedControlOff: not mounted
+-- (no game on screen)
+local function speedGame(opts)
+	opts = opts or {}
+	opts.saves = opts.saves or SAVES
+	local g = newGame(opts)
+	local exports = loadSpeedScript()
+	local step = g.step
+	g.speedControl = exports.SpeedControl
+	g.step = function(dt)
+		step(dt)
+		if not g.speedControlOff then frame(exports.SpeedControl, opts.params or { gameCtx = {} }) end
+	end
+	return g
+end
+
+-- the requests waiting in the GUI save data for the speed control (opens), oldest first
+local function opensNow() return ((fake.guiSave.hummer_remote_probe or {}).opens) or {} end
+
 test("speed control: replaces the base recipe, draws the base buttons, the label from the GUI save data", function()
 	local exports, replaced, base = loadSpeedScript()
 	eq(#replaced, 1)
@@ -901,11 +983,12 @@ end)
 
 test("speed control: opens a requested window once, never one left in the save from the last game", function()
 	local exports = loadSpeedScript()
-	publish({ label = "", open = { seq = 5, entity = 1234 } }) -- what the loaded save still holds
+	publish({ label = "", opens = { { seq = 5, entity = 1234 } } }) -- what the loaded save still holds
 	frame(exports.SpeedControl)
 	frame(exports.SpeedControl)
 	eq(#R.events, 0, "the old request is not opened")
-	publish({ label = "", open = { seq = 6, entity = 777 } })
+	eq(fake.guiSave["hummer_remote_probe.open"].done[1].skipped, true, "and reported as skipped")
+	publish({ label = "", opens = { { seq = 5, entity = 1234 }, { seq = 6, entity = 777 } } })
 	frame(exports.SpeedControl)
 	eq(#R.events, 1)
 	eq(R.events[1].name, "selectEntity"); eq(R.events[1].param.entity, 777); eq(R.events[1].param.stack, false)
@@ -924,7 +1007,7 @@ test("speed control: the speedButtons setting hides only the ×8 / ×16; label a
 	eq(kids[2].kind, "text", "the label right after the base buttons")
 	eq(kids[2].t.text, "×16 実測×3.2")
 	local before = #R.events
-	publish({ label = "", buttons = false, open = { seq = 41, entity = 4242 } })
+	publish({ label = "", buttons = false, opens = { { seq = 41, entity = 4242 } } })
 	frame(exports.SpeedControl)
 	eq(#R.events, before + 1, "a window request is still carried out")
 	eq(R.events[#R.events].param.entity, 4242)
@@ -1140,11 +1223,14 @@ test("status shows the GUI save data read back; a failing setGuiSaveData is logg
 end)
 
 test("load clears a label and a request the save carried over", function()
-	fake.guiSave.hummer_remote_probe = { label = "×16 old", open = { seq = 3, entity = 9 } }
+	fake.guiSave.hummer_remote_probe = { label = "×16 old", open = { seq = 3, entity = 9 }, opens = { { seq = 4, entity = 9 } } }
+	fake.guiSave["hummer_remote_probe.open"] = { done = { { seq = 4 } } }
 	local g = newGame({ saves = SAVES })
 	frames(g, 2)
 	eq(fake.guiSave.hummer_remote_probe.label, "")
-	eq(fake.guiSave.hummer_remote_probe.open, false)
+	eq(fake.guiSave.hummer_remote_probe.open, false, "the single slot of earlier versions is cleared too")
+	eq(#fake.guiSave.hummer_remote_probe.opens, 0)
+	eq(#fake.guiSave["hummer_remote_probe.open"].done, 0, "and the last game's reports")
 end)
 
 local ENT = { TOWN = { 11, 12 }, LINE = { 21 }, TRANSPORT_VEHICLE = { 31 }, STATION_GROUP = { 41 }, INDUSTRY = { 51 } }
@@ -1186,20 +1272,22 @@ test("entities: lists a kind with names, filtered and sorted", function()
 	truthy(not (answerText(g2, 195) or ""):find("construction", 1, true), "towns have none")
 end)
 
-test("window: by name or id, publishes the request, focuses the camera on demand, closes all", function()
-	local g = newGame({ saves = SAVES, entities = ENT, names = NAMES })
+test("window: by name or id, opened by the speed control, focuses the camera on demand, closes all", function()
+	local g = speedGame({ saves = SAVES, entities = ENT, names = NAMES })
 	frames(g, 2)
 	send(g, 192, "window", '{ kind = "town", name = "emsworth", focus = true }')
 	frames(g, FIRST)
 	local a = answerText(g, 192) or ""
 	truthy(a:find('"entity":11') and a:find('"name":"Emsworth"'), "exact name wins over the longer one: " .. a)
-	eq(fake.guiSave.hummer_remote_probe.open.entity, 11)
+	truthy(a:find('"relayed":true'), "answered once the speed control opened it: " .. a)
+	eq(R.events[#R.events].name, "selectEntity"); eq(R.events[#R.events].param.entity, 11)
 	eq(g.focused, 11)
-	local seq = fake.guiSave.hummer_remote_probe.open.seq
+	local seq = final(g, 192).seq
 	send(g, 193, "window", '{ entity = 31 }')
 	frames(g, 20)
-	eq(fake.guiSave.hummer_remote_probe.open.entity, 31)
-	truthy(fake.guiSave.hummer_remote_probe.open.seq > seq, "a new request number")
+	eq(R.events[#R.events].param.entity, 31)
+	truthy(final(g, 193).seq > seq, "a new request number")
+	eq(#opensNow(), 0, "nothing left waiting")
 	send(g, 194, "window", '{ kind = "town", name = "worth" }')
 	frames(g, 20)
 	truthy((answerText(g, 194, "error") or ""):find("2 matches"), answerText(g, 194, "error"))
@@ -1211,21 +1299,20 @@ end)
 test("window --manager: a line by name or id goes to the line manager, never its own window", function()
 	local ent = { TOWN = { 11 }, LINE = { 21, 22 }, TRANSPORT_VEHICLE = { 31 } }
 	local names = { [11] = "Emsworth", [21] = "Bus 1", [22] = "Bus 10", [31] = "Bus 1 #1" }
-	local g = newGame({ saves = SAVES, entities = ent, names = names })
+	local g = speedGame({ saves = SAVES, entities = ent, names = names })
 	frames(g, 2)
 	send(g, 196, "window", '{ kind = "line", name = "bus 1", manager = true }')
 	frames(g, FIRST)
 	local a = answerText(g, 196) or ""
 	truthy(a:find('"entity":21') and a:find('"manager":true') and a:find('"name":"Bus 1"'), "exact name wins: " .. a)
-	local open = fake.guiSave.hummer_remote_probe.open
-	eq(open.manager, 21); eq(open.entity, nil, "not the line's own window too")
-	local seq = open.seq
+	eq(#R.events, 1, "not the line's own window too")
+	eq(R.events[1].name, "openVehicleManager"); eq(R.events[1].param.openWithLineEntity, 21)
+	local seq = final(g, 196).seq
 	send(g, 197, "window", '{ entity = 22, manager = true, focus = true }')
 	frames(g, 20)
-	open = fake.guiSave.hummer_remote_probe.open
-	eq(open.manager, 22); truthy(open.seq > seq, "a new request number"); eq(g.focused, 22)
+	eq(R.events[2].param.openWithLineEntity, 22); truthy(final(g, 197).seq > seq, "a new request number"); eq(g.focused, 22)
 	truthy((answerText(g, 197) or ""):find('"name":"Bus 10"'), answerText(g, 197))
-	seq = open.seq
+	local fired = #R.events
 	-- a vehicle's id, an id that is nobody's, another kind, a name that fits two lines, no line at all: refused,
 	-- and nothing is published for the speed control to open
 	send(g, 198, "window", '{ entity = 31, manager = true }'); frames(g, 20)
@@ -1238,22 +1325,21 @@ test("window --manager: a line by name or id goes to the line manager, never its
 	truthy((answerText(g, 200, "error") or ""):find("manager opens a line"), answerText(g, 200, "error"))
 	truthy((answerText(g, 201, "error") or ""):find("2 matches"), answerText(g, 201, "error"))
 	truthy((answerText(g, 202, "error") or ""):find("no match"), answerText(g, 202, "error"))
-	eq(fake.guiSave.hummer_remote_probe.open.seq, seq, "no request published for a refused one")
+	eq(#R.events, fired, "nothing opened for a refused one")
 	-- without manager the same line opens its own window, as before
 	send(g, 203, "window", '{ kind = "line", name = "bus 1" }')
 	frames(g, 20)
-	open = fake.guiSave.hummer_remote_probe.open
-	eq(open.entity, 21); eq(open.manager, nil)
+	eq(#R.events, fired + 1); eq(R.events[fired + 1].name, "selectEntity"); eq(R.events[fired + 1].param.entity, 21)
 	truthy(not (answerText(g, 203) or ""):find("manager", 1, true), answerText(g, 203))
 end)
 
 test("uiRequest: manager is a line id (a whole positive number) or left out", function()
-	eq(core.uiRequest({ open = { seq = 1, manager = 21 } }).open.manager, 21)
-	eq(core.uiRequest({ open = { seq = 1, manager = "21" } }).open.manager, 21)
+	eq(core.uiRequest({ opens = { { seq = 1, manager = 21 } } }).opens[1].manager, 21)
+	eq(core.openRequest({ seq = 1, manager = "21" }).manager, 21)
 	for _, bad in ipairs({ "x", -1, 0, 1.5, math.huge, 0 / 0, {}, false }) do
-		eq(core.uiRequest({ open = { seq = 1, manager = bad } }).open.manager, nil, "manager " .. tostring(bad))
+		eq(core.openRequest({ seq = 1, manager = bad }).manager, nil, "manager " .. tostring(bad))
 	end
-	eq(core.uiRequest({ open = { seq = 1 } }).open.manager, nil)
+	eq(core.openRequest({ seq = 1 }).manager, nil)
 end)
 
 test("core loads where _G is not a plain table (TF3 GUI Lua) and still shares a table", function()
@@ -1588,7 +1674,7 @@ end)
 test("scriptEvent: sent as a command at once, not through the speed control; a refusal goes to the log", function()
 	local g = newGame({ saves = SAVES })
 	frames(g, 2)
-	local before = fake.guiSave.hummer_remote_probe and fake.guiSave.hummer_remote_probe.open
+	local before = #opensNow()
 	send(g, 210, "scriptEvent", '{ id = "hummer_age_of_mobility", name = "industry_upgrades.apply", param = { construction = 9, step = 3 } }')
 	frames(g, FIRST)
 	truthy((answerText(g, 210) or ""):find('"event":"industry_upgrades.apply"'), answerText(g, 210, "error"))
@@ -1597,7 +1683,7 @@ test("scriptEvent: sent as a command at once, not through the speed control; a r
 	truthy(sent, "a script event command")
 	eq(sent.id, "hummer_age_of_mobility"); eq(sent.name, "industry_upgrades.apply"); eq(sent.param.construction, 9)
 	eq(sent.src, "")
-	eq(fake.guiSave.hummer_remote_probe and fake.guiSave.hummer_remote_probe.open, before, "the speed control is not asked")
+	eq(#opensNow(), before, "the speed control is not asked")
 	send(g, 211, "scriptEvent", '{ name = "x" }')
 	frames(g, 20)
 	truthy((answerText(g, 211, "error") or ""):find("id"))
@@ -1628,33 +1714,155 @@ test("uiRequest: buttons hidden only by an explicit false", function()
 end)
 
 test("uiRequest: carries an event and a tool; malformed ones dropped", function()
-	local r = core.uiRequest({ open = { seq = 3, event = { name = "e", param = { a = 1 } }, tool = { module = "/m.tl", field = "F", close = true } } })
-	eq(r.open.event.name, "e"); eq(r.open.event.param.a, 1)
-	eq(r.open.tool.module, "/m.tl"); eq(r.open.tool.field, "F"); eq(r.open.tool.close, true)
-	r = core.uiRequest({ open = { seq = 4, event = { name = 7 }, tool = { module = "" } } })
-	eq(r.open.event, nil); eq(r.open.tool, nil); eq(r.open.seq, 4)
+	local r = core.uiRequest({ opens = { { seq = 3, event = { name = "e", param = { a = 1 } }, tool = { module = "/m.tl", field = "F", close = true } } } }).opens[1]
+	eq(r.event.name, "e"); eq(r.event.param.a, 1)
+	eq(r.tool.module, "/m.tl"); eq(r.tool.field, "F"); eq(r.tool.close, true)
+	r = core.openRequest({ seq = 4, event = { name = 7 }, tool = { module = "" } })
+	eq(r.event, nil); eq(r.tool, nil); eq(r.seq, 4)
 end)
 
-test("event and tool: handed to the speed control through the GUI save data", function()
-	local g = newGame({ saves = SAVES })
+test("openRequests: oldest first, entries without a request number left out; the old single slot is ignored", function()
+	local list = core.uiRequest({ opens = { { seq = 9, entity = 2 }, { entity = 3 }, "x", { seq = 7, event = { name = "a" } } },
+		open = { seq = 99, entity = 5 } }).opens
+	eq(#list, 2); eq(list[1].seq, 7); eq(list[1].event.name, "a"); eq(list[2].seq, 9)
+	eq(#core.uiRequest(nil).opens, 0); eq(#core.uiRequest({ opens = "no" }).opens, 0)
+	local rep = core.openReports({ done = { { seq = 7 }, { seq = 9, error = "boom" }, { seq = 11, skipped = true }, { error = "x" }, 3 } })
+	truthy(rep[7] and rep[7].error == nil and not rep[7].skipped)
+	eq(rep[9].error, "boom"); eq(rep[11].skipped, true); eq(rep[8], nil)
+	eq(next(core.openReports(nil)), nil); eq(next(core.openReports({ done = 1 })), nil)
+end)
+
+test("event and tool: handed to the speed control through the GUI save data, answered once relayed", function()
+	local g = speedGame({ saves = SAVES })
 	frames(g, 2)
+	g.speedControlOff = true -- held back, to see the request wait
 	send(g, 200, "event", '{ name = "example_window.show", param = { welcome = true } }')
 	frames(g, FIRST)
-	truthy((answerText(g, 200) or ""):find('"event":"example_window.show"'), answerText(g, 200))
-	local open = fake.guiSave.hummer_remote_probe.open
+	eq(answerText(g, 200), nil, "no answer before the speed control fired it")
+	local open = opensNow()[1]
 	eq(open.event.name, "example_window.show"); eq(open.event.param.welcome, true)
+	g.speedControlOff = false
+	frames(g, 5)
+	local a = final(g, 200)
+	eq(a.ok, true); eq(a.event, "example_window.show"); eq(a.relayed, true); eq(a.seq, open.seq)
+	truthy(a.relayedInSec > 0, "it waited")
+	eq(R.events[#R.events].name, "example_window.show")
 	local seq = open.seq
-	send(g, 201, "tool", '{ name = "music" }')
+	package.preload["/gui/evq_tool.tl"] = function() return { "T" } end
+	send(g, 201, "tool", '{ module = "/gui/evq_tool.tl" }')
 	frames(g, 20)
-	open = fake.guiSave.hummer_remote_probe.open
-	eq(open.tool.module, "/gui/music_player/music_player.tl"); truthy(open.seq > seq, "a new request")
-	eq(open.event, nil, "only the newest request")
+	package.preload["/gui/evq_tool.tl"], package.loaded["/gui/evq_tool.tl"] = nil, nil
+	local b = final(g, 201)
+	eq(b.ok, false, "the speed control's params here have no tool stack")
+	eq(b.relayed, true); truthy(b.error:find("no gameCtx.toolStack"), b.error); truthy(b.seq > seq, "a new request")
 	send(g, 202, "tool", '{ name = "nope" }')
 	frames(g, 20)
 	truthy((answerText(g, 202, "error") or ""):find("unknown tool"))
 	send(g, 203, "event", '{ name = "x", param = 3 }')
 	frames(g, 20)
 	truthy((answerText(g, 203, "error") or ""):find("must be a table"))
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
+-- 2026-11-22 18:30 JST: two events sent in the same second, and only the second reached the other mod (one slot,
+-- written over before the speed control read it)
+test("event: two sent before the speed control's next read both go, in the order sent, each answered with the relay mark", function()
+	local g = speedGame({ saves = SAVES })
+	frames(g, 2)
+	send(g, 300, "status") -- any command first: the idle poll (2 s) would otherwise space the two apart
+	frames(g, FIRST)
+	local fired = #R.events
+	-- the guiUpdate script takes one command per poll; two handlers run in one frame here, as two polls before
+	-- the speed control's next read would leave it
+	g.speedControlOff = true
+	send(g, 301, "event", '{ name = "aom_window.hints_set", param = { on = false } }')
+	frames(g, 10)
+	send(g, 302, "event", '{ name = "aom_window.hint_reset", param = { hint = "all" } }')
+	frames(g, 10)
+	eq(#opensNow(), 2, "both wait in the queue")
+	eq(answerText(g, 301), nil); eq(answerText(g, 302), nil)
+	g.speedControlOff = false
+	frames(g, 1)
+	eq(#R.events, fired + 1, "one per read of the speed control")
+	frames(g, 5)
+	eq(#R.events, fired + 2, "then the other")
+	eq(R.events[fired + 1].name, "aom_window.hints_set"); eq(R.events[fired + 1].param.on, false)
+	eq(R.events[fired + 2].name, "aom_window.hint_reset"); eq(R.events[fired + 2].param.hint, "all")
+	local a, na = final(g, 301)
+	local b, nb = final(g, 302)
+	eq(na, 1); eq(nb, 1)
+	eq(a.ok, true); eq(a.relayed, true); eq(a.event, "aom_window.hints_set")
+	eq(b.ok, true); eq(b.relayed, true); eq(b.event, "aom_window.hint_reset")
+	truthy(a.seq < b.seq, "numbered in the order sent")
+	eq(#opensNow(), 0, "the queue is empty again")
+	frames(g, 30)
+	eq(#R.events, fired + 2, "each fired once")
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
+test("speed control: two requests in one read both fire, oldest first, one per read", function()
+	newGame({ saves = SAVES }) -- the game API of a running game
+	local exports = loadSpeedScript()
+	publish({ label = "", opens = {} })
+	frame(exports.SpeedControl)
+	publish({ label = "", opens = { { seq = 11, event = { name = "a" } }, { seq = 12, event = { name = "b" } } } })
+	frame(exports.SpeedControl)
+	frame(exports.SpeedControl)
+	frame(exports.SpeedControl)
+	eq(#R.events, 2); eq(R.events[1].name, "a"); eq(R.events[2].name, "b")
+	local done = fake.guiSave["hummer_remote_probe.open"].done
+	eq(done[#done - 1].seq, 11); eq(done[#done].seq, 12); eq(done[#done].error, nil)
+	-- one the speed control finds in an order other than sent still goes oldest first
+	publish({ label = "", opens = { { seq = 14, event = { name = "d" } }, { seq = 13, event = { name = "c" } } } })
+	frame(exports.SpeedControl)
+	frame(exports.SpeedControl)
+	eq(R.events[3].name, "c"); eq(R.events[4].name, "d")
+	publish(nil)
+end)
+
+test("event: not relayed when no speed control takes it; an error answer, and it never fires later", function()
+	local g = speedGame({ saves = SAVES })
+	frames(g, 2)
+	g.speedControlOff = true
+	send(g, 310, "event", '{ name = "late.one" }')
+	frames(g, FIRST)
+	eq(answerText(g, 310), nil)
+	frames(g, 30 * (core.OPEN_RELAY_SEC + 1))
+	local a, n = final(g, 310)
+	eq(n, 1); eq(a.ok, false); eq(a.relayed, false)
+	truthy(a.error:find("did not take it"), a.error)
+	eq(#opensNow(), 0, "dropped from the queue")
+	g.speedControlOff = false
+	local fired = #R.events
+	frames(g, 10)
+	eq(#R.events, fired, "not fired after its answer said it was not")
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
+test("event: one the speed control fails to fire is an error answer with the reason, relayed", function()
+	local g = speedGame({ saves = SAVES })
+	frames(g, 2)
+	R.failEvent = "broken.one"
+	send(g, 320, "event", '{ name = "broken.one" }')
+	frames(g, FIRST)
+	R.failEvent = nil
+	local a = final(g, 320)
+	eq(a.ok, false); eq(a.relayed, true)
+	truthy(a.error:find("relayed, but event broken.one failed"), a.error)
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
+test("event: a request the speed control finds at its first read is skipped as old, and said so", function()
+	local g = speedGame({ saves = SAVES })
+	g.speedControlOff = true
+	frames(g, 2)
+	send(g, 330, "event", '{ name = "before.mount" }')
+	frames(g, FIRST)
+	eq(#opensNow(), 1)
+	g.speedControlOff = false
+	frames(g, 5)
+	local a = final(g, 330)
+	eq(a.ok, false); eq(a.relayed, false); truthy(a.error:find("took it as old"), a.error)
 	fake.guiSave.hummer_remote_probe = nil
 end)
 
@@ -1866,15 +2074,15 @@ test("speed control: fires a requested event and pushes or pops a tool on the ga
 	}
 	local gameCtx = { toolStack = { get = function() return { getApi = function() return stackApi end } end } }
 	local params = { gameCtx = gameCtx }
-	publish({ label = "", open = { seq = 1 } })
+	publish({ label = "", opens = { { seq = 1 } } })
 	frame(exports.SpeedControl, params)
-	publish({ label = "", open = { seq = 2, event = { name = "example_window.show", param = { welcome = true } } } })
+	publish({ label = "", opens = { { seq = 2, event = { name = "example_window.show", param = { welcome = true } } } } })
 	frame(exports.SpeedControl, params)
 	eq(#R.events, 1); eq(R.events[1].name, "example_window.show"); eq(R.events[1].param.welcome, true)
-	publish({ label = "", open = { seq = 3, tool = { module = "/gui/music_player/music_player.tl" } } })
+	publish({ label = "", opens = { { seq = 3, tool = { module = "/gui/music_player/music_player.tl" } } } })
 	frame(exports.SpeedControl, params)
 	eq(#pushed, 1); eq(pushed[1][1], "push"); eq(pushed[1][2], music); eq(pushed[1][3].gameCtx, gameCtx)
-	publish({ label = "", open = { seq = 4, tool = { module = "/gui/game_bar/game_bar_widgets.tl", field = "CalendarEditorTool", close = true } } })
+	publish({ label = "", opens = { { seq = 4, tool = { module = "/gui/game_bar/game_bar_widgets.tl", field = "CalendarEditorTool", close = true } } } })
 	frame(exports.SpeedControl, params)
 	eq(pushed[2][1], "pop"); eq(pushed[2][2][1], "CAL")
 	frame(exports.SpeedControl, params)
@@ -1886,16 +2094,16 @@ end)
 test("speed control: a manager request fires openVehicleManager with the line, once", function()
 	newGame({ saves = SAVES })
 	local exports = loadSpeedScript()
-	publish({ label = "", open = { seq = 1, manager = 5 } })
+	publish({ label = "", opens = { { seq = 1, manager = 5 } } })
 	frame(exports.SpeedControl, {})
 	eq(#R.events, 0, "the request left in the save is not opened")
-	publish({ label = "", open = { seq = 2, manager = 21 } })
+	publish({ label = "", opens = { { seq = 2, manager = 21 } } })
 	frame(exports.SpeedControl, {})
 	eq(#R.events, 1)
 	eq(R.events[1].name, "openVehicleManager"); eq(R.events[1].param.openWithLineEntity, 21)
 	frame(exports.SpeedControl, {})
 	eq(#R.events, 1, "opened once")
-	publish({ label = "", open = { seq = 3, manager = 22, entity = 9 } })
+	publish({ label = "", opens = { { seq = 3, manager = 22, entity = 9 } } })
 	frame(exports.SpeedControl, {})
 	eq(#R.events, 3, "both, if a request ever held both")
 	eq(R.events[2].name, "selectEntity"); eq(R.events[3].param.openWithLineEntity, 22)
@@ -1910,16 +2118,16 @@ test("speed control: a tool it cannot open is logged once, and nothing breaks", 
 	print = function(s) printed[#printed + 1] = s end
 	package.preload["/gui/no_tool.tl"] = function() return "not a table" end
 	local ok, err = pcall(function()
-		publish({ label = "", open = { seq = 1 } })
+		publish({ label = "", opens = { { seq = 1 } } })
 		frame(exports.SpeedControl, {})
-		publish({ label = "", open = { seq = 2, tool = { module = "/gui/music_player/music_player.tl" } } })
+		publish({ label = "", opens = { { seq = 2, tool = { module = "/gui/music_player/music_player.tl" } } } })
 		package.preload["/gui/music_player/music_player.tl"] = function() return { "M" } end
 		frame(exports.SpeedControl, {}) -- no gameCtx in the params
-		publish({ label = "", open = { seq = 3, tool = { module = "/gui/music_player/music_player.tl" } } })
+		publish({ label = "", opens = { { seq = 3, tool = { module = "/gui/music_player/music_player.tl" } } } })
 		frame(exports.SpeedControl, {})
-		publish({ label = "", open = { seq = 4, tool = { module = "/gui/no_tool.tl" } } })
+		publish({ label = "", opens = { { seq = 4, tool = { module = "/gui/no_tool.tl" } } } })
 		frame(exports.SpeedControl, { gameCtx = {} })
-		publish({ label = "x", open = { seq = 5, entity = 9 } })
+		publish({ label = "x", opens = { { seq = 5, entity = 9 } } })
 		frame(exports.SpeedControl, {})
 	end)
 	print = realPrint
@@ -2056,64 +2264,6 @@ end)
 ---------------------------------------------------------------------------------------------------------------------
 -- vehicles: buy, duplicate, replace, sell, depots, vehicles
 
--- a small JSON reader for the answers (strings, numbers, booleans, null, arrays, objects)
-local function decode(text)
-	local i = 1
-	local function ws() i = text:find("[^ \t\r\n]", i) or #text + 1 end
-	local value
-	local function str()
-		local out = {}
-		i = i + 1
-		while true do
-			local c = text:sub(i, i)
-			if c == '"' then i = i + 1; return table.concat(out) end
-			if c == "\\" then
-				local n = text:sub(i + 1, i + 1)
-				if n == "u" then out[#out + 1] = string.char(tonumber(text:sub(i + 2, i + 5), 16) % 256); i = i + 6
-				else out[#out + 1] = ({ n = "\n", t = "\t", r = "\r", b = "\b", f = "\f" })[n] or n; i = i + 2 end
-			else out[#out + 1] = c; i = i + 1 end
-		end
-	end
-	function value()
-		ws()
-		local c = text:sub(i, i)
-		if c == "{" then
-			local t = {}
-			i = i + 1; ws()
-			if text:sub(i, i) == "}" then i = i + 1; return t end
-			while true do
-				ws(); local k = str(); ws(); i = i + 1 -- ':'
-				t[k] = value(); ws()
-				local d = text:sub(i, i); i = i + 1
-				if d == "}" then return t end
-			end
-		elseif c == "[" then
-			local t = {}
-			i = i + 1; ws()
-			if text:sub(i, i) == "]" then i = i + 1; return t end
-			while true do
-				t[#t + 1] = value(); ws()
-				local d = text:sub(i, i); i = i + 1
-				if d == "]" then return t end
-			end
-		elseif c == '"' then return str()
-		elseif text:sub(i, i + 3) == "true" then i = i + 4; return true
-		elseif text:sub(i, i + 4) == "false" then i = i + 5; return false
-		elseif text:sub(i, i + 3) == "null" then i = i + 4; return nil
-		else
-			local num = text:match("^-?[%d%.eE+-]+", i)
-			i = i + #num
-			return tonumber(num)
-		end
-	end
-	return value()
-end
-
--- the one final answer of a command (plain or _error), decoded, and how many final answers there are
-local function final(g, id)
-	local a, e = answerText(g, id), answerText(g, id, "error")
-	return decode(a or e or "null"), (a and 1 or 0) + (e and 1 or 0)
-end
 
 test("core.vehicleArgs: defaults, and every bad value refused with a reason", function()
 	local a = core.vehicleArgs("buy", { model = "bus", depot = 301 })
@@ -4881,16 +5031,18 @@ test("buildToolRequest: tag with a template; bad res, template and seconds refus
 	eq(#core.menuFilter(nil).enabledItems, 0)
 end)
 
--- the events the speed control would see: each new open.seq, in order, with the game time it appeared
+-- the events the speed control would see: each new request in opens, in order, with the game time it appeared
 local function watchEvents(g, n, dt)
 	local seen = {}
-	local last = ((fake.guiSave.hummer_remote_probe or {}).open or {}).seq
+	local last = -1
+	for _, o in ipairs(opensNow()) do last = math.max(last, o.seq) end
 	for _ = 1, n do
 		g.step(dt)
-		local o = (fake.guiSave.hummer_remote_probe or {}).open
-		if type(o) == "table" and o.seq ~= last then
-			last = o.seq
-			seen[#seen + 1] = { name = o.event and o.event.name, param = o.event and o.event.param, t = g.time }
+		for _, o in ipairs(opensNow()) do
+			if o.seq > last then
+				last = o.seq
+				seen[#seen + 1] = { name = o.event and o.event.name, param = o.event and o.event.param, t = g.time }
+			end
 		end
 	end
 	return seen
@@ -4966,6 +5118,20 @@ test("build-tool --menu with res: open, filter, select a gap apart, then the cle
 	eq(#ev[4].param.enabledItems, 0)
 	truthy(ev[2].t - ev[1].t >= 1 and ev[3].t - ev[2].t >= 1, "a gap between each")
 	truthy(ev[4].t - ev[3].t >= 5 - 0.1)
+	fake.guiSave.hummer_remote_probe = nil
+end)
+
+test("build-tool with the speed control on screen: all four events fire, in order, none written over", function()
+	local g = speedGame({ saves = SAVES })
+	frames(g, 2)
+	local fired = #R.events
+	send(g, 956, "buildTool", '{ menu = "road", res = "station/street/bus_stop.con", seconds = 5 }')
+	frames(g, FIRST + 30 * 12)
+	eq(final(g, 956).ok, true, tostring(final(g, 956).error))
+	local names = {}
+	for i = fired + 1, #R.events do names[#names + 1] = R.events[i].name end
+	eq(table.concat(names, ","), "openRoad,setMenuFilter,constructionMenuSelectTabForConstruction,setMenuFilter")
+	eq(#opensNow(), 0)
 	fake.guiSave.hummer_remote_probe = nil
 end)
 
