@@ -7766,7 +7766,8 @@ test("road snap: the game's sequence (a trunk in pieces, then a branch to one of
 	local a = roadRun(g, 975, '{ from = "0,0", to = "300,0" }')
 	truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.newNodes, 1)
 	local trunkEnd = a.nodes[1]
-	eq(g.nodeConfig[trunkEnd], false, "a node this command made has no set-up (as in the game)")
+	eq(g.nodeConfig[trunkEnd], false, "a node this command made has no set-up (as the fake supposes of the game)")
+	eq(a.newNodeConfigs[1].node, trunkEnd); eq(a.newNodeConfigs[1].nodeConfig, false, "read back into the answer")
 	a = roadRun(g, 976, '{ from = "300,0", to = "600,0" }')
 	eq(a.ok, false); truthy(tostring(a.error):find(tostring(trunkEnd), 1, true), tostring(a.error))
 	a = roadRun(g, 977, '{ from = "300,0", to = "300,-200" }')

@@ -1814,7 +1814,9 @@ function M.installBuild(g, spec)
 	-- street proposal adds has one only when its nodeConfigsToAdd names it (a script's road has none, as in the
 	-- game); a construction's own nodes have one (the engine adds them: "Added node config" in its proposal's log).
 	-- A piece joined to a node without one that already has two pieces is an assertion (2026-11-23 in the game:
-	-- Engine.h:322 GetComponentDataIndex, BaseNodeConfig). spec.nodeConfigRaises: reading one raises;
+	-- Engine.h:322 GetComponentDataIndex, BaseNodeConfig; the two-piece condition is a guess from that one crash,
+	-- and the game died in the simulation after applying, the fake dies on sending, refused or not; that a
+	-- script's nodes have none is from Track Connector's notes, not read in a game). spec.nodeConfigRaises: reading one raises;
 	-- spec.noNodeConfigType: no BASE_NODE_CONFIG component type.
 	local streets = spec.streets or {}
 	local streetNames = {}

@@ -634,9 +634,10 @@ function M.new(ctx)
 
 	-- whether a road node carries its junction set-up (BaseNodeConfig: its lane connections, engine.d.tl): true or
 	-- false, nil when that cannot be told (no BASE_NODE_CONFIG component type, or the engine raises). A node a
-	-- script's street proposal made without nodeConfigsToAdd has none (Track Connector's tc_proposal says so of
-	-- roads a script built); a new piece joined to such a node killed the game (2026-11-23: Engine.h:322
-	-- GetComponentDataIndex, the node without BaseNodeConfig, right after a road snapped to an earlier road's node)
+	-- script's street proposal made without nodeConfigsToAdd probably has none (Track Connector's tc_proposal says
+	-- so of roads a script built; not read in a game yet: the answer's newNodeConfigs tells). On 2026-11-23 the
+	-- game died right after a road snapped to an earlier road's node (Engine.h:322 GetComponentDataIndex, a node
+	-- without BaseNodeConfig); joins to such ends with one piece had gone through before
 	local function nodeConfigState(n)
 		local ct = try(function() return CT().BASE_NODE_CONFIG end)
 		if ct == nil then return nil end
@@ -698,9 +699,9 @@ function M.new(ctx)
 				names[#names + 1] = string.format("%d (%.1f m, %d piece%s)", q.node, q.snapped, q.pieces, q.pieces == 1 and "" or "s")
 			end
 			return nil, "the road node(s) within snap have no junction set-up (BaseNodeConfig): " .. table.concat(names, ", ") ..
-				". A road this command built ends in such nodes; joining one can kill the game (Engine.h " ..
-				"GetComponentDataIndex), and a new node there would sit on it: nothing sent. Join a node of a " ..
-				"construction's or a player's road, or build the piece from further away"
+				". A road a script built (this command's too, probably) ends in such nodes; joining one killed the " ..
+				"game (Engine.h GetComponentDataIndex), and a new node there would sit by it: nothing sent. Join a " ..
+				"node of a construction's or a player's road, or put this end well away from that node"
 		end
 		if z == nil then return nil, "the terrain's height could not be read: give z" end
 		return { x = pt[1], y = pt[2], z = z, zFrom = zFrom }
@@ -846,6 +847,16 @@ function M.new(ctx)
 			end
 		end
 		out.edges, out.nodes = core.array(edges), core.array(nodes)
+		-- whether the new nodes got a junction set-up (true / false / "unread"): read back, so that a game says
+		-- whether a script's road really ends in nodes that cannot be joined (not measured yet, 2026-11-23)
+		if #nodes > 0 then
+			local cfg = {}
+			for _, n in ipairs(nodes) do
+				local s = nodeConfigState(n)
+				cfg[#cfg + 1] = { node = n, nodeConfig = s == nil and "unread" or s }
+			end
+			out.newNodeConfigs = core.array(cfg)
+		end
 		out.edge = edges[1]
 		if res.success and edges[1] then
 			local be = comp(edges[1], "BASE_EDGE")
