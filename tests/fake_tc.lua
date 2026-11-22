@@ -5,7 +5,8 @@
 --   local tc = dofile("tests/fake_tc.lua"); tc.install(g, opts)   (after fake.new, before the first command)
 -- opts (all optional):
 --   nodes = { [id] = { x, y, z } }, edges = { [id] = { node0, node1, road = true (a street), template } },
---   constructions = { [id] = { box = { x0, y0, x1, y1 }, stations = { ids }, frozenEdges = { ids }, depots } },
+--   constructions = { [id] = { box = { x0, y0, x1, y1 }, stations = { ids }, frozenEdges = { ids }, depots = { depot
+--     entities (the fake game's opts.depots) }, frozenNodes = { ids } } },
 --   townBuildings = { [id] = { box } }, stationConstruction = { [station] = construction },
 --   industries = { [id] = { box } } (an industry's part without a CONSTRUCTION component: INDUSTRY + SUBCONSTRUCTION),
 --   year (what api.engine.util.getYear gives; none: no such function), availability = { [template] = { yearFrom, yearTo } },
@@ -116,7 +117,8 @@ function M.install(g, opts)
 			local c = cons[e]
 			-- not one of Track Connector's: the fake game's (an industry's construction, industryStocks)
 			if not c then return baseComp(e, kind) end
-			return { stations = copy(c.stations or {}), frozenEdges = copy(c.frozenEdges or {}), depots = copy(c.depots or {}) }
+			return { stations = copy(c.stations or {}), frozenEdges = copy(c.frozenEdges or {}), depots = copy(c.depots or {}),
+				frozenNodes = copy(c.frozenNodes or {}) }
 		elseif kind == "TOWN_BUILDING" then
 			return tbs[e] and {} or nil
 		elseif kind == "INDUSTRY" or kind == "SUBCONSTRUCTION" then
@@ -176,6 +178,12 @@ function M.install(g, opts)
 			return -1
 		end,
 		getConstructionEntityForStation = function(st) return (opts.stationConstruction or {})[st] or -1 end,
+		-- a depot's construction: the one listing it in depots (an entity that does not exist: an assertion)
+		getConstructionEntityForDepot = function(d)
+			if not known(d) then g.crashed = "ASSERT: getConstructionEntityForDepot on " .. tostring(d); error(g.crashed) end
+			for c, x in pairs(cons) do for _, e in ipairs(x.depots or {}) do if e == d then return c end end end
+			return -1
+		end,
 	}
 	sys.octreeSystem = { findIntersectingEntities = function(box, cb)
 		t.octreeCalls = (t.octreeCalls or 0) + 1

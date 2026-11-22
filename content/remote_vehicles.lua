@@ -679,8 +679,68 @@ function M.new(ctx)
 		return nil
 	end
 
+	-- a depot's own track or road ends, from its construction (streetConnectorSystem.getConstructionEntityForDepot,
+	-- engine/system.d.tl:237): the nodes of its frozen pieces, each { node, x, y, z, edges (pieces of its kind
+	-- there), track }, its frozenNodes left out. free: those only one piece reaches (a connect --from / --to end, as connect counts them);
+	-- joined: the rest that also have a piece not of the depot's (its track already joined to a line: measured
+	-- 2026-11-23, a depot whose ids around it gave no free end). The street system is asked only of nodes the
+	-- depot's own pieces name. nil (and why) when the construction cannot be found or read.
+	local function depotEnds(e)
+		local ok, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(e) end)
+		con = ok and tonumber(con) or nil
+		if not con or con < 0 then return nil, "its construction could not be found (getConstructionEntityForDepot)" end
+		local c = try(function() return api.engine.getComponent(con, CT().CONSTRUCTION) end)
+		if c == nil then return nil, "its construction " .. con .. " could not be read" end
+		local street = enumOf("RoadType")
+		street = street and try(function() return street.STREET end)
+		local frozen, order, kindOf, frozenN = {}, {}, {}, {}
+		-- (its frozen nodes are left out: the track's inner end in the depot is one piece's end too)
+		for _, n in ipairs(core.toList(core.field(c, "frozenNodes"))) do
+			n = tonumber(n)
+			if n then frozenN[n] = true end
+		end
+		for _, edge in ipairs(core.toList(core.field(c, "frozenEdges"))) do
+			edge = tonumber(edge)
+			if edge then frozen[edge] = true end
+		end
+		for edge in pairs(frozen) do
+			local be = try(function() return api.engine.getComponent(edge, CT().BASE_EDGE) end)
+			local rt = be and core.field(be, "roadType")
+			if rt ~= nil and street ~= nil then
+				for _, k in ipairs({ "node0", "node1" }) do
+					local n = tonumber(core.field(be, k))
+					if n and kindOf[n] == nil and not frozenN[n] then order[#order + 1] = n; kindOf[n] = rt ~= street end
+				end
+			end
+		end
+		table.sort(order)
+		local free, joined = {}, {}
+		for _, n in ipairs(order) do
+			local okT, tr = pcall(function() return core.toList(api.engine.system.streetSystem.getNodeTrackSegments(n)) end)
+			local okR, rd = pcall(function() return core.toList(api.engine.system.streetSystem.getNodeStreetSegments(n)) end)
+			if okT and okR then
+				local track = kindOf[n]
+				local mine = track and tr or rd
+				local others = 0
+				for _, s in ipairs(tr) do if not frozen[tonumber(s)] then others = others + 1 end end
+				for _, s in ipairs(rd) do if not frozen[tonumber(s)] then others = others + 1 end end
+				local bn = try(function() return api.engine.getComponent(n, CT().BASE_NODE) end)
+				local p = bn and core.field(bn, "position")
+				local entry = { node = n, x = tonumber(core.field(p, "x")), y = tonumber(core.field(p, "y")),
+					z = tonumber(core.field(p, "z")), edges = #mine, track = track }
+				if #tr + #rd == 1 then
+					free[#free + 1] = entry
+				elseif others > 0 then
+					entry.trackPieces, entry.roadPieces = #tr, #rd
+					joined[#joined + 1] = entry
+				end
+			end
+		end
+		return { construction = con, free = free, joined = joined }
+	end
+
 	-- args: grep (substring of the name, any case). The company's own depots, as the line manager lists them
-	-- (manager_window.tl: requireOwnedByPlayer)
+	-- (manager_window.tl: requireOwnedByPlayer). Each with its free ends (depotEnds: freeEnds, joinedEnds)
 	function handlers.depots(c)
 		local ids = core.toList(api.engine.getEntitiesWithComponent(CT().VEHICLE_DEPOT, { requireOwnedByPlayer = player() }))
 		local grep = type(c.args.grep) == "string" and c.args.grep:lower() or nil
@@ -699,6 +759,16 @@ function M.new(ctx)
 					carrier = d and carrierName(raw) or nil, carrierRaw = raw ~= nil and tostring(raw) or nil,
 					maintenancePool = d and tonumber(core.field(d, "maintenancePool")) or nil,
 					vehicles = core.size(try(function() return api.engine.system.transportVehicleSystem.getDepotVehicles(e) end)) }
+				-- (guarded: a depot whose ends do not read answers why, the rest of the list still comes)
+				local okE, ends, why = pcall(depotEnds, e)
+				if not okE then ends, why = nil, "its ends could not be read: " .. tostring(ends) end
+				local o = out[#out]
+				if ends then
+					o.construction, o.freeEnds = ends.construction, core.array(ends.free)
+					o.joinedEnds = #ends.joined > 0 and core.array(ends.joined) or nil
+				else
+					o.endsWhy = why
+				end
 			end
 		end
 		table.sort(out, function(x, y) return x.name < y.name end)

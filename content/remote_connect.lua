@@ -447,6 +447,23 @@ function M.new(ctx)
 		return ends
 	end
 
+	-- a depot's construction's free ends, its frozen nodes left out: the track's inner end in a depot is one
+	-- piece's end too, and the construction keeps it (whether a depot's mouth is ever among its frozenNodes is not
+	-- measured)
+	local function depotConstructionEnds(con, road)
+		local frozenN = {}
+		local cc = comp(con, "CONSTRUCTION")
+		for _, n in ipairs(core.toList(cc and core.field(cc, "frozenNodes"))) do
+			n = tonumber(n)
+			if n then frozenN[n] = true end
+		end
+		local ends = {}
+		for _, fe in ipairs(constructionEnds(con, road)) do
+			if not frozenN[fe.node] then ends[#ends + 1] = fe end
+		end
+		return ends
+	end
+
 	local function stationGroups()
 		local out = {}
 		for _, e in ipairs(core.toList(try(function() return api.engine.getEntitiesWithComponent(CT().STATION_GROUP) end))) do
@@ -475,6 +492,33 @@ function M.new(ctx)
 			if not fe then return nil, what .. ": " .. err end
 			return { name = "node " .. id, entity = id, kind = "node", ends = { fe } }
 		end
+		-- a depot (VEHICLE_DEPOT: its entity, as the depots command lists it): the free ends of its construction
+		-- (getConstructionEntityForDepot). One is the end; two or more are named and refused (which way the
+		-- depot is to be joined is not guessed); none is refused (its track may be joined to a line already)
+		if comp(id, "VEHICLE_DEPOT") then
+			local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(id) end)
+			con = okC and tonumber(con) or nil
+			if not con or con < 0 or not comp(con, "CONSTRUCTION") then
+				return nil, string.format("%s: depot %d: its construction could not be found (getConstructionEntityForDepot)", what, id)
+			end
+			-- (its frozen nodes left out: the track's inner end in the depot is one piece's end too, and the
+			-- construction keeps it)
+			local ends = depotConstructionEnds(con, road)
+			local label = string.format("depot %d (%s, construction %d)", id, nameOf(id) or "?", con)
+			if #ends == 0 then
+				return nil, string.format("%s: %s has no free %s end (its track may be joined to a line already: the " ..
+					"depots command lists its joinedEnds)", what, label, road and "road" or "track")
+			end
+			if #ends > 1 then
+				local names = {}
+				for _, fe in ipairs(ends) do
+					names[#names + 1] = string.format("node %d (%.1f, %.1f)", fe.node, fe.x, fe.y)
+				end
+				return nil, string.format("%s: %s has %d free %s ends: %s; give one node", what, label, #ends,
+					road and "road" or "track", table.concat(names, ", "))
+			end
+			return { name = nameOf(id) or ("depot " .. id), entity = id, kind = "depot", ends = ends }
+		end
 		local stations
 		local sg = comp(id, "STATION_GROUP")
 		if sg then
@@ -482,9 +526,15 @@ function M.new(ctx)
 		elseif comp(id, "STATION") then
 			stations = { id }
 		elseif comp(id, "CONSTRUCTION") then
+			-- (a depot's construction, as the depots answer names it: its ends as the depot's, frozen nodes left out;
+			-- a station's are as before: whether its platform ends are among its frozenNodes is not measured)
+			local cc = comp(id, "CONSTRUCTION")
+			if #core.toList(cc and core.field(cc, "depots")) > 0 then
+				return out("construction", depotConstructionEnds(id, road))
+			end
 			return out("construction", constructionEnds(id, road))
 		else
-			return nil, string.format("%s: %s is no node, station, station group or station construction", what, tostring(id))
+			return nil, string.format("%s: %s is no node, depot, station, station group or station construction", what, tostring(id))
 		end
 		local ends, seen = {}, {}
 		for _, st in ipairs(stations) do
