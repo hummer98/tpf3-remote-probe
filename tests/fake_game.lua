@@ -1326,12 +1326,21 @@ function M.new(dir, opts)
 		}, multipleUnitRep = {
 			-- opts.multipleUnits = { [id] = { fileName, name, vehicles = { { name, forward } } } } (a .mu.lua as loaded);
 			-- broken = true: get raises, as for a file that did not load
-			getAll = function()
+			-- mu.invisible: only getAll(true) lists it; opts.muGetAllNoNames: getAll's values are no names (true),
+			-- so only getName tells them; opts.muNoGetName: getName gives nothing
+			getAll = function(includeInvisible)
 				local out = {}
-				for id, mu in pairs(multipleUnits) do out[id] = mu.fileName end
+				for id, mu in pairs(multipleUnits) do
+					if includeInvisible == true or not mu.invisible then
+						out[id] = opts.muGetAllNoNames and true or mu.fileName
+					end
+				end
 				return out
 			end,
-			getName = function(id) return multipleUnits[id] and multipleUnits[id].fileName end,
+			getName = function(id)
+				if opts.muNoGetName then return nil end
+				return multipleUnits[id] and multipleUnits[id].fileName
+			end,
 			get = function(id)
 				local mu = multipleUnits[id]
 				if mu and mu.broken then error("multiple unit " .. tostring(id) .. " did not load") end
@@ -1594,6 +1603,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_debug.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_town_grow.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_parcels.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_reach.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
 		-- (MODHUB_PUBLISHED_IDS), taken out of that table in this game's own copy of remote_core.lua

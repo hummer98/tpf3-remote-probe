@@ -45,6 +45,9 @@ M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newga
 -- expected to have it, and the base has no My Mods page there either
 M.MENU_ONLY = { modhubStatus = true, modhubValidate = true, modhubPublish = true }
 
+-- reach (remote_reach.lua): read only, in a game (kept apart from the table above, which other branches change)
+M.COMMANDS.reach = true
+
 ---------------------------------------------------------------------------------------------------------------------
 -- mod settings (mod.json params): each arrives as a 1-based index into these lists
 
@@ -1705,11 +1708,105 @@ local function entityArg(v)
 	return n
 end
 
--- a model argument that names a multiple unit (a .mu.lua file, as the store's "multiple unit" rows): bought as
--- the train it lists, not as one model
+-- a model argument that names a multiple unit (a .mu.lua file, as the store's "multiple unit" rows; .mu also, as
+-- the game may name them without .lua): bought as the train it lists, not as one model
 M.MU_SUFFIX = ".mu.lua"
 function M.isMuName(q)
-	return type(q) == "string" and #q > #M.MU_SUFFIX and q:lower():sub(-#M.MU_SUFFIX) == M.MU_SUFFIX
+	if type(q) ~= "string" then return false end
+	local l = q:lower()
+	return (#l > #M.MU_SUFFIX and l:sub(-#M.MU_SUFFIX) == M.MU_SUFFIX) or (#l > 3 and l:sub(-3) == ".mu")
+end
+
+-- a multiple unit's name as compared: any case, the folder left out, and .mu.lua or .mu off the end
+-- ("vehicle/train/shinkansen_0s/Shinkansen_0s.MU.lua" -> "shinkansen_0s")
+function M.muKey(name)
+	local n = tostring(name or ""):lower():gsub("\\", "/")
+	n = n:match("([^/]*)$") or n
+	n = n:gsub("%.mu%.lua$", ""):gsub("%.mu$", "")
+	return n
+end
+
+-- the multiple units from api.res.multipleUnitRep.getAll() ({ [id] = name }, type.d.tl): { id, value (getAll's
+-- value, when a name), getName (getName(id), when a name), name (getName's, else the value: the store goes by
+-- getName, vehicle_store_window.tl), names (both, to match against) }, sorted by id. A unit with neither is left
+-- out. Second result: why the walk stopped, when pairs could not go through (the list is then what came before).
+-- 2026-11-23 in game a lookup by getName's name alone matched nothing: it is not known which form either has.
+function M.muListFrom(all, getName)
+	local list = {}
+	if all == nil then return list end
+	local ok, err = pcall(function()
+		for id, v in pairs(all) do
+			local value = type(v) == "string" and v ~= "" and v or nil
+			local byName
+			if getName then
+				local okN, n = pcall(getName, id)
+				if okN and type(n) == "string" and n ~= "" then byName = n end
+			end
+			local names = {}
+			if byName then names[#names + 1] = byName end
+			if value and value ~= byName then names[#names + 1] = value end
+			if #names > 0 and tonumber(id) then
+				list[#list + 1] = { id = tonumber(id), value = value, getName = byName, name = names[1], names = names }
+			end
+		end
+	end)
+	table.sort(list, function(x, y) return x.id < y.id end)
+	if not ok then return list, string.format("the walk of getAll() stopped after %d: %s", #list, tostring(err)) end
+	return list
+end
+
+-- list (muListFrom) against query: the whole name (any case), then the key (muKey: file name without .mu.lua /
+-- .mu), then a unique part of the key. No hit: why, with what was there to match, so the next try can do better:
+-- how many there are (and notes, e.g. that the visible list was empty), the names holding a piece of the query
+-- (its parts between _ - . and spaces, 3 letters or more), and the first 5.
+function M.matchMu(list, query, notes)
+	if type(query) ~= "string" or query == "" then return nil, "give the multiple unit" end
+	local q, k = query:lower(), M.muKey(query)
+	local exact, key, partial = {}, {}, {}
+	for _, m in ipairs(list or {}) do
+		-- the best of its names counts (getName's and getAll's value may differ in form)
+		local best = 0
+		for _, name in ipairs(m.names or { m.name }) do
+			local n = tostring(name):lower():gsub("\\", "/")
+			local mk = M.muKey(name)
+			if n == q then best = math.max(best, 3)
+			elseif k ~= "" and mk == k then best = math.max(best, 2)
+			elseif k ~= "" and mk:find(k, 1, true) then best = math.max(best, 1) end
+		end
+		if best == 3 then exact[#exact + 1] = m
+		elseif best == 2 then key[#key + 1] = m
+		elseif best == 1 then partial[#partial + 1] = m end
+	end
+	local hits = #exact > 0 and exact or (#key > 0 and key or partial)
+	if #hits == 1 then return hits[1] end
+	local function names(t, n)
+		local out = {}
+		for i = 1, math.min(#t, n) do out[#out + 1] = string.format("%s (%s)", tostring(t[i].name), tostring(t[i].id)) end
+		return table.concat(out, ", ") .. (#t > n and ", ..." or "")
+	end
+	if #hits > 1 then
+		table.sort(hits, function(a, b) return tostring(a.name) < tostring(b.name) end)
+		return nil, string.format("%d multiple units match %q: %s", #hits, query, names(hits, 10))
+	end
+	list = list or {}
+	local near, seen = {}, {}
+	for piece in k:gmatch("[^_%-%.%s]+") do
+		if #piece >= 3 then
+			for _, m in ipairs(list) do
+				for _, name in ipairs(m.names or { m.name }) do
+					if not seen[m] and tostring(name):lower():find(piece, 1, true) then
+						seen[m] = true
+						near[#near + 1] = m
+					end
+				end
+			end
+		end
+	end
+	local msg = string.format("no multiple unit matches %q (%d multiple units listed%s)", query, #list,
+		(notes and notes ~= "") and ("; " .. notes) or "")
+	if #near > 0 then msg = msg .. "; names with a piece of it: " .. names(near, 10) end
+	if #list > 0 then msg = msg .. "; the first ones: " .. names(list, 5) end
+	return nil, msg
 end
 
 -- cmd: buy, duplicate, replace or sell. Returns { via, count, depot, line, vehicle, model, mu } (model: the query
@@ -1808,6 +1905,15 @@ function M.modelsArgs(args)
 	if args.carrier ~= nil then
 		if type(args.carrier) ~= "string" or args.carrier == "" then return nil, "carrier must be a name (ROAD, RAIL, TRAM, AIR, WATER)" end
 		out.carrier = args.carrier:upper()
+	end
+	-- mu: the multiple units instead (true, or a part of the name to keep)
+	if args.mu ~= nil and args.mu ~= false then
+		if args.mu ~= true and (type(args.mu) ~= "string" or args.mu == "") then
+			return nil, "mu must be true or a part of the name"
+		end
+		out.mu = args.mu
+		if out.carrier then return nil, "carrier does not go with mu (multiple units are trains)" end
+		if out.grep then return nil, "grep does not go with mu (give the filter as mu)" end
 	end
 	if args.limit ~= nil then
 		local n = tonumber(args.limit)
@@ -2483,22 +2589,27 @@ M.UNHAPPY_BELOW = 0.5
 -- 1000 * 2 * 60)
 M.TERMINAL_GRACE_MS = 2 * 60 * 1000
 
--- args: vehicle or line (one of them: an entity id), limit (persons listed, 1..PERSONS_MAX). Returns them or nil
--- and why.
+-- args: vehicle, line, town (its residents: the people whose home is one of its buildings) or destination (the
+-- people with that entity as one of their destinations: home, shop or work), one of them: an entity id; limit
+-- (persons listed, 1..PERSONS_MAX). Returns them or nil and why.
+M.PERSONS_FROM = { vehicle = "the vehicles", line = "the lines", town = "entities --kind town",
+	destination = "industry-workers, stations --catchment" }
 function M.personsArgs(args)
 	args = type(args) == "table" and args or {}
 	local out = { limit = M.PERSONS_LIMIT }
-	for _, k in ipairs({ "vehicle", "line" }) do
+	local given = {}
+	for _, k in ipairs({ "vehicle", "line", "town", "destination" }) do
 		if args[k] ~= nil then
 			local n = tonumber(args[k])
 			if n == nil or n ~= math.floor(n) or n < 0 or n > M.MAX_ENTITY_ID then
-				return nil, k .. " must be an entity id (" .. (k == "vehicle" and "the vehicles" or "the lines") .. " command lists them)"
+				return nil, k .. " must be an entity id (" .. M.PERSONS_FROM[k] .. " lists them)"
 			end
 			out[k] = n
+			given[#given + 1] = k
 		end
 	end
-	if out.vehicle and out.line then return nil, "give vehicle or line, not both" end
-	if not (out.vehicle or out.line) then return nil, "give the vehicle (or a line): its entity id" end
+	if #given > 1 then return nil, "give one of vehicle, line, town, destination, not both (" .. table.concat(given, " and ") .. ")" end
+	if #given == 0 then return nil, "give the vehicle (or a line, a town, a destination): its entity id" end
 	if args.limit ~= nil then
 		local n = tonumber(args.limit)
 		if n == nil or n ~= math.floor(n) or n < 1 or n > M.PERSONS_MAX then
@@ -2542,6 +2653,32 @@ function M.personSummary(persons)
 		if type(p.atTerminal) == "table" and p.atTerminal.late == true then out.lateWaiting = out.lateWaiting + 1 end
 	end
 	if out.withHappiness > 0 then out.meanHappiness = sum / out.withHappiness end
+	out.reach = M.reachSummary(persons)
+	return out
+end
+
+-- over persons { reachable = { walkDrive = { n... }, lines = { n... } } }: how many have the counts, and per place
+-- of the engine's list (landUse2ReachableWalkDrive / Lines, {integer, integer} in the tealdef: which land use each
+-- is, it does not say) how many reach at least one such destination; none: reaching nothing either way. nil when
+-- no person has them.
+function M.reachSummary(persons)
+	local out = { persons = 0, walkDrive = {}, lines = {}, none = 0 }
+	for _, p in ipairs(persons or {}) do
+		local r = type(p.reachable) == "table" and p.reachable or nil
+		if r then
+			out.persons = out.persons + 1
+			local any = false
+			for _, k in ipairs({ "walkDrive", "lines" }) do
+				for i, n in ipairs(type(r[k]) == "table" and r[k] or {}) do
+					out[k][i] = out[k][i] or 0
+					if tonumber(n) and n > 0 then out[k][i] = out[k][i] + 1; any = true end
+				end
+			end
+			if not any then out.none = out.none + 1 end
+		end
+	end
+	if out.persons == 0 then return nil end
+	M.array(out.walkDrive); M.array(out.lines)
 	return out
 end
 

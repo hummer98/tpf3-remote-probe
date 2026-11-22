@@ -36,6 +36,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py models [--grep trillium] [--carrier water]   # vehicle models: store price, running costs, speed, capacity
   tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
   tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302      (a multiple unit: the whole train, via gui)
+  tf3ctl.py models --mu [shinkansen]                          (read only: the multiple units and their names)
   tf3ctl.py duplicate --vehicle 601 | replace --vehicle 601 --model bus_1920 | sell --vehicle 601
             # each answers with via, balance before/after, spent, the model's store price, parts' purchaseTime
   tf3ctl.py money --set 10000000 | --add -5000   # the balance, as the sandbox money editor (a journal entry)
@@ -48,10 +49,17 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
             # building parcels left and right of a road piece (count, built on, centre, area), whether the piece is in
             # a construction; a rect: each street piece with an end or its middle in it, and totals
+  tf3ctl.py reach --target 51 | reach --town 11 [--limit 20] | reach --problems | reach --api   # read only:
+            # the engine's targets (workplaces, shops) and whether they are reachable walking / driving / by lines,
+            # the town problems (Disconnected, Overlength); not checked in a game yet
+  tf3ctl.py reach --from 11 --to 51 [--mode walk|drive|lines|all] [--radius 40]   # read only: is there a footway
+            # / road path between two places (entity ids or x,y points); no cost, lines only as the target's mark
   tf3ctl.py persons --vehicle 601 [--limit 50] [--every 5 --count 120]   # who is aboard: happiness, expected
             # arrival vs the game time; the engine's unhappy counts for the vehicle, its line and stops (read only).
             # --every: one compact JSON line per sample (JSON Lines), until --count or Ctrl-C; --line 21: a line's
             # riders instead of one vehicle (whether those waiting for it are included is not checked)
+  tf3ctl.py persons --town 11 [--limit 2000] | persons --destination 51   # a town's residents, or those with an
+            # entity as a destination; each with the counts of destinations it reaches (reachable), and summary.reach
   tf3ctl.py line create --stops Central,Harbour [--name "[probe] A"] [--cargo grain] [--via gui|cmd]
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
   tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 --load-mode all,available   # piers picked, full load
@@ -2945,8 +2953,13 @@ PERSONS_MAX = 2000  # the mod's PERSONS_MAX (remote_core.lua)
 
 
 def persons_args(ns):
-    """The persons command's args: --vehicle or --line (argparse makes it one of them), --limit when given."""
-    args = {"vehicle": ns.vehicle} if ns.vehicle is not None else {"line": ns.line}
+    """The persons command's args: --vehicle, --line, --town or --destination (argparse makes it one of them), --limit
+    when given."""
+    args = {}
+    for k in ("vehicle", "line", "town", "destination"):
+        if getattr(ns, k, None) is not None:
+            args[k] = getattr(ns, k)
+            break
     if ns.limit is not None:
         if not 1 <= ns.limit <= PERSONS_MAX:
             raise ToolError("--limit must be from 1 to %d" % PERSONS_MAX)
@@ -3056,6 +3069,15 @@ def models_args(ns):
         args["grep"] = ns.grep
     if ns.carrier:
         args["carrier"] = ns.carrier
+    mu = getattr(ns, "mu", None)
+    if mu is not None:
+        if mu is not True and not mu:
+            raise ToolError("--mu takes a part of the name, or nothing for all")
+        if ns.carrier:
+            raise ToolError("--carrier does not go with --mu (multiple units are trains)")
+        if ns.grep is not None:
+            raise ToolError("--grep does not go with --mu (give the filter as --mu FILTER)")
+        args["mu"] = mu
     return args
 
 
@@ -3095,6 +3117,61 @@ def parcels_args(ns):
     args = {"rect": v}
     if ns.list:
         args["list"] = True
+    return args
+
+
+REACH_RADIUS_MAX = 500  # the mod's RADIUS_MAX (remote_reach.lua)
+REACH_LIMIT_MAX = 200  # the mod's TARGETS_LIST_MAX
+
+
+def reach_place(v, name):
+    """An end of reach --from / --to: an entity id, or a point x,y (sent as it is written; the mod checks too)."""
+    v = v.strip()
+    if re.fullmatch(r"\d+", v):
+        return int(v)
+    parts = v.split(",")
+    try:
+        xy = [float(x) for x in parts]
+    except ValueError:
+        xy = []
+    if len(xy) != 2 or any(x != x or abs(x) == float("inf") for x in xy):
+        raise ToolError("%s must be an entity id or a point x,y (for a negative x write %s=-100,50)" % (name, name))
+    return "%s,%s" % (repr(xy[0]), repr(xy[1]))
+
+
+def reach_args(ns):
+    """reach: one of --api, --problems, --target E, --town T (with --limit), --from A --to B (with --mode, --radius)."""
+    forms = [f for f, on in (("api", ns.api), ("problems", ns.problems), ("target", ns.target is not None),
+                             ("town", ns.town is not None),
+                             ("path", ns.from_ is not None or ns.to is not None)) if on]
+    if len(forms) != 1:
+        raise ToolError("give one of --api, --problems, --target ID, --town ID, --from A --to B")
+    form = forms[0]
+    if form != "path" and (ns.mode is not None or ns.radius is not None):
+        raise ToolError("--mode and --radius go with --from and --to")
+    if form != "town" and ns.limit is not None:
+        raise ToolError("--limit goes with --town")
+    if form in ("api", "problems"):
+        return {form: True}
+    if form in ("target", "town"):
+        v = getattr(ns, form)
+        if v < 0:
+            raise ToolError("--%s must be an entity id" % form)
+        args = {form: v}
+        if ns.limit is not None:
+            if not 0 <= ns.limit <= REACH_LIMIT_MAX:
+                raise ToolError("--limit must be from 0 to %d" % REACH_LIMIT_MAX)
+            args["limit"] = ns.limit
+        return args
+    if ns.from_ is None or ns.to is None:
+        raise ToolError("give both --from and --to")
+    args = {"from": reach_place(ns.from_, "--from"), "to": reach_place(ns.to, "--to")}
+    if ns.mode is not None:
+        args["mode"] = ns.mode
+    if ns.radius is not None:
+        if not 0 < ns.radius <= REACH_RADIUS_MAX:
+            raise ToolError("--radius must be above 0 and at most %d m" % REACH_RADIUS_MAX)
+        args["radius"] = ns.radius
     return args
 
 
@@ -3514,8 +3591,21 @@ def cmd_log(ns):
     return None
 
 
+class _ExactParser(argparse.ArgumentParser):
+    """A parser that takes only whole option names (no --eng for --engine-check).
+
+    The game guard outside tf3ctl tells read-only from game-changing calls by the flags as typed; an abbreviation
+    would read as one thing there and as another here. add_subparsers makes every sub parser (and theirs) of this
+    class, so the rule holds at every level.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)
+
+
 def make_parser():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = _ExactParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--owner", default=os.environ.get("TF3CTL_OWNER"),
                    help="name of the client sending commands; game-changing commands go only to the game this owner "
                         "started (launch / restart)")
@@ -3834,6 +3924,9 @@ def make_parser():
     mdl.add_argument("--grep", help="a part of the file name or the shown name, any case (digits: the id too)")
     mdl.add_argument("--carrier", type=str.upper, choices=["ROAD", "RAIL", "TRAM", "AIR", "WATER"], help="any case")
     mdl.add_argument("--limit", type=int, default=200, help="details for this many, 1-1000 (total counts them all)")
+    mdl.add_argument("--mu", nargs="?", const=True, default=None, metavar="FILTER",
+                     help="the multiple units (.mu.lua) instead: id, getName's and getAll's names, shown name, cars, "
+                          "and buyAs (what buy --model takes); FILTER: a part of a name or the shown name, any case")
     sg = sub.add_parser("stations", help="the company's (and nobody's) station groups: id, stations, platforms, "
                                          "carriers, position; per platform (station:terminal) its tag, position, "
                                          "load flags, cargoTransferSpeeds and carriers")
@@ -3867,9 +3960,28 @@ def make_parser():
     pw = ps.add_mutually_exclusive_group(required=True)
     pw.add_argument("--vehicle", type=int, help="the company's vehicle (vehicles lists them); gone: missing true")
     pw.add_argument("--line", type=int, help="the company's line: who rides it (those waiting for it too: not checked)")
+    pw.add_argument("--town", type=int, help="a town's residents (those whose home is one of its buildings)")
+    pw.add_argument("--destination", type=int, help="those with this entity (an industry, a town building) as a "
+                    "destination: home, shop or work")
     ps.add_argument("--limit", type=int, help="persons listed, 1-2000 (default 200; total counts them all)")
     ps.add_argument("--every", type=float, help="repeat every this many seconds (at least 0.5): one JSON line each")
     ps.add_argument("--count", type=int, help="with --every: this many samples (default: until Ctrl-C)")
+    rc = sub.add_parser("reach", help="read only: whether places can be got to, as the engine keeps it (its "
+                                      "targets' isReachable walk / drive / lines, town problems, a path search); "
+                                      "not checked in a game yet")
+    rc.add_argument("--api", action="store_true", help="which of the engine functions are there (calls none)")
+    rc.add_argument("--problems", action="store_true", help="every town's problems (Disconnected, Overlength)")
+    rc.add_argument("--target", type=int, help="an industry, town building, station or construction: its target "
+                    "entries (reachable walking, driving, by lines) and its town's problems")
+    rc.add_argument("--town", type=int, help="a town: its buildings' target entries counted (and the first "
+                    "--limit listed, those out of reach first) and its problems")
+    rc.add_argument("--limit", type=int, help="with --town: entries listed, 0-%d (default 20)" % REACH_LIMIT_MAX)
+    rc.add_argument("--from", dest="from_", metavar="A", help="an entity id or a point x,y")
+    rc.add_argument("--to", metavar="B", help="an entity id or a point x,y")
+    rc.add_argument("--mode", choices=("walk", "drive", "lines", "all"), help="with --from/--to: walk (footways), "
+                    "drive (roads), lines (the target's mark only) or all (walk and drive, the default)")
+    rc.add_argument("--radius", type=float, help="m round a point (or a place without nodes of its own) the "
+                    "network nodes are taken from (default 40)")
     ls = sub.add_parser("lines", help="the company's lines: stops and platforms, vehicles, cargo")
     ls.add_argument("--name", help="a part of the name, any case")
     ls.add_argument("--line", type=int, help="this line only (its entity id)")
@@ -4154,6 +4266,8 @@ def main(argv=None):
             if ns.every is not None:
                 return persons_every(ns)  # prints its own lines
             res = send("persons", persons_args(ns))
+        elif ns.cmd == "reach":
+            res = send("reach", reach_args(ns))
         elif ns.cmd == "lines":
             res = send("lines", lines_args(ns))
         elif ns.cmd == "line":

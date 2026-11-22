@@ -106,25 +106,33 @@ function M.new(ctx)
 		return hit.id
 	end
 
-	-- the multiple units (.mu.lua, api.res.multipleUnitRep), by id and file name, for a model argument that ends
-	-- in .mu.lua: the store lists them as rows of their own, apart from the models
-	local function findMu(query)
+	-- the multiple units (.mu.lua, api.res.multipleUnitRep) as core.muListFrom gives them, and a note on how they
+	-- were read. Only getAll() is what the store lists; when it gives none, getAll(true) (includeInvisible) is read
+	-- for the note and for models --mu (invisible = true), never to buy from: what the engine does with a unit the
+	-- store does not offer is not known.
+	local function muList()
+		local rep = try(function() return api.res.multipleUnitRep end)
+		if not rep then error("api.res.multipleUnitRep is not there", 0) end
+		local getName = function(id) return api.res.multipleUnitRep.getName(id) end
 		local all = try(function() return api.res.multipleUnitRep.getAll() end)
-		if not all then error("api.res.multipleUnitRep.getAll failed", 0) end
-		local list = {}
-		local ok = pcall(function()
-			for id in pairs(all) do
-				local name = try(function() return api.res.multipleUnitRep.getName(id) end)
-				if type(name) == "string" then list[#list + 1] = { id = id, name = name } end
-			end
-		end)
-		if not ok then error("could not walk api.res.multipleUnitRep.getAll()", 0) end
-		-- the file name itself (the folder left out) wins over a part of one: tgv.mu.lua is not old_tgv.mu.lua
-		local q, own = query:lower(), {}
-		for _, m in ipairs(list) do
-			if (m.name:lower():match("([^/]+)$") or "") == q then own[#own + 1] = m end
+		local list, walkErr = core.muListFrom(all, getName)
+		local notes, hidden = {}, {}
+		if walkErr then notes[#notes + 1] = walkErr end
+		if #list == 0 then
+			local all2 = try(function() return api.res.multipleUnitRep.getAll(true) end)
+			local list2, walkErr2 = core.muListFrom(all2, getName)
+			notes[#notes + 1] = string.format("getAll() gave %s, getAll(true) %d (not bought from: the store lists only getAll())",
+				all == nil and "nothing (it failed)" or "none", #list2)
+			if walkErr2 then notes[#notes + 1] = "getAll(true): " .. walkErr2 end
+			hidden = list2
 		end
-		local hit, err = core.matchModel(#own > 0 and own or list, query, "multiple unit")
+		return list, #notes > 0 and table.concat(notes, "; ") or nil, hidden
+	end
+
+	-- the multiple unit a model argument ending in .mu.lua names (core.matchMu), opened as the store would
+	local function findMu(query)
+		local list, note = muList()
+		local hit, err = core.matchMu(list, query, note)
 		if not hit then error(err, 0) end
 		local mu, why = vc.muParts(hit.id)
 		if not mu then error(why, 0) end
@@ -1083,9 +1091,46 @@ function M.new(ctx)
 		return list
 	end
 
+	-- models --mu: the multiple units (id, file name, shown name, cars), for the name a buy of one takes
+	-- models --mu: the multiple units (id, getName's and getAll's names, shown name, cars), for the name a buy of
+	-- one takes. FILTER keeps those whose names or shown name hold it.
+	local function multipleUnits(c, a)
+		local list, note, hidden = muList()
+		local all, invisible = {}, {}
+		for _, m in ipairs(list) do all[#all + 1] = m end
+		for _, m in ipairs(hidden) do all[#all + 1] = m; invisible[m] = true end
+		-- how many units share a key: buyAs is then the whole name, as the key alone would match them all
+		local keys = {}
+		for _, m in ipairs(list) do local k = core.muKey(m.name); keys[k] = (keys[k] or 0) + 1 end
+		local want = type(a.mu) == "string" and a.mu:lower() or nil
+		local hits = {}
+		for _, m in ipairs(all) do
+			local mu = try(function() return api.res.multipleUnitRep.get(m.id) end)
+			local title = mu and try(function() return mu.name end)
+			title = type(title) == "string" and title or nil
+			local keep = not want
+			for _, n in ipairs(m.names) do keep = keep or tostring(n):lower():find(want, 1, true) ~= nil end
+			keep = keep or (title ~= nil and title:lower():find(want, 1, true) ~= nil)
+			if keep then hits[#hits + 1] = { m = m, mu = mu, title = title } end
+		end
+		local out = {}
+		for i = 1, math.min(#hits, a.limit) do
+			local h = hits[i]
+			local m = h.m
+			local cars = h.mu and core.toList(try(function() return h.mu.vehicles end)) or nil
+			local k = core.muKey(m.name)
+			out[#out + 1] = { id = m.id, fileName = m.name, getName = m.getName, value = m.value, name = h.title,
+				cars = cars and #cars or nil, invisible = invisible[m] or nil,
+				buyAs = (not invisible[m]) and ((keys[k] or 0) > 1 and m.name or (k .. core.MU_SUFFIX)) or nil }
+		end
+		answer(c.id, { ok = true, total = #hits, listed = #list, invisible = #hidden > 0 and #hidden or nil, note = note,
+			multipleUnits = core.array(out) })
+	end
+
 	function handlers.models(c)
 		local a, err = core.modelsArgs(c.args)
 		if not a then return fail(c.id, err) end
+		if a.mu then return multipleUnits(c, a) end
 		local index = vehicleModelIndex()
 		local digits = a.grep and a.grep:match("^%d+$") and tonumber(a.grep)
 		local hits = {}
@@ -1164,6 +1209,16 @@ function M.new(ctx)
 		p.targetOrAtEntity = entityNum(core.field(sp, "targetOrAtEntity"))
 		p.destinations = numbers(core.field(sp, "destinations")) -- residence, shopping, work (-1: none)
 		p.lastMoveMode = tonumber(core.field(sp, "lastMoveMode"))
+		-- how many destinations of each land use the person reaches walking or driving, and by lines (engine.d.tl
+		-- SimPerson; which land use each place is, the tealdef does not say: core.reachSummary)
+		local rw, rl = core.field(sp, "landUse2ReachableWalkDrive"), core.field(sp, "landUse2ReachableLines")
+		-- by place (a number that does not read stays a hole, not a shift into the next land use's place)
+		local function byPlace(v)
+			local out = {}
+			for i = 1, core.size(v) do out[i] = tonumber(core.at(v, i)) or -1 end
+			return core.array(out)
+		end
+		if rw ~= nil or rl ~= nil then p.reachable = { walkDrive = byPlace(rw), lines = byPlace(rl) } end
 		local good = try(function() return api.engine.util.cargo.isGoodQuality(e) end)
 		if type(good) == "boolean" then p.good = good end
 		local spav = personComp(e, "SIM_PERSON_AT_VEHICLE")
@@ -1218,6 +1273,57 @@ function M.new(ctx)
 		return out
 	end
 
+	-- persons --town / --destination: who lives in a town (the people with one of its residential buildings as a
+	-- destination, simPersonSystem.getSimPersonsForDestination of each, as industry-workers asks an industry), or
+	-- who has an entity as a destination. Only an entity with a PERSON_CAPACITY is asked (what the engine does for
+	-- one without is unknown, and an assertion is past pcall); a town only when the engine lists it as one. -> the
+	-- ids (no doubles) or nil and why
+	local function residentsOrVisitors(a)
+		local function existsE(e) return try(function() return api.engine.entityExists(e) end) == true end
+		local function forDestination(e)
+			if not existsE(e) then return nil end
+			if try(function() return api.engine.getComponent(e, CT().PERSON_CAPACITY) end) == nil then return nil end
+			return core.toList(try(function() return api.engine.system.simPersonSystem.getSimPersonsForDestination(e) end))
+		end
+		if a.destination then
+			if not existsE(a.destination) then return nil, "no such entity: " .. a.destination end
+			local list = forDestination(a.destination)
+			if list == nil then
+				return nil, "entity " .. a.destination .. " has no person capacity (no one can have it as a destination)"
+			end
+			return list
+		end
+		local isTown = false
+		for _, t in ipairs(core.toList(try(function() return api.engine.getEntitiesWithComponent(CT().TOWN) end))) do
+			if tonumber(t) == a.town then isTown = true end
+		end
+		if not isTown then return nil, "entity " .. a.town .. " is no town (entities --kind town lists them)" end
+		local map = try(function() return api.engine.system.townBuildingSystem.getTown2BuildingMap() end)
+		local LU = try(function() return api.type.enum.LandUseType end)
+		local RES = LU and core.field(LU, "RESIDENTIAL")
+		local seen, out = {}, {}
+		-- by pairs, as the other readers of this map do (a missing key of an engine map is not known to be safe)
+		local mine
+		pcall(function() for k, v in pairs(map) do if tonumber(k) == a.town then mine = v end end end)
+		for _, b in ipairs(core.toList(mine)) do
+			b = tonumber(b)
+			local tb = b and existsE(b) and try(function() return api.engine.getComponent(b, CT().TOWN_BUILDING) end)
+			local pcE = tb and tonumber(core.field(tb, "personCapacity"))
+			-- the building itself, else its PersonCapacity entity (stations --catchment finds them both ways)
+			for _, e in ipairs({ b, pcE }) do
+				local pc = e and e >= 0 and existsE(e) and try(function() return api.engine.getComponent(e, CT().PERSON_CAPACITY) end)
+				if pc and RES ~= nil and core.field(pc, "type") == RES then
+					for _, p in ipairs(forDestination(e) or {}) do
+						p = tonumber(p)
+						if p and not seen[p] then seen[p] = true; out[#out + 1] = p end
+					end
+					break
+				end
+			end
+		end
+		return out
+	end
+
 	-- args: vehicle (the company's) or line (the company's), limit. Read only. A vehicle that is gone or not the
 	-- company's is answered with missing = true and no persons (not an error), so a poll sees a ship sold.
 	function handlers.persons(c)
@@ -1253,6 +1359,12 @@ function M.new(ctx)
 			res.quality = { vehicle = core.qualityOf(try(function()
 				return api.engine.util.cargo.getCargoQualityDataForVehicle(a.vehicle, pax)
 			end)) }
+		elseif a.town or a.destination then
+			local err2
+			ids, err2 = residentsOrVisitors(a)
+			if not ids then return fail(c.id, err2) end
+			res.town, res.destination = a.town, a.destination
+			res.quality = {}
 		else
 			local own = false
 			for _, l in ipairs(core.toList(try(function() return api.engine.system.lineSystem.getLinesForPlayer(player()) end))) do

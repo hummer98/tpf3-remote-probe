@@ -2591,7 +2591,7 @@ end
 test("core: a model ending in .mu.lua is a multiple unit, bought via gui only and never replaced", function()
 	truthy(core.isMuName("shinkansen_0s.mu.lua")); truthy(core.isMuName("vehicle/train/tgv/TGV.MU.LUA"))
 	eq(core.isMuName(".mu.lua"), false); eq(core.isMuName("bus_1900.mdl"), false); eq(core.isMuName(nil), false)
-	eq(core.isMuName("shinkansen_0s.mu"), false)
+	truthy(core.isMuName("shinkansen_0s.mu"), "the game may name them .mu"); eq(core.isMuName(".mu"), false)
 	local a = core.vehicleArgs("buy", { model = "tgv.mu.lua", depot = 302 })
 	eq(a.mu, true); eq(a.model, "tgv.mu.lua"); eq(a.via, "gui")
 	eq(core.vehicleArgs("buy", { model = "bus_1900", depot = 302 }).mu, nil, "a single model as before")
@@ -2721,6 +2721,126 @@ test("duplicate a bought multiple unit: the copy keeps its group, its file name 
 	eq(b.sentParts[10].reversed, true)
 	eq(b.storePriceTotal, a.storePriceTotal)
 	eq(b.vehicles[1].vehicleGroups, nil, "the grouping readout is the multiple-unit buy's only")
+end)
+
+test("core: multiple unit names compared without case, folder, .mu.lua or .mu; misses say what was there", function()
+	eq(core.muKey("vehicle/train/shinkansen_0s/Shinkansen_0s.MU.lua"), "shinkansen_0s")
+	eq(core.muKey("shinkansen_0s.mu"), "shinkansen_0s"); eq(core.muKey("res\\models\\tgv.mu.lua"), "tgv")
+	eq(core.muKey(nil), "")
+	local list = core.muListFrom({ [5] = "res/multiple_unit/shinkansen_0s.mu", [7] = true, [9] = "tgv.mu.lua" },
+		function(id) if id == 7 then return "vehicle/train/ice1/ice1.mu.lua" end end)
+	eq(#list, 3, "getAll's values, getName where the value is no name")
+	eq(list[1].id, 5); eq(list[2].name, "vehicle/train/ice1/ice1.mu.lua"); eq(list[3].name, "tgv.mu.lua")
+	eq(list[1].value, "res/multiple_unit/shinkansen_0s.mu"); eq(list[1].getName, nil)
+	eq(list[2].value, nil); eq(list[2].getName, "vehicle/train/ice1/ice1.mu.lua")
+	eq(#core.muListFrom(nil), 0); eq(#core.muListFrom({ [1] = true }), 0, "no getName: nothing named")
+	-- both names kept when they differ: getName's is the name (the store's), the value matches too
+	local both = core.muListFrom({ [3] = "Shinkansen 0 Series" }, function() return "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua" end)
+	eq(both[1].name, "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua"); eq(#both[1].names, 2)
+	eq(core.matchMu(both, "shinkansen_0s.mu.lua").id, 3, "by getName's form")
+	eq(core.matchMu(both, "Shinkansen 0 Series").id, 3, "by the value's form")
+	-- a map pairs cannot walk (an engine userdata): what came before, and why it stopped
+	local none, why = core.muListFrom(newproxy(true))
+	eq(#none, 0); truthy(why and why:find("the walk of getAll() stopped after 0", 1, true), tostring(why))
+	eq(select(2, core.muListFrom({ [1] = "a.mu" })), nil, "a walk that goes through says nothing")
+	for _, q in ipairs({ "shinkansen_0s.mu.lua", "SHINKANSEN_0S.mu", "res/multiple_unit/shinkansen_0s.mu", "shinkansen_0s.mu.lua" }) do
+		local hit, err = core.matchMu(list, q)
+		eq(hit and hit.id, 5, q .. ": " .. tostring(err))
+	end
+	eq(core.matchMu(list, "ice.mu.lua").id, 7, "a unique part of the key")
+	local hit, err = core.matchMu(list, "shinkansen_100.mu.lua", "getAll() gave none, getAll(true) 3")
+	eq(hit, nil)
+	truthy(err:find('no multiple unit matches "shinkansen_100.mu.lua" (3 multiple units listed; getAll() gave none, getAll(true) 3)', 1, true), err)
+	truthy(err:find("names with a piece of it: res/multiple_unit/shinkansen_0s.mu (5)", 1, true), err)
+	truthy(err:find("the first ones: res/multiple_unit/shinkansen_0s.mu (5), vehicle/train/ice1/ice1.mu.lua (7), tgv.mu.lua (9)", 1, true), err)
+	hit, err = core.matchMu({}, "x.mu.lua")
+	truthy(err:find("(0 multiple units listed)", 1, true), err); eq(err:find("first ones"), nil)
+	-- two whose key holds the query: the names, so one can be picked
+	hit, err = core.matchMu({ { id = 1, name = "a/tgv_x.mu.lua" }, { id = 2, name = "b/tgv_y.mu.lua" } }, "tgv_.mu.lua")
+	eq(hit, nil); truthy(err:find("2 multiple units match"), err)
+	-- models --mu args
+	eq(core.modelsArgs({ mu = true }).mu, true); eq(core.modelsArgs({ mu = "shin" }).mu, "shin")
+	eq(core.modelsArgs({}).mu, nil)
+	eq(core.modelsArgs({ mu = "" }), nil); eq(core.modelsArgs({ mu = 3 }), nil)
+	eq(core.modelsArgs({ mu = true, carrier = "rail" }), nil)
+	eq(core.modelsArgs({ mu = true, grep = "x" }), nil)
+end)
+
+test("buy a multiple unit: getAll's values match; no getName is refused (the store sends getName's); getAll(true) only told", function()
+	-- getAll's values are names, getName gives nothing: matched, but refused before anything is sent, as the store
+	-- could not name it in muFileNames either
+	local g = muGame({ muNoGetName = true })
+	send(g, 495, "buy", '{ model = "shinkansen_0s.mu", depot = 302 }')
+	frames(g, FIRST)
+	local a = final(g, 495)
+	eq(a.ok, false); truthy(a.error:find("multiple unit 1 has no file name", 1, true), a.error)
+	eq(#buyCmds(g), 0); eq(g.guiChanges, nil)
+	-- getAll's values no names: getName tells them, as before; .mu works as .mu.lua
+	g = muGame({ muGetAllNoNames = true })
+	send(g, 496, "buy", '{ model = "shinkansen_0s.mu", depot = 302 }')
+	frames(g, FIRST)
+	a = final(g, 496)
+	eq(a.ok, true, tostring(a.error)); eq(#a.vehicles[1].parts, 8)
+	eq(buyCmds(g)[1].config.muFileNames[1], "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua")
+	-- every unit invisible: getAll() is empty, getAll(true) is counted in the error but nothing is bought from it
+	local units = {}
+	for id, mu in pairs(MU_UNITS) do local c = {}; for k, v in pairs(mu) do c[k] = v end; c.invisible = true; units[id] = c end
+	g = vehicleGame({ models = MU_MODELS, multipleUnits = units, balance = 100000000,
+		depots = { [302] = { name = "Train depot", modes = { "TRAIN" } } } })
+	send(g, 497, "buy", '{ model = "tgv.mu.lua", depot = 302 }')
+	frames(g, FIRST)
+	a = final(g, 497)
+	eq(a.ok, false)
+	truthy(a.error:find('no multiple unit matches "tgv.mu.lua" (0 multiple units listed; getAll() gave none, getAll(true) 9', 1, true), a.error)
+	eq(#buyCmds(g), 0)
+	send(g, 498, "models", "{ mu = true }")
+	frames(g, FIRST)
+	a = final(g, 498)
+	eq(a.ok, true); eq(a.listed, 0); eq(a.invisible, 9); eq(a.total, 9)
+	eq(a.multipleUnits[1].invisible, true); eq(a.multipleUnits[1].buyAs, nil, "not offered to buy")
+	truthy(a.note:find("getAll(true) 9", 1, true), a.note)
+end)
+
+test("models --mu: the multiple units with id, file name, shown name, cars and what buy takes; a filter keeps some", function()
+	local g = muGame()
+	send(g, 499, "models", "{ mu = true }")
+	frames(g, FIRST)
+	local a = final(g, 499)
+	eq(a.ok, true, tostring(a.error))
+	eq(a.total, 9); eq(a.listed, 9); eq(a.note, nil)
+	eq(a.multipleUnits[1].id, 1)
+	eq(a.multipleUnits[1].fileName, "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua")
+	eq(a.multipleUnits[1].name, "Shinkansen 0 Series"); eq(a.multipleUnits[1].cars, 8)
+	eq(a.multipleUnits[1].buyAs, "shinkansen_0s.mu.lua")
+	eq(a.multipleUnits[1].getName, "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua")
+	eq(a.multipleUnits[1].value, "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua", "getAll's value as it is"); eq(a.multipleUnits[1].invisible, nil)
+	send(g, 500, "models", '{ mu = "TGV", limit = 1 }')
+	frames(g, FIRST)
+	a = final(g, 500)
+	eq(a.total, 3, "tgv, old_tgv, tgv_atlantique"); eq(#a.multipleUnits, 1)
+	-- the shown name counts for the filter
+	send(g, 502, "models", '{ mu = "0 series" }')
+	frames(g, FIRST)
+	eq(final(g, 502).total, 1)
+	eq(#buyCmds(g), 0, "read only")
+	send(g, 501, "models", '{ mu = "", limit = 1 }')
+	frames(g, FIRST)
+	eq(final(g, 501).ok, false)
+	-- two units with one file name in different folders: buyAs is the whole name, which buy takes
+	local units = { [1] = MU_UNITS[1], [8] = { fileName = "mods/x/shinkansen_0s.mu.lua", vehicles = MU_UNITS[1].vehicles } }
+	local g2 = vehicleGame({ models = MU_MODELS, multipleUnits = units, balance = 100000000,
+		depots = { [302] = { name = "Train depot", modes = { "TRAIN" } } } })
+	send(g2, 503, "models", "{ mu = true }")
+	frames(g2, FIRST)
+	local d = final(g2, 503)
+	eq(d.multipleUnits[2].buyAs, "mods/x/shinkansen_0s.mu.lua")
+	send(g2, 504, "buy", string.format("{ model = %q, depot = 302 }", d.multipleUnits[2].buyAs))
+	frames(g2, FIRST)
+	local e = final(g2, 504)
+	eq(e.ok, true, tostring(e.error)); eq(e.multipleUnit.id, 8)
+	send(g2, 505, "buy", '{ model = "shinkansen_0s.mu.lua", depot = 302 }')
+	frames(g2, FIRST)
+	truthy(final(g2, 505).error:find("2 multiple units match"), "the key alone is ambiguous")
 end)
 
 test("buy a single model (regression): one part, group { 1 }, no mu file name, no multipleUnit in the answer", function()
@@ -10120,6 +10240,10 @@ test("parcels: the engine's userdata, other field names, no map (getParcelData, 
 	truthy(e.ok, e.error); eq(e.edges[1].left.count, 3); eq(e.edges[1].sideMismatch, 1, "the flag disagrees with the list")
 	for _, gg in ipairs({ u, f, nm, np, sw, odd }) do eq(#gg.commands, 0); truthy(not gg.crashed, gg.crashed) end
 end)
+
+-- reach and persons --town / --destination (tests/run_reach.lua, its fake tests/fake_reach.lua)
+dofile(root .. "/tests/run_reach.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
+	newGame = newGame, send = send, frames = frames, final = final, FIRST = FIRST, SAVES = SAVES })
 
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it
