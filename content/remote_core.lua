@@ -2752,7 +2752,7 @@ function M.stockSetRequest(args)
 	return r
 end
 
--- steps: count (1..STEPS_MAX simulation steps), dryRun
+-- steps: count (1..STEPS_MAX simulation steps), dryRun, allowRunning (send while the game is not paused)
 function M.stepsRequest(args)
 	args = type(args) == "table" and args or {}
 	local n = wholeNumber(args.count)
@@ -2760,7 +2760,40 @@ function M.stepsRequest(args)
 		return nil, "count must be a whole number from 1 to " .. M.STEPS_MAX
 	end
 	if args.dryRun ~= nil and type(args.dryRun) ~= "boolean" then return nil, "dryRun must be true or false" end
-	return { count = n, dryRun = args.dryRun == true }
+	if args.allowRunning ~= nil and type(args.allowRunning) ~= "boolean" then
+		return nil, "allowRunning must be true or false"
+	end
+	return { count = n, dryRun = args.dryRun == true, allowRunning = args.allowRunning == true }
+end
+
+-- One step is 200 of game time (measured 2026-11-22, paused: steps 1 / 10 moved it 200 / 2000; 20 steps make a
+-- day). The engine's callback comes before the steps have all run (steps 1000 answered at 100 of them; the rest
+-- ran on at about 65 steps a second), so the answer waits for the steps' own marks.
+M.STEP_GAME_TIME = 200
+M.STEPS_WAIT_MIN_SEC = 30
+M.STEPS_WAIT_SEC_PER_10000 = 200 -- 10000 steps measured at about 150 s: some room over that
+
+-- how long a steps command may take, from the send to the last step: at least STEPS_WAIT_MIN_SEC
+function M.stepsWaitSec(count)
+	return math.max(M.STEPS_WAIT_MIN_SEC, (tonumber(count) or 0) / 10000 * M.STEPS_WAIT_SEC_PER_10000)
+end
+
+-- whether steps sent at before (gameTime, updateCount) have all run by now: the update count up by count, or the
+-- game time up by count steps. -> done, and which mark said so ("updateCount" / "gameTime"); nil when neither
+-- can be read at both ends
+function M.stepsDone(before, now, count)
+	before, now = before or {}, now or {}
+	local readable = false
+	if before.updateCount and now.updateCount then
+		readable = true
+		if now.updateCount - before.updateCount >= count then return true, "updateCount" end
+	end
+	if before.gameTime and now.gameTime then
+		readable = true
+		if now.gameTime - before.gameTime >= count * M.STEP_GAME_TIME then return true, "gameTime" end
+	end
+	if not readable then return nil end
+	return false
 end
 
 return M
