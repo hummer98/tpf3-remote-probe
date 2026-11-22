@@ -2536,6 +2536,229 @@ test("buy: the base's vehicle_util.makePart builds the part when it loads", func
 	eq(g.madeParts, 1)
 end)
 
+-- multiple units (.mu.lua): the vanilla Shinkansen 0 series (8 cars, all forward) and the official mod's TGV PSE
+-- (10 cars, the last power car turned round), as their files list them
+local MU_MODELS = {
+	[101] = { name = "vehicle/bus/bus_1900.mdl", price = 30000, vehicle = true },
+	[701] = { name = "vehicle/train/shinkansen_0s/shinkansen_0s_front.mdl", price = 500000, vehicle = true },
+	[702] = { name = "vehicle/train/shinkansen_0s/shinkansen_0s_middle1.mdl", price = 300000, vehicle = true },
+	[703] = { name = "vehicle/train/shinkansen_0s/shinkansen_0s_middle2.mdl", price = 310000, vehicle = true },
+	[704] = { name = "vehicle/train/shinkansen_0s/shinkansen_0s_back.mdl", price = 490000, vehicle = true },
+	[711] = { name = "vehicle/train/tgv/tgv_front.mdl", price = 800000, vehicle = true },
+	[712] = { name = "vehicle/train/tgv/tgv_middle1.mdl", price = 200000, vehicle = true },
+	[713] = { name = "vehicle/train/tgv/tgv_middle2.mdl", price = 210000, vehicle = true },
+	[714] = { name = "vehicle/train/tgv/tgv_middle3.mdl", price = 220000, vehicle = true },
+	[715] = { name = "vehicle/train/tgv/tgv_middle4.mdl", price = 230000, vehicle = true },
+	[790] = { name = "vehicle/train/broken/not_a_vehicle.mdl", price = 1 },
+}
+local function muCars(list)
+	local out = {}
+	for i, x in ipairs(list) do out[i] = { name = x[1], forward = x[2] ~= false } end
+	return out
+end
+local MU_UNITS = {
+	[1] = { fileName = "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua", name = "Shinkansen 0 Series", vehicles = muCars({
+		{ "shinkansen_0s_front.mdl" }, { "shinkansen_0s_middle1.mdl" }, { "shinkansen_0s_middle2.mdl" },
+		{ "shinkansen_0s_middle1.mdl" }, { "shinkansen_0s_middle2.mdl" }, { "shinkansen_0s_middle1.mdl" },
+		{ "shinkansen_0s_middle2.mdl" }, { "shinkansen_0s_back.mdl" } }) },
+	[2] = { fileName = "vehicle/train/tgv/tgv.mu.lua", name = "TGV PSE", vehicles = muCars({
+		{ "tgv_front.mdl" }, { "tgv_middle1.mdl" }, { "tgv_middle2.mdl" }, { "tgv_middle2.mdl" }, { "tgv_middle3.mdl" },
+		{ "tgv_middle2.mdl" }, { "tgv_middle2.mdl" }, { "tgv_middle2.mdl" }, { "tgv_middle4.mdl" }, { "tgv_front.mdl", false } }) },
+	-- a name that holds "tgv.mu.lua" too: the file name itself wins
+	[4] = { fileName = "vehicle/train/old/old_tgv.mu.lua", name = "Old TGV", vehicles = muCars({ { "tgv_front.mdl" } }) },
+	[3] = { fileName = "vehicle/train/tgv/tgv_atlantique.mu.lua", name = "TGV Atlantique", vehicles = muCars({ { "tgv_front.mdl" } }) },
+	-- broken ones: no cars, a car the game has no model for, a car that is no vehicle, a car without a name, a
+	-- file that did not load
+	[91] = { fileName = "vehicle/train/broken/empty.mu.lua", vehicles = {} },
+	[92] = { fileName = "vehicle/train/broken/missing.mu.lua", vehicles = muCars({ { "tgv_front.mdl" }, { "no_such_car.mdl" } }) },
+	[93] = { fileName = "vehicle/train/broken/building.mu.lua", vehicles = muCars({ { "not_a_vehicle.mdl" } }) },
+	[94] = { fileName = "vehicle/train/broken/noname.mu.lua", vehicles = { { forward = true } } },
+	[95] = { fileName = "vehicle/train/broken/unloaded.mu.lua", broken = true, vehicles = {} },
+}
+local function muGame(opts)
+	opts = opts or {}
+	opts.models, opts.multipleUnits = MU_MODELS, MU_UNITS
+	opts.balance = opts.balance or 100000000
+	opts.depots = opts.depots or { [302] = { name = "Train depot", modes = { "TRAIN", "ELECTRIC_TRAIN" } } }
+	return vehicleGame(opts)
+end
+local function buyCmds(g)
+	local out = {}
+	for _, c in ipairs(g.commands) do if c.kind == "buy" then out[#out + 1] = c end end
+	return out
+end
+
+test("core: a model ending in .mu.lua is a multiple unit, bought via gui only and never replaced", function()
+	truthy(core.isMuName("shinkansen_0s.mu.lua")); truthy(core.isMuName("vehicle/train/tgv/TGV.MU.LUA"))
+	eq(core.isMuName(".mu.lua"), false); eq(core.isMuName("bus_1900.mdl"), false); eq(core.isMuName(nil), false)
+	eq(core.isMuName("shinkansen_0s.mu"), false)
+	local a = core.vehicleArgs("buy", { model = "tgv.mu.lua", depot = 302 })
+	eq(a.mu, true); eq(a.model, "tgv.mu.lua"); eq(a.via, "gui")
+	eq(core.vehicleArgs("buy", { model = "bus_1900", depot = 302 }).mu, nil, "a single model as before")
+	local b, err = core.vehicleArgs("buy", { model = "tgv.mu.lua", depot = 302, via = "cmd" })
+	eq(b, nil); truthy(err:find("via gui only"), err)
+	b, err = core.vehicleArgs("replace", { model = "tgv.mu.lua", vehicle = 601 })
+	eq(b, nil); truthy(err:find("can only be bought"), err)
+	-- the request the speed control reads keeps the unit's id
+	local r = core.vehicleRequests({ { id = 3, kind = "buy", mu = 2, count = 1, depot = 302 } })
+	eq(r[1].mu, 2); eq(r[1].modelId, nil)
+	local hit, why = core.matchModel({ { id = 1, name = "vehicle/train/tgv/tgv.mu.lua" } }, "ice1.mu.lua", "multiple unit")
+	eq(hit, nil); eq(why, 'no multiple unit matches "ice1.mu.lua"')
+end)
+
+test("buy a multiple unit (Shinkansen 0 series): 8 parts in the file's order, one group, its file name; prices", function()
+	local g = muGame()
+	send(g, 480, "buy", '{ model = "shinkansen_0s.mu.lua", depot = 302, count = 2 }')
+	frames(g, FIRST)
+	local a, n = final(g, 480)
+	eq(n, 1)
+	eq(a.ok, true, tostring(a.error))
+	eq(g.crashed, nil)
+	local want = { 701, 702, 703, 702, 703, 702, 703, 704 }
+	local cmds = buyCmds(g)
+	eq(#cmds, 2, "one buy per train")
+	for _, c in ipairs(cmds) do
+		eq(#c.config.vehicles, 8)
+		eq(#c.config.vehicleGroups, 1); eq(c.config.vehicleGroups[1], 8)
+		eq(#c.config.muFileNames, 1); eq(c.config.muFileNames[1], "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua")
+		for i, p in ipairs(c.config.vehicles) do
+			eq(p.part.modelId, want[i], "part " .. i)
+			eq(a.sentParts[i].reversed, nil, "only a part turned round says so")
+			eq(p.part.reversed, false)
+			truthy(p.purchaseTime > 0, "stamped by the base")
+			eq(#p.autoLoadConfig, #p.part.compartment2loadConfig)
+		end
+	end
+	local total = 500000 + 3 * 300000 + 3 * 310000 + 490000
+	eq(a.storePriceTotal, 2 * total); eq(a.spent, 2 * total)
+	eq(#a.storeParts, 8); eq(a.model, nil, "no single model for a train")
+	eq(a.multipleUnit.id, 1); eq(a.multipleUnit.fileName, "vehicle/train/shinkansen_0s/shinkansen_0s.mu.lua")
+	eq(a.multipleUnit.name, "Shinkansen 0 Series"); eq(#a.multipleUnit.parts, 8)
+	eq(#a.vehicles, 2); eq(#a.vehicleIds, 2)
+	for _, v in ipairs(a.vehicles) do
+		eq(#v.parts, 8)
+		for i, p in ipairs(v.parts) do eq(p.modelId, want[i]) end
+	end
+	eq(#a.sentParts, 8)
+end)
+
+test("buy a multiple unit with a car turned round (TGV PSE): the last power car goes reversed, as its file says", function()
+	for _, vu in ipairs({ false, true }) do
+		local g = muGame({ vehicleUtil = vu, callbackFrames = 5 })
+		send(g, 481, "buy", '{ model = "tgv.mu.lua", depot = 302, line = 21 }')
+		frames(g, FIRST)
+		local a = final(g, 481)
+		eq(a.ok, true, tostring(a.error))
+		eq(g.crashed, nil)
+		if vu then eq(g.madeParts, 10, "the base's makePart, with each car's forward") end
+		local c = buyCmds(g)[1]
+		eq(#c.config.vehicles, 10); eq(c.config.vehicleGroups[1], 10); eq(c.config.muFileNames[1], "vehicle/train/tgv/tgv.mu.lua")
+		for i, p in ipairs(c.config.vehicles) do eq(p.part.reversed, i == 10, "part " .. i) end
+		eq(c.config.vehicles[1].part.modelId, 711); eq(c.config.vehicles[10].part.modelId, 711)
+		eq(a.sentParts[10].reversed, true); eq(a.sentParts[1].reversed, nil)
+		eq(g.fleet[a.vehicles[1].entity].vehicles[10].part.reversed, true, "the engine holds it turned round")
+		eq(a.multipleUnit.id, 2, "tgv.mu.lua itself, not old_tgv.mu.lua")
+		eq(a.vehicles[1].parts[10].reversed, true, "read back from the engine"); eq(a.vehicles[1].parts[1].reversed, nil)
+		eq(#a.vehicles[1].vehicleGroups, 1); eq(a.vehicles[1].vehicleGroups[1], 10)
+		eq(a.vehicles[1].muFileNames[1], "vehicle/train/tgv/tgv.mu.lua")
+		eq(a.multipleUnit.parts[10].forward, false); eq(a.multipleUnit.parts[1].forward, true)
+		eq(a.vehicles[1].line, 21)
+	end
+end)
+
+test("buy a multiple unit: none of that name, an ambiguous name, and a broken file each answer once, nothing sent", function()
+	local cases = {
+		{ "ice1.mu.lua", 'no multiple unit matches "ice1.mu.lua"' },
+		{ "broken/", nil }, -- not a .mu.lua: a model query, which no model matches
+		{ "empty.mu.lua", "lists no vehicles" },
+		{ "missing.mu.lua", "vehicle 2 (no_such_car.mdl) is no model the game has" },
+		{ "building.mu.lua", "vehicle 1 (not_a_vehicle.mdl) is no vehicle model" },
+		{ "noname.mu.lua", "vehicle 1 has no model name" },
+		{ "unloaded.mu.lua", "no multiple unit 95" },
+	}
+	for i, case in ipairs(cases) do
+		local g = muGame()
+		send(g, 482 + i, "buy", string.format('{ model = %q, depot = 302 }', case[1]))
+		frames(g, FIRST)
+		local a, n = final(g, 482 + i)
+		eq(n, 1, case[1])
+		eq(a.ok, false, case[1])
+		if case[2] then truthy(a.error:find(case[2], 1, true), case[1] .. ": " .. tostring(a.error)) end
+		eq(#buyCmds(g), 0, case[1] .. ": nothing sent")
+		eq(g.guiChanges, nil, case[1]); eq(g.crashed, nil); eq(g.balance, 100000000)
+	end
+	-- two files whose names both hold the query
+	local g = muGame()
+	send(g, 490, "buy", '{ model = "e.mu.lua", depot = 302 }')
+	frames(g, FIRST)
+	local a = final(g, 490)
+	eq(a.ok, false); truthy(a.error:find("multiple units match"), a.error)
+end)
+
+test("buy a multiple unit: not enough money for the second train answers as a single model does", function()
+	local g = muGame({ balance = 3000000 })
+	send(g, 491, "buy", '{ model = "shinkansen_0s.mu.lua", depot = 302, count = 2 }')
+	frames(g, FIRST)
+	local a, n = final(g, 491)
+	eq(n, 1); eq(a.ok, false)
+	eq(#a.vehicles, 1, "the first one was bought"); truthy(a.error:find("money"), a.error)
+end)
+
+test("duplicate a bought multiple unit: the copy keeps its group, its file name and the turned-round car", function()
+	local g = muGame()
+	send(g, 493, "buy", '{ model = "tgv.mu.lua", depot = 302 }')
+	frames(g, FIRST)
+	local a = final(g, 493)
+	eq(a.ok, true, tostring(a.error))
+	send(g, 494, "duplicate", string.format("{ vehicle = %d, depot = 302 }", a.vehicles[1].entity))
+	frames(g, FIRST)
+	local b = final(g, 494)
+	eq(b.ok, true, tostring(b.error))
+	eq(g.crashed, nil)
+	local c = buyCmds(g)[2]
+	eq(#c.config.vehicles, 10); eq(c.config.vehicleGroups[1], 10); eq(c.config.muFileNames[1], "vehicle/train/tgv/tgv.mu.lua")
+	eq(c.config.vehicles[10].part.reversed, true); eq(c.config.vehicles[1].part.reversed, false)
+	eq(b.sentParts[10].reversed, true)
+	eq(b.storePriceTotal, a.storePriceTotal)
+	eq(b.vehicles[1].vehicleGroups, nil, "the grouping readout is the multiple-unit buy's only")
+end)
+
+test("buy a single model (regression): one part, group { 1 }, no mu file name, no multipleUnit in the answer", function()
+	local g = muGame({ depots = { [301] = { name = "Bus depot", modes = { "BUS" } } } })
+	send(g, 492, "buy", '{ model = "bus_1900", depot = 301 }')
+	frames(g, FIRST)
+	local a = final(g, 492)
+	eq(a.ok, true, tostring(a.error))
+	local c = buyCmds(g)[1]
+	eq(#c.config.vehicles, 1); eq(#c.config.vehicleGroups, 1); eq(c.config.vehicleGroups[1], 1)
+	eq(#c.config.muFileNames, 0); eq(c.config.vehicles[1].part.reversed, false)
+	eq(a.multipleUnit, nil); eq(a.model.id, 101); eq(a.storePriceTotal, 30000)
+end)
+
+test("fake engine: a config whose groups do not add up, or a group that is not its unit, is the engine's assertion", function()
+	local g = muGame()
+	local function part(id, rev) return { part = { modelId = id, reversed = rev or false, compartment2loadConfig = {} }, purchaseTime = 1, autoLoadConfig = {} } end
+	local function sendCfg(cfg)
+		g.crashed = nil
+		pcall(function() api.cmd.sendCommand(api.cmd.makeVehicleBuyCmd(0, 302, cfg)) end)
+		frames(g, 3)
+		return g.crashed
+	end
+	for _, case in ipairs({
+		{ { vehicles = { part(701), part(704) }, vehicleGroups = { 1 }, muFileNames = {} }, "sum to" },
+		{ { vehicles = { part(701) }, vehicleGroups = { 1 }, muFileNames = { "", "" } }, "muFileNames for" },
+		{ { vehicles = { part(711) }, vehicleGroups = { 1 }, muFileNames = { "vehicle/train/tgv/tgv.mu.lua" } }, "is not multiple unit" },
+		{ { vehicles = { part(711, true) }, vehicleGroups = { 1 }, muFileNames = { "vehicle/train/tgv/tgv_atlantique.mu.lua" } }, "is not car" },
+	}) do
+		local crashed = sendCfg(case[1])
+		truthy(crashed and crashed:find(case[2], 1, true), case[2] .. ": " .. tostring(crashed))
+	end
+	-- the right shapes go through: a single model, a single model with "" as its file name, the unit as its file says
+	eq(sendCfg({ vehicles = { part(701) }, vehicleGroups = { 1 }, muFileNames = {} }), nil)
+	eq(sendCfg({ vehicles = { part(701) }, vehicleGroups = { 1 }, muFileNames = { "" } }), nil)
+	eq(sendCfg({ vehicles = { part(711) }, vehicleGroups = { 1 }, muFileNames = { "vehicle/train/tgv/tgv_atlantique.mu.lua" } }), nil)
+end)
+
 
 test("duplicate: a copy with new parts (purchaseTime from now, full maintenance) on the source's line", function()
 	local g = vehicleGame({ fleet = { [601] = fleetOf(101, 5, 21) } })

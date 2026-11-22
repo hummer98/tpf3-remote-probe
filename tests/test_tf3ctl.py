@@ -1891,6 +1891,11 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(tf3ctl.vehicle_args(ns(via="cmd", vehicle=7)), {"via": "cmd", "vehicle": 7})
         got = mod_reads(tf3ctl.command_text(8, "buy", {"via": "cmd", "model": "101", "depot": 301, "line": 21}))
         self.assertEqual(got["args"], {"via": "cmd", "model": "101", "depot": 301, "line": 21})
+        # a multiple unit goes as the model text: the mod tells it by its .mu.lua ending
+        mu = tf3ctl.make_parser().parse_args(["buy", "--model", "shinkansen_0s.mu.lua", "--depot", "302"])
+        self.assertEqual(tf3ctl.vehicle_args(mu), {"via": "gui", "model": "shinkansen_0s.mu.lua", "depot": 302, "count": 1})
+        got = mod_reads(tf3ctl.command_text(9, "buy", tf3ctl.vehicle_args(mu)))
+        self.assertEqual(got["args"]["model"], "shinkansen_0s.mu.lua")
         self.assertTrue({"buy", "duplicate", "replace", "sell", "money"} <= tf3ctl.CHANGES_GAME)
         self.assertEqual(tf3ctl.money_args(ns(set=5, add=None)), {"set": 5})
         self.assertEqual(tf3ctl.money_args(ns(set=None, add=-3)), {"add": -3})

@@ -362,6 +362,7 @@ function M.new(dir, opts)
 		[200] = { name = "building/bus_house.mdl", price = 1 },
 	}
 	g.models = models -- a test may change a cost, as a price mod rewrites metadata.cost
+	local multipleUnits = opts.multipleUnits or {}
 	g.balance = opts.balance or 1000000
 	g.cam = { x = 0, y = 0, distance = 500, angle = 0.5, pitch = 0.6 }
 	g.fleet = copy(opts.fleet or {})
@@ -566,6 +567,43 @@ function M.new(dir, opts)
 		-- TF3 asserts this in UpdateConfigFromModelIds (vehicle_util_engine.cpp:353) and dies, uncatchable: a cmd buy
 		-- with autoLoadConfig left empty crashed the game, 2026-11-16 13:21 JST
 		if cmd.config then
+			-- the groups (TransportVehicleConfig, type.d.tl: "The sum of all entries must be the total of vehicles"),
+			-- a multiple unit's group as its file lists it, and muFileNames empty (a single model, as the store sends
+			-- it) or one per group: what the engine does with a mismatch is not known, the fake takes the worse
+			local groups, names, sum = cmd.config.vehicleGroups or {}, cmd.config.muFileNames or {}, 0
+			for _, n in ipairs(groups) do
+				if n < 1 then g.crashed = "Assertion: a vehicle group of " .. tostring(n); error(g.crashed) end
+				sum = sum + n
+			end
+			if sum ~= #cmd.config.vehicles then
+				g.crashed = string.format("Assertion: vehicleGroups sum to %d for %d vehicles", sum, #cmd.config.vehicles)
+				error(g.crashed)
+			end
+			if #names ~= 0 and #names ~= #groups then
+				g.crashed = string.format("Assertion: %d muFileNames for %d vehicleGroups", #names, #groups)
+				error(g.crashed)
+			end
+			local first = 1
+			for i, n in ipairs(groups) do
+				local fileName = names[i]
+				if fileName and fileName ~= "" then
+					local mu
+					for _, m in pairs(multipleUnits) do if m.fileName == fileName then mu = m end end
+					if not mu or #mu.vehicles ~= n then
+						g.crashed = "Assertion: group " .. i .. " is not multiple unit " .. tostring(fileName)
+						error(g.crashed)
+					end
+					for k, v in ipairs(mu.vehicles) do
+						local p = cmd.config.vehicles[first + k - 1]
+						local m = models[p.part.modelId]
+						if not m or m.name:match("([^/]+)$") ~= v.name:match("([^/]+)$") or p.part.reversed ~= (v.forward ~= true) then
+							g.crashed = string.format("Assertion: part %d is not car %d of %s", first + k - 1, k, fileName)
+							error(g.crashed)
+						end
+					end
+				end
+				first = first + n
+			end
 			for _, p in ipairs(cmd.config.vehicles) do
 				if #(p.autoLoadConfig or {}) ~= #p.part.compartment2loadConfig then
 					g.crashed = "Assertion 'autoLoadConfig.size() == compartment2loadConfig.size()' failed"
@@ -1285,6 +1323,20 @@ function M.new(dir, opts)
 					end
 				end
 			end,
+		}, multipleUnitRep = {
+			-- opts.multipleUnits = { [id] = { fileName, name, vehicles = { { name, forward } } } } (a .mu.lua as loaded);
+			-- broken = true: get raises, as for a file that did not load
+			getAll = function()
+				local out = {}
+				for id, mu in pairs(multipleUnits) do out[id] = mu.fileName end
+				return out
+			end,
+			getName = function(id) return multipleUnits[id] and multipleUnits[id].fileName end,
+			get = function(id)
+				local mu = multipleUnits[id]
+				if mu and mu.broken then error("multiple unit " .. tostring(id) .. " did not load") end
+				return mu and copy(mu) or nil
+			end,
 		}, modelRep = {
 			getAll = function()
 				local out = {}
@@ -1292,6 +1344,14 @@ function M.new(dir, opts)
 				return out
 			end,
 			getName = function(id) return models[id] and models[id].name end,
+			-- by resource name, as a .mu.lua names its cars ("x_front.mdl", the folder left out): the full name or the
+			-- file name; -1 when there is none (what the engine gives is not known; the probe takes nil and < 0 alike)
+			find = function(name)
+				name = tostring(name)
+				for id, m in pairs(models) do if m.name == name then return id end end
+				for id, m in pairs(models) do if m.name:match("([^/]+)$") == name then return id end end
+				return -1
+			end,
 			get = function(id)
 				local m = models[id]
 				if not m then return nil end

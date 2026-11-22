@@ -693,7 +693,7 @@ function M.uiRequest(d)
 end
 
 -- the vehicle requests (gui way) the guiUpdate script hands the speed control: { { id, kind, modelId, count,
--- depot, line, vehicle } }, plain numbers only; anything else is left out rather than guessed at
+-- depot, line, vehicle, mu } } (mu: a multiple unit's id in multipleUnitRep, bought instead of modelId), plain numbers only; anything else is left out rather than guessed at
 M.VEHICLE_KINDS = { buy = true, duplicate = true, replace = true, sell = true }
 function M.vehicleRequests(list)
 	local out = {}
@@ -701,7 +701,7 @@ function M.vehicleRequests(list)
 	for _, r in ipairs(list) do
 		if type(r) == "table" and tonumber(r.id) and M.VEHICLE_KINDS[r.kind] then
 			out[#out + 1] = { id = tonumber(r.id), kind = r.kind, modelId = tonumber(r.modelId), count = tonumber(r.count),
-				depot = tonumber(r.depot), line = tonumber(r.line), vehicle = tonumber(r.vehicle) }
+				depot = tonumber(r.depot), line = tonumber(r.line), vehicle = tonumber(r.vehicle), mu = tonumber(r.mu) }
 		end
 	end
 	return out
@@ -1692,8 +1692,15 @@ local function entityArg(v)
 	return n
 end
 
--- cmd: buy, duplicate, replace or sell. Returns { via, count, depot, line, vehicle, model } (model: the query as
--- given, matched later against the model list) or nil and why.
+-- a model argument that names a multiple unit (a .mu.lua file, as the store's "multiple unit" rows): bought as
+-- the train it lists, not as one model
+M.MU_SUFFIX = ".mu.lua"
+function M.isMuName(q)
+	return type(q) == "string" and #q > #M.MU_SUFFIX and q:lower():sub(-#M.MU_SUFFIX) == M.MU_SUFFIX
+end
+
+-- cmd: buy, duplicate, replace or sell. Returns { via, count, depot, line, vehicle, model, mu } (model: the query
+-- as given, matched later against the model list, or the multiple unit list when mu is true) or nil and why.
 function M.vehicleArgs(cmd, args)
 	args = type(args) == "table" and args or {}
 	local out = { via = args.via == nil and "gui" or args.via }
@@ -1709,6 +1716,13 @@ function M.vehicleArgs(cmd, args)
 		if type(m) == "number" then m = string.format("%d", m) end
 		if type(m) ~= "string" or m == "" then return nil, "give the model (its id, or a part of its file name)" end
 		out.model = m
+		if M.isMuName(m) then
+			-- only the store's way is built for a multiple unit: the cmd way sends purchaseTime 0 (wrong prices) and
+			-- a train of parts by hand has never been sent through it
+			if cmd == "replace" then return nil, "replace takes one model; a multiple unit (.mu.lua) can only be bought" end
+			if out.via ~= "gui" then return nil, "a multiple unit (.mu.lua) is bought via gui only" end
+			out.mu = true
+		end
 	end
 	if cmd == "buy" then
 		local n = args.count == nil and 1 or tonumber(args.count)
@@ -1729,7 +1743,9 @@ end
 
 -- list: { { id = n, name = "vehicle/bus/xx.mdl" } } of vehicle models. An id (as a number or digits) or an exact
 -- name wins, then the exact file name without folder and extension, then a unique substring (any case).
-function M.matchModel(list, query)
+-- what: the kind of thing in the messages (default "vehicle model"; "multiple unit" for the .mu.lua list)
+function M.matchModel(list, query, what)
+	what = what or "vehicle model"
 	if type(query) == "number" then query = string.format("%d", query) end
 	if type(query) ~= "string" or query == "" then return nil, "give the model" end
 	local id = query:match("^%d+$") and tonumber(query)
@@ -1743,11 +1759,11 @@ function M.matchModel(list, query)
 	end
 	local hits = #exact > 0 and exact or (#base > 0 and base or partial)
 	if #hits == 1 then return hits[1] end
-	if #hits == 0 then return nil, string.format("no vehicle model matches %q", query) end
+	if #hits == 0 then return nil, string.format("no %s matches %q", what, query) end
 	table.sort(hits, function(a, b) return tostring(a.name) < tostring(b.name) end)
 	local names = {}
 	for i = 1, math.min(#hits, 10) do names[#names + 1] = string.format("%s (%s)", tostring(hits[i].name), tostring(hits[i].id)) end
-	return nil, string.format("%d models match %q: %s%s", #hits, query, table.concat(names, ", "), #hits > 10 and ", ..." or "")
+	return nil, string.format("%d %ss match %q: %s%s", #hits, what == "vehicle model" and "model" or what, query, table.concat(names, ", "), #hits > 10 and ", ..." or "")
 end
 
 -- what the operation cost: positive = paid, negative = earned (a sale). nil when a balance is unknown (the

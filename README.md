@@ -227,6 +227,7 @@ python3 tools/tf3ctl.py vehicles --entity 601 --state --at-terminal --every 2 --
 python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # or --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
+python3 tools/tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302 [--line 21] [--count 2]   # a multiple unit
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
 python3 tools/tf3ctl.py replace --vehicle 601 --model bus_1920
 python3 tools/tf3ctl.py sell --vehicle 601
@@ -1113,6 +1114,19 @@ up after 20 s with "no answer". Relayed means fired, not that a
 - Ships: a large ship (mode SHIP) needs a large pier at every stop; the engine may assign a small one (SMALL_SHIP
   only) and refuse the ship (`NoSmallShip`). Make ship lines with `line create --terminals`, picking large piers
   (`transportModes` with SHIP in `stations` platforms), and check them with `lines --problems`.
+- Multiple units: a `--model` ending in `.mu.lua` (e.g. `shinkansen_0s.mu.lua`, or the official TGV mod's
+  `tgv.mu.lua`) buys that multiple unit, as the store's multiple-unit row does: every car its file lists, in order,
+  each turned round where the file says `forward = false`, its model found by `api.res.modelRep.find`, sent as one
+  vehicle with `vehicleGroups = { n }` and `muFileNames = { <the file's name> }` (`vehicle_configs.muParts` /
+  `newMuConfig`, after `vehicle_store_window.tl`). The name is matched against `api.res.multipleUnitRep` (the full
+  name, or a unique part of it). The whole file is checked before anything is sent: no cars, a car the game has no
+  model for, or one that is no vehicle model, is an error. Via gui only (`--via cmd` is refused), and `replace` takes
+  no multiple unit. The answer adds `multipleUnit` (`id`, `fileName`, `name`, `parts` with each car's `modelId`, `name`,
+  `forward`); `storeParts` and `storePriceTotal` cover every car; `sentParts` and `vehicles[].parts` mark any
+  turned-round part with `reversed: true` (for any vehicle, not only a multiple unit), and each vehicle bought this
+  way carries the engine's `vehicleGroups` and `muFileNames`. A file name (the folder left out) that equals the
+  query wins over names that only contain it. A train of single models put together by hand (a locomotive and its coaches) is not offered.
+  Not checked in game yet.
 - `buy` needs `--depot` (the store only picks a depot when opened from one); count 1-20; with `--line` the first
   stop is stop 0. `duplicate` copies the config with parts at `purchaseTime` 0 and maintenance 1, as the base
   clone does; depot and line default to `findBestLineAndDepotForVehicle`.

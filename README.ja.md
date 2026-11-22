@@ -219,6 +219,7 @@ python3 tools/tf3ctl.py vehicles --entity 601 --state --at-terminal --every 2 --
 python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # または --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
+python3 tools/tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302 [--line 21] [--count 2]   # 編成 (multiple unit)
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
 python3 tools/tf3ctl.py replace --vehicle 601 --model bus_1920
 python3 tools/tf3ctl.py sell --vehicle 601
@@ -1035,6 +1036,16 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
 - 船: 大型船 (mode SHIP) は、どの停車駅でも大型船着場が要ります。エンジンが小型船着場 (SMALL_SHIP だけ) を割り当てると、
   船は断られます (`NoSmallShip`)。船の路線は `line create --terminals` で大型船着場 (`stations` の `platforms` で
   `transportModes` に SHIP があるもの) を指定して作り、`lines --problems` で見てください。
+- 編成 (multiple unit): `--model` が `.mu.lua` で終わると (例 `shinkansen_0s.mu.lua`、公式の TGV の MOD の
+  `tgv.mu.lua`)、店の編成の行と同じくその編成を買います。ファイルに並ぶ車両を順に全部、`forward = false` の車両は
+  向きを逆にし、モデルは `api.res.modelRep.find` で引き、`vehicleGroups = { 両数 }` と `muFileNames = { ファイル名 }`
+  の 1 台として送ります (`vehicle_configs.muParts` / `newMuConfig`、`vehicle_store_window.tl` にならう)。名前は
+  `api.res.multipleUnitRep` の名前 (全体、または一意な一部) と突き合わせます。送る前にファイル全体を調べ、車両が無い・
+  ゲームに無いモデル・車両でないモデルがあればエラーです。gui だけで (`--via cmd` は断ります)、`replace` は編成を
+  受けません。返事には `multipleUnit` (`id`・`fileName`・`name`・車両ごとの `modelId`・`name`・`forward` の `parts`)
+  が付き、`storeParts` と `storePriceTotal` は全車両の分、`sentParts` と `vehicles[].parts` は向きが逆の部品に
+  `reversed: true` を付けます (編成に限らず、どの車両でも)。編成で買った車両には、エンジンが持つ `vehicleGroups` と
+  `muFileNames` も付きます。フォルダを除いたファイル名が問い合わせと等しいものは、名前に含むだけのものより優先します。単独のモデルを手で並べた列車 (機関車と客車) は作れません。ゲーム内では未確認です。
 - `buy` は `--depot` が必須です (店は車庫から開いたときだけ車庫を決める)。台数は 1-20。`--line` の先頭の停車駅は
   0 番。`duplicate` は本体の複製と同じく config を写し、部品を purchaseTime 0・maintenanceState 1 にします。車庫と
   路線の既定は `findBestLineAndDepotForVehicle`。

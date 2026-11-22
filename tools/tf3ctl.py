@@ -35,6 +35,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # one JSON line per sample, as persons --every
   tf3ctl.py models [--grep trillium] [--carrier water]   # vehicle models: store price, running costs, speed, capacity
   tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
+  tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302      (a multiple unit: the whole train, via gui)
   tf3ctl.py duplicate --vehicle 601 | replace --vehicle 601 --model bus_1920 | sell --vehicle 601
             # each answers with via, balance before/after, spent, the model's store price, parts' purchaseTime
   tf3ctl.py money --set 10000000 | --add -5000   # the balance, as the sandbox money editor (a journal entry)
@@ -3744,7 +3745,9 @@ def make_parser():
         if name != "buy":
             vb.add_argument("--vehicle", type=int, required=True)
         if name in ("buy", "replace"):
-            vb.add_argument("--model", required=True, help="model id, or a unique part of its file name")
+            vb.add_argument("--model", required=True, help="model id, or a unique part of its file name" + (
+                "; a name ending in .mu.lua buys that multiple unit (the whole train its file lists, e.g. "
+                "shinkansen_0s.mu.lua; via gui only)" if name == "buy" else ""))
         if name in ("buy", "duplicate"):
             vb.add_argument("--depot", type=int, required=(name == "buy"),
                             help="depot entity (the depots command)" + ("" if name == "buy" else
