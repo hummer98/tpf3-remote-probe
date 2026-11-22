@@ -788,7 +788,10 @@ python3 tools/tf3ctl.py persons --destination 51          # those with the indus
   `capacity`, `freeCapacity`, `destinationWeight`, `edgeWalk` / `edgeDrive` (`entity`, `index`: the network edge
   the target is reached by), `landUseKey` (the list's own key) and `landUseGuess`; `counts`; `landUse` (the
   entity's own `PERSON_CAPACITY` type, to check the guess by); `found` false with `why` when it is no target (a
-  home, an industry without workplaces). A construction stands for its industries, town buildings and stations, a
+  home, an industry without workplaces). The answer is read by pairs as well as by index (a table from 0, or keyed
+  by name, reads too); when it reads as no targets at all, `targetsRead` is false, `found` is null (not "no
+  target") and `raw` describes what came (type, `#`, first keys, a few levels down); `reach --town` says so in
+  `targetsWhy`. A construction stands for its industries, town buildings and stations, a
   town building also for its PersonCapacity entity (`candidates`). With the building's town (or the closest town
   of an industry's construction) come `townProblems` (`api.engine.util.town.getTownProblems`: `problem` and the
   towns it is `with`).
