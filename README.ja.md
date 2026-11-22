@@ -453,8 +453,12 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの nod
   ときは警告 (「3 個の畑が取り除かれます」) だけになりますが、`--remove-fields` の無い build ではその畑と衝突します
   (2026-11-23、伐採場のそばの道路)。そのときは答えに `caution` が付きます。
 - `--remove-fields`: 道にある畑を取り除いて建てます。build の context で畑を集めます (`gatherFields`。Track Connector と
-  同じ。建物は集めない)。エンジンが畑を取り除いて建てます。畑以外 (建物・線路・建物の construction) は、今までどおり断り
+  同じ。建物は集めない)。エンジンが畑を取り除いて建てます。畑以外 (建物・線路・ほかの建造物) は、今までどおり断り
   ます。これを付けずに衝突で断られた道路には `hint` が付きます。ゲームを変えるので、テスト用のセーブでだけ使ってください。
+  **ゲーム内では未確認** (2026-11-23 に書いたもの): 取り除かれるのが畑だけか (建物・線路・産業の一部は断られるか)、
+  伐採場のそばで邪魔をしていた entity が畑だったか、エンジン自身の context が畑を集めるか (警告からの見立て)。答えにも
+  `removeFieldsNote` で書きます。`--remove-fields` を付けた dry-run の `caution` は、畑以外の警告なら本番で衝突しうる、と
+  言います。
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ

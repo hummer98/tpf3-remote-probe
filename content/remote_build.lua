@@ -1282,6 +1282,12 @@ function M.new(ctx)
 					out.caution = "the engine warned (" .. table.concat(v.warnings, "; ") .. ") in its own context; the " ..
 						"build gathers no fields and may be refused for what a warning lets through here (a field " ..
 						"in the way: a collision). If the warning is that fields will be removed, give --remove-fields"
+				elseif warned then
+					-- (--remove-fields gathers fields only: a warning of anything else, buildings for one, the build may
+					-- still be refused for)
+					out.caution = "the engine warned (" .. table.concat(v.warnings, "; ") .. ") in its own context; the " ..
+						"build gathers fields (--remove-fields) but no buildings: a warning of anything but fields " ..
+						"may still be a collision in the build"
 				end
 			else
 				out.engineContext = "the build's"
@@ -1297,6 +1303,10 @@ function M.new(ctx)
 			return answer(c.id, out)
 		end
 		out.removeFields = r.removeFields or nil
+		if r.removeFields then
+			out.removeFieldsNote = "gatherFields on, gatherBuildings off: not checked in a game yet that only fields go " ..
+				"and buildings and tracks still refuse it: look at it (frame)"
+		end
 		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
 			piecesBefore = piecesAround(a, b) }
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields), false, true), function(data, success, entities)

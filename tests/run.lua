@@ -8464,16 +8464,27 @@ test("road --remove-fields: fields in the way go (gatherFields); without it a co
 	eq(g.buildCmds[#g.buildCmds].context.gatherFields, false, "no fields gathered by default")
 	-- with it: the dry run without the caution, then built, the fields gone
 	a = roadRun(g, 1122, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true, removeFields = true }')
-	truthy(a.ok, a.error); eq(a.verdict, "buildable with warnings"); eq(a.caution, nil)
+	truthy(a.ok, a.error); eq(a.verdict, "buildable with warnings")
 	a = roadRun(g, 1123, '{ from = "60,1000", to = "60,1129.5", removeFields = true }')
 	truthy(a.ok, a.error); eq(a.removeFields, true); eq(g.fieldsRemoved, 3); truthy(a.edge)
 	eq(g.buildCmds[#g.buildCmds].context.gatherFields, true); eq(g.buildCmds[#g.buildCmds].context.gatherBuildings, false)
 	-- something else in the way: still refused with it, and no hint
 	a = roadRun(g, 1124, '{ from = "5100,0", to = "5200,0", removeFields = true }')
 	eq(a.ok, false); eq(a.collisions[1], 4343); eq(a.hint, nil)
+	-- with it the dry run's caution: a warning of anything but fields may still be a collision
+	a = roadRun(g, 1130, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true, removeFields = true }')
+	truthy(tostring(a.caution):find("anything but fields", 1, true), tostring(a.caution))
 	-- no fields and no warnings: buildable
-	a = roadRun(g, 1125, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true }')
+	a = roadRun(g, 1131, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.verdict, "buildable"); eq(a.caution, nil)
+	-- fields and a building on the same way (a new game): still refused with it, nothing removed
+	local blocked = function(x, y) return (x > 5000 or (y > 1000 and y < 1200)) and 4343 or nil end
+	local g2 = world({ blocked = blocked })
+	a = roadRun(g2, 1128, '{ from = "60,1000", to = "60,1129.5", removeFields = true }')
+	eq(a.ok, false); eq(g2.fieldsRemoved, nil, "nothing removed when refused"); truthy(a.removeFieldsNote)
+	-- its dry run warns and says a warning may still be a collision
+	a = roadRun(g2, 1129, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true, removeFields = true }')
+	eq(a.verdict, "refused", "the fake's building: a collision in any context")
 	-- the form with a Context (the build's own): refused without --remove-fields, as the build would be
 	g = world({ proposalDataTwoArgs = true })
 	a = roadRun(g, 1126, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true }')

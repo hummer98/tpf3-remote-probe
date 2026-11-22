@@ -2086,7 +2086,8 @@ function M.installBuild(g, spec)
 			if fl and #fl > 0 then
 				if ctx and ctx.gatherFields then
 					table.insert(data.errorState.warnings, #fl .. " fields will be removed")
-					if not dry then g.fieldsRemoved = (g.fieldsRemoved or 0) + #fl end
+					-- (removed only when the proposal is applied: apply counts them)
+					data.fieldsGone = (data.fieldsGone or 0) + #fl
 				else
 					data.errorState.critical = true
 					table.insert(data.errorState.messages, "Collision")
@@ -2127,8 +2128,9 @@ function M.installBuild(g, spec)
 		if spec.proposalDataTwoArgs and ctx == nil then error("bad argument #2 to 'makeProposalData' (Context expected)") end
 		if type(p) ~= "userdata" then crash("makeProposalData: no proposal") end
 		-- (nothing built, nothing paid: plain values, as the engine's ProposalData reads)
-		-- (the proposal alone: the GUI's own context, which gathers fields, as the game's answer read: a warning
-		-- that fields go, where the build with gatherFields off collided, 2026-11-23; with a Context: that one)
+		-- (the proposal alone: the GUI's own context, taken to gather fields from the game's answer, a warning that
+		-- fields go where the build with gatherFields off collided, 2026-11-23: a guess at why, not read; with a
+		-- Context: that one)
 		return (evaluate(p, true, ctx or { gatherFields = true }))
 	end }
 	api.type.Box3 = { new = function(lo, hi) return { min = lo, max = hi } end }
@@ -2194,6 +2196,7 @@ function M.installBuild(g, spec)
 	local function apply(cmd)
 		local data, adds, removes = evaluate(cmd.proposal, false, cmd.context)
 		if data.errorState.critical and not cmd.ignoreErrors then return false, data, {} end
+		if data.fieldsGone then g.fieldsRemoved = (g.fieldsRemoved or 0) + data.fieldsGone end
 		-- a construction whose own script fails its check (scriptFails): the engine logs "Error during construction
 		-- update" and still says success, with no errors, no entities, nothing paid and nothing built (2026-11-22, a
 		-- harbour); otherResult: success with only another entity (a node) and no construction among them
