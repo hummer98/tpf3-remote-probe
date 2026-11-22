@@ -18,7 +18,8 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
-	modhubValidate = true, modhubPublish = true, water = true, road = true, terrain = true, terrainApi = true }
+	modhubValidate = true, modhubPublish = true, water = true, road = true, terrain = true, terrainApi = true,
+	town = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -29,7 +30,8 @@ M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame =
 	-- e.g. one a person started on the My Mods page: so others are warned. modhubStatus only reads.
 	-- modhubPublish uploads to mod.io (its dry run validates, as modhubValidate)
 	modhubValidate = true, modhubPublish = true,
-	terrain = true } -- also its dry run, as build's (terrainApi only looks whether functions exist)
+	terrain = true, -- also its dry run, as build's (terrainApi only looks whether functions exist)
+	town = true } -- also its dry run (it asks the engine for a town proposal, as the editor's preview)
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true,
@@ -636,6 +638,7 @@ function M.uiRequest(d)
 	out.vehicles = M.vehicleRequests(d.vehicles)
 	out.lines = M.lineRequests(d.lines)
 	out.terrain = M.terrainRequests(d.terrain)
+	out.town = M.townRequests(d.town)
 	return out
 end
 
@@ -1081,7 +1084,8 @@ M.TERRAIN_NEEDS = { "api.engine.terrain.makeMapFromGame", "api.engine.terrain.ge
 -- also reported by terrainApi: what the base map editor calls round it, and what later steps (towns) would need
 M.TERRAIN_LOOKS = { "api.gui.map.setMapSeedText", "api.gui.map.reloadMaterialIndexManagerPipeline",
 	"api.engine.mapgen.createTowns", "api.engine.mapgen.createIndustries", "api.cmd.makeTownCreateCmd",
-	"api.gui.game.isMapEditor", "api.engine.terrain.getHeightAt" }
+	"api.gui.game.isMapEditor", "api.engine.terrain.getHeightAt",
+	"api.type.Map.Town.new", "api.cmd.makeTownUpdateCargoNeedsCmd" } -- (the town command's: remote_town.lua)
 
 -- "a.b.c" under the global table: the value there, nil where a step is missing; nothing called
 local function valueAt(path, root)
@@ -1312,6 +1316,235 @@ function M.terrainMapPoints(box)
 	if not (x0 and y0 and x1 and y1) or x1 < x0 or y1 < y0 then return nil end
 	local s = M.TERRAIN_STEP
 	return (math.floor((x1 - x0) / s + 0.5) + 1) * (math.floor((y1 - y0) / s + 0.5) + 1)
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- town: one town put on the map, as the map editor's towns window and import do (map_editor.tl makeTowns):
+-- api.engine.mapgen.createTowns(seed, { GameMap.Town }) makes the proposal (TownInfo: initialLandUseCapacities and
+-- the streets' angle the engine picks for the place), api.cmd.makeTownCreateCmd(result.toAdd) builds it. The
+-- town's first cargo needs are handed over twice: as GameMap.Town.landUse2CargoNeeds (category names per land
+-- use, as the base import and Advanced Town Placement pass them) and, when the new town does not show them,
+-- api.cmd.makeTownUpdateCargoNeedsCmd with cargo type ids per district (as Real World Map Importer does: a town
+-- made by a script gets no first demand from the game, and without one it never asks for goods).
+
+M.TOWN_SIZE = { 0.1, 2.5 } -- sizeFactors (each district): the import's default is 1; ATP uses 0.34 .. 2.3, RWMI 0.4 .. 2.2
+M.TOWN_MAX_CAPACITY = 1000 -- the average initial capacity per district, when given (ATP: 220 * its size factor, up to ~500)
+M.TOWN_NAME_MAX = 64
+M.TOWN_MAX_NEEDS = 3 -- categories per land use
+M.TOWN_LAND_USES = { "res", "com", "ind" } -- in the engine's district order (residential, commercial, industrial)
+M.TOWN_LAND_USE_TYPE = { res = "RESIDENTIAL", com = "COMMERCIAL", ind = "INDUSTRIAL" }
+-- what the work needs where it runs (nil is missing; see terrainFunctions on callable tables)
+M.TOWN_NEEDS = { "api.engine.mapgen.createTowns", "api.type.Map.Town.new", "api.cmd.makeTownCreateCmd",
+	"api.cmd.sendCommand", "api.type.Vec2f.new" }
+-- also reported: the needs command, sent from the guiUpdate state after the town is made (without it the town may
+-- have no first needs), and the map check
+M.TOWN_LOOKS = { "api.cmd.makeTownUpdateCargoNeedsCmd", "api.engine.terrain.isValidCoordinate" }
+M.TOWN_VIAS = M.TERRAIN_VIAS
+
+-- the needs as given: nil = auto (the economy's lowest tier, one for the shops and one for the industry, as ATP),
+-- false or "none" = none, a table { res = { "fish" }, com = ..., ind = ... } or a text "com:fish,ind:planks"
+-- (land use : category, comma separated). -> "auto" | "none" | { res = {...}, com = {...}, ind = {...} }, or nil
+-- and why
+function M.townNeedsArg(v)
+	if v == nil or v == "auto" then return "auto" end
+	if v == false or v == "none" then return "none" end
+	local out, n = { res = {}, com = {}, ind = {} }, 0
+	local function add(lu, cat)
+		lu = tostring(lu):lower()
+		if out[lu] == nil then return "needs: the land use must be res, com or ind (not " .. lu .. ")" end
+		if type(cat) ~= "string" or not cat:match("^[%w_]+$") then
+			return "needs: a category is a name such as fish or planks (not " .. tostring(cat) .. ")"
+		end
+		for _, c in ipairs(out[lu]) do if c == cat then return nil end end
+		if #out[lu] >= M.TOWN_MAX_NEEDS then return "needs: at most " .. M.TOWN_MAX_NEEDS .. " per land use" end
+		table.insert(out[lu], cat)
+		n = n + 1
+	end
+	if type(v) == "string" then
+		for part in (v .. ","):gmatch("([^,]*),") do
+			local lu, cat = part:match("^%s*(%a+)%s*:%s*([^%s]+)%s*$")
+			if not lu then return nil, "needs: give land use:category, comma separated (com:fish,ind:planks)" end
+			local err = add(lu, cat)
+			if err then return nil, err end
+		end
+	elseif type(v) == "table" then
+		for k, list in pairs(v) do
+			if type(list) ~= "table" then return nil, "needs." .. tostring(k) .. ": a list of category names" end
+			for _, cat in ipairs(list) do
+				local err = add(k, cat)
+				if err then return nil, err end
+			end
+		end
+	else
+		return nil, "needs: auto, none, a text com:fish,ind:planks or a table"
+	end
+	if n == 0 then return nil, "needs: none given (for none write none)" end
+	return out
+end
+
+-- args: at = "x,y" or a list (metres), name, size (each district's size factor, default 1), capacity (the
+-- average initial capacity per district; none: the engine's for the place), needs (townNeedsArg), dryRun, via (auto
+-- = gui, update, gui), inGame (outside the map editor: only when asked for). -> the request, or nil and why
+function M.townRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.at == nil then return nil, "give at (x,y in metres)" end
+	local p, err = M.numberList(args.at, 2)
+	if not p then return nil, "at: " .. err end
+	if #p ~= 2 or not finite(p[1]) or not finite(p[2]) then return nil, "at needs x,y (finite numbers)" end
+	local L = M.BUILD_LIMITS.xy
+	if math.abs(p[1]) > L or math.abs(p[2]) > L then return nil, "at: x and y must be within " .. L end
+	local name = type(args.name) == "string" and args.name:match("^%s*(.-)%s*$") or ""
+	if name == "" then return nil, "give name (the town's name)" end
+	if #name > M.TOWN_NAME_MAX then return nil, "name: at most " .. M.TOWN_NAME_MAX .. " bytes" end
+	local r = { at = { x = p[1], y = p[2] }, name = name, dryRun = args.dryRun == true }
+	local size = args.size == nil and 1 or tonumber(args.size)
+	if not finite(size) or size < M.TOWN_SIZE[1] or size > M.TOWN_SIZE[2] then
+		return nil, string.format("size must be a number from %g to %g (the size factor; 1 as the base import)", M.TOWN_SIZE[1], M.TOWN_SIZE[2])
+	end
+	r.size = size
+	if args.capacity ~= nil then
+		local c = tonumber(args.capacity)
+		if not finite(c) or c < 1 or c > M.TOWN_MAX_CAPACITY or c ~= math.floor(c) then
+			return nil, "capacity must be a whole number from 1 to " .. M.TOWN_MAX_CAPACITY
+		end
+		r.capacity = c
+	end
+	local needs, nerr = M.townNeedsArg(args.needs)
+	if not needs then return nil, nerr end
+	r.needs = needs
+	local via = args.via == nil and "auto" or args.via
+	if not M.TOWN_VIAS[via] then return nil, "via must be auto, update or gui" end
+	r.via = via
+	if args.inGame ~= nil and type(args.inGame) ~= "boolean" then return nil, "inGame must be true or false" end
+	r.inGame = args.inGame == true
+	return r
+end
+
+-- the economy's cargo categories ({ [name] = { tier, landUses } }, landUses as LandUseType values or names) and the
+-- cargo types ({ [id] = category }) -> the needs per land use: { res, com, ind = { names } } and the cargo type
+-- ids per district { { res ids }, { com ids }, { ind ids } } (makeTownUpdateCargoNeedsCmd's form), or nil and why.
+-- want: townNeedsArg's. landUseType: { RESIDENTIAL = 0, ... } (the engine's enum).
+function M.townNeedsPlan(want, categories, cargoCategory, landUseType)
+	local names = { res = {}, com = {}, ind = {} }
+	local ids = { {}, {}, {} }
+	if want == "none" then return names, ids end
+	local idOf = {}
+	for id, cat in pairs(cargoCategory or {}) do
+		id = tonumber(id)
+		if id and type(cat) == "string" and cat ~= "" and (idOf[cat] == nil or id < idOf[cat]) then idOf[cat] = id end
+	end
+	local luOf = {}
+	for _, k in ipairs(M.TOWN_LAND_USES) do
+		local v = landUseType and landUseType[M.TOWN_LAND_USE_TYPE[k]]
+		if v ~= nil then luOf[tostring(v)] = k end
+		luOf[M.TOWN_LAND_USE_TYPE[k]] = k
+	end
+	-- a category's land uses (as keys of names)
+	local function usesOf(c)
+		local out = {}
+		for _, v in ipairs(type(c) == "table" and type(c.landUses) == "table" and c.landUses or {}) do
+			local k = luOf[tostring(v)] or luOf[tostring(v):upper()]
+			if k then out[k] = true end
+		end
+		return out
+	end
+	if want == "auto" then
+		-- one for the shops and one for the industry, the first of the lowest tier by name (ATP picks one of each at
+		-- random; here the same every time)
+		local pools = { com = {}, ind = {} }
+		for cat, c in pairs(categories or {}) do
+			if type(c) == "table" and tonumber(c.tier) == 0 and idOf[cat] then
+				for k in pairs(usesOf(c)) do if pools[k] then table.insert(pools[k], cat) end end
+			end
+		end
+		for k, list in pairs(pools) do
+			table.sort(list)
+			if list[1] then names[k] = { list[1] } end
+		end
+	else
+		for _, k in ipairs(M.TOWN_LAND_USES) do
+			for _, cat in ipairs(want[k] or {}) do
+				local c = categories and categories[cat]
+				if c == nil then
+					local known = {}
+					for name in pairs(categories or {}) do known[#known + 1] = name end
+					table.sort(known)
+					return nil, string.format("needs: no cargo category %q in this game's economy (%s)", cat, table.concat(known, ", "))
+				end
+				if not idOf[cat] then return nil, string.format("needs: no cargo type of category %q", cat) end
+				table.insert(names[k], cat)
+			end
+		end
+	end
+	for i, k in ipairs(M.TOWN_LAND_USES) do
+		for _, cat in ipairs(names[k]) do table.insert(ids[i], idOf[cat]) end
+	end
+	return names, ids
+end
+
+-- a town's cargo needs as the TOWN component holds them (per district a list of { id, weight } pairs, or ids)
+-- -> { { ids }, { ids }, { ids } }
+function M.townNeedIds(cargoNeeds)
+	local out = { {}, {}, {} }
+	for k = 1, 3 do
+		local list = M.at(cargoNeeds, k)
+		local n = M.size(list) or 0
+		for i = 1, n do
+			local v = M.at(list, i)
+			local id = tonumber(v) or tonumber(M.at(v, 1))
+			if id then table.insert(out[k], id) end
+		end
+	end
+	return out
+end
+
+-- the ids as whole numbers where the Lua has them (the GUI save data may hand them back as floats; the command takes
+-- CargoTypeIds) -> { { ids }, { ids }, { ids } }
+function M.townIntIds(ids)
+	local out = {}
+	for k = 1, 3 do
+		out[k] = {}
+		for _, id in ipairs((ids or {})[k] or {}) do
+			out[k][#out[k] + 1] = math.tointeger and math.tointeger(id) or id
+		end
+	end
+	return out
+end
+
+-- does have hold every id of want, per district
+function M.townNeedsMet(have, want)
+	for k = 1, 3 do
+		local set = {}
+		for _, id in ipairs((have or {})[k] or {}) do set[id] = true end
+		for _, id in ipairs((want or {})[k] or {}) do if not set[id] then return false end end
+	end
+	return true
+end
+
+-- the engine's initial capacities scaled to an average of capacity per district, its districts' proportions kept
+-- (as ATP rescales createTowns' proposal). -> the list, or nil when the engine's add up to nothing
+function M.townScaledCapacities(caps, capacity)
+	local total = 0
+	for k = 1, 3 do total = total + (tonumber(caps[k]) or 0) end
+	if total <= 0 then return nil end
+	local avg = total / 3
+	local out = {}
+	for k = 1, 3 do out[k] = math.floor(capacity * (tonumber(caps[k]) or 0) / avg + 0.5) end
+	return out
+end
+
+-- the town requests the guiUpdate script hands the speed control (the gui way): { { id, kind = "apply", args,
+-- propose } }; checked again here, malformed ones left out
+function M.townRequests(list)
+	local out = {}
+	if type(list) ~= "table" then return out end
+	for _, r in ipairs(list) do
+		local id = type(r) == "table" and tonumber(r.id)
+		if id and r.kind == "apply" and type(r.args) == "table" and M.townRequest(r.args) then
+			out[#out + 1] = { id = id, kind = "apply", args = r.args, propose = r.propose == true }
+		end
+	end
+	return out
 end
 
 -- the official mods (Urban Games' vehicle packs on mod.io, ug_*): a map editor started by newgame --editor takes

@@ -449,6 +449,57 @@ python3 tools/tf3ctl.py terrain --rect 0,0,300,800 --slope-y -10 --base 120 [--v
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): guiUpdate の状態にこれらの関数があるか、マップエディタの外で
   置き換えが効くか (見た例はどれもエディタの中)、範囲の中の木と町の土地がどうなるか、読み直しの値。
 
+### 町を1つ (`town`)
+
+```
+python3 tools/tf3ctl.py town --at 1200,-300 --name "Harbourside" --dry-run
+python3 tools/tf3ctl.py town --at 1200,-300 --name "Harbourside" [--size 1.5] [--capacity 300]
+python3 tools/tf3ctl.py town --at=-800,400 --name "Quayside" --needs com:fish,ind:planks [--via auto|update|gui] [--in-game]
+python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
+```
+
+- 地図の1点に町を1つ置きます。マップエディタの町の窓と取り込みと同じやり方です (`map_editor.tl` の `makeTowns`)。
+  `GameMap.Town` を1つ (`api.type.Map.Town.new()`: `pos`・`name`・`sizeFactors`・`landUse2CargoNeeds`・
+  `existing = -1`) `api.engine.mapgen.createTowns("remote_probe", { town })` に渡し、返った `TownInfo` 1つ
+  (`toAdd`) を `api.cmd.makeTownCreateCmd({ info })` で送ります。マップエディタの中 (`api.gui.game.isMapEditor()`)
+  でだけ送ります。エディタの外では、`--in-game` を付けたとき (テスト用の新しいゲーム) だけ通します (見た例は、本体の
+  エディタも町の MOD も、どれもエディタの中)。ゲームを変えるコマンドとして、ほかのクライアントに警告が出ます (dry run も)。
+- `--size` は各地区の大きさの係数 (`sizeFactors = { f, f, f }`、0.1 〜 2.5、初期設定は本体の取り込みと同じ 1。
+  Real World Map Importer は 500 人で 0.5、5000 人で 1)。`--capacity N` は、エンジンの `initialLandUseCapacities`
+  を、割合を保ったまま地区あたり平均 N (1 〜 1000) に直します (Advanced Town Placement と同じ。その町は 500 ほどまで)。付けなければ、その場所に
+  エンジンが出した値をそのまま送ります。
+- 最初の需要: スクリプトで作った町には、ゲームが最初の需要を付けず、需要が無いと町は品物を求めないまま
+  (Real World Map Importer の更新履歴)。初期設定では、経済の一番下の段 (tier 0) から、店に1つ・工業に1つ
+  (貨物の種類があるもので、名前の順で最初のもの)。`--needs com:fish,ind:planks` で名前を指定できます (土地の使い方
+  `res`・`com`・`ind`、それぞれ 3 つまで、経済の category の名前)。`--no-needs` で付けません。
+  2 回に分けて渡します: `landUse2CargoNeeds` として (`LandUseType` ごとに category の名前と重み 1。本体の取り込みと
+  Advanced Town Placement の渡し方)。作った町の `TOWN` コンポーネントに、作成の callback から数フレームあとで
+  それが見えなければ、`api.cmd.makeTownUpdateCargoNeedsCmd(town, { {住宅の id}, {商業の id}, {工業の id} }, true)`
+  を貨物の種類の id で送り (Real World Map Importer と同じ)、もう一度読み直します。
+- 置けない場所 (道路・建物・水・荒れ地) の扱いはエンジンに任せます: `createTowns` が出したエラーはそのまま返します。
+  初期の容量が 0, 0, 0 の案は断ります (Advanced Town Placement もこういう場所を外す)。エンジンが作成を断ったとき
+  (callback) もエラー。`createTowns` が消す町として挙げたもの (`toRemove`。エディタは先に消す) は数えるだけで
+  (`toRemoveIgnored`)、このコマンドは町を消しません。`createTowns` は渡したリストを地図の町の全部と見るらしく
+  (本体の取り込みは残す町を足して渡す)、`toRemoveIgnored` は今ある町の数になることが多く、エンジンの案はそれらの
+  場所を空けないかもしれません。ほかの町から十分離して置いてください。地図の外の点 (`isValidCoordinate`) は断り、
+  確認できないときは警告にします。
+- `--dry-run` は何も送りません。エディタの中か `--in-game` のときは `createTowns` に案だけを聞き (コマンドは送らない。
+  答えの `proposal`)、それ以外では引数と需要だけを確認します。
+- 2 つの道 (`via`) は `terrain` と同じ: `gui` (と初期設定の `auto`) は速度ボタンのレシピ (その join)、`update` は
+  guiUpdate の状態で、書いたときだけ。需要のコマンドは guiUpdate の状態から送ります。その状態に
+  `makeTownUpdateCargoNeedsCmd` が無ければ、町は需要なしで作り、答えにそう出します (`needsSet`・`warnings`。
+  `functionsUpdate` にも出る)。成功と言われたのに新しい町が見つからないときはエラーです。
+- 答え: `via`・`mapEditor`・`inGame`・`at`・`name`・`size`・`capacity`・`needs` (土地の使い方ごとの名前)・
+  `needIds` (地区ごとの貨物の種類の id)・`proposal` (TownInfo の `name`・`position`・`initialLandUseCapacities`・
+  `scaledCapacities`・`capacityScalingFactor`・`majorStreetAngle`)・`sent`・`success`・`entity` (コマンドのあとに
+  増えた町の id。いくつもあれば名前で選ぶ)・`townName`・`position` (bounding box の真ん中)・`population`
+  (`industry-workers` と同じく `getTown2personCapacitiesMap` から。建物はゲームの数日のうちに建つので、最初は少ない)・
+  `personCapacities`・`needsRead` (読み直した地区ごとの貨物の種類の id)・`needsSet`・`needsMet`・`warnings`。
+  断ったときは `error`。
+- **ゲーム内では未確認** (2026-11-22 に書いたもの): guiUpdate の状態やレシピにこれらの関数があるか、マップエディタの
+  外で効くか、`landUse2CargoNeeds` が効くか、需要のコマンド、道路や建物のある場所にエンジンがどう答えるか、
+  作った直後の人口。
+
 ### メインメニューからのマイMOD (`modhub`)
 
 ```
@@ -658,6 +709,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - `build` は全部 (「建物を1つ地図に置く」を参照)。 `road` も全部 (「まっすぐな道路を1本」を参照)。
 - gui で買った車両を MOD が自分で路線に送ることと、断られたときの理由。`lines --problems`。`stations --catchment`。
 - `terrain`・`terrain --probe-api`・`newgame --editor` は全部 (「長方形の範囲の地面」を参照)。
+- `town` は全部 (「町を1つ」を参照)。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 - `modhub publish` は全部 (「新しい MOD を1つ上げる」を参照)。`modhub status` と `validate` は 2026-11-22 に確認済み。
 

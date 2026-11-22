@@ -1481,6 +1481,48 @@ class QuitLaunchTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(tf3ctl.main(["terrain", "--probe-api", "--rect", "0,0,1,1"]), 2)
 
+    def test_town_args(self):
+        p = tf3ctl.make_parser()
+
+        def args(*argv):
+            return tf3ctl.town_args(p.parse_args(["town"] + list(argv)))
+        self.assertEqual(args("--at=-100,50", "--name", " Harbourside "), {"at": [-100.0, 50.0], "name": "Harbourside"})
+        self.assertEqual(args("--at", "1200,-300", "--name", "B", "--size", "1.5", "--capacity", "300", "--needs",
+                              "com:fish, IND:planks", "--via", "gui", "--in-game", "--dry-run"),
+                         {"at": [1200.0, -300.0], "name": "B", "size": 1.5, "capacity": 300,
+                          "needs": "com:fish,IND:planks", "via": "gui", "inGame": True, "dryRun": True})
+        self.assertEqual(args("--at", "0,0", "--name", "C", "--no-needs")["needs"], "none")
+        self.assertNotIn("inGame", args("--at", "0,0", "--name", "C"), "the map editor only by default")
+        self.assertEqual(args("--at", "0,0", "--name", "C", "--size", "2.5")["size"], 2.5, "the limit itself")
+        for bad in (["--at", "0", "--name", "N"], ["--at", "a,b", "--name", "N"], ["--at", "0,nan", "--name", "N"],
+                    ["--at", "0,0", "--name", "  "], ["--at", "0,0", "--name", "x" * 65],
+                    ["--at", "0,0", "--name", "N", "--size", "0"], ["--at", "0,0", "--name", "N", "--size", "nan"],
+                    ["--at", "0,0", "--name", "N", "--capacity", "0"], ["--at", "0,0", "--name", "N", "--capacity", "1001"],
+                    ["--at", "0,0", "--name", "N", "--size", "2.6"],
+                    ["--at", "0,0", "--name", "N", "--needs", "fish"], ["--at", "0,0", "--name", "N", "--needs", "shop:fish"],
+                    ["--at", "0,0", "--name", "N", "--needs", "com:fi sh"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                args(*bad)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            p.parse_args(["town", "--at", "0,0", "--name", "N", "--needs", "com:fish", "--no-needs"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            p.parse_args(["town", "--at", "0,0"])
+        self.assertIn("town", tf3ctl.CHANGES_GAME)
+        # the mod reads the point as a list of numbers and the name as a string
+        got = mod_reads(tf3ctl.command_text(9, "town", args("--at", "10,-20", "--name", "N", "--needs", "com:fish")))
+        self.assertEqual((got["cmd"], got["args"]["at"][1], got["args"]["name"], got["args"]["needs"]),
+                         ("town", -20, "N", "com:fish"))
+        sent = []
+
+        def fake_send(cmd, a=None, timeout=20, **kw):
+            sent.append((cmd, a, timeout))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = tf3ctl.main(["town", "--at", "1,2", "--name", "T", "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertEqual(sent, [("town", {"at": [1.0, 2.0], "name": "T", "dryRun": True}, tf3ctl.TOWN_TIMEOUT_SEC)])
+
     def test_newgame_and_launch_editor(self):
         p = tf3ctl.make_parser()
         ns = p.parse_args(["newgame", "--editor", "--size", "tiny", "--no-towns", "--dry-run"])

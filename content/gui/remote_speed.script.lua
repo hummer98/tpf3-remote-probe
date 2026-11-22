@@ -26,6 +26,7 @@ local core = req(MOD .. "::/remote_core.lua")
 local vc = req(MOD .. "::/vehicle_configs.lua")
 local lc = req(MOD .. "::/line_configs.lua")
 local tw = req(MOD .. "::/terrain_work.lua")
+local townw = req(MOD .. "::/town_work.lua")
 
 local READ_SEC = 0.5
 -- where the vehicle reports go: a key of their own, so this recipe never writes over what the guiUpdate script
@@ -33,6 +34,7 @@ local READ_SEC = 0.5
 local REPORT_KEY = MOD .. ".vehicles"
 local LINE_REPORT_KEY = MOD .. ".lines"
 local TERRAIN_REPORT_KEY = MOD .. ".terrain"
+local TOWN_REPORT_KEY = MOD .. ".town"
 local REPORTS_KEPT = 10
 
 -- a replacement another mod installed before this one: drawn instead of the base buttons and our ×8 / ×16, so
@@ -113,6 +115,8 @@ local channels = {
 	lines = newChannel(LINE_REPORT_KEY, lc.performGui, "line"),
 	-- terrain: the replacement where the base map editor makes it (a react state), and terrainApi's look there
 	terrain = newChannel(TERRAIN_REPORT_KEY, tw.performGui, "terrain"),
+	-- town: createTowns and the create command, where the base map editor calls them (a react state)
+	town = newChannel(TOWN_REPORT_KEY, townw.performGui, "town"),
 }
 
 -- main thread (join)

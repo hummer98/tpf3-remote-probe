@@ -7742,5 +7742,247 @@ test("newgame editor: isMapEditor, the official mods and the probe only (not the
 	eq(s2.mapEditor.gui, false)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- town (one town at a point, its first needs)
+
+test("core.townRequest: at, name, size, capacity, needs, via, inGame; the limits", function()
+	local r = core.townRequest({ at = "100,-200", name = " Harbourside " })
+	eq(r.at.x, 100); eq(r.at.y, -200); eq(r.name, "Harbourside", "trimmed"); eq(r.size, 1); eq(r.capacity, nil)
+	eq(r.needs, "auto"); eq(r.via, "auto"); eq(r.inGame, false); eq(r.dryRun, false)
+	local s = core.townRequest({ at = { 5, 6 }, name = "B", size = 0.5, capacity = 300, needs = "com:fish, ind:planks",
+		via = "update", inGame = true, dryRun = true })
+	eq(s.size, 0.5); eq(s.capacity, 300); eq(s.needs.com[1], "fish"); eq(s.needs.ind[1], "planks"); eq(#s.needs.res, 0)
+	eq(s.via, "update"); eq(s.inGame, true); eq(s.dryRun, true)
+	eq(core.townRequest({ at = "0,0", name = "N", needs = false }).needs, "none")
+	eq(core.townRequest({ at = "0,0", name = "N", needs = "none" }).needs, "none")
+	eq(core.townRequest({ at = "0,0", name = "N", needs = { com = { "fish", "fish" } } }).needs.com[2], nil, "the same once")
+	truthy(core.townRequest({ at = "0,0", name = "N", size = core.TOWN_SIZE[2] }), "the limit itself")
+	for _, bad in ipairs({
+		{ { name = "N" }, "give at" },
+		{ { at = "1", name = "N" }, "x,y" },
+		{ { at = "a,b", name = "N" }, "at" },
+		{ { at = "0,200000", name = "N" }, "within" },
+		{ { at = "0,0" }, "give name" },
+		{ { at = "0,0", name = "   " }, "give name" },
+		{ { at = "0,0", name = string.rep("x", 65) }, "at most 64" },
+		{ { at = "0,0", name = "N", size = 0 }, "size must be" },
+		{ { at = "0,0", name = "N", size = 3.5 }, "size must be" },
+		{ { at = "0,0", name = "N", size = "big" }, "size must be" },
+		{ { at = "0,0", name = "N", capacity = 0 }, "capacity" },
+		{ { at = "0,0", name = "N", capacity = 1.5 }, "capacity" },
+		{ { at = "0,0", name = "N", capacity = 1001 }, "capacity" },
+		{ { at = "0,0", name = "N", needs = "fish" }, "land use:category" },
+		{ { at = "0,0", name = "N", needs = "shop:fish" }, "res, com or ind" },
+		{ { at = "0,0", name = "N", needs = "com:fi sh" }, "land use:category" },
+		{ { at = "0,0", name = "N", needs = "com:a,com:b,com:c,com:d" }, "at most 3" },
+		{ { at = "0,0", name = "N", needs = {} }, "none given" },
+		{ { at = "0,0", name = "N", needs = 5 }, "needs" },
+		{ { at = "0,0", name = "N", via = "cmd" }, "via" },
+		{ { at = "0,0", name = "N", inGame = "yes" }, "inGame" },
+	}) do
+		local ok, err = core.townRequest(bad[1])
+		eq(ok, nil, bad[2]); truthy(err and err:find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	truthy(core.COMMANDS.town and core.CHANGES_GAME.town and not core.MENU_COMMANDS.town, "changes the game, in a game")
+	eq(#core.townRequests({ { id = 1, kind = "apply", args = { at = "0,0", name = "A" }, propose = true },
+		{ id = 2, kind = "apply", args = { at = "0,0" } }, { kind = "apply", args = { at = "0,0", name = "A" } },
+		{ id = 3, kind = "probe" } }), 1)
+	eq(core.townRequests({ { id = 1, kind = "apply", args = { at = "0,0", name = "A" }, propose = true } })[1].propose, true)
+end)
+
+test("core.townNeedsPlan / townNeedIds / townNeedsMet / townScaledCapacities", function()
+	local LU = { RESIDENTIAL = 0, COMMERCIAL = 1, INDUSTRIAL = 2 }
+	local cats = { vegetables = { tier = 0, landUses = { 1 } }, fish = { tier = 0, landUses = { "COMMERCIAL" } },
+		planks = { tier = 0, landUses = { 2 } }, tools = { tier = 1, landUses = { 1 } }, oil = { tier = 0, landUses = { 2 } } }
+	local cargo = { [11] = "fish", [12] = "vegetables", [13] = "planks", [15] = "tools", [16] = "fish" }
+	local n, ids = core.townNeedsPlan("auto", cats, cargo, LU)
+	eq(n.com[1], "fish", "the first of tier 0 by name"); eq(#n.com, 1); eq(n.ind[1], "planks", "oil has no cargo type"); eq(#n.res, 0)
+	eq(ids[2][1], 11, "the lowest id of the category"); eq(ids[3][1], 13); eq(#ids[1], 0)
+	local m, mids = core.townNeedsPlan({ res = {}, com = { "tools", "vegetables" }, ind = {} }, cats, cargo, LU)
+	eq(table.concat(m.com, ","), "tools,vegetables"); eq(table.concat(mids[2], ","), "15,12")
+	local none, nids = core.townNeedsPlan("none", cats, cargo, LU)
+	eq(#none.com + #none.ind, 0); eq(#nids[2], 0)
+	local x, err = core.townNeedsPlan({ com = { "gold" } }, cats, cargo, LU)
+	eq(x, nil); truthy(err:find('no cargo category "gold"') and err:find("fish, oil, planks"), err)
+	local y, err2 = core.townNeedsPlan({ ind = { "oil" } }, cats, cargo, LU)
+	eq(y, nil); truthy(err2:find("no cargo type"), err2)
+	local have = core.townNeedIds({ {}, { { 11, 1 }, { 12, 0.5 } }, { 13 } })
+	eq(table.concat(have[2], ","), "11,12"); eq(have[3][1], 13)
+	eq(#core.townNeedIds(nil)[1], 0)
+	eq(core.townNeedsMet(have, { {}, { 11 }, { 13 } }), true); eq(core.townNeedsMet(have, { {}, { 15 }, {} }), false)
+	eq(core.townNeedsMet({ {}, {}, {} }, { {}, {}, {} }), true)
+	local sc = core.townScaledCapacities({ 200, 100, 0 }, 100)
+	eq(sc[1], 200); eq(sc[2], 100); eq(sc[3], 0, "the proportions kept, average 100")
+	eq(core.townScaledCapacities({ 0, 0, 0 }, 100), nil)
+end)
+
+-- the map editor (unless opts.mapEditor = false) with the speed control on screen and the town fakes
+local function townGame(spec, opts)
+	opts = opts or {}
+	if opts.mapEditor == nil then opts.mapEditor = true end
+	opts.entities = opts.entities or { TOWN = { 11 } }
+	opts.names = opts.names or { [11] = "Oldtown" }
+	local g = vehicleGame(opts)
+	fake.installTown(g, spec)
+	return g
+end
+local function townRun(g, id, argsLua, n)
+	send(g, id, "town", argsLua)
+	frames(g, n or FIRST + 30)
+	return final(g, id)
+end
+
+test("town: placed in the editor via gui; createTowns gets the name, place, size and needs; the answer has the town", function()
+	local g = townGame()
+	local a = townRun(g, 2001, '{ at = "300,-400", name = "Harbourside", size = 1.5 }')
+	truthy(a and a.ok, a and a.error)
+	eq(a.via, "gui"); eq(a.sent, true); eq(a.success, true); eq(a.mapEditor, true)
+	-- what createTowns got
+	eq(#g.townProposals, 1); eq(#g.townProposals[1], 1)
+	local t = g.townProposals[1][1]
+	eq(t.name, "Harbourside"); eq(t.pos.x, 300); eq(t.pos.y, -400); eq(t.existing, -1)
+	eq(table.concat(t.sizeFactors, ","), "1.5,1.5,1.5")
+	-- the first needs as category names per land use (COMMERCIAL 1, INDUSTRIAL 2), weight 1
+	eq(t.landUse2CargoNeeds[1][1][1], "fish"); eq(t.landUse2CargoNeeds[1][1][2], 1); eq(t.landUse2CargoNeeds[2][1][1], "bricks")
+	eq(t.landUse2CargoNeeds[0], nil, "none for the homes")
+	-- what was sent: the TownInfo createTowns gave, unchanged
+	eq(#g.townCmds, 1); eq(#g.townCmds[1].towns, 1); eq(g.townCmds[1].towns[1].name, "Harbourside")
+	eq(table.concat(g.townCmds[1].towns[1].initialLandUseCapacities, ","), "150,75,75")
+	-- the answer
+	eq(a.entity, g.newTowns[1]); eq(a.townName, "Harbourside"); eq(a.position.x, 300); eq(a.position.y, -400)
+	eq(a.population, 150); eq(a.proposal.initialLandUseCapacities[1], 150); eq(a.proposal.majorStreetAngle, 0.5)
+	eq(a.needs.com[1], "fish"); eq(a.needs.ind[1], "bricks"); eq(a.needIds[2][1], 11)
+	-- the town got no needs from the map's: sent once with the ids, as RWMI, and read back
+	eq(#g.townNeedsCmds, 1); eq(g.townNeedsCmds[1].town, a.entity); eq(g.townNeedsCmds[1].needs[2][1], 11)
+	eq(g.townNeedsCmds[1].needs[3][1], 14); eq(g.townNeedsCmds[1].update, true)
+	eq(a.needsMet, true); truthy(a.needsSet:find("sent"), a.needsSet)
+	truthy(a.note:find("not checked in a game"), a.note)
+	eq(#(fake.guiSave.hummer_remote_probe.town or {}), 0, "the request taken back")
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("town: needs the town already took are not sent again; none asked sends none; asked ones by name", function()
+	local g = townGame({ needsFromMap = true })
+	local a = townRun(g, 2010, '{ at = "0,0", name = "A" }')
+	truthy(a.ok, a.error); eq(#g.townNeedsCmds, 0); eq(a.needsMet, true); truthy(a.needsSet:find("not needed"), a.needsSet)
+	local b = townRun(g, 2011, '{ at = "500,0", name = "B", needs = "none" }')
+	truthy(b.ok, b.error); eq(#g.townNeedsCmds, 0); eq(b.needsSet, "none asked")
+	eq(next(g.townProposals[2][1].landUse2CargoNeeds), nil, "no needs in the map's town")
+	local h = townGame()
+	local c = townRun(h, 2012, '{ at = "0,0", name = "C", needs = "com:vegetables,com:tools,ind:planks" }')
+	truthy(c.ok, c.error)
+	eq(#h.townProposals[1][1].landUse2CargoNeeds[1], 2)
+	eq(table.concat(h.townNeedsCmds[1].needs[2], ","), "12,15"); eq(h.townNeedsCmds[1].needs[3][1], 13)
+	local d = townRun(h, 2013, '{ at = "0,0", name = "D", needs = "com:gold" }')
+	eq(d.ok, false); truthy(d.error:find('no cargo category "gold"'), d.error); eq(#h.townCmds, 1, "nothing sent")
+end)
+
+test("town --dry-run: createTowns' proposal in the editor, nothing sent; outside it without inGame not even that", function()
+	local g = townGame()
+	local a = townRun(g, 2020, '{ at = "100,100", name = "Dry", capacity = 300, dryRun = true }')
+	truthy(a.ok, a.error)
+	eq(a.dryRun, true); eq(a.sent, false); eq(a.success, nil); eq(a.entity, nil)
+	eq(#g.townProposals, 1); eq(#g.townCmds, 0); eq(#g.townNeedsCmds, 0); eq(#g.newTowns, 0)
+	eq(table.concat(a.proposal.scaledCapacities, ","), "450,225,225", "average 300, the engine's proportions")
+	local o = townGame(nil, { mapEditor = false })
+	local b = townRun(o, 2021, '{ at = "100,100", name = "Dry", dryRun = true }')
+	truthy(b.ok, b.error); eq(b.sent, false); eq(#o.townProposals, 0, "createTowns not asked")
+	truthy(b.proposalNote:find("not the map editor"), b.proposalNote); eq(b.needs.com[1], "fish")
+	local c = townRun(o, 2022, '{ at = "100,100", name = "Dry", dryRun = true, inGame = true }')
+	truthy(c.ok, c.error); eq(#o.townProposals, 1); eq(#o.townCmds, 0)
+end)
+
+test("town outside the map editor: refused unless inGame; inGame places it", function()
+	local g = townGame(nil, { mapEditor = false })
+	local a = townRun(g, 2030, '{ at = "0,0", name = "X" }')
+	eq(a.ok, false); truthy(a.error:find("not the map editor") and a.error:find("--in-game", 1, true), a.error)
+	eq(#g.townProposals, 0); eq(#g.townCmds, 0)
+	local b = townRun(g, 2031, '{ at = "0,0", name = "X", inGame = true }')
+	truthy(b.ok, b.error); eq(b.inGame, true); eq(#g.townCmds, 1); eq(b.townName, "X")
+	-- the capacity scaled into what is sent
+	local c = townRun(g, 2032, '{ at = "900,0", name = "Y", inGame = true, capacity = 60 }')
+	truthy(c.ok, c.error); eq(table.concat(g.townCmds[2].towns[1].initialLandUseCapacities, ","), "90,45,45")
+end)
+
+test("town: the engine's error as it is, no room, a refused command, toRemove never destroyed, off the map", function()
+	local g = townGame({ createRaises = "TownGenerator: collides with a street" })
+	local a = townRun(g, 2040, '{ at = "0,0", name = "E" }')
+	eq(a.ok, false); truthy(a.error:find("TownGenerator: collides with a street", 1, true), a.error); eq(#g.townCmds, 0)
+	local n = townGame({ noRoom = true })
+	local b = townRun(n, 2041, '{ at = "0,0", name = "E" }')
+	eq(b.ok, false); truthy(b.error:find("no room"), b.error); eq(#n.townCmds, 0)
+	local f = townGame({ createFails = true })
+	local c = townRun(f, 2042, '{ at = "0,0", name = "E" }')
+	eq(c.ok, false); truthy(c.error:find("refused"), c.error); eq(c.sent, true); eq(#f.townNeedsCmds, 0)
+	local r = townGame({ toRemove = { 11 } })
+	local d = townRun(r, 2043, '{ at = "0,0", name = "E" }')
+	truthy(d.ok, d.error); eq(d.toRemoveIgnored, 1)
+	for _, cmd in ipairs(r.commands) do truthy(cmd.kind ~= "townDestroy", "nothing destroyed") end
+	local e = townRun(r, 2044, '{ at = "9000,0", name = "Far" }')
+	eq(e.ok, false); truthy(e.error:find("not on the map"), e.error)
+	truthy(not g.crashed and not n.crashed and not f.crashed and not r.crashed)
+end)
+
+test("town: via gui where only the recipe has the functions; via update refused there, works where it has them", function()
+	local g = townGame({ reactOnly = true })
+	local a = townRun(g, 2050, '{ at = "0,0", name = "R" }')
+	truthy(a.ok, a.error); eq(a.via, "gui"); eq(a.functionsUpdate["api.engine.mapgen.createTowns"], "nil")
+	eq(a.functionsGui["api.engine.mapgen.createTowns"], "function"); eq(#g.townCmds, 1)
+	local b = townRun(g, 2051, '{ at = "0,0", name = "R", via = "update" }')
+	eq(b.ok, false); truthy(b.error:find("missing in the guiUpdate state: api.engine.mapgen.createTowns"), b.error)
+	local u = townGame()
+	local c = townRun(u, 2052, '{ at = "0,0", name = "U", via = "update" }')
+	truthy(c.ok, c.error); eq(c.via, "update"); eq(#u.townCmds, 1); eq(c.needsMet, true)
+	-- the speed control gone: no pickup, an error after a while
+	u.speedControlOff = true
+	local d = townRun(u, 2053, '{ at = "0,0", name = "V" }', FIRST + 700)
+	eq(d.ok, false); truthy(d.error:find("did not take it up"), d.error)
+	-- the menu: refused
+	local m = newGame({ saves = SAVES, menu = true })
+	frames(m, 2)
+	send(m, 2054, "town", '{ at = "0,0", name = "M" }')
+	frames(m, FIRST)
+	truthy((answerText(m, 2054, "error") or ""):find("needs a running game"))
+end)
+
+test("town: a create callback frames later (the report read again), none at all (timeout), no town made, no map check", function()
+	local g = townGame({ callbackFrames = 6 })
+	local a = townRun(g, 2070, '{ at = "0,0", name = "Late" }')
+	truthy(a and a.ok, a and a.error); eq(a.success, true); eq(a.entity, g.newTowns[1]); eq(a.needsMet, true)
+	local l = townGame({ lostCallback = true })
+	local b = townRun(l, 2071, '{ at = "0,0", name = "Lost" }', FIRST + 30)
+	eq(b, nil, "no answer before the timeout")
+	frames(l, 300, 0.25) -- 75 s of application time: past the 60 s for the callback
+	b = final(l, 2071)
+	eq(b.ok, false); truthy(b.error:find("no answer from the engine"), b.error); eq(b.sent, true)
+	local n = townGame({ lostTown = true })
+	local c = townRun(n, 2072, '{ at = "0,0", name = "Ghost" }')
+	eq(c.ok, false); truthy(c.error:find("new town was not found"), c.error)
+	local v = townGame({ noValidCheck = true })
+	local d = townRun(v, 2073, '{ at = "0,0", name = "Unchecked" }')
+	truthy(d.ok, d.error); truthy(d.warnings and d.warnings[1]:find("could not be checked"), d.warnings and d.warnings[1])
+	eq(d.functionsGui["api.engine.terrain.isValidCoordinate"], "nil")
+	eq(d.functionsGui["api.cmd.makeTownUpdateCargoNeedsCmd"], "function")
+	truthy(not g.crashed and not l.crashed and not n.crashed and not v.crashed)
+end)
+
+test("town: the needs ids sent are whole numbers even when the GUI save data hands back floats", function()
+	local ids = core.townIntIds({ {}, { 11.0 }, { 13.0, 14 } })
+	eq(ids[2][1], 11); eq(#ids[3], 2); eq(#ids[1], 0)
+	if math.tointeger then eq(math.type(ids[2][1]), "integer") end
+	eq(#core.townIntIds(nil)[2], 0)
+end)
+
+test("town: needs refused or the needs command missing are warnings; the town is still answered", function()
+	local g = townGame({ needsFails = true })
+	local a = townRun(g, 2060, '{ at = "0,0", name = "W" }')
+	truthy(a.ok, a.error); eq(a.needsMet, false); truthy(a.needsSet:find("refused"), a.needsSet)
+	truthy(a.warnings and a.warnings[1]:find("not those asked"), a.warnings and a.warnings[1])
+	local h = townGame({ noNeedsCmd = true })
+	local b = townRun(h, 2061, '{ at = "0,0", name = "W" }')
+	truthy(b.ok, b.error); truthy(b.needsSet:find("not sent"), b.needsSet); eq(b.entity, h.newTowns[1])
+	truthy(not g.crashed and not h.crashed)
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)

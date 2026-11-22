@@ -1093,6 +1093,12 @@ local terrain = (ug_require or require)(MOD .. "::/remote_terrain.lua").new({ co
 	towns = function() return entitiesOf("town") end })
 handlers.terrain = terrain.handle
 handlers.terrainApi = terrain.api
+-- town (remote_town.lua, town_work.lua): one town at a point, with its first needs
+local town = (ug_require or require)(MOD .. "::/remote_town.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = appTime, try = try, say = say, publishUi = publishUi, mod = MOD,
+	work = (ug_require or require)(MOD .. "::/town_work.lua"),
+	towns = function() return entitiesOf("town") end, posOf = function(e) return lines.posOf(e) end })
+handlers.town = town.handle
 -- My Mods (remote_modhub.lua): the staging area, validate and the one upload, in the main menu only
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })
@@ -1310,7 +1316,7 @@ local function init()
 	G.buildTool = nil -- a new GUI: no filter left to clear
 	-- the save may hold the last game's label and requests; buttons now, not at the first label step, so a game
 	-- set to hide them never shows them
-	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {}, terrain = {},
+	publishUi({ label = "", tip = "", open = false, vehicles = {}, lines = {}, terrain = {}, town = {},
 		buttons = G.options.speedButtons ~= false })
 	if not G.menu then
 		vehicles.reset()
@@ -1318,6 +1324,7 @@ local function init()
 		connect.reset()
 		build.reset()
 		terrain.reset()
+		town.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1428,6 +1435,7 @@ local function step()
 	connect.step()
 	build.step()
 	terrain.step()
+	town.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()

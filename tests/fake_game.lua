@@ -2217,6 +2217,238 @@ function M.installTerrain(g, spec)
 	end
 end
 
+-- The engine's side of the town command (mapgen.createTowns, makeTownCreateCmd, makeTownUpdateCargoNeedsCmd), for
+-- remote_town.lua. api.type.Map.Town.new gives a strict record (an unknown field is an error, as the engine's);
+-- createTowns asserts on anything that is not one, and gives one TownInfo per town (its initialLandUseCapacities
+-- spec.capacities, default 100 / 50 / 50 times the size factor; spec.noRoom: 0, 0, 0). spec.toRemove: createTowns
+-- also lists these town ids to remove. spec.createRaises: createTowns raises this text (as the engine on a place it
+-- cannot take). spec.createFails: the create callback says no success. spec.reactOnly: createTowns and
+-- makeTownCreateCmd are there only in a react state. spec.needsFromMap: the new town takes landUse2CargoNeeds as
+-- its first needs (default: it gets none, as RWMI saw). spec.needsFails: the needs command's callback says no.
+-- spec.noNeedsCmd: no makeTownUpdateCargoNeedsCmd. spec.callbackFrames: the create runs, and its callback comes,
+-- that many frames later (as queued commands); spec.lostCallback: it runs but no callback comes.
+-- spec.noValidCheck: no isValidCoordinate. spec.lostTown: the create says success but makes no town.
+-- The shapes are checked as the engine's types have them (sizeFactors 3 numbers, landUse2CargoNeeds keyed by
+-- LandUseType values with { name, weight } pairs, initialLandUseCapacities 3 whole numbers, cargo type ids whole
+-- numbers of known cargo types): anything else is an assertion. The economy: spec.categories ({ [name] = { tier, landUses } }),
+-- spec.cargo ({ [id] = category }). g.townProposals: each createTowns call's towns; g.townCmds: each create sent;
+-- g.townNeedsCmds: each needs command; g.newTowns: the ids made; g.townNeeds[e]: a town's cargoNeeds.
+function M.installTown(g, spec)
+	spec = spec or {}
+	local CT = api.type.ComponentType
+	CT.TOWN = CT.TOWN or "TOWN"
+	local LU = api.type.enum.LandUseType
+	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
+	api.type.Vec2f = api.type.Vec2f or { new = function(x, y) return { x = x, y = y } end }
+	g.townProposals, g.townCmds, g.townNeedsCmds, g.newTowns, g.townNeeds = {}, {}, {}, {}, {}
+	local townNames, townPos, townCaps = {}, {}, {}
+	local cargo -- (the economy's, below)
+	local records = setmetatable({}, { __mode = "k" })
+	local FIELDS = { pos = true, name = true, sizeFactors = true, landUse2CargoNeeds = true, existing = true }
+	api.type.Map = api.type.Map or {}
+	api.type.Map.Town = { new = function()
+		local store = { existing = -1, sizeFactors = {}, landUse2CargoNeeds = {}, name = "" }
+		local u = newproxy(true)
+		local mt = getmetatable(u)
+		mt.__index = function(_, k) if not FIELDS[k] then error("Town: no field " .. tostring(k)) end return store[k] end
+		mt.__newindex = function(_, k, v)
+			if not FIELDS[k] then error("Town: no field " .. tostring(k)) end
+			if k == "sizeFactors" then
+				if type(v) ~= "table" or #v ~= 3 then crash("Town.sizeFactors: 3 numbers") end
+				for i = 1, 3 do if type(v[i]) ~= "number" then crash("Town.sizeFactors: 3 numbers") end end
+			elseif k == "landUse2CargoNeeds" then
+				if type(v) ~= "table" then crash("Town.landUse2CargoNeeds: a map") end
+				for lu, list in pairs(v) do
+					if lu ~= LU.RESIDENTIAL and lu ~= LU.COMMERCIAL and lu ~= LU.INDUSTRIAL then
+						crash("Town.landUse2CargoNeeds: key " .. tostring(lu) .. " is no LandUseType")
+					end
+					for _, pair in ipairs(list) do
+						if type(pair) ~= "table" or type(pair[1]) ~= "string" or type(pair[2]) ~= "number" then
+							crash("Town.landUse2CargoNeeds: { name, weight } pairs")
+						end
+					end
+				end
+			elseif k == "name" and type(v) ~= "string" then crash("Town.name: a string")
+			elseif k == "existing" and type(v) ~= "number" then crash("Town.existing: an entity")
+			end
+			store[k] = copy(v)
+		end
+		records[u] = store
+		return u
+	end }
+	local infos = setmetatable({}, { __mode = "k" })
+	local createTowns = function(seed, list)
+		if type(seed) ~= "string" then crash("createTowns: no seed") end
+		local proposal, out = {}, {}
+		for _, t in ipairs(list) do
+			local st = records[t]
+			if not st then crash("createTowns: not a GameMap.Town") end
+			proposal[#proposal + 1] = copy(st)
+		end
+		g.townProposals[#g.townProposals + 1] = proposal
+		if spec.createRaises then error(spec.createRaises) end
+		for _, st in ipairs(proposal) do
+			local f = st.sizeFactors[1] or 1
+			local caps = spec.noRoom and { 0, 0, 0 } or copy(spec.capacities) or { 100 * f, 50 * f, 50 * f }
+			local info = { name = st.name, position = { x = st.pos.x, y = st.pos.y }, initialLandUseCapacities = caps,
+				landUse2CargoNeedsCategories = copy(st.landUse2CargoNeeds), majorStreetAngle = 0.5,
+				initialMajorStreetAngle = 0.5, capacityScalingFactor = 1 }
+			infos[info] = true
+			out[#out + 1] = info
+		end
+		return { toAdd = out, toRemove = copy(spec.toRemove or {}) }
+	end
+	local createCmd = function(list)
+		local towns = {}
+		for _, info in ipairs(list) do
+			if not infos[info] then crash("makeTownCreateCmd: not a TownInfo from createTowns") end
+			local caps = info.initialLandUseCapacities
+			if type(caps) ~= "table" or #caps ~= 3 then crash("TownInfo.initialLandUseCapacities: 3 integers") end
+			for i = 1, 3 do
+				if type(caps[i]) ~= "number" or caps[i] ~= math.floor(caps[i]) then crash("TownInfo.initialLandUseCapacities: 3 integers") end
+			end
+			towns[#towns + 1] = copy(info)
+		end
+		return { kind = "townCreate", towns = towns }
+	end
+	api.engine.mapgen = api.engine.mapgen or {}
+	if spec.reactOnly then
+		setmetatable(api.engine.mapgen, { __index = function(_, k) if k == "createTowns" and M.inReact then return createTowns end end })
+		api.engine.mapgen.createTowns = nil
+		local mt = getmetatable(api.cmd) or {}
+		local prev = mt.__index
+		mt.__index = function(t, k)
+			if k == "makeTownCreateCmd" then return M.inReact and createCmd or nil end
+			if type(prev) == "function" then return prev(t, k) end
+			return prev and prev[k]
+		end
+		setmetatable(api.cmd, mt)
+	else
+		api.engine.mapgen.createTowns = createTowns
+		api.cmd.makeTownCreateCmd = createCmd
+	end
+	if not spec.noNeedsCmd then
+		api.cmd.makeTownUpdateCargoNeedsCmd = function(e, needs, update)
+			if type(needs) ~= "table" or type(update) ~= "boolean" then crash("makeTownUpdateCargoNeedsCmd: needs, update") end
+			for k = 1, 3 do
+				for _, id in ipairs(needs[k] or {}) do
+					if type(id) ~= "number" or id ~= math.floor(id) or not cargo[id] then
+						crash("makeTownUpdateCargoNeedsCmd: " .. tostring(id) .. " is no cargo type id")
+					end
+				end
+			end
+			return { kind = "townNeeds", town = e, needs = copy(needs), update = update }
+		end
+	end
+	-- the economy
+	local categories = spec.categories or { vegetables = { tier = 0, landUses = { LU.COMMERCIAL } },
+		fish = { tier = 0, landUses = { LU.COMMERCIAL } }, planks = { tier = 0, landUses = { LU.INDUSTRIAL } },
+		bricks = { tier = 0, landUses = { LU.INDUSTRIAL } }, tools = { tier = 1, landUses = { LU.COMMERCIAL } } }
+	cargo = spec.cargo or { [11] = "fish", [12] = "vegetables", [13] = "planks", [14] = "bricks", [15] = "tools" }
+	api.res.economyRep = { find = function(id) return id == "eco" and 4 or -1 end,
+		get = function(i) if i ~= 4 then crash("economyRep.get " .. tostring(i)) end return { cargoCategories = copy(categories) } end }
+	local baseConfig = api.res.getBaseConfig
+	api.res.getBaseConfig = function()
+		local c = baseConfig and baseConfig() or {}
+		c.economyId = "eco"
+		return c
+	end
+	local getAll, get = api.res.cargoTypeRep.getAll, api.res.cargoTypeRep.get
+	api.res.cargoTypeRep.getAll = function()
+		local out = getAll()
+		for id, cat in pairs(cargo) do out[id] = cat:upper() end
+		return out
+	end
+	api.res.cargoTypeRep.get = function(id)
+		if cargo[id] then return { name = cargo[id], category = cargo[id] } end
+		return get(id)
+	end
+	-- the commands
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		if type(cmd) ~= "table" or (cmd.kind ~= "townCreate" and cmd.kind ~= "townNeeds") then return send(cmd, cb) end
+		g.commands[#g.commands + 1] = cmd
+		if cmd.kind == "townNeeds" then
+			g.townNeedsCmds[#g.townNeedsCmds + 1] = cmd
+			if not townNames[cmd.town] then crash("makeTownUpdateCargoNeedsCmd: no town " .. tostring(cmd.town)) end
+			if not spec.needsFails then
+				local n = {}
+				for k = 1, 3 do
+					n[k] = {}
+					for _, id in ipairs(cmd.needs[k] or {}) do n[k][#n[k] + 1] = { id, 1 } end
+				end
+				g.townNeeds[cmd.town] = n
+			end
+			if cb then cb(cmd, not spec.needsFails) end
+			return
+		end
+		g.townCmds[#g.townCmds + 1] = cmd
+		local function run()
+		if spec.createFails then if cb and not spec.lostCallback then cb(cmd, false, {}) end return end
+		local made = {}
+		for _, t in ipairs(spec.lostTown and {} or cmd.towns) do
+			g.nextEntity = g.nextEntity + 1
+			local e = g.nextEntity
+			g.newTowns[#g.newTowns + 1] = e
+			townNames[e], townPos[e] = t.name, t.position
+			local caps = t.initialLandUseCapacities
+			townCaps[e] = { caps[1] or 0, caps[2] or 0, caps[3] or 0 }
+			local n = { {}, {}, {} }
+			if spec.needsFromMap then
+				local idOf = {}
+				for id, cat in pairs(cargo) do idOf[cat] = id end
+				for lu, list in pairs(t.landUse2CargoNeedsCategories or {}) do
+					for _, pair in ipairs(list) do table.insert(n[lu + 1], { idOf[pair[1]], pair[2] }) end
+				end
+			end
+			g.townNeeds[e] = n
+			made[#made + 1] = { e, 1 }
+		end
+		if cb and not spec.lostCallback then cb(cmd, true, made) end
+		end
+		if spec.callbackFrames then
+			g.callbacks[#g.callbacks + 1] = { frames = spec.callbackFrames, fn = run }
+		else
+			run()
+		end
+	end
+	local getEntities = api.engine.getEntitiesWithComponent
+	api.engine.getEntitiesWithComponent = function(kind, filter)
+		local list = getEntities(kind, filter)
+		if kind ~= CT.TOWN then return list end
+		local out = copy(list or {})
+		for _, e in ipairs(g.newTowns) do out[#out + 1] = e end
+		return out
+	end
+	local getName = api.engine.util.getEntityName
+	api.engine.util.getEntityName = function(e) return townNames[e] or getName(e) end
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		if townNames[e] then
+			if kind == CT.TOWN then return { cargoNeeds = copy(g.townNeeds[e]) } end
+			if kind == "BOUNDING_VOLUME" then
+				local p = townPos[e]
+				return { bbox = { min = { x = p.x - 100, y = p.y - 100, z = 0 }, max = { x = p.x + 100, y = p.y + 100, z = 20 } } }
+			end
+			return nil
+		end
+		return getComponent(e, kind)
+	end
+	local tbs = api.engine.system.townBuildingSystem
+	local capsMap = tbs.getTown2personCapacitiesMap
+	tbs.getTown2personCapacitiesMap = function()
+		local m = capsMap()
+		for e, c in pairs(townCaps) do m[e] = copy(c) end
+		return m
+	end
+	api.engine.terrain = api.engine.terrain or {}
+	if spec.noValidCheck then
+		api.engine.terrain.isValidCoordinate = nil
+	elseif api.engine.terrain.isValidCoordinate == nil then
+		api.engine.terrain.isValidCoordinate = function(v) return math.abs(v.x) <= 2048 and math.abs(v.y) <= 2048 end
+	end
+end
+
 M.dateOf = dateOf
 M.DAY_TICKS = DAY_TICKS
 
