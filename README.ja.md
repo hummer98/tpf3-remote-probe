@@ -505,6 +505,40 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   外で効くか、`landUse2CargoNeeds` が効くか、需要のコマンド、道路や建物のある場所にエンジンがどう答えるか、
   作った直後の人口。
 
+### 在庫とシミュレーションの歩み (`stock`・`steps`: debug の命令、試験用のセーブだけ)
+
+```sh
+python3 tools/tf3ctl.py stock list --entity 51                       # 読むだけ
+python3 tools/tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]
+python3 tools/tf3ctl.py stock set --entity 601 --stock -1 --amount 30 --cargo COAL   # 車両の積み荷
+python3 tools/tf3ctl.py steps 500 [--dry-run]
+```
+
+- **試験用のセーブだけで使ってください。** ゲームの debug の命令 (`api.cmd.debug`) を送り、プレイヤーにはできない形で
+  ゲームを変えます (貨物が湧く、時計と関係なくシミュレーションが進む)。試験用の地図での待ち時間 (港の在庫が貯まる、
+  車両が満載で着く、町が育つ) を短くするためのものです。ゲームを変える命令として、ほかのクライアントに警告が出ます
+  (dry run も)。
+- `stock list` は、本体の debug パネルと同じ読み方で在庫の一覧を読みます: entity の `STOCK_LIST` コンポーネント、
+  0 から数える stock の番号 (`stock set --stock` に渡す番号)、stock ごとの `type`・`cargoType`・`cargo` (貨物の種類の
+  名前)・`capacity`・`count` (`getStockCount`)・`cargoTypes` (その stock が受ける貨物の種類ごとの名前と `count`)。
+  entity そのものに `STOCK_LIST` が無い産業・町の建物・倉庫は、その `stockList` の entity をたどります (`via`)。
+  車両には在庫の一覧が無いので、`kind` が `vehicle` になり、積める貨物の種類ごとの `cargo` (`capacity`・`count`)
+  が出ます。決めるのは `--stock -1 --cargo NAME`。id は `industry-stocks`・`stations`・`vehicles` で分かります。
+- `stock set` は `api.cmd.debug.makeStockSetCargoAmountCmd(在庫の一覧の entity, stock, amount[, cargo])` を送ります
+  (cargo は指定したときだけ。本体のパネルも在庫の一覧の stock には付けない)。送る前に断るもの: 一覧に無い stock の
+  番号、stock の capacity (車両ならその貨物の capacity、ほかは 100000) を超える量、stock や車両が受けない貨物、
+  エンジンに無い entity。答え: `before`、`after` (callback の数フレーム後に読む)、`success`、`engineResult` (callback が
+  返したもの)、`stockList` (送った先の entity)。`--dry-run` は何も送らず、`before` と `functionPresent` を答えます。
+- `steps N` (1〜10000) は `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)` を送ります。答え: `before` と `after`
+  (`gameTime`・`updateCount`・`tickCount`・`date`)、`gameTimeDelta`、`updateCountDelta`、`gameTimePerStep`、
+  `callbackSec`、`success`、`engineResult`。一時停止していないと、2 回の読みの間にゲームの時間がひとりでに進むので、
+  きれいに数えるには先に `pause` してください。
+- ゲームに無い (nil の) debug の関数は呼びません。答えにそう出ます (`functionPresent` が false、`sent` が false)。
+  エンジンが断ったとき (`success` が false)、命令を作る・送るときのエラー、30 秒 (`steps` は 150 秒) callback が
+  来ないときはエラーで、エンジンが文を返したときはそのまま入れます。
+- **ゲーム内では未確認** (2026-11-22 に書いたもの): 製品版にこの debug の関数があるか、実行するか断るか、駅が自分の
+  在庫の一覧を持つか、1 歩がゲームの時間でどれだけか、大きな `steps` がどれだけゲームを止めるか。
+
 ### メインメニューからのマイMOD (`modhub`)
 
 ```
@@ -682,6 +716,8 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
   入ります。ロードの待ちが時間切れになったときは、ボタン待ちのはずだと出ます。
 - `line delete` は、車両のいる路線を `--sell-vehicles` が無ければ断ります。本体のミッションと保護された entity の
   確認は省いています (試験用のセーブ向けのため)。
+- `stock set` と `steps` はゲームの debug の命令です。試験用のセーブだけで使ってください (試験用のセーブと
+  プレイヤーのセーブを見分ける仕組みはありません。ゲーム内では未確認)。
 - `money` は「その他」の仕訳として帳簿に残り、収支の表やグラフに出ます。
 - `buy` は、年代の外のモデルも買えます (店の可否の確認は通しません)。
 
@@ -715,6 +751,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - gui で買った車両を MOD が自分で路線に送ることと、断られたときの理由。`lines --problems`。`stations --catchment`。
 - `terrain`・`terrain --probe-api`・`newgame --editor` は全部 (「長方形の範囲の地面」を参照)。
 - `town` は全部 (「町を1つ」を参照)。
+- `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 - `modhub publish` は全部 (「新しい MOD を1つ上げる」を参照)。`modhub status` と `validate` は 2026-11-22 に確認済み。
 

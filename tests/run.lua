@@ -8020,5 +8020,203 @@ test("town: needs refused or the needs command missing are warnings; the town is
 	truthy(not g.crashed and not h.crashed)
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- debug commands (remote_debug.lua): stockList, stockSet, steps
+
+test("core.stockSetRequest / stepsRequest / stockListArgs: ranges and shapes", function()
+	local r = core.stockSetRequest({ entity = 51, stock = 0, amount = 100 })
+	eq(r.entity, 51); eq(r.stock, 0); eq(r.amount, 100); eq(r.cargo, nil); eq(r.dryRun, false)
+	local v = core.stockSetRequest({ entity = "601", stock = -1, amount = "0", cargo = "COAL", dryRun = true })
+	eq(v.entity, 601); eq(v.stock, -1); eq(v.amount, 0); eq(v.cargo, "COAL"); eq(v.dryRun, true)
+	eq(core.stockSetRequest({ entity = 1, stock = 0, amount = core.STOCK_MAX_AMOUNT }).amount, core.STOCK_MAX_AMOUNT)
+	for _, bad in ipairs({
+		{ {}, "entity" }, { { entity = -1, stock = 0, amount = 1 }, "entity" }, { { entity = 1.5, stock = 0, amount = 1 }, "entity" },
+		{ { entity = "x", stock = 0, amount = 1 }, "entity" }, { { entity = 2 ^ 31, stock = 0, amount = 1 }, "entity" },
+		{ { entity = 1, amount = 1 }, "stock" }, { { entity = 1, stock = -2, amount = 1 }, "stock" },
+		{ { entity = 1, stock = 0.5, amount = 1 }, "stock" }, { { entity = 1, stock = 1001, amount = 1 }, "stock" },
+		{ { entity = 1, stock = 0 }, "amount" }, { { entity = 1, stock = 0, amount = -1 }, "amount" },
+		{ { entity = 1, stock = 0, amount = core.STOCK_MAX_AMOUNT + 1 }, "amount" }, { { entity = 1, stock = 0, amount = 2.5 }, "amount" },
+		{ { entity = 1, stock = 0, amount = 0 / 0 }, "amount" },
+		{ { entity = 1, stock = 0, amount = 1, cargo = "" }, "cargo" }, { { entity = 1, stock = 0, amount = 1, cargo = 5 }, "cargo" },
+		{ { entity = 1, stock = 0, amount = 1, cargo = "CO AL" }, "cargo" },
+		{ { entity = 1, stock = 0, amount = 1, cargo = ("X"):rep(core.CARGO_NAME_MAX + 1) }, "cargo" },
+		{ { entity = 1, stock = -1, amount = 1 }, "needs cargo" },
+		{ { entity = 1, stock = 0, amount = 1, dryRun = "yes" }, "dryRun" },
+	}) do
+		local ok, err = core.stockSetRequest(bad[1])
+		eq(ok, nil, bad[2])
+		truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	truthy(select(2, core.stockSetRequest(nil)))
+	eq(core.stepsRequest({ count = 1 }).count, 1); eq(core.stepsRequest({ count = core.STEPS_MAX }).count, core.STEPS_MAX)
+	eq(core.stepsRequest({ count = "5", dryRun = true }).dryRun, true)
+	for _, bad in ipairs({ {}, { count = 0 }, { count = core.STEPS_MAX + 1 }, { count = 1.5 }, { count = "x" }, { count = -3 }, { count = 0 / 0 } }) do
+		truthy(select(2, core.stepsRequest(bad)):find("count must be"))
+	end
+	truthy(select(2, core.stepsRequest({ count = 2, dryRun = 1 })):find("dryRun"))
+	eq(core.stockListArgs({ entity = 7 }).entity, 7)
+	truthy(select(2, core.stockListArgs({})):find("entity"))
+	-- stockSet and steps warn other owners (they change the game); stockList only reads
+	eq(core.CHANGES_GAME.stockSet, true); eq(core.CHANGES_GAME.steps, true); eq(core.CHANGES_GAME.stockList, nil)
+	eq(core.COMMANDS.stockList, true); eq(core.COMMANDS.stockSet, true); eq(core.COMMANDS.steps, true)
+	eq(core.MENU_COMMANDS.stockSet, nil); eq(core.MENU_COMMANDS.steps, nil)
+end)
+
+test("core.debugFunction: there or not by nil only (a locked callable table counts as there)", function()
+	local locked = setmetatable({}, { __call = function() end, __metatable = "locked" })
+	truthy(core.debugFunction("api.cmd.debug.f", { api = { cmd = { debug = { f = locked } } } }) ~= nil)
+	eq(core.debugFunction("api.cmd.debug.f", { api = { cmd = {} } }), nil)
+	eq(core.debugFunction("api.cmd.debug.f", { api = { cmd = { debug = 5 } } }), nil)
+end)
+
+-- a game with an industry (51: a coal output stock and a mixed input stock), a station's stock list (411, a group's
+-- station), an industry 55 whose stocks are on another entity (56), and a vehicle 601 with room for 30 coal
+local function debugGame(spec, opts)
+	opts = opts or {}
+	opts.industries = opts.industries or {
+		[51] = { name = "Coal mine", stocks = { { type = 1, cargoType = 1, capacity = 400, count = 37 },
+			{ type = 0, cargoType = -1, cargoTypes = { 1, 2 }, capacity = 50, count = 4 } } },
+		[55] = { name = "Farm", stockList = 56 } }
+	opts.fleet = opts.fleet or { [601] = { vehicles = {}, line = -1, depot = 301, capacities = { 0, 30 },
+		live = { loaded = { [1] = 3 } } } }
+	local g = vehicleGame(opts)
+	spec = spec or {}
+	spec.stockLists = spec.stockLists or {
+		[411] = { stocks = { { type = 2, cargoType = -1, cargoTypes = { 1, 2 }, capacity = 200, count = 0, byCargo = {} } } },
+		[56] = { stocks = { { type = 0, cargoType = 2, capacity = 80, count = 5 } } } }
+	spec.owners = spec.owners or { [77] = { kind = "TOWN_BUILDING", stockList = -1 } } -- a building with none
+	fake.installDebug(g, spec)
+	return g
+end
+local function debugRun(g, id, cmd, argsLua, n)
+	send(g, id, cmd, argsLua)
+	frames(g, n or FIRST + 10)
+	return final(g, id)
+end
+
+test("stockList: an industry's stocks 0-based with counts per cargo, a station's, an owner's, a vehicle's load", function()
+	local g = debugGame()
+	local a = debugRun(g, 2201, "stockList", "{ entity = 51 }")
+	truthy(a.ok, a.error); eq(a.kind, "stockList"); eq(a.stockList, 51); eq(#a.stocks, 2)
+	eq(a.stocks[1].stockId, 0); eq(a.stocks[1].cargo, "COAL"); eq(a.stocks[1].count, 37); eq(a.stocks[1].capacity, 400)
+	eq(a.stocks[2].stockId, 1); eq(a.stocks[2].cargoType, -1); eq(#a.stocks[2].cargoTypes, 2)
+	eq(a.stocks[2].cargoTypes[2].cargo, "GRAIN")
+	local b = debugRun(g, 2202, "stockList", "{ entity = 411 }")
+	truthy(b.ok, b.error); eq(b.stockList, 411); eq(b.stocks[1].typeName, "StorageStock"); eq(b.stocks[1].cargoTypes[1].count, 0)
+	local o = debugRun(g, 2203, "stockList", "{ entity = 55 }")
+	truthy(o.ok, o.error); eq(o.stockList, 56); eq(o.via, "INDUSTRY"); eq(o.stocks[1].count, 5); eq(o.stocks[1].cargo, "GRAIN")
+	local v = debugRun(g, 2204, "stockList", "{ entity = 601 }")
+	truthy(v.ok, v.error); eq(v.kind, "vehicle"); eq(v.stock, -1); eq(#v.cargo, 1)
+	eq(v.cargo[1].cargo, "COAL"); eq(v.cargo[1].capacity, 30); eq(v.cargo[1].count, 3)
+	local x = debugRun(g, 2205, "stockList", "{ entity = 99999 }")
+	eq(x.ok, false); truthy(x.error:find("no such entity"), x.error)
+	local y = debugRun(g, 2206, "stockList", "{ entity = 77 }") -- a town building without a stock list
+	eq(y.ok, false); truthy(y.error:find("holds no stock list"), y.error)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("stockSet: sent with the stock list's entity, 0-based stock and the amount; read back; cargo only when given", function()
+	local g = debugGame()
+	local a = debugRun(g, 2211, "stockSet", "{ entity = 51, stock = 0, amount = 100 }")
+	truthy(a.ok, a.error); eq(a.sent, true); eq(a.success, true); eq(a.before, 37); eq(a.after, 100)
+	local c = g.debugCmds[1]
+	eq(c.entity, 51); eq(c.stock, 0); eq(c.amount, 100); eq(c.nargs, 3, "no cargo argument when none is given")
+	eq(a.engineResult.kind, "debugStock", "the callback's data comes back")
+	-- an owner: the command goes to its stock list's entity
+	local o = debugRun(g, 2212, "stockSet", "{ entity = 55, stock = 0, amount = 60 }")
+	truthy(o.ok, o.error); eq(g.debugCmds[2].entity, 56); eq(o.stockList, 56); eq(o.before, 5); eq(o.after, 60)
+	-- a station's mixed stock, one cargo type
+	local s = debugRun(g, 2213, "stockSet", '{ entity = 411, stock = 0, amount = 100, cargo = "COAL" }')
+	truthy(s.ok, s.error); eq(g.debugCmds[3].cargoType, "COAL"); eq(g.debugCmds[3].nargs, 4); eq(s.before, 0); eq(s.after, 100)
+	-- a vehicle's load: stock -1 and the cargo name
+	local v = debugRun(g, 2214, "stockSet", '{ entity = 601, stock = -1, amount = 30, cargo = "COAL" }')
+	truthy(v.ok, v.error); eq(v.holder, "vehicle"); eq(g.debugCmds[4].stock, -1); eq(v.before, 3); eq(v.after, 30)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("stockSet: what the stock cannot take is refused before anything is sent; dry run sends nothing", function()
+	local g = debugGame()
+	for i, case in ipairs({
+		{ "{ entity = 51, stock = 2, amount = 1 }", "no stock 2" },
+		{ "{ entity = 51, stock = -1, amount = 1, cargo = \"COAL\" }", "no stock -1" },
+		{ "{ entity = 51, stock = 0, amount = 401 }", "capacity" },
+		{ "{ entity = 51, stock = 0, amount = 1, cargo = \"GRAIN\" }", "does not take GRAIN" },
+		{ "{ entity = 411, stock = 0, amount = 1, cargo = \"FISH\" }", "does not take FISH" },
+		{ "{ entity = 601, stock = 0, amount = 1, cargo = \"COAL\" }", "stock -1" },
+		{ "{ entity = 601, stock = -1, amount = 31, cargo = \"COAL\" }", "capacity" },
+		{ "{ entity = 601, stock = -1, amount = 1, cargo = \"GRAIN\" }", "no room for GRAIN" },
+		{ "{ entity = 99999, stock = 0, amount = 1 }", "no such entity" },
+		{ "{ entity = 51, stock = 0, amount = -5 }", "amount must be" },
+		{ "{ entity = 51, amount = 5 }", "stock must be" },
+	}) do
+		local a = debugRun(g, 2220 + i, "stockSet", case[1])
+		eq(a.ok, false, case[1]); truthy(tostring(a.error):find(case[2], 1, true), tostring(a.error) .. " / " .. case[2])
+	end
+	eq(#g.debugCmds, 0, "nothing sent")
+	local d = debugRun(g, 2240, "stockSet", "{ entity = 51, stock = 0, amount = 100, dryRun = true }")
+	truthy(d.ok, d.error); eq(d.sent, false); eq(d.dryRun, true); eq(d.before, 37); eq(d.functionPresent, true)
+	local s = debugRun(g, 2241, "steps", "{ count = 50, dryRun = true }")
+	truthy(s.ok, s.error); eq(s.sent, false); eq(s.count, 50)
+	eq(#g.debugCmds, 0, "a dry run sends nothing"); eq(g.updateCount, 1000)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("steps: sent with the count; the game time and update count before and after", function()
+	local g = debugGame({ stepMs = 200 })
+	local a = debugRun(g, 2251, "steps", "{ count = 25 }")
+	truthy(a.ok, a.error); eq(a.sent, true); eq(a.success, true)
+	eq(g.debugCmds[1].amount, 25); eq(g.debugCmds[1].nargs, 1)
+	eq(a.before.gameTime, 123456); eq(a.after.gameTime, 123456 + 5000); eq(a.gameTimeDelta, 5000)
+	eq(a.updateCountDelta, 25); eq(a.gameTimePerStep, 200)
+	truthy(a.before.date and a.before.date.year, "the date too")
+	local b = debugRun(g, 2252, "steps", "{ count = 10001 }")
+	eq(b.ok, false); truthy(b.error:find("count must be")); eq(#g.debugCmds, 1)
+end)
+
+test("debug commands: a function not there is not called; locked callable tables are used", function()
+	local g = debugGame({ missing = { stockSet = true, steps = true } })
+	local a = debugRun(g, 2261, "stockSet", "{ entity = 51, stock = 0, amount = 100 }")
+	eq(a.ok, false); eq(a.sent, false); eq(a.functionPresent, false)
+	truthy(a.error:find("makeStockSetCargoAmountCmd is not there", 1, true), a.error)
+	local b = debugRun(g, 2262, "steps", "{ count = 5 }")
+	eq(b.ok, false); eq(b.sent, false); truthy(b.error:find("makeGamePerformSimulationStepsCmd is not there", 1, true), b.error)
+	eq(#g.debugCmds, 0)
+	-- the dry run says the function is missing too
+	local d = debugRun(g, 2263, "stockSet", "{ entity = 51, stock = 0, amount = 1, dryRun = true }")
+	truthy(d.ok); eq(d.functionPresent, false)
+	local h = debugGame({ opaqueApi = true })
+	local c = debugRun(h, 2264, "steps", "{ count = 3 }")
+	truthy(c.ok, c.error); eq(h.debugCmds[1].amount, 3)
+	local e = debugRun(h, 2265, "stockSet", "{ entity = 51, stock = 1, amount = 20 }")
+	truthy(e.ok, e.error); eq(e.after, 20)
+end)
+
+test("debug commands: the engine's refusal, a raise and a missing callback come back as errors", function()
+	local g = debugGame({ refuse = { stockSet = true, steps = true } })
+	local a = debugRun(g, 2271, "stockSet", "{ entity = 51, stock = 0, amount = 100 }")
+	eq(a.ok, false); eq(a.sent, true); eq(a.success, false); truthy(a.error:find("refused"), a.error)
+	eq(a.before, 37); eq(a.after, 37)
+	local b = debugRun(g, 2272, "steps", "{ count = 5 }")
+	eq(b.ok, false); eq(b.success, false); truthy(b.error:find("refused"), b.error)
+	local refused = false
+	for _, l in ipairs(g.logs) do if tostring(l):find("refused by the engine") then refused = true end end
+	truthy(refused, "logged")
+	local m = debugGame({ makeRaises = "not allowed in release" })
+	local c = debugRun(m, 2273, "steps", "{ count = 5 }")
+	eq(c.ok, false); eq(c.sent, false); truthy(c.error:find("not allowed in release", 1, true), c.error)
+	local s = debugGame({ sendRaises = "debug commands are disabled" })
+	local d = debugRun(s, 2274, "stockSet", "{ entity = 51, stock = 0, amount = 1 }")
+	eq(d.ok, false); eq(d.sent, false); truthy(d.error:find("debug commands are disabled", 1, true), d.error)
+	local n = debugGame({ noCallback = true })
+	n.frozen = false
+	send(n, 2275, "stockSet", "{ entity = 51, stock = 0, amount = 1 }")
+	frames(n, FIRST + 10)
+	eq(select(2, final(n, 2275)), 0, "no answer before the deadline")
+	frames(n, 31 * 30, 1 / 30)
+	local e, count = final(n, 2275)
+	eq(count, 1); eq(e.ok, false); truthy(e.error:find("no callback"), e.error)
+	truthy(not g.crashed and not m.crashed and not s.crashed and not n.crashed)
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)

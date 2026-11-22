@@ -19,7 +19,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
 	modhubValidate = true, modhubPublish = true, water = true, road = true, terrain = true, terrainApi = true,
-	town = true }
+	town = true, stockList = true, stockSet = true, steps = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -31,7 +31,9 @@ M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame =
 	-- modhubPublish uploads to mod.io (its dry run validates, as modhubValidate)
 	modhubValidate = true, modhubPublish = true,
 	terrain = true, -- also its dry run, as build's (terrainApi only looks whether functions exist)
-	town = true } -- also its dry run (it asks the engine for a town proposal, as the editor's preview)
+	town = true, -- also its dry run (it asks the engine for a town proposal, as the editor's preview)
+	-- the debug commands (remote_debug.lua): test saves only; their dry runs too, as build's (stockList only reads)
+	stockSet = true, steps = true }
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true,
@@ -2649,6 +2651,78 @@ function M.validationSummary(r, limit)
 	return { criticalPc = r.criticalPc, criticalConsole = r.criticalConsole, levelPc = r.levelPc,
 		levelConsole = r.levelConsole, counts = counts, messageCount = #msgs, messages = M.array(list),
 		truncated = #msgs > #list or nil, text = text }
+end
+
+
+---------------------------------------------------------------------------------------------------------------------
+-- debug commands (remote_debug.lua does the game side): api.cmd.debug's stock amount and simulation steps, to cut
+-- the waiting on maps made for tests (a harbour's stock filling up, a full load, a town growing). Test saves only.
+
+M.DEBUG_FUNCTIONS = { stockSet = "api.cmd.debug.makeStockSetCargoAmountCmd",
+	steps = "api.cmd.debug.makeGamePerformSimulationStepsCmd" }
+M.STOCK_MAX_AMOUNT = 100000 -- a stock list's stock is also held to its capacity (the base debug panel's slider max)
+M.STEPS_MAX = 10000
+M.CARGO_NAME_MAX = 100
+
+-- the debug function at path (DEBUG_FUNCTIONS) or nil. There or not goes by nil only: the engine's api entries are
+-- callable tables whose metatable cannot be read (see terrainFunctions), so a callable check would miss them.
+function M.debugFunction(path, root)
+	return valueAt(path, root)
+end
+
+local function wholeNumber(v)
+	local n = tonumber(v)
+	if n == nil or n ~= n or n ~= math.floor(n) then return nil end
+	return n
+end
+
+-- stockList: args entity (a stock list, an industry / town building / warehouse holding one, or a vehicle)
+function M.stockListArgs(args)
+	args = type(args) == "table" and args or {}
+	local e = wholeNumber(args.entity)
+	if e == nil or e < 0 or e > M.MAX_ENTITY_ID then
+		return nil, "give the entity: an industry's, station's or vehicle's id (industry-stocks, stations, vehicles)"
+	end
+	return { entity = e }
+end
+
+-- stockSet: entity (as stockList), stock (the stock's id, 0-based as the engine counts them; -1 = a vehicle's
+-- load, which needs cargo), amount (0..STOCK_MAX_AMOUNT), cargo (a cargo type's resource name, e.g. COAL: optional
+-- for a stock list's stock), dryRun. -> the request, or nil and why. Whether the stock is there and takes that
+-- cargo and amount is checked in the game, against the stock list read there.
+function M.stockSetRequest(args)
+	args = type(args) == "table" and args or {}
+	local r, err = M.stockListArgs(args)
+	if not r then return nil, err end
+	local stock = wholeNumber(args.stock)
+	if stock == nil or stock < -1 or stock > 1000 then
+		return nil, "stock must be a stock's id (0, 1, ... as stock list shows them; -1 for a vehicle's load)"
+	end
+	local amount = wholeNumber(args.amount)
+	if amount == nil or amount < 0 or amount > M.STOCK_MAX_AMOUNT then
+		return nil, "amount must be a whole number from 0 to " .. M.STOCK_MAX_AMOUNT
+	end
+	local cargo = args.cargo
+	if cargo ~= nil then
+		if type(cargo) ~= "string" or cargo == "" or #cargo > M.CARGO_NAME_MAX or cargo:find("[%c%s]") then
+			return nil, "cargo must be a cargo type's name as stock list shows it (e.g. COAL)"
+		end
+	end
+	if stock == -1 and cargo == nil then return nil, "stock -1 (a vehicle's load) needs cargo" end
+	if args.dryRun ~= nil and type(args.dryRun) ~= "boolean" then return nil, "dryRun must be true or false" end
+	r.stock, r.amount, r.cargo, r.dryRun = stock, amount, cargo, args.dryRun == true
+	return r
+end
+
+-- steps: count (1..STEPS_MAX simulation steps), dryRun
+function M.stepsRequest(args)
+	args = type(args) == "table" and args or {}
+	local n = wholeNumber(args.count)
+	if n == nil or n < 1 or n > M.STEPS_MAX then
+		return nil, "count must be a whole number from 1 to " .. M.STEPS_MAX
+	end
+	if args.dryRun ~= nil and type(args.dryRun) ~= "boolean" then return nil, "dryRun must be true or false" end
+	return { count = n, dryRun = args.dryRun == true }
 end
 
 return M

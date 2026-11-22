@@ -1099,6 +1099,10 @@ local town = (ug_require or require)(MOD .. "::/remote_town.lua").new({ core = c
 	work = (ug_require or require)(MOD .. "::/town_work.lua"),
 	towns = function() return entitiesOf("town") end, posOf = function(e) return lines.posOf(e) end })
 handlers.town = town.handle
+-- debug (remote_debug.lua): api.cmd.debug's stock amount and simulation steps, and stockList to read the stocks
+local debugCmds = (ug_require or require)(MOD .. "::/remote_debug.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = appTime, try = try, say = say })
+for k, fn in pairs(debugCmds.handlers) do handlers[k] = fn end
 -- My Mods (remote_modhub.lua): the staging area, validate and the one upload, in the main menu only
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })
@@ -1436,6 +1440,7 @@ local function step()
 	build.step()
 	terrain.step()
 	town.step()
+	debugCmds.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()
