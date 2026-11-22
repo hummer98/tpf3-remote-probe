@@ -1066,7 +1066,12 @@ function M.roadRequest(args)
 		end
 		t = t:match("^%s*(.-)%s*$")
 	end
-	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true }
+	-- engineCheck: the dry run asks the engine (makeProposalData); only with a dry run (a build is the engine's own)
+	if args.engineCheck == true and args.dryRun ~= true then
+		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
+	end
+	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true,
+		engineCheck = args.engineCheck == true }
 end
 
 -- road --inspect-node (read only): one node's id

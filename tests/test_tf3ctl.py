@@ -1687,6 +1687,17 @@ class QuitLaunchTest(unittest.TestCase):
                     ["--from", "0,0", "--to", "1,1", "--snap", "-1"], ["--from", "0,0", "--to", "1,1", "--type", " "]):
             with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
                 tf3ctl.road_args(p.parse_args(["road"] + bad))
+        # --engine-check: with --dry-run only; it counts as changing the game, a plain dry run does not
+        rd = p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--engine-check"])
+        args = tf3ctl.road_args(rd)
+        self.assertEqual(args["engineCheck"], True)
+        self.assertTrue(tf3ctl.changes_game("road", args))
+        self.assertFalse(tf3ctl.changes_game("road", {"from": [0, 0], "to": [1, 1], "dryRun": True}))
+        self.assertTrue(tf3ctl.changes_game("road", {"from": [0, 0], "to": [1, 1]}))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--engine-check"]))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--engine-check"]))
         # --from and --to: required unless --inspect-node (checked after parsing)
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.road_args(p.parse_args(["road", "--from", "0,0"]))

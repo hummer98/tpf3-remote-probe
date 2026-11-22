@@ -337,7 +337,7 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   `connect --from`; and `connectable`: where a `road` can join it, see `road`), `cost` (the engine's), `balanceBefore` / `balanceAfter` / `spent`, `errors`, `warnings`,
   `collisions` (ids in the way), `params` as sent, `at` (with the z used, `zFrom`). A refusal is `ok: false` with
   the engine's messages in `error`.
-- `--dry-run` builds nothing and does **not** ask the engine (`road --dry-run` does: `makeProposalData` takes a
+- `--dry-run` builds nothing and does **not** ask the engine (`road --dry-run --engine-check` does: `makeProposalData` takes a
   `SimpleProposal` on the GUI thread, though `engine/util.d.tl:939` types it for a `Proposal`; a construction's is
   not asked yet). The probe checks the name, the params it
   would send and the height, and lists the constructions within 30 m of the point (`near`, a rough look by their
@@ -407,6 +407,7 @@ python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner  
 
 ```
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # asks the engine (changes the game)
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
 ```
 
@@ -461,12 +462,16 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road read
   piece is looked for between the two ends, leaving out the pieces that were there before it was sent; built with
   no new piece found gives a `warning`. A template or the `BaseEdgeType` / `RoadType` enum that does not read
   refuses the command before anything is sent.
-- `--dry-run` sends nothing: it makes the same proposal the road's build sends (set-ups included) and asks
-  the engine about it with `api.engine.util.proposal.makeProposalData` (the proposal alone, else with a context), in
+- `--dry-run` sends nothing and does not ask the engine: it answers the plan, checked by the probe only
+  (`checked: false`, `engineCheck: "not asked (use --engine-check)"`), so it is safe to run as other dry runs.
+- `--dry-run --engine-check` (`--engine-check` goes with `--dry-run` only): it also makes the same proposal the
+  road's build sends (set-ups included) and asks the engine about it with `api.engine.util.proposal.makeProposalData` (the proposal alone, else with a context), in
   the guiUpdate (never in a recipe's body). The answer has `checked: true`, `engineCheck` (the form taken),
   `buildable`, the engine's `cost`, `errors`, `warnings`, `collisions`, `critical`, and `balance`; one the engine
   would refuse is `ok: false` with its messages in `error`. When `makeProposalData` is not there or raises both
-  ways, the answer is the probe's own plan (`checked: false`, `engineCheck: "not available: ..."`).
+  ways, the answer is the probe's own plan (`checked: false`, `engineCheck: "not available: ..."`). The engine's
+  evaluation runs native code a `pcall` cannot guard (an assertion there would end the game), so tf3ctl counts
+  this as changing the game: ask for the game first, test saves only.
 - `--inspect-node ID` (read only, alone): the node's position, `streetSegments` (each piece's `edge`, `node0` /
   `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
   (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,

@@ -507,6 +507,10 @@ def changes_game(cmd, args):
     if cmd not in CHANGES_GAME:
         return False
     args = args or {}
+    # road --dry-run --engine-check: the engine evaluates the proposal (makeProposalData), so it counts as changing
+    # the game (ask for the game first), unlike a plain dry run
+    if cmd == "road" and args.get("engineCheck") is True:
+        return True
     if cmd not in DRY_RUN_CHANGES and (args.get("dryRun") is True or args.get("list") is True):
         return False
     if cmd == "camera" and not args:
@@ -1943,7 +1947,8 @@ def water_args(ns):
 
 def road_inspect_args(ns):
     """road --inspect-node ID (read only): the node alone; nothing else goes with it."""
-    if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run:
+    if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run \
+            or ns.engine_check:
         raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run)")
     if ns.inspect_node < 0:
         raise ToolError("--inspect-node must be a node's entity id (0 or more)")
@@ -1974,6 +1979,10 @@ def road_args(ns):
         args["snap"] = ns.snap
     if ns.dry_run:
         args["dryRun"] = True
+    if ns.engine_check:
+        if not ns.dry_run:
+            raise ToolError("--engine-check goes with --dry-run only")
+        args["engineCheck"] = True
     return args
 
 
@@ -3580,8 +3589,10 @@ def make_parser():
                     "node (default 5, 0: never); never a node without a junction set-up (BaseNodeConfig; this "
                     "command gives its new nodes one): the next one, else refused")
     rd.add_argument("--dry-run", action="store_true", help="no build: the template, the ends (snapped or on the "
-                    "terrain), the length and the set-ups checked here, then the same proposal asked of the engine "
-                    "(makeProposalData: errors, collisions, cost); when that cannot be had, the probe's checks only")
+                    "terrain), the length and the set-ups checked here only; the engine is not asked")
+    rd.add_argument("--engine-check", action="store_true", help="with --dry-run only: also ask the engine about the "
+                    "same proposal a build sends (makeProposalData: errors, collisions, cost). Counts as changing "
+                    "the game: ask for the game first")
     rd.add_argument("--inspect-node", type=int, metavar="ID", help="read only, alone: what road reads of one node "
                     "(the street system's pieces there, the construction it belongs to and whether it is frozen, its "
                     "junction set-up, the octree's pieces within 1, 5 and 20 m) and what road would do with it")

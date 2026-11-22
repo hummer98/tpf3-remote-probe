@@ -319,7 +319,7 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   道路・線路の空いた端と位置。`connect --from` の候補。`connectable`: `road` でつなげる所。`road` を参照)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
   `spent`、`errors`、`warnings`、`collisions` (邪魔をしている id)、送った `params`、`at` (使った z と `zFrom`)。断られた
   ときは `ok: false` で、エンジンの文言が `error` に入ります。
-- `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run` は聞きます。`makeProposalData` は
+- `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は
   `engine/util.d.tl:939` では `Proposal` 用ですが、GUI のスレッドでは `SimpleProposal` を受けます。建物のほうはまだ
   聞いていません)。プローブが確認するのは、名前・送る params・高さと、
   点から 30 m の中の建物 (`near`。箱で見るだけの大まかなもの) です。答えは `checked: false` で、`buildable` はありません。
@@ -386,6 +386,7 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
 
 ```
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # エンジンに聞く (ゲームを変える側)
 python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
 ```
 
@@ -434,12 +435,17 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの nod
   `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい
   道路が見つからないときは `warning` を付けます。template や `BaseEdgeType` / `RoadType` の enum が読めないときは、
   何も送らずに断ります。
-- `--dry-run` は何も送りません。建てるときに送るのと同じ proposal (設定も含む) を作り、
+- `--dry-run` は何も送らず、エンジンにも聞きません。プローブが確かめた計画だけを返します (`checked: false`、
+  `engineCheck: "not asked (use --engine-check)"`)。ほかの dry-run と同じく、安全に使えます。
+- `--dry-run --engine-check` (`--engine-check` は `--dry-run` と一緒にだけ使う): 建てるときに送るのと同じ proposal
+  (設定も含む) も作り、
   `api.engine.util.proposal.makeProposalData` (proposal だけ、だめなら context も渡す) でエンジンに聞きます。
   呼ぶのは guiUpdate の中で、レシピの本体では呼びません。答えは `checked: true`、`engineCheck` (使った形)、`buildable`、
   エンジンの `cost`・`errors`・`warnings`・`collisions`・`critical`、`balance`。エンジンが断るものは `ok: false` で、文言が
   `error` に入ります。`makeProposalData` が無いか、どちらの形でもエラーになるときは、プローブの計画だけを返します
-  (`checked: false`、`engineCheck: "not available: ..."`)。
+  (`checked: false`、`engineCheck: "not available: ..."`)。エンジンの評価は pcall で守れないネイティブのコードを通る
+  (そこで assertion が出るとゲームが終わる) ので、tf3ctl はこれをゲームを変える命令に数えます。統括から時間をもらって、
+  テスト用のセーブでだけ使ってください。
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ

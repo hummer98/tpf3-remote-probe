@@ -1170,6 +1170,16 @@ function M.new(ctx)
 				end
 			end
 		end
+		if r.dryRun and not r.engineCheck then
+			-- the probe's own checks only, nothing made for the engine: a dry run is to be safe to run without asking
+			-- for the game (the shared rules), and the engine's evaluation might assert where pcall cannot catch it
+			out.ok, out.dryRun, out.checked = true, true, false
+			out.engineCheck = "not asked (use --engine-check)"
+			out.why = "checked here: the template, the ends (a road node within snap, or the terrain's height), the " ..
+				"length and the set-ups planned; the engine's check (collisions, terrain, money) comes with " ..
+				"--engine-check or a build"
+			return answer(c.id, out)
+		end
 		local sp = api.type.SimpleProposal.new()
 		local nodes, nextId = {}, -1
 		local function endNode(e)
@@ -1238,7 +1248,7 @@ function M.new(ctx)
 		if #cfgRemove > 0 then sp.streetProposal.nodeConfigsToRemove = cfgRemove end
 		out.newNodes, out.nodeConfigs = #nodes, #cfgAdd
 		if r.dryRun then
-			-- the same proposal a build sends, asked of the engine and not sent
+			-- (engineCheck) the same proposal a build sends, asked of the engine and not sent
 			out.dryRun = true
 			local v, form = engineCheck(sp)
 			if not v then

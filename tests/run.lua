@@ -7674,7 +7674,10 @@ test("core.roadRequest: from and to (z optional), snap, type, dry run; every bad
 	local r = core.roadRequest({ from = "1,2", to = { 3, 4, 5 } })
 	eq(r.from[1], 1); eq(r.from[3], nil); eq(r.to[3], 5); eq(r.snap, 5, "the default"); eq(r.type, nil); eq(r.dryRun, false)
 	r = core.roadRequest({ from = "1,2", to = "30,4", snap = 0, type = " town_new_small ", dryRun = true })
-	eq(r.snap, 0); eq(r.type, "town_new_small"); eq(r.dryRun, true)
+	eq(r.snap, 0); eq(r.type, "town_new_small"); eq(r.dryRun, true); eq(r.engineCheck, false)
+	eq(core.roadRequest({ from = "1,2", to = "30,4", dryRun = true, engineCheck = true }).engineCheck, true)
+	local no, why = core.roadRequest({ from = "1,2", to = "30,4", engineCheck = true })
+	eq(no, nil); truthy(why:find("engineCheck goes with dryRun", 1, true), why)
 	for _, bad in ipairs({
 		{ {}, "give from" }, { { from = "1,2" }, "give to" }, { { from = "1", to = "2,3" }, "at least x,y" },
 		{ { from = "1,2,3,4", to = "2,3" }, "at most 3" }, { { from = "a,2", to = "2,3" }, "finite" },
@@ -8035,8 +8038,12 @@ end)
 test("road --dry-run: the plan, nothing sent; no ids in the result or no callback: the piece found between the ends", function()
 	local g = roadWorld()
 	local a = roadRun(g, 958, '{ from = "102,1", to = "200,0", dryRun = true }')
-	truthy(a.ok, a.error); eq(a.dryRun, true); eq(a.checked, true); eq(a.buildable, true); eq(a.from.node, 8001); eq(a.template, TOWN_OLD)
-	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 1)
+	truthy(a.ok, a.error); eq(a.dryRun, true); eq(a.checked, false); eq(a.buildable, nil); eq(a.from.node, 8001); eq(a.template, TOWN_OLD)
+	eq(a.engineCheck, "not asked (use --engine-check)")
+	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 0, "a dry run alone never asks the engine")
+	a = roadRun(g, 9581, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(g.proposalDataCalls, 1, "asked with engineCheck")
+	eq(#g.buildCmds, 0)
 	g = roadWorld({ noStreetResults = true })
 	a = roadRun(g, 959, '{ from = "102,1", to = "200,0" }')
 	truthy(a.ok, a.error); truthy(a.edge, "found"); eq(g.edges[a.edge].node0, 8001)
@@ -8056,39 +8063,39 @@ test("road --dry-run: the plan, nothing sent; no ids in the result or no callbac
 end)
 
 -- road --dry-run asks the engine (makeProposalData) about the very proposal a build would send
-test("road --dry-run: the engine's verdict (makeProposalData) on the proposal a build sends; refused ones; nothing sent", function()
+test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on the proposal a build sends; refused ones; nothing sent", function()
 	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end })
-	local a = roadRun(g, 1010, '{ from = "102,1", to = "200,0", dryRun = true }')
+	local a = roadRun(g, 1010, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(a.cost, 1000, "the engine's cost")
 	eq(a.engineCheck, "makeProposalData (SimpleProposal)", "the proposal alone first (Overpass Builder's form)")
 	eq(a.nodeConfigs, 2, "the set-ups planned, as a build's"); eq(a.newNodes, 1)
 	eq(#g.buildCmds, 0); eq(#g.streetCmds, 0, "nothing recorded as sent"); eq(g.balance, a.balance)
 	-- a collision: not buildable, an error, the collisions; nothing sent
-	a = roadRun(g, 1011, '{ from = "0,1500", to = "0,1600", dryRun = true }')
+	a = roadRun(g, 1011, '{ from = "0,1500", to = "0,1600", dryRun = true, engineCheck = true }')
 	eq(a.ok, false); eq(a.dryRun, true); eq(a.checked, true); eq(a.buildable, false); eq(a.collisions[1], 4343)
 	truthy(a.error:find("the engine would refuse it: Collision", 1, true), a.error)
 	truthy(a.error:find("nothing sent", 1, true))
 	-- money
 	g.balance = 10
-	a = roadRun(g, 1012, '{ from = "0,500", to = "0,600", dryRun = true }')
+	a = roadRun(g, 1012, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true }')
 	eq(a.ok, false); truthy(a.error:find("Not enough money", 1, true), a.error)
 	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 3)
 	-- the form with a Context: taken after the proposal alone raises; the proposal alone is never sent twice
 	g = roadWorld({ proposalDataTwoArgs = true })
-	a = roadRun(g, 1013, '{ from = "102,1", to = "200,0", dryRun = true }')
+	a = roadRun(g, 1013, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.checked, true); eq(a.engineCheck, "makeProposalData (SimpleProposal, Context)"); eq(g.proposalDataCalls, 2)
 	g = roadWorld({ proposalDataOneArg = true })
-	a = roadRun(g, 1016, '{ from = "102,1", to = "200,0", dryRun = true }')
+	a = roadRun(g, 1016, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.engineCheck, "makeProposalData (SimpleProposal)"); eq(g.proposalDataCalls, 1)
 	-- not to be had: the probe's own answer, and why
 	g = roadWorld({ noSimpleProposalData = true })
-	a = roadRun(g, 1014, '{ from = "102,1", to = "200,0", dryRun = true }')
+	a = roadRun(g, 1014, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.checked, false); eq(a.buildable, nil)
 	truthy(a.engineCheck:find("not available", 1, true) and a.engineCheck:find("Proposal expected", 1, true), a.engineCheck)
 	truthy(a.why:find("could not be had", 1, true), a.why)
 	g = roadWorld()
 	api.engine.util.proposal = nil
-	a = roadRun(g, 1015, '{ from = "102,1", to = "200,0", dryRun = true }')
+	a = roadRun(g, 1015, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.checked, false); truthy(a.engineCheck:find("is not there", 1, true), a.engineCheck)
 	eq(#g.buildCmds, 0); truthy(not g.crashed, g.crashed)
 end)
@@ -8180,7 +8187,7 @@ test("road to an industry: an arm's far end joins; the mouth joins with its set-
 	eq(#st.nodeConfigsToAdd, 1); eq(st.nodeConfigsToAdd[1].entity, -1, "only the new node's")
 	eq(g.edges[a.edge].node1, mouth.node)
 	-- dry run to the mouth: the engine's verdict, the same plan
-	a = roadRun(g, 1033, '{ from = "180,200", to = "212.1,259.5", dryRun = true }')
+	a = roadRun(g, 1033, '{ from = "180,200", to = "212.1,259.5", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.checked, true); eq(a.to.nodeConfigKept, true)
 	-- the frozen inner end: refused, dry run too, nothing sent or asked
 	local calls, sent = g.proposalDataCalls, #g.buildCmds
@@ -8318,7 +8325,7 @@ test("road snap: a town road's seam node the octree misses near it is found (pie
 	end
 	-- the town's node has its set-up (the network's nodes have one, as a town's would: not read in a game)
 	local g = world(4)
-	local a = roadRun(g, 1090, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3, dryRun = true }')
+	local a = roadRun(g, 1090, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3, dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.from.node, 4066, "the seam node"); eq(a.from.snapped, 0); eq(a.from.passedOver, nil)
 	eq(a.from.laneRules, 4, "a junction of three"); eq(a.from.snapNote, nil); eq(a.checked, true)
 	a = roadRun(g, 1091, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3 }')
