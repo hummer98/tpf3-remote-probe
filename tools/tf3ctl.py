@@ -2038,8 +2038,9 @@ def water_args(ns):
 def road_inspect_args(ns):
     """road --inspect-node ID (read only): the node alone; nothing else goes with it."""
     if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run \
-            or ns.engine_check:
-        raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run)")
+            or ns.engine_check or ns.remove_fields:
+        raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run, "
+                        "--engine-check, --remove-fields)")
     if ns.inspect_node < 0:
         raise ToolError("--inspect-node must be a node's entity id (0 or more)")
     return {"node": ns.inspect_node}
@@ -2073,6 +2074,8 @@ def road_args(ns):
         if not ns.dry_run:
             raise ToolError("--engine-check goes with --dry-run only")
         args["engineCheck"] = True
+    if ns.remove_fields:
+        args["removeFields"] = True
     return args
 
 
@@ -3815,6 +3818,9 @@ def make_parser():
     rd.add_argument("--engine-check", action="store_true", help="with --dry-run only: also ask the engine about the "
                     "same proposal a build sends (makeProposalData: errors, collisions, cost). Counts as changing "
                     "the game: ask for the game first")
+    rd.add_argument("--remove-fields", action="store_true", help="let the road take farm fields in its way (the "
+                    "context's gatherFields, as the base's tools: the engine warns that fields will be removed); "
+                    "buildings, tracks and the rest still refuse it. Test saves only (changes the game)")
     rd.add_argument("--inspect-node", type=int, metavar="ID", help="read only, alone: what road reads of one node "
                     "(the street system's pieces there, the construction it belongs to and whether it is frozen, its "
                     "junction set-up, the octree's pieces within 1, 5 and 20 m) and what road would do with it")

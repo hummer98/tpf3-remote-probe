@@ -1761,6 +1761,13 @@ class QuitLaunchTest(unittest.TestCase):
                     ["--from", "0,0", "--to", "1,1", "--snap", "-1"], ["--from", "0,0", "--to", "1,1", "--type", " "]):
             with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
                 tf3ctl.road_args(p.parse_args(["road"] + bad))
+        # --remove-fields: sent as removeFields; a build with it changes the game, as any road build
+        rd = p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--remove-fields"])
+        self.assertEqual(tf3ctl.road_args(rd)["removeFields"], True)
+        self.assertNotIn("removeFields", tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1"])))
+        self.assertTrue(tf3ctl.changes_game("road", tf3ctl.road_args(rd)))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--remove-fields"]))
         # --engine-check: with --dry-run only; it counts as changing the game, a plain dry run does not
         rd = p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--engine-check"])
         args = tf3ctl.road_args(rd)
