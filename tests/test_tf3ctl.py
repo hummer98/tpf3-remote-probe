@@ -3510,6 +3510,44 @@ class ModhubPublishUpdateTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 1, "only the dry run")
         self.assertIsNone(tf3ctl.read_pending())
 
+    def test_previous_revision_is_one_or_more(self):
+        for bad in ("0", "-3"):
+            self.refused("whole number of 1 or more", *(self.UPDATE + ("--previous-revision", bad)))
+
+    def test_only_uploads_mod_io_took_count_as_the_last_revision(self):
+        self.add_history(revision=10001)
+        self.add_history(revision=10003, outcome="partial")
+        self.add_history(revision=10004, outcome="failed")  # with a mod.io id written by some other version
+        self.add_history(revision=10005, outcome="no answer")
+        self.revision(10004)
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--dry-run",)))
+        self.assertEqual(res["update"]["previousRevision"], 10003)
+        self.add_history(revision=10004, outcome="success, fileid missing")
+        self.sent = []
+        self.refused("is not above 10004", *self.UPDATE)
+
+    def test_a_first_upload_records_its_revision_for_the_next_update(self):
+        os.remove(os.path.join(self.meta, "mod.io_fileid.txt"))
+        self.revision(10001)
+        os.remove(os.path.join(self.meta, "mod.io_fileid.txt"))
+
+        def first():
+            with open(os.path.join(self.meta, "mod.io_fileid.txt"), "w") as f:
+                f.write(self.MODIO)
+            return {"ok": True, "publishCalled": True, "modId": self.MODIO, "result": {"success": True}}
+        self.answers = [{"ok": True, "dryRun": True}, first]
+        res = self.run_publish(*self.FULL)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual((self.mark_at_send[1]["firstUpload"], self.mark_at_send[1]["revision"]), (True, 10001))
+        h = self.history()[-1]
+        self.assertEqual((h["mode"], h["revision"], h["modId"]), ("firstUpload", 10001, self.MODIO))
+        # the update after it needs no --previous-revision
+        self.revision(10002)
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--dry-run",)))
+        self.assertEqual((res["update"]["previousRevision"], res["update"]["previousFrom"]), (10001, "publish_history.jsonl"))
+
     def test_a_refused_update_dry_run_leaves_no_mark(self):
         self.answers = [{"ok": False, "error": "mod.io holds no details of mod 6543965", "publishCalled": False}]
         res = self.run_publish(*(self.UPDATE + ("--previous-revision", "10001")))
@@ -3579,6 +3617,60 @@ class ModhubPublishEndToEndTest(unittest.TestCase):
         with open(tf3ctl.history_path(), encoding="utf-8") as f:
             self.assertEqual(json.loads(f.readlines()[-1])["outcome"], "success")
         # the fileid is there now: the tool refuses on its own (exit 2), before the mod sees anything
+        code, res = self.ctl(*full)
+        self.assertEqual(code, 2)
+
+
+class ModhubPublishUpdateEndToEndTest(unittest.TestCase):
+    """An update through real files, against the fake game in its main menu with the mod on mod.io: the tool's
+    update and modioId reach the mod, which answers mode update; the history keeps the revision, and the same
+    revision a second time is refused by the tool."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp()
+        cls.dir = os.path.join(cls.root, "recordings")
+        cls.meta = make_staging(cls.root, fileid="6543965", revision=10003)
+        cls.game = subprocess.Popen(["luajit", os.path.join(ROOT, "tests", "fake_game.lua"), cls.root, "60", "menu",
+                                     "modhub-update"], stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 10
+        while not glob.glob(os.path.join(cls.dir, "remote_probe__cmd_*.lua")):
+            if time.time() > deadline:
+                raise RuntimeError("the fake game did not start")
+            time.sleep(0.05)
+        os.environ["TF3_REMOTE_DIR"] = cls.dir
+        os.environ["TF3_ASSUME_RUNNING"] = "1"
+        for path in (tf3ctl.pending_path(), tf3ctl.history_path()):
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+    tearDownClass = ModhubPublishEndToEndTest.tearDownClass
+    ctl = ModhubPublishEndToEndTest.ctl
+
+    def test_update_dry_run_then_the_update_then_the_same_revision_is_refused(self):
+        full = ("modhub", "publish", FU, "--public", "yes", "--changelog", "Wording.", "--timeout", "60")
+        # without the previous revision (nothing in the history), and with --first-upload: refused by the tool
+        code, res = self.ctl(*(full + ("--dry-run",)))
+        self.assertEqual(code, 2)
+        code, res = self.ctl(*(full + ("--dry-run", "--first-upload")))
+        self.assertEqual(code, 2)
+        code, res = self.ctl(*(full + ("--dry-run", "--previous-revision", "10001")))
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["mode"], res["modioId"], res["wouldPublish"], res["publishCalled"]),
+                         ("update", "6543965", True, False))
+        self.assertEqual(res["checks"]["modhubIdValue"], "6543965")
+        self.assertEqual((res["update"]["modioTitle"], res["update"]["modioVersion"], res["update"]["revision"],
+                          res["update"]["previousRevision"]), ("Auto Force Unload", "10001", 10003, 10001))
+        self.assertIsNone(tf3ctl.read_pending())
+        code, res = self.ctl(*(full + ("--previous-revision", "10001")))
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["publishCalled"])
+        self.assertEqual((res["modId"], res["fileid"]), ("6543965", "6543965"))
+        self.assertTrue(res["pendingCleared"])
+        with open(tf3ctl.history_path(), encoding="utf-8") as f:
+            h = json.loads(f.readlines()[-1])
+        self.assertEqual((h["outcome"], h["mode"], h["revision"], h["modId"]), ("success", "update", 10003, "6543965"))
+        # the same revision again: the tool refuses it from the history (exit 2), before the mod sees anything
         code, res = self.ctl(*full)
         self.assertEqual(code, 2)
 

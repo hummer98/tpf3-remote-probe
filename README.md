@@ -672,8 +672,9 @@ behind), then writes a **publish mark**, `$XDG_STATE_HOME/tf3ctl/publish_pending
 without it; folder, owner, time, visibility, first upload or update, mod.io id, revision), and only then sends the
 upload. While a mark is there, every publish
 is refused. The mark goes only (1) when the upload succeeded without partial errors and the fileid file appeared
-(within 60 s) holding the mod.io id the game answered (for an update: the same id as before; an update the game
-answers with another mod.io id is not a success, and the mark stays), or (2) by `modhub publish-clear --yes`, which a person runs
+(within 60 s) holding the mod.io id the game answered (for an update the file is there from before, so this only
+compares the game's answer with its id; an update the game answers with another mod.io id is not a success, and
+the mark stays), or (2) by `modhub publish-clear --yes`, which a person runs
 after looking at the account's mods on mod.io (refused while the running game says the upload is still
 Publishing). Any other end (a failure, partial errors, a refusal after the mark, a timeout, a lost game) leaves it.
 Every upload sent also adds one line to `publish_history.jsonl` next to the mark (time, owner, folder, visibility,

@@ -2629,6 +2629,15 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 				levelPc = "Warning", levelConsole = "Warning" } },
 		{ folder = "example_mod_1", title = "Example" },
 	} } or nil
+	-- modhub-update: the force unload one is on mod.io already (mod 6543965, public) and an upload updates it
+	if arg[4] == "modhub-update" then
+		modhub = { fileidDir = dir .. "/staging_area", staging = {
+			{ folder = "hummer_force_unload_default_1", title = "Force Unload by Default", modhubId = "6543965",
+				details = { visible = true, title = "Auto Force Unload", modId = "6543965", version = "10001" },
+				publish = { modId = "6543965" } },
+			{ folder = "example_mod_1", title = "Example" },
+		} }
+	end
 	local g = M.new(dir, { saves = saves, maxSpeed = 40, menu = arg[3] == "menu", modhub = modhub,
 		entities = { TOWN = { 11, 12 }, LINE = { 21 } }, names = { [11] = "Emsworth", [12] = "Emsworth Bay", [21] = "Bus 1" },
 		positions = { [11] = { 0, 0 } },

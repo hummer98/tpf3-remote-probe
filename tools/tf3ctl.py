@@ -2257,6 +2257,10 @@ def uploaded_revision(name, modio_id):
             continue
         if not isinstance(h, dict) or h.get("folder") != name or str(h.get("modId")) != modio_id:
             continue
+        # only the outcomes where mod.io took the upload: a failed one may be sent again with the same revision
+        outcome = str(h.get("outcome") or "")
+        if not (outcome == "partial" or outcome.startswith("success")):
+            continue
         rev = h.get("revision")
         if isinstance(rev, int) and not isinstance(rev, bool) and (best is None or rev > best):
             best = rev
@@ -2304,6 +2308,8 @@ def publish_local_checks(name, folder=None, changelog=None, first_upload=True, p
                         "mod takes --first-upload; nothing was sent" % (name, FILEID_NAME))
     if first_upload and previous is not None:
         raise ToolError("--previous-revision is only for an update; nothing was sent")
+    if previous is not None and previous < 1:
+        raise ToolError("--previous-revision is a revision, a whole number of 1 or more; nothing was sent")
     update = None if first_upload else publish_update_checks(name, mod_dir, modio_id, changelog, previous)
     cover = os.path.join(meta, "0.png")
     if not os.path.isfile(cover):
@@ -2550,7 +2556,8 @@ def cmd_modhub_publish_clear(ns):
 
 
 def cmd_modhub(ns):
-    """My Mods in the main menu: status (read only), validate (one staging mod), publish (one new mod)."""
+    """My Mods in the main menu: status (read only), validate (one staging mod), publish (one new mod, or an update
+    of the mod.io page of the folder's fileid)."""
     if ns.action == "publish":
         return cmd_modhub_publish(ns)
     if ns.action == "publish-clear":

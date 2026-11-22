@@ -6787,6 +6787,7 @@ test("modhub publish update refuses another mod.io id, a mod without one, one mo
 		{ fuOnModio({ details = false }), nil, "holds no details of mod 6543965" }, -- deleted on mod.io (remoteMissing)
 		{ fuOnModio({ details = { visible = true, modId = FU_ID, found = false } }), nil, "holds no details" },
 		{ fuOnModio({ details = { visible = true, modId = "7000002" } }), nil, "details are of mod 7000002" },
+		{ fuOnModio({ details = { visible = true } }), nil, "details are of mod nil" }, -- an id that cannot be read
 		{ fuOnModio(), { "public = false" }, "cannot make it hidden" },
 		{ fuOnModio({ logo = false }), nil, "no valid cover image" },
 	}

@@ -466,7 +466,8 @@ function M.new(ctx)
 
 	local function publishPayload(job)
 		return { folder = job.args.folder, value = job.value, phase = job.phase, seconds = appTime() - job.started,
-			mode = job.args.update and "update" or "firstUpload", modioId = job.args.modioId, dryRun = job.args.dryRun, publishCalled = job.publishCalled == true, settings = plannedSettings(job.args),
+			mode = job.args.update and "update" or "firstUpload", modioId = job.args.modioId,
+			dryRun = job.args.dryRun, publishCalled = job.publishCalled == true, settings = plannedSettings(job.args),
 			checks = job.checks, validation = job.result }
 	end
 
@@ -524,12 +525,13 @@ function M.new(ctx)
 				return c, "the staging mod's mod.io id is " .. tostring(c.modhubIdValue) .. ", not " .. want
 					.. " (_metadata/mod.io_fileid.txt): not updated"
 			end
-			if remote == nil or remote.found == false then
+			-- found and the mod.io id must read as expected: one that cannot be read is refused too
+			if remote == nil or remote.found ~= true then
 				return c, "mod.io holds no details of mod " .. want .. " (deleted on mod.io, or not synced): the game "
 					.. "would make a new mod page; not updated"
 			end
-			if remote.modId ~= nil and remote.modId ~= want then
-				return c, "mod.io's details are of mod " .. remote.modId .. ", not " .. want .. ": not updated"
+			if remote.modId ~= want then
+				return c, "mod.io's details are of mod " .. tostring(remote.modId) .. ", not " .. want .. ": not updated"
 			end
 			if remote.visible == true and job.args.public == false then
 				return c, "mod " .. want .. " is public on mod.io, and the page cannot make it hidden (its Set Public "
