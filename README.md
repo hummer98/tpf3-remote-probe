@@ -34,8 +34,8 @@ The file format is described at the top of `content/remote.script.lua`.
 A few commands need the GUI's react state (opening windows, firing events, the vehicle store's code path). For those
 the mod replaces the speed buttons' recipe with the same buttons plus ×8 / ×16 buttons and a small label, and passes requests to that
 recipe through the GUI save data. So **the speed buttons must be on screen** for `window`, `event`, `tool`, and the
-`--via gui` way of the vehicle and line commands (without them those fail after 60 s with "no word from the speed
-control").
+`--via gui` way of the vehicle and line commands (without them `window`, `event` and `tool` fail after 10 s with
+`"relayed": false`, the vehicle and line commands after 60 s with "no word from the speed control").
 
 In the main menu there is no game script yet. For that, the game can be launched with
 `--script hummer_remote_probe::/startup.lua`, which runs the same command loop in the menu (status, saves, info,
@@ -187,7 +187,7 @@ python3 tools/tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer on
 the entity exists. Refused in the main menu.
 
 `build-tool` opens the construction menu's placing tool for one construction, with two base events sent through
-the speed control one after the other (1.5 s apart, since it reads every 0.5 s and keeps only the newest):
+the speed control one after the other (1.5 s apart, so the menu is open before the next one):
 `setMenuFilter` with the construction's tag (`resName`, or `resName@N` with `--template`), so the menu lists only
 it, then `constructionMenuSelectTabForConstruction`, which opens its tab and picks the first item. Undoing it:
 
@@ -212,8 +212,8 @@ and its drawn cursor move, the real pointer does not. It never sends a button or
 `camera --set` to the place, `build-tool --menu rail`, `pointer 0.5,0.47`, then `frame`; reload the save (unsaved)
 to put the menu away. With the company's money at 0 the tooltip says "not enough money" instead of the cost.
 
-The events share the speed control's one request slot with `window`, `event` and `tool`: one of those sent
-within the 1.5 s gap, or just before the clear, is overwritten (or overwrites the tab request). Wait for
+The events go into the same queue as `window`, `event` and `tool` (see `event` below), so nothing is overwritten;
+one of those sent within the 1.5 s gap fires between the build tool's events, which may close its menu. Wait for
 `build-tool` to finish before sending them.
 
 ### Vehicles, money and lines
@@ -844,13 +844,24 @@ mod's code, and was checked against no running copy of it.
   windows do. Events can only be fired from inside react, so the GUI script writes the request into the GUI save
   data (`api.gui.game.setGuiSaveData`, kept per mod in C++) and the speed buttons' recipe reads it in
   `react.enqueueJoin`. A plain Lua table shared between the two never reached the recipe (they are separate Lua
-  states). Requests left from the previous game are dropped on load, so a request sent right after a load may time
-  out.
+  states). Requests left from the previous game are dropped on load, so a request sent right after a load may be
+  answered "took it as old; not run". The answer waits for the recipe, as `event`'s does.
   With `--manager` (a line by `--line NAME` or `--entity ID`, the company's own only) it fires
   `openVehicleManager` with `{openWithLineEntity = line}` instead, as the line window's "Manage Line" button and the
   statistics' line rows do; the manager selects the line on its next step. Not checked in game yet.
-- **`event`** takes a react event name and, as its parameter, a JSON object of plain values. Its answer and `tool`'s only say
-  that the request was written; whether a window opened shows in `frame` or the log.
+- **`event`** takes a react event name and, as its parameter, a JSON object of plain values. `window`, `event`,
+  `tool` and `build-tool`'s events go into a queue in the GUI save data (`opens`), and the recipe fires them one per
+  read (every 0.5 s), oldest first. Until 2026-11-22 this was a single slot: of two events sent in the same second
+  only the second was fired. The answer comes once the recipe has fired the event and said so (under
+  `<mod>.open`), with `"relayed": true` and `relayedInSec` (about 0.5-1 s, plus 0.5 s for each request queued
+before it), so a script that sends events one
+  after another gets them in that order. The answer is an error when the recipe's `fireEvent` raised
+  (`"relayed": true`, "relayed, but ..."), when the recipe did not take it within 10 s (`"relayed": false`: no game
+  on screen, the ESC menu or a dialog, or another mod's speed control in its place; it is then dropped and never
+  fires later; the 10 s count from when it was queued, so only about 19 can wait at once), or when it was left from
+before the recipe's first read (a load). A request still waiting when a game loads gets no answer: tf3ctl gives
+up after 20 s with "no answer". Relayed means fired, not that a
+  listener acted on it: whether a window opened shows in `frame` or the log.
 - **`tool`** pushes the module's tool on the game's tool stack as the base buttons do
   (`gameCtx.toolStack:get():getApi().push(tool, nil, {gameCtx})`). Only tools a module returns can be opened:
   music (`/gui/music_player/music_player.tl`) and calendar (`game_bar_widgets.CalendarEditorTool`); statistics are

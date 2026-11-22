@@ -35,6 +35,8 @@ local REPORT_KEY = MOD .. ".vehicles"
 local LINE_REPORT_KEY = MOD .. ".lines"
 local TERRAIN_REPORT_KEY = MOD .. ".terrain"
 local TOWN_REPORT_KEY = MOD .. ".town"
+-- what became of each window, event and tool request (opens): relayed, failed or skipped
+local OPEN_REPORT_KEY = MOD .. ".open"
 local REPORTS_KEPT = 10
 
 -- a replacement another mod installed before this one: drawn instead of the base buttons and our ×8 / ×16, so
@@ -65,11 +67,17 @@ end
 
 -- the window, event or tool of one request (main thread, in the join). gameCtx: the base passes it in the speed
 -- control's params; its tool stack is what the base's own buttons push their tools onto.
+-- Returns the first failure (text) or nil: the guiUpdate script answers the command with it.
 local function perform(open, gameCtx, warnedRef)
+	local first
+	local function failed(key, msg)
+		warnOnce(warnedRef, key, msg)
+		first = first or msg
+	end
 	if open.entity then
 		-- as the base statistics and line windows open an entity's window
 		local ok, err = pcall(react.fireEvent, nil, "selectEntity", { entity = open.entity, stack = false })
-		if not ok then warnOnce(warnedRef, "selectEntity " .. tostring(err), "selectEntity failed: " .. tostring(err)) end
+		if not ok then failed("selectEntity " .. tostring(err), "selectEntity failed: " .. tostring(err)) end
 	end
 	if open.manager then
 		-- as the line window's "Manage Line" button (entity_window/line/line.tl) and the statistics' line rows: the
@@ -77,12 +85,12 @@ local function perform(open, gameCtx, warnedRef)
 		-- An integer where the Lua has them: the GUI save data may hand the id back as a float
 		local line = math.tointeger and math.tointeger(open.manager) or open.manager
 		local ok, err = pcall(react.fireEvent, nil, "openVehicleManager", { openWithLineEntity = line })
-		if not ok then warnOnce(warnedRef, "openVehicleManager " .. tostring(err), "openVehicleManager failed: " .. tostring(err)) end
+		if not ok then failed("openVehicleManager " .. tostring(err), "openVehicleManager failed: " .. tostring(err)) end
 	end
 	if open.event then
 		local ok, err = pcall(react.fireEvent, nil, open.event.name, open.event.param)
 		local msg = "event " .. open.event.name .. " failed: " .. tostring(err)
-		if not ok then warnOnce(warnedRef, msg, msg) end
+		if not ok then failed(msg, msg) end
 	end
 	if open.tool then
 		local t = open.tool
@@ -95,7 +103,52 @@ local function perform(open, gameCtx, warnedRef)
 			if t.close then stack.pop(def, nil) else stack.push(def, nil, { gameCtx = gameCtx }) end
 		end)
 		local msg = "tool " .. t.module .. " failed: " .. tostring(err)
-		if not ok then warnOnce(warnedRef, msg, msg) end
+		if not ok then failed(msg, msg) end
+	end
+	return first
+end
+
+-- the reports on the window, event and tool requests, newest last: { seq, error, skipped }. Kept for the life of
+-- this Lua state, as the channels' reports below; the guiUpdate script matches them by seq, which never repeats.
+local openReports = { list = {} }
+-- the highest seq taken: in this Lua state, not the recipe's refs, as the channels' handled sets below. A speed
+-- control mounted again (its refs new) would otherwise take the waiting requests for old ones and never run them.
+-- nil until the first read of this Lua state. seq only grows (os.time based), so a later game's requests are newer.
+local opensSeen = { seq = nil }
+
+-- main thread (join)
+local function reportOpens(entries, warnedRef)
+	local list = openReports.list
+	for _, e in ipairs(entries) do list[#list + 1] = e end
+	while #list > core.OPEN_REPORTS_KEPT do table.remove(list, 1) end
+	local ok, err = pcall(function() api.gui.game.setGuiSaveData(OPEN_REPORT_KEY, { done = core.plain(list) }) end)
+	if not ok then warnOnce(warnedRef, "open report " .. tostring(err), "window/event report not written: " .. tostring(err)) end
+end
+
+-- main thread (join): the oldest request not yet run, one per read, so two requests sent close together both go,
+-- in the order they were sent, each in a join of its own (as two clicks would). seenRef (opensSeen): the highest
+-- seq taken;
+-- nil until the first read, whose requests are taken as old (a loaded save may still hold the last game's) and
+-- reported as skipped rather than run.
+local function performOpens(opens, seenRef, gameCtx, warnedRef)
+	local seen = seenRef.seq
+	if seen == nil then
+		local top, skipped = false, {}
+		for _, o in ipairs(opens) do
+			if not top or o.seq > top then top = o.seq end
+			skipped[#skipped + 1] = { seq = o.seq, skipped = true }
+		end
+		seenRef.seq = top
+		if #skipped > 0 then reportOpens(skipped, warnedRef) end
+		return
+	end
+	for _, o in ipairs(opens) do -- oldest first (core.openRequests)
+		if seen == false or o.seq > seen then
+			seenRef.seq = o.seq
+			local err = perform(o, gameCtx, warnedRef)
+			reportOpens({ { seq = o.seq, error = err } }, warnedRef)
+			return
+		end
 	end
 end
 
@@ -200,8 +253,6 @@ end
 
 local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(params)
 	local state = react.useState({ label = "", tip = "", buttons = true })
-	-- nil until the first read: a request already in the save data when the game loads is old, not opened
-	local seenSeq = react.useRef(nil)
 	local warnedRef = react.useRef(nil)
 	-- the newest params, for the join (a timer registered on an earlier render would see old ones)
 	local paramsRef = react.useRef(nil)
@@ -219,14 +270,9 @@ local SpeedControl = react.RegisterRecipe("HummerRemoteSpeedControl", function(p
 				local okV, errV = pcall(performChannel, ch, r[name] or {}, warnedRef)
 				if not okV then warnOnce(warnedRef, name .. " " .. tostring(errV), ch.what .. " requests failed: " .. tostring(errV)) end
 			end
-			local seq = r.open and r.open.seq or false
-			if seenSeq:get() == nil then
-				seenSeq:set(seq)
-			elseif seq and seq ~= seenSeq:get() then
-				seenSeq:set(seq)
-				local p = paramsRef:get()
-				perform(r.open, type(p) == "table" and p.gameCtx or nil, warnedRef)
-			end
+			local p = paramsRef:get()
+			local okO, errO = pcall(performOpens, r.opens, opensSeen, type(p) == "table" and p.gameCtx or nil, warnedRef)
+			if not okO then warnOnce(warnedRef, "opens " .. tostring(errO), "window/event requests failed: " .. tostring(errO)) end
 		end, "HummerRemoteSpeedControl:read")
 	end, READ_SEC)
 	local speed = react.useState(nil)

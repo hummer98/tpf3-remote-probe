@@ -34,7 +34,8 @@ tf3ctl.py  --答えを読み、JSON を出力し、古いファイルを消す
 いくつかのコマンドは GUI の react の状態を要します (ウィンドウを開く、イベントを送る、車両の店と同じ処理)。そのために
 MOD は速度ボタンのレシピを、同じボタンと ×8 / ×16 のボタンと小さな表示に差し替え、依頼を GUI の保存データでそのレシピに渡します。
 そのため、`window`・`event`・`tool` と、車両・路線のコマンドの `--via gui` では、**ゲーム画面に速度ボタンが出ている**
-必要があります (出ていなければ、60 秒後に「no word from the speed control」のエラーになります)。
+必要があります (出ていなければ、`window`・`event`・`tool` は 10 秒後に `"relayed": false` の、車両・路線は 60 秒後に
+「no word from the speed control」のエラーになります)。
 
 メインメニューには、まだゲームのスクリプトがありません。そこで、ゲームを `--script hummer_remote_probe::/startup.lua`
 付きで起動すると、同じコマンド処理がメニューで動きます (status・saves・info・load・newgame・poll・quit だけ)。
@@ -182,7 +183,7 @@ python3 tools/tf3ctl.py pointer 0.5,0.47 [--px]          # ゲームの中のポ
 距離・±2π を超える angle・±π/2 を超える pitch は断ります。`--entity` は entity があるかを確かめます。メインメニューでは断ります。
 
 `build-tool` は、建設メニューの 1 つの建物の配置ツールを開きます。本体のイベント 2 つを、速度ボタン経由で順に送ります
-(速度ボタンは 0.5 秒ごとに読み、最新の 1 つしか持たないので 1.5 秒あけます)。まず `setMenuFilter` にその建物のタグ
+(次を送る前にメニューが開くよう、1.5 秒あけます)。まず `setMenuFilter` にその建物のタグ
 (`resName`、`--template` 付きなら `resName@N`) を送ってメニューにそれだけを出し、次に `constructionMenuSelectTabForConstruction`
 でタブを開き、最初の品目を選ばせます。戻し方:
 
@@ -205,8 +206,8 @@ resName は実在する必要があります (`api.res.constructionRep`)。そ�
 ボタンやキーのイベントは決して送りません。表紙の撮り方: `camera --set` で場所を写し、`build-tool --menu rail`、`pointer 0.5,0.47`、
 `frame`。メニューは、セーブを読み直して (保存せずに) 片付けます。会社のお金が 0 だと、ツールチップはコストの代わりに資金不足と出ます。
 
-このイベントは、速度ボタンの依頼枠 1 つを `window`・`event`・`tool` と共有します。1.5 秒の間や解除の直前にそれらを送ると、
-どちらかが上書きされます。`build-tool` が済んでから送ってください。
+このイベントは `window`・`event`・`tool` と同じ列に入るので (下の `event` を参照)、上書きはされません。ただし 1.5 秒の間に
+それらを送ると、`build-tool` のイベントの間に割り込み、メニューを閉じることがあります。`build-tool` が済んでから送ってください。
 
 ### 車両・所持金・路線
 
@@ -790,12 +791,22 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   イベントは react の中からしか送れないので、GUI スクリプトが依頼を GUI の保存データ (`api.gui.game.setGuiSaveData`、
   ゲームが MOD ごとに C++ で持つ) に書き、速度ボタンのレシピが `react.enqueueJoin` で読みます。両者で共有した Lua の表
   は、レシピに届きませんでした (別の Lua 状態のため)。前のゲームの依頼はロードのときに捨てるので、ロード直後に送った
-  依頼は時間切れになることがあります。
+  依頼は「took it as old; not run」(古いものとして実行しなかった) の返事になることがあります。返事は `event` と同じく
+  レシピを待ちます。
   `--manager` を付けると (路線を `--line 名前` か `--entity ID` で。自社の路線だけ)、代わりに
   `openVehicleManager` を `{openWithLineEntity = 路線}` で送ります。路線の窓の「路線管理」ボタンと統計の路線の行と
   同じ道で、管理の窓が次のステップでその路線を選びます。ゲーム内ではまだ確認していません。
-- **`event`** は、react のイベント名と、引数として平らな値だけの JSON オブジェクトを取ります。`event` と `tool` の
-  返事は「依頼を書いた」までで、ウィンドウが開いたかは `frame` かログで見ます。
+- **`event`** は、react のイベント名と、引数として平らな値だけの JSON オブジェクトを取ります。`window`・`event`・`tool` と
+  `build-tool` のイベントは GUI の保存データの列 (`opens`) に入り、レシピが 1 回の読み取り (0.5 秒ごと) に 1 つずつ、
+  古い順に送ります。2026-11-22 までは枠が 1 つだけで、同じ秒に送った 2 つのイベントのうち後のほうしか送られませんでした。
+  返事は、レシピがイベントを送ってそれを (`<mod>.open` に) 書いてから返り、`"relayed": true` と `relayedInSec`
+  (0.5〜1 秒ほど。前に待っている依頼 1 つにつき 0.5 秒のびる) が入ります。続けて送るスクリプトは、その順に届きます。次のときは返事がエラーになります:
+  レシピの `fireEvent` が失敗した (`"relayed": true`、「relayed, but ...」)、レシピが 10 秒のうちに受け取らなかった
+  (`"relayed": false`。画面にゲームが無い、ESC メニューやダイアログ、別の MOD の速度ボタンが代わりにある。その依頼は
+  捨て、あとから送ることはありません。10 秒は列に入れたときから数えるので、一度に待てるのは 19 個ほど)、
+レシピが最初に読む前から残っていた (ロード)。ロードのときに待っている依頼には返事が来ず、tf3ctl が 20 秒後に
+「no answer」で終わります。「relayed」は送ったという意味で、
+  受け手が動いたかではありません。ウィンドウが開いたかは `frame` かログで見ます。
 - **`tool`** は、本体のボタンと同じく、モジュールのツールをゲームのツールスタックに積みます
   (`gameCtx.toolStack:get():getApi().push(tool, nil, {gameCtx})`)。開けるのはモジュールが返すツールだけです: music
   (`/gui/music_player/music_player.tl`)、calendar (`game_bar_widgets.CalendarEditorTool`)。統計は `statistics.tl`
