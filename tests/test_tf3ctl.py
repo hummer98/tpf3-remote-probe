@@ -23,13 +23,28 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Every tempfile.mkdtemp() here (many tests make one and leave it) lands in one folder for this run, which goes at the
 # end, even when tests fail or raise: tearDownModule, and atexit for a run stopped early. The folder is under
-# $REMOTE_PROBE_TEST_TMP, else $TMPDIR, else tests/.tmp (gitignored) -- not /tmp unless asked for, a small tmpfs that
-# once ran out of inodes with test leftovers. Set before anything else asks tempfile for a folder; the luajit
-# processes the tests start inherit it through $TMPDIR.
-_TEST_BASE = os.path.join(os.environ.get("REMOTE_PROBE_TEST_TMP") or os.environ.get("TMPDIR")
+# $REMOTE_PROBE_TEST_TMP, else $TMPDIR unless that is in /tmp, else tests/.tmp (gitignored) -- /tmp only when
+# REMOTE_PROBE_TEST_TMP asks for it: a small tmpfs that once ran out of inodes with test leftovers. Set before anything
+# else asks tempfile for a folder; the luajit processes the tests start inherit it through $TMPDIR. A killed run leaves
+# its folder: the next run removes such folders (py-* and tests/run.lua's run-*) once they are a day old.
+_TMPDIR = os.environ.get("TMPDIR")
+if _TMPDIR and (_TMPDIR.rstrip("/") == "/tmp" or _TMPDIR.startswith("/tmp/")):
+    _TMPDIR = None
+_TEST_BASE = os.path.join(os.environ.get("REMOTE_PROBE_TEST_TMP") or _TMPDIR
                           or os.path.join(ROOT, "tests", ".tmp"), "remote_probe_tests")
-os.makedirs(_TEST_BASE, exist_ok=True)
-TEST_RUN_DIR = tempfile.mkdtemp(prefix="py-", dir=_TEST_BASE)
+for _old in glob.glob(os.path.join(_TEST_BASE, "py-*")) + glob.glob(os.path.join(_TEST_BASE, "run-*")):
+    with contextlib.suppress(OSError):
+        if os.path.isdir(_old) and time.time() - os.path.getmtime(_old) > 86400:
+            shutil.rmtree(_old, ignore_errors=True)
+for _attempt in range(10):
+    # made again each time: another run that just finished may have removed the base
+    os.makedirs(_TEST_BASE, exist_ok=True)
+    try:
+        TEST_RUN_DIR = tempfile.mkdtemp(prefix="py-", dir=_TEST_BASE)
+        break
+    except FileNotFoundError:
+        if _attempt == 9:
+            raise
 tempfile.tempdir = TEST_RUN_DIR
 os.environ["TMPDIR"] = TEST_RUN_DIR
 
