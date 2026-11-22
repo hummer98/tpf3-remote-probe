@@ -556,8 +556,8 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
 ```
 python3 tools/tf3ctl.py modhub status [--folder my_mod_1] [--wait 30]   # 読むだけ
 python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
-python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." --first-upload [--dry-run] [--timeout 900]
-python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." [--previous-revision N] [--dry-run]   # 更新
+python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." --first-upload [--version X.Y.Z] [--dry-run] [--timeout 900]
+python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." [--previous-revision N] [--version X.Y.Z] [--dry-run]   # 更新
 python3 tools/tf3ctl.py modhub publish-clear --yes
 ```
 
@@ -605,7 +605,9 @@ mod.io に MOD があるときだけボタンの名前を「Update」にしま�
 MOD のページや公開にした MOD はゲームからは戻せないので、次のどれか1つでも外れると何も送りません。
 
 - フォルダが、publish の受け付ける2つの一覧の両方にある。`tools/tf3ctl.py` と `content/remote_core.lua` の
-  `MODHUB_PUBLISH_FOLDERS` (validate の一覧とは別)。自分の MOD に合わせて両方を直してください。
+  `MODHUB_PUBLISH_FOLDERS` (validate の一覧とは別)。自分の MOD に合わせて両方を直してください。mod.io に上げ済みの
+  フォルダは、`MODHUB_PUBLISHED_IDS` (両方のファイル) で mod.io の id にも結び付けてある: `--first-upload` は断り、
+  更新は fileid のファイルがその id のときだけ送る (fileid のファイルが消えると新規に見えてしまうため)。
 - `--public yes|no` (既定値なし) と、空でない `--changelog` が付いている。
 - staging のフォルダの `_metadata/mod.io_fileid.txt` (最初のアップロードのあとゲームが mod.io の id を書くファイルで、
   次のアップロードが同じページの更新になるのはこれのため): `--first-upload` のときは**無い**こと (あると2つ目のページが
@@ -623,6 +625,10 @@ MOD のページや公開にした MOD はゲームからは戻せないので�
   (mod.io が受け取ったもの: 成功・部分的なエラー・fileid が遅れた場合)。履歴に無いとき (履歴が revision を残す前の
   アップロード) は、`--previous-revision N` で今 mod.io にある revision を渡す。最初のアップロードでは断り、履歴に
   revision があるときはそれと同じでなければ断る。
+- `--version X.Y.Z` (付けなくてもよい。最初のアップロードでも更新でも): 頭に 0 の付かない整数で、Y と Z は 0〜99、
+  `mod.json` の `revision` を X*10000 + Y*100 + Z と読んだものと同じ (revision 10003 なら 1.0.3 だけ、revision 1 なら
+  0.0.1 だけ)。MOD も、道具が送る revision とあらためて比べる。MOD の dry-run が送らないと答えたとき (ゲームに入って
+  いる remote_probe が古く、無視した) は、道具がアップロードを断る。
 - ゲームの中で、最初のアップロード: MOD が Ready、`modhubId` が無効で mod.io に中身が無い (新規)。更新: MOD が Ready、
   `modhubId` が fileid のファイルの id で、mod.io にその MOD の中身がある (無いとページは「mod.io で消された、新しく
   作る」と出すので断る)。mod.io で公開の MOD に `--public no` は断る (そのときページの「Set Public」の欄は押せない。
@@ -636,16 +642,17 @@ MOD のページや公開にした MOD はゲームからは戻せないので�
 `--dry-run` は、検証を含めて上の全部を通し、送るはずの設定を返します。`publish` は呼びません。更新のときは、答えに
 `update` も入ります: mod.io の id (`modioId`)、上げる名前 (`name`、modinfo.json の) と今 mod.io にある名前・公開か・版
 (`modioTitle`・`modioVisible`・`modioVersion`)、新しい revision と前の revision (`revision`・`previousRevision`・
-`previousFrom`: 履歴か `--previous-revision` か)、変更欄。`--dry-run` が無いときも、
+`previousFrom`: 履歴か `--previous-revision` か)、変更欄。`--version` のときは、MOD が送る `additionalMetadata`
+(`{"version": "X.Y.Z"}`) も入ります。`--dry-run` が無いときも、
 道具はまず同じ dry-run を回し (そこで断られれば何も残らない)、それから **「送った」の印**
-`$XDG_STATE_HOME/tf3ctl/publish_pending.json` (無ければ `~/.local/state/tf3ctl/`。フォルダ・owner・時刻・公開か・最初か更新か・mod.io の id・revision) を書き、
+`$XDG_STATE_HOME/tf3ctl/publish_pending.json` (無ければ `~/.local/state/tf3ctl/`。フォルダ・owner・時刻・公開か・最初か更新か・mod.io の id・revision・version) を書き、
 そのあとでアップロードを送ります。印があるあいだは、どの publish も断ります。印が消えるのは、(1) アップロードが部分的な
 エラー無しで成功し、ゲームが返した mod.io の id と同じ中身の fileid のファイルが (60 秒以内に) できたとき (更新ではファイルが前から
 あるので、ゲームの答えをその id と比べるだけ。ゲームが別の mod.io の id を返した更新は成功とせず、印は残る)、(2) 人が
 mod.io のアカウントの MOD を見てから `modhub publish-clear --yes` を実行したとき (動いているゲームが Publishing と答える
 あいだは断る)、の2つだけです。ほかの終わり方 (失敗・部分的なエラー・印のあとでの拒否・時間切れ・ゲームが落ちた) では
 残ります。送ったアップロードは、成否にかかわらず、印の隣の `publish_history.jsonl` に1行ずつ残します (時刻・owner・
-フォルダ・公開か・最初か更新か・revision・結果・mod.io の id・fileid)。次の更新は、この revision と比べます。印があるあいだと、Publishing のために MOD が quit を断るあいだは、
+フォルダ・公開か・最初か更新か・revision・version (`--version`。無ければ null)・結果・mod.io の id・fileid)。次の更新は、この revision と比べます。印があるあいだと、Publishing のために MOD が quit を断るあいだは、
 `quit --kill` と `restart` は `--force` を付けてもゲームを kill しません。**アップロードの途中に、人がメニューから手で
 セーブを読んだりゲームを終えたりしないでください。**
 
@@ -653,7 +660,9 @@ mod.io のアカウントの MOD を見てから `modhub publish-clear --yes` �
 `PublishSettings` に、`setPublic` は `--public` (ページの「Set Public」の欄。初期値は新規の MOD では false、更新では
 mod.io での公開の状態)、`updateMetadata = true` (ページの初期値。新規の MOD では欄は押せない。更新では modinfo.json の
 name・summary・description をもう一度上げる)、`changeLog` は `--changelog`、
-`isSavegame = false`、`issuesConfirmed = false` (「Proceed Anyway」を聞いていない)。答えに全部入ります。
+`isSavegame = false`、`issuesConfirmed = false` (「Proceed Anyway」を聞いていない)。`--version` のときは
+`additionalMetadata = {version = "X.Y.Z"}` も (API の説明は「アップロードのメタデータに混ぜる自由な追加の情報」。ページは
+セーブデータのときだけ使う)。付けないときは additionalMetadata を設定しません。答えに全部入ります。
 
 `publish` を呼んだあとは、15 秒ごとに進み具合を返し、HasResult を最大 `--timeout` (既定 900 秒、コマンド全体) 待ちます。
 結果はゲームが返したとおりに返します。成功なら mod.io の id と部分的なエラー (ページの「Upload Failed」の一覧)、失敗なら
@@ -666,7 +675,8 @@ Publishing のあいだは `quit`・`load`・`newgame` を断るので、ゲー�
 - **ゲーム内で確認済み:** 最初のアップロード (2026-11-22)。mod.io が受け取り、fileid のファイルにその id が入った。
 - **ゲーム内では未確認:** 更新。ゲームが `mod.io_fileid.txt` を結果の時点で書くのか、ページの Ok (`abortPublish`) で
   書くのか。`setPublic = false` で mod.io では非公開になるのか。アップロードのあと mod.io の `version` に何が入るのか
-  (表示するだけで、比べには使わない)。
+  (表示するだけで、比べには使わない)。`--version` (additionalMetadata) が mod.io のファイルの版に入るのか (付けない
+  ときは、revision 10003 でゲームが「1.0」を送った)。
 
 ### 複数のクライアント
 
