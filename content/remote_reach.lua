@@ -152,12 +152,13 @@ local function keyOrder(a, b)
 	if na ~= nb then return na end
 	return tostring(a.key) < tostring(b.key)
 end
-function M.items(v, core)
+-- unsorted: in the order pairs gives (for the entries, where the order changes nothing and the list is long)
+function M.items(v, core, unsorted)
 	local out = {}
 	if v == nil then return out, "nil" end
 	if type(v) == "table" then
 		for k, x in pairs(v) do out[#out + 1] = { key = k, value = x } end
-		table.sort(out, keyOrder)
+		if not unsorted then table.sort(out, keyOrder) end
 		return out, "pairs"
 	end
 	local n = lenOf(v)
@@ -167,7 +168,7 @@ function M.items(v, core)
 	end
 	local ok = pcall(function() for k, x in pairs(v) do out[#out + 1] = { key = k, value = x } end end)
 	if ok and #out > 0 then
-		table.sort(out, keyOrder)
+		if not unsorted then table.sort(out, keyOrder) end
 		return out, "pairs"
 	end
 	return {}, n == 0 and "empty" or "unreadable"
@@ -178,7 +179,7 @@ end
 -- targets / entries / entity, `depth` levels down
 M.RAW_KEYS = 12
 function M.describeRaw(v, core, depth)
-	depth = depth or 3
+	depth = depth or 4
 	local d = { type = type(v) }
 	if v == nil or (type(v) ~= "table" and type(v) ~= "userdata") then
 		if v ~= nil then d.value = tostring(v) end
@@ -186,6 +187,15 @@ function M.describeRaw(v, core, depth)
 	end
 	d.size = lenOf(v) or "none"
 	d.text = tostring(v)
+	-- its metatable's keys (getmetatable may not be there in the game's Lua: then none), for how it may be read
+	local okM, mt = pcall(function() return getmetatable(v) end)
+	if okM and type(mt) == "table" then
+		local mk = {}
+		pcall(function() for k, x in pairs(mt) do mk[#mk + 1] = tostring(k) .. ":" .. type(x) end end)
+		table.sort(mk)
+		d.meta = core.array(mk)
+		if type(mt.__name) == "string" then d.metaName = mt.__name end
+	end
 	local list, how = M.items(v, core)
 	d.read, d.items = how, #list
 	local keys = {}
@@ -195,7 +205,7 @@ function M.describeRaw(v, core, depth)
 	d.keys = core.array(keys)
 	if depth > 1 then
 		if list[1] then d.first = M.describeRaw(list[1].value, core, depth - 1) end
-		for _, f in ipairs({ "targets", "entries", "entity" }) do
+		for _, f in ipairs({ "targets", "entries", "edges", "entity" }) do
 			local x = core.field(v, f)
 			if x ~= nil then
 				d.fields = d.fields or {}
@@ -232,10 +242,11 @@ function M.entriesOf(td, core)
 	local e = core.field(td, "entries")
 	if e == nil then e = td end
 	local out = {}
-	for _, it in ipairs((M.items(e, core))) do
+	local items, how = M.items(e, core, true)
+	for _, it in ipairs(items) do
 		if isEntry(it.value, core) then out[#out + 1] = it.value end
 	end
-	return out
+	return out, how
 end
 
 -- an EdgeId as the tealdef types edgeWalk / edgeDrive ({integer, integer}: entity, index), or an EdgeId record
@@ -263,10 +274,13 @@ end
 -- and size
 function M.targetIndex(raw, core)
 	local lists, how = M.targetLists(raw, core)
-	local byEntity, info, total = {}, {}, 0
+	local byEntity, info, total, partial = {}, {}, 0, false
 	for ord, l in ipairs(lists) do
-		local entries = M.entriesOf(l.list, core)
-		info[#info + 1] = { key = type(l.key) == "number" and l.key or tostring(l.key), landUseGuess = M.landUseGuess(ord, #lists), entries = #entries }
+		local entries, read = M.entriesOf(l.list, core)
+		info[#info + 1] = { key = type(l.key) == "number" and l.key or tostring(l.key), landUseGuess = M.landUseGuess(ord, #lists),
+			entries = #entries, read = read }
+		-- a list that would not read: an entity missing from the index may be in it
+		if read == "unreadable" then partial = true end
 		for _, en in ipairs(entries) do
 			total = total + 1
 			local e = tonumber(core.field(en, "entity"))
@@ -277,9 +291,11 @@ function M.targetIndex(raw, core)
 			end
 		end
 	end
-	local idx = { byEntity = byEntity, lists = info, total = total, how = how, count = #lists, readable = total > 0 }
-	-- read as nothing: what it was, so the next try knows its shape (a map with no targets at all is read so too)
-	if not idx.readable then idx.raw = M.describeRaw(raw, core) end
+	local idx = { byEntity = byEntity, lists = info, total = total, how = how, count = #lists, readable = total > 0,
+		partial = partial or nil }
+	-- read as nothing (or a list not at all): what it was, so the next try knows its shape (a map with no targets at
+	-- all is read so too)
+	if not idx.readable or partial then idx.raw = M.describeRaw(raw, core) end
 	return idx
 end
 
@@ -646,6 +662,9 @@ function M.new(ctx)
 			-- nothing read at all: no answer about this entity either way
 			res.found = nil
 			res.why = "getTargetsByLandUse read as no targets at all (raw: its shape): not known whether this is one"
+		elseif #entries == 0 and index.partial then
+			res.found = nil
+			res.why = "not in the lists that read, and one of getTargetsByLandUse's lists would not read (raw): not known"
 		elseif #entries == 0 then
 			res.why = "not among the engine's targets (getTargetsByLandUse): no workplace or shop of a town's people"
 		end
@@ -698,7 +717,8 @@ function M.new(ctx)
 				entries[#entries + 1] = p
 			end
 		end
-		res.byKind, res.counts, res.notTarget = byKind, M.reachCounts(entries), notTarget
+		-- nothing read: every building would pass for no target, so no count
+		res.byKind, res.counts, res.notTarget = byKind, M.reachCounts(entries), index.readable and not index.partial and notTarget or nil
 		-- the ones out of reach first (what a person looks for), then by building
 		table.sort(entries, function(x, y)
 			local rx = (x.isReachableWalk or x.isReachableDrive or x.isReachableLines) and 1 or 0

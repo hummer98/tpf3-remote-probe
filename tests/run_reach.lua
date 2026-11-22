@@ -223,6 +223,23 @@ return function(t)
 			truthy(t.ok, t.error); eq(t.counts.targets, 1, shape .. ": the shop"); eq(t.targetsWhy, nil)
 			truthy(not g.crashed, g.crashed)
 		end
+		for _, shape in ipairs({ "pairsOnly", "lenZero" }) do
+			local g = reachGame({ targetsShape = shape })
+			local a = run(g, "reach", "{ target = 51 }", true)
+			truthy(a.ok, a.error); eq(a.found, true, shape); eq(a.targetsTotal, 2, shape); eq(a.read, "targets/pairs", shape)
+			truthy(not g.crashed, g.crashed)
+		end
+		-- the engine's lists there but empty inside: raw goes down to the entries' size (0), and no building counts
+		local ei = reachGame({ targetsShape = "emptyInside" })
+		local ea = run(ei, "reach", "{ target = 51 }", true)
+		truthy(ea.ok, ea.error); eq(ea.found, nil); eq(ea.raw.fields.targets.size, 2)
+		eq(ea.raw.fields.targets.first.fields.entries.size, 0, "the entries' own size, four levels down")
+		truthy(#ea.raw.fields.targets.first.meta > 0, "its metatable's keys")
+		local et = run(ei, "reach", "{ town = 11 }")
+		truthy(et.ok, et.error); eq(et.notTarget, nil, "nothing read: no notTarget count"); truthy(not ei.crashed, ei.crashed)
+		-- one list that would not read: an entity missing from the rest is not called no target
+		local pa = R.targetIndex({ targets = { { entries = { { entity = 1103 } } }, newproxy(false) } }, core)
+		eq(pa.readable, true); eq(pa.partial, true); eq(pa.lists[2].read, "unreadable"); truthy(pa.raw)
 		local z = reachGame({ targetsShape = "zeroBased" })
 		eq(run(z, "reach", "{ target = 51 }", true).entries[1].landUseKey, 1, "the second list from 0")
 		local b = reachGame({ targetsShape = "byName" })

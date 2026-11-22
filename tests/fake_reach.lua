@@ -173,6 +173,36 @@ function M.install(g, spec)
 				for _, l in ipairs(lists) do for _, e in ipairs(l.entries) do o[#o + 1] = e end end
 				return wrap(o)
 			end
+			-- userdata read by pairs only: no __len (pairsOnly) or one that says 0 (lenZero), at each level
+			if spec.targetsShape == "pairsOnly" or spec.targetsShape == "lenZero" then
+				local function po(t)
+					local u = newproxy(true)
+					local m = getmetatable(u)
+					m.__index = function(_, k)
+						if type(k) == "number" then crash("ASSERT: index read of a pairs-only object: " .. k) end
+						return t[k]
+					end
+					m.__pairs = function() return next, t, nil end
+					if spec.targetsShape == "lenZero" then m.__len = function() return 0 end end
+					return u
+				end
+				local o = {}
+				for i, l in ipairs(lists) do
+					local es = {}
+					for j, e in ipairs(l.entries) do es[j] = e end
+					o[i] = po({ entries = po(es), edges = po({}) })
+				end
+				return po({ targets = po(o) })
+			end
+			-- a TargetData that reads by nothing, round an empty vector of entries (shape "emptyInside")
+			if spec.targetsShape == "emptyInside" then
+				local u = newproxy(true)
+				getmetatable(u).__index = function(_, k)
+					if k == "entries" then return asUserdata({}) end
+					error("no field " .. tostring(k))
+				end
+				return { targets = asUserdata({ u, u }) }
+			end
 			if spec.targetsShape == "opaque" then
 				-- an object with neither # nor pairs, whose index raises
 				local u = newproxy(true)
