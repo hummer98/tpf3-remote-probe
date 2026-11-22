@@ -1717,6 +1717,69 @@ class QuitLaunchTest(unittest.TestCase):
                                  sleep=sleep, clock=lambda: now[0])
         self.assertIn("2 of 2 samples got no answer", err.getvalue())
 
+    def test_vehicles_at_terminal_and_every(self):
+        parse = tf3ctl.make_parser().parse_args
+        self.assertEqual(tf3ctl.vehicles_args(parse(["vehicles", "--entity", "601", "--state", "--at-terminal"])),
+                         {"limit": 200, "entities": [601], "state": True, "atTerminal": True})
+        # without the new flags the args are as before (no atTerminal key)
+        self.assertEqual(tf3ctl.vehicles_args(parse(["vehicles", "--entity", "601", "--state"])),
+                         {"limit": 200, "entities": [601], "state": True})
+        for bad in (["--at-terminal"], ["--state", "--count", "3"], ["--state", "--every", "0.1"],
+                    ["--state", "--every", "nan"], ["--state", "--every", "2", "--count", "0"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.vehicles_args(parse(["vehicles"] + bad))
+        got = mod_reads(tf3ctl.command_text(9, "vehicles", {"limit": 200, "state": True, "atTerminal": True}))
+        self.assertEqual(got["args"], {"limit": 200, "state": True, "atTerminal": True})
+        self.assertNotIn("vehicles", tf3ctl.CHANGES_GAME)
+        # --every: the persons loop with the vehicles command; each line keeps the answer's gameTime
+        now = [50.0]
+
+        def sleep(sec):
+            now[0] += sec
+
+        sent = []
+
+        def fake_send(cmd, args=None, **_):
+            sent.append((cmd, args))
+            return {"ok": True, "gameTime": 1000 * len(sent), "total": 1, "vehicles": [{"entity": 601}]}
+
+        out = io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send):
+            code = tf3ctl.vehicles_every(parse(["vehicles", "--entity", "601", "--state", "--at-terminal", "--every",
+                                                "2", "--count", "3"]), out=out, sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(code, 0)
+        rows = [json.loads(x) for x in out.getvalue().splitlines()]
+        self.assertEqual([(r["sample"], r["gameTime"], r["unixTime"]) for r in rows],
+                         [(1, 1000, 50.0), (2, 2000, 52.0), (3, 3000, 54.0)])
+        self.assertEqual(sent, [("vehicles", {"limit": 200, "entities": [601], "state": True, "atTerminal": True})] * 3)
+        # main runs the loop for vehicles --every (and a plain call still sends once)
+        out = io.StringIO()
+        sent.clear()
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), \
+                unittest.mock.patch.object(tf3ctl, "vehicles_every", lambda ns: sent.append("loop") or 0):
+            self.assertEqual(tf3ctl.main(["vehicles", "--state", "--every", "1", "--count", "2"]), 0)
+        self.assertEqual(sent, ["loop"])
+
+    def test_line_force_unload_args(self):
+        parse = tf3ctl.make_parser().parse_args
+        args = tf3ctl.line_args(parse(["line", "update", "23", "--force-unload", "0, 1"]))
+        self.assertEqual(args, {"action": "update", "via": "gui", "line": 23, "forceUnload": [False, True]})
+        self.assertEqual(tf3ctl.line_args(parse(["line", "create", "--stops", "47,48,49", "--force-unload", "1,0,1"]))
+                         ["forceUnload"], [True, False, True])
+        # the mod reads them as booleans, in order
+        got = mod_reads(tf3ctl.command_text(9, "line", args))
+        self.assertEqual(got["args"]["forceUnload"], [False, True])
+        for bad, why in ((["line", "update", "23", "--force-unload", "2,0"], "item 1"),
+                         (["line", "update", "23", "--force-unload", "0,"], "item 2"),
+                         (["line", "update", "23", "--force-unload", "yes"], "item 1"),
+                         (["line", "create", "--stops", "47,48", "--force-unload", "1"], "one for every stop"),
+                         (["line", "create", "--stops", "47,48", "--force-unload", "1,1,0"], "one for every stop")):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad) as cm:
+                tf3ctl.line_args(parse(bad))
+            self.assertIn(why, str(cm.exception))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse(["line", "delete", "23", "--force-unload", "0,1"])
+
     def test_line_args(self):
         def parse(*argv):
             ns = tf3ctl.argparse.Namespace

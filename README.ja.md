@@ -214,6 +214,7 @@ resName は実在する必要があります (`api.res.constructionRep`)。そ�
 python3 tools/tf3ctl.py depots [--grep bus]
 python3 tools/tf3ctl.py vehicles [--line 21]
 python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
+python3 tools/tf3ctl.py vehicles --entity 601 --state --at-terminal --every 2 --count 300   # gameTime 付きの JSON Lines
 python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # または --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
@@ -229,6 +230,7 @@ python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--c
 python3 tools/tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C]
 python3 tools/tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 [--load-mode all,available]
 python3 tools/tf3ctl.py line update 23 [--terminals 0:2,0:1] [--load-mode any]
+python3 tools/tf3ctl.py line update 23 --force-unload 0,1   # 停車駅ごと: 到着時にすべての貨物を降ろす
 python3 tools/tf3ctl.py line delete 21 [--sell-vehicles]
 ```
 
@@ -805,6 +807,13 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   `stopIndex` と `doorsTime` (扉が開いた時刻) を控え、出たあとの `lastLineStopDeparture` (と `lineStopDepartures` の
   その停車駅の値。JSON の配列の 0 から数えて `stopIndex` 番目) を出発の時刻にします。ゲーム時刻と timeUntil* の単位は
   ゲームで未確認です。
+- `vehicles --state` の返事の `gameTime` は、エンジンの `GAME_TIME.gameTime` を、車両を読む前に返事ごとに1度だけ
+  読んだものです。返事の中の車両はみな同じフレームの値です (`sinceDoors` もこの時刻から数えます)。`--at-terminal`
+  (`--state` と一緒に) は、今 `state` が AT_TERMINAL の車両だけを返します (`total` はその数。`--entity` に入れても
+  港にいない車両は、並べず `missing` にも入れません。state が読めない車両は省きます)。`--every SEC --count N` は
+  `persons --every` と同じに繰り返します (1回ごとに1行の JSON に `sample` と `unixTime`。止まったときと飛ばした
+  予定の扱いも同じ)。港にいる間の積荷を、ゲーム時刻つきで記録できます。**ゲーム内では未確認** (2026-11-22 に
+  書いたもの): とくに、ある速度で2回の間に `gameTime` がどれだけ進むか。
 - `persons` (読むだけ) は、自社の車両に乗っている住民 (`--vehicle`。車両の窓の乗客の一覧と同じ
   `getVehicle2Cargo2SimEntitesMap`)、または自社の路線に乗っている人と待っている人 (`--line`、
   `simPersonSystem.getSimPersonsForLine`。待っている人も入るかは未確認で、資料には "travelling with the given line"
@@ -873,7 +882,12 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   StockList の entity。3つとも引く) と、種類の数がその enum と合うか。
 - `lines` は自社の路線を返します: 停車駅 (駅グループ、駅とホーム、0 始まり、`loadMode`: 0 available、1 満載
   (どれか)、2 満載 (全部))、車両、乗り物の種類、`customFilters`、`loads` (どこかの停車駅で積む貨物)、`vehicleCargo`
-  (路線の車両が積める貨物)。`--line N` でその路線だけを返します (自社の路線でなければエラー)。
+  (路線の車両が積める貨物)。`--line N` でその路線だけを返します (自社の路線でなければエラー)。停車駅ごとに、
+  路線の窓の貨物の設定 (cargo filter) が読むのと同じ `stopConfig` の値も付きます: `forceUnload` (「到着時にすべての
+  貨物を強制的に積み下ろし」。在庫がいっぱいでも降ろす)、`destroyForConfigChange`、`destroyForRefresh`、`stopLoads`
+  (その停車駅で積む貨物の種類と `maxLoad`、積載量に対する割合 0〜1)。停車駅の `minWaitingTime` / `maxWaitingTime` /
+  `maxAdditionalWaitingTime` も付きます。エンジンが出さない項目は省きます。**ゲーム内では未確認** (2026-11-22 に
+  書いたもの)。
 - `lines --problems` (読むだけ) は、路線の窓と同じ読み方で、路線ごとに `problems` を足します: `segments`
   (`getDetailedLineProblems` の区間ごと・停車駅ごとの `noPath`・`incompatibleStop`・`duplicateStop`・`empty`、
   `noPathLocation` (`edgeIndex`・`node`・`nodePosition` と、名前にした `okModes` / `relaxedModes` / `allowedModes`)、
@@ -906,6 +920,16 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   `LEGACY_UNLOAD_ONLY` は断ります (本体の窓に無い)。`--stops` なしの update は、今の停車駅に設定します。読み直した
   ホームか loadMode が頼んだものと違えば `ok` は false です。gui でレシピの報告が届かないときは、ホームか loadMode
   だけを変える update は `--cargo` だけのときと同じく時間切れになります。
+- `--force-unload 0|1,...` は `Line.Stop.stopConfig.forceUnload` (「到着時にすべての貨物を強制的に積み下ろし」。在庫が
+  いっぱいでも降ろす。貨物の設定の窓のチェックボックス) を設定します。停車駅ごとに順に 0 か 1 を1つずつ。「全部に
+  1つ」の形はありません: 停車駅 (`--stops`、無ければ路線の今の停車駅) と数が合わなければ、何も送らずに断ります。
+  停車駅の `StopConfig` は写しを作って `forceUnload` だけを変えます (積む設定・`maxLoad`・destroy の2つは残す。貨物の
+  設定の窓も新しい `StopConfig` を作って残りを写す)。`customFilters` は変えません。gui では本体の `line_util` を通り
+  (経路の `passThroughStopData.stopConfig`。`autoAssignTerminals` がこれを停車駅に写す)、cmd では路線の今の停車駅を
+  写して `makeLineUpdateCmd` で送ります。貨物の設定の窓そのものもこの命令で送ります。どちらもお金は動きません。
+  読み直した停車駅の `forceUnload` が頼んだものと違えば `ok` は false で、`lines` で停車駅ごとに見られます。gui で
+  レシピの報告が届かないときは、`--force-unload` だけの update は `--load-mode` と同じく時間切れになります。
+  **ゲーム内では未確認** (2026-11-22 に書いたもの): とくに、何も積まない停車駅で船が本当に降ろすか。
 - `line delete <line>` は、先に車両を売り (`--sell-vehicles` のときだけ)、売却が成功してから `makeLineDestroyCmd`
   を送ります。
 - `--cargo <id か名前>` は、その貨物だけを、その貨物を出す (出荷の在庫がある) 停車駅で積む設定にします。本体と

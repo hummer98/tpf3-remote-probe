@@ -31,6 +31,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py depots [--grep bus]             # depot entities to buy at
   tf3ctl.py vehicles [--line 21]            # the company's vehicles: models, purchaseTime, value
   tf3ctl.py vehicles --entity 601,602 --state [--since 120000]   # + state, stop, door/departure times, cargo, costs
+            # and the game time of the read (gameTime); --at-terminal: only those in port now; --every 2 --count 60:
+            # one JSON line per sample, as persons --every
   tf3ctl.py models [--grep trillium] [--carrier water]   # vehicle models: store price, running costs, speed, capacity
   tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
   tf3ctl.py duplicate --vehicle 601 | replace --vehicle 601 --model bus_1920 | sell --vehicle 601
@@ -49,6 +51,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py line create --stops Central,Harbour [--name "[probe] A"] [--cargo grain] [--via gui|cmd]
   tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C] | line delete 21 [--sell-vehicles]
   tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 --load-mode all,available   # piers picked, full load
+  tf3ctl.py line update 23 --force-unload 0,1   # per stop: unload all on arrival even into a full stock (lines shows it)
   tf3ctl.py connect --from 5123 --to Harbour [--build]   # a track between two free ends (needs Track Connector)
   tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con --at 1200,800 [--angle 1.57] \
             [--params '{"rbr_height": 8}'] [--name N] [--dry-run]   # one construction (.con), no click: test saves
@@ -1780,6 +1783,22 @@ def parse_load_modes(text):
     return items[0] if len(items) == 1 else items
 
 
+def parse_force_unload(text):
+    """--force-unload 0,1 (one per stop, in order: Line.Stop.stopConfig.forceUnload) -> [False, True]. No "one for
+    all": a count that does not match the line's stops is refused (here against --stops, in the mod against the
+    line's own)."""
+    if text is None:
+        return None
+    out = []
+    for i, item in enumerate(text.split(","), 1):
+        item = item.strip()
+        if item not in ("0", "1"):
+            raise ToolError("--force-unload item %d %r: give 0 or 1 for every stop, in order, e.g. --force-unload 0,1"
+                            % (i, item))
+        out.append(item == "1")
+    return out
+
+
 def line_args(ns):
     """The line command's args: action and what it takes (the mod checks every one again)."""
     args = {"action": ns.action}
@@ -1806,10 +1825,16 @@ def line_args(ns):
             raise ToolError("--load-mode: give one for every stop, or one for all (%d stops, %d modes)"
                             % (len(stops), len(modes)))
         args["loadModes"] = modes
+    force = parse_force_unload(getattr(ns, "force_unload", None))
+    if force is not None:
+        if stops is not None and len(force) != len(stops):
+            raise ToolError("--force-unload: give one for every stop (%d stops, %d values)" % (len(stops), len(force)))
+        args["forceUnload"] = force
     if getattr(ns, "sell_vehicles", False):
         args["sellVehicles"] = True
-    if ns.action == "update" and not any(k in args for k in ("stops", "name", "cargo", "terminals", "loadModes")):
-        raise ToolError("line update: give --stops, --name, --cargo, --terminals or --load-mode")
+    if ns.action == "update" and not any(k in args for k in ("stops", "name", "cargo", "terminals", "loadModes",
+                                                               "forceUnload")):
+        raise ToolError("line update: give --stops, --name, --cargo, --terminals, --load-mode or --force-unload")
     return args
 
 
@@ -2262,6 +2287,11 @@ def vehicles_args(ns):
         args["state"] = True
     if ns.since is not None:
         args["since"] = ns.since
+    if getattr(ns, "at_terminal", False):
+        if not ns.state:
+            raise ToolError("--at-terminal goes with --state")
+        args["atTerminal"] = True
+    every_checks(ns)
     return args
 
 
@@ -2278,13 +2308,19 @@ def persons_args(ns):
         if not 1 <= ns.limit <= PERSONS_MAX:
             raise ToolError("--limit must be from 1 to %d" % PERSONS_MAX)
         args["limit"] = ns.limit
-    if ns.count is not None and ns.every is None:
-        raise ToolError("--count goes with --every")
-    if ns.every is not None and not (math.isfinite(ns.every) and ns.every >= PERSONS_MIN_EVERY_SEC):
-        raise ToolError("--every must be a number of seconds, at least %g" % PERSONS_MIN_EVERY_SEC)
-    if ns.count is not None and ns.count < 1:
-        raise ToolError("--count must be 1 or more")
+    every_checks(ns)
     return args
+
+
+def every_checks(ns):
+    """--every and --count as persons and vehicles take them (absent on a namespace without them: nothing to check)."""
+    every, count = getattr(ns, "every", None), getattr(ns, "count", None)
+    if count is not None and every is None:
+        raise ToolError("--count goes with --every")
+    if every is not None and not (math.isfinite(every) and every >= PERSONS_MIN_EVERY_SEC):
+        raise ToolError("--every must be a number of seconds, at least %g" % PERSONS_MIN_EVERY_SEC)
+    if count is not None and count < 1:
+        raise ToolError("--count must be 1 or more")
 
 
 def no_answer_reason(err):
@@ -2302,15 +2338,24 @@ def no_answer_reason(err):
 
 
 def persons_every(ns, out=None, sleep=time.sleep, clock=time.time):
-    """--every: samples on a fixed grid of ns.every seconds from the start (a slow answer does not drift the times),
-    each as one compact JSON line with sample (its slot on the grid, 1-based) and unixTime (when the tool sent it)
+    """persons --every (sample_every)."""
+    return sample_every("persons", persons_args(ns), ns, out=out, sleep=sleep, clock=clock)
+
+
+def vehicles_every(ns, out=None, sleep=time.sleep, clock=time.time):
+    """vehicles --every (sample_every): with --state each line has the game time of its read (gameTime)."""
+    return sample_every("vehicles", vehicles_args(ns), ns, out=out, sleep=sleep, clock=clock)
+
+
+def sample_every(cmd, args, ns, out=None, sleep=time.sleep, clock=time.time):
+    """--every of a read-only command (persons, vehicles): samples on a fixed grid of ns.every seconds from the
+    start (a slow answer does not drift the times), each as one compact JSON line with sample (its slot on the grid, 1-based) and unixTime (when the tool sent it)
     added, until ns.count samples or Ctrl-C. A sample that ran past later slots does not make up for them in a
     burst: those slots are skipped (the next line says how many, under skipped) and the loop waits for the next
     one. Read only, as one call is. An answer that is not ok, or a game that cannot answer (menu, closed), ends
     the loop as a last line with ok false; its exit code is the loop's. No answer is a line with noAnswer and
     reason, and the loop goes on (exit code 2 at the end)."""
     out = out or sys.stdout
-    args = persons_args(ns)
     start = clock()
     slot = taken = gaps = skipped = 0
     try:
@@ -2326,7 +2371,7 @@ def persons_every(ns, out=None, sleep=time.sleep, clock=time.time):
             sent = clock()
             code = 0
             try:
-                res = send("persons", args)
+                res = send(cmd, args)
                 if not res.get("ok"):
                     code = 1
             except GameNotReady as e:
@@ -3030,6 +3075,11 @@ def make_parser():
                     "on board, its running cost per year and balance; and the game time")
     vl.add_argument("--since", type=int, help="with --state: each vehicle's balance (income less costs) from this "
                     "game time (the gameTime of an earlier answer)")
+    vl.add_argument("--at-terminal", action="store_true", help="with --state: only the vehicles at a terminal now "
+                    "(state AT_TERMINAL); total counts those")
+    vl.add_argument("--every", type=float, help="repeat every this many seconds (at least 0.5): one JSON line each "
+                    "(with --state: each with its gameTime)")
+    vl.add_argument("--count", type=int, help="with --every: this many samples (default: until Ctrl-C)")
     mdl = sub.add_parser("models", help="vehicle models (read only): the store's price and running costs, priceScale, "
                                         "speed, capacity per cargo type, loadSpeed, compartments, waterVehicle")
     mdl.add_argument("--grep", help="a part of the file name or the shown name, any case (digits: the id too)")
@@ -3088,6 +3138,9 @@ def make_parser():
             la.add_argument("--load-mode", metavar="MODE[,...]",
                             help="available, any (full load, any cargo) or all (full load, all cargo): one for every "
                                  "stop, or one per stop in order (Line.Stop.loadMode)")
+            la.add_argument("--force-unload", metavar="0|1,...",
+                            help="0 or 1 for every stop, in order: unload all cargo on arrival even when the stock is "
+                                 "full (Line.Stop.stopConfig.forceUnload, the line window's cargo filter)")
             la.add_argument("--via", choices=["gui", "cmd"], default="gui",
                             help="gui: the base's line_util (in the speed control); cmd: stops built by the probe")
         else:
@@ -3295,6 +3348,8 @@ def main(argv=None):
         elif ns.cmd == "depots":
             res = send("depots", {"grep": ns.grep} if ns.grep else {})
         elif ns.cmd == "vehicles":
+            if ns.every is not None:
+                return vehicles_every(ns)  # prints its own lines
             res = send("vehicles", vehicles_args(ns))
         elif ns.cmd == "models":
             res = send("models", models_args(ns))

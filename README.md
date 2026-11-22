@@ -222,6 +222,7 @@ within the 1.5 s gap, or just before the clear, is overwritten (or overwrites th
 python3 tools/tf3ctl.py depots [--grep bus]
 python3 tools/tf3ctl.py vehicles [--line 21]
 python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
+python3 tools/tf3ctl.py vehicles --entity 601 --state --at-terminal --every 2 --count 300   # JSON Lines with gameTime
 python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # or --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
@@ -237,6 +238,7 @@ python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--c
 python3 tools/tf3ctl.py line update 21 [--stops 41,42,43] [--name N] [--cargo C]
 python3 tools/tf3ctl.py line create --stops 47,48 --terminals 0:2,0:1 [--load-mode all,available]
 python3 tools/tf3ctl.py line update 23 [--terminals 0:2,0:1] [--load-mode any]
+python3 tools/tf3ctl.py line update 23 --force-unload 0,1   # per stop: unload all cargo on arrival
 python3 tools/tf3ctl.py line delete 21 [--sell-vehicles]
 ```
 
@@ -862,6 +864,14 @@ mod's code, and was checked against no running copy of it.
   every few seconds: while AT_TERMINAL note `stopIndex` and `doorsTime` (the doors opened); once it has left, the
   departure is `lastLineStopDeparture`, and also the entry for that stop in `lineStopDepartures` (the JSON list's
   element `stopIndex`, counting from 0). Units of the game time and of the timeUntil* fields are not checked in game.
+- `gameTime` in a `vehicles --state` answer is the engine's `GAME_TIME.gameTime`, read once per answer before the
+  vehicles, so every vehicle in it is of that one frame (and `sinceDoors` is counted from it). `--at-terminal` (with
+  `--state`) lists only the vehicles whose `state` is AT_TERMINAL now (`total` counts those; one of `--entity` that
+  is not in port is neither listed nor missing; one whose state cannot be read is left out). `--every SEC --count N`
+  repeats the call as `persons --every` does (one compact JSON line per sample with `sample` and `unixTime`, the
+  same rules for stalls and skipped slots), so the cargo on board while in port can be logged against the game
+  time. **Not checked in game yet** (written 2026-11-22): in particular how far `gameTime` moves between two
+  samples at a given speed.
 - `persons` (read only) lists the sim persons aboard one of the company's vehicles (`--vehicle`; the vehicle
   window's passenger list, `getVehicle2Cargo2SimEntitesMap`), or riding and waiting for one of its lines
   (`--line`, `simPersonSystem.getSimPersonsForLine`; that it includes those waiting is not checked: its doc says
@@ -937,7 +947,11 @@ All unchecked in game. There is no command to build stations.
 - `lines` lists the company's lines: stops (station group, station and terminal, 0-based, and `loadMode`: 0
   available, 1 full load any, 2 full load all), vehicles, carriers, `customFilters`, `loads` (cargo some stop
   loads) and `vehicleCargo` (cargo the line's vehicles can carry). `--line N` lists that line only (an error when
-  it is not the company's).
+  it is not the company's). Each stop also has its `stopConfig` flags as the line window's cargo filter reads them:
+  `forceUnload` ("unload all cargo on arrival", even into a full stock), `destroyForConfigChange`,
+  `destroyForRefresh`; `stopLoads` (the cargo types the stop loads, with `maxLoad`, the fraction of capacity 0..1);
+  and the stop's `minWaitingTime` / `maxWaitingTime` / `maxAdditionalWaitingTime`. What the engine does not give is
+  left out. **Not checked in game yet** (written 2026-11-22).
 - `lines --problems` (read only) adds `problems` per line, as the line manager reads them: `segments` (from
   `getDetailedLineProblems`: per segment, per stop, `noPath`, `incompatibleStop`, `duplicateStop`, `empty`,
   `noPathLocation` with `edgeIndex`, `node`, `nodePosition` and the mode sets `okModes` / `relaxedModes` /
@@ -975,6 +989,17 @@ All unchecked in game. There is no command to build stations.
   on the line's own stops. `ok` is false when the platforms or load modes read back differ from those asked for.
   Via gui without the recipe's report, an update that changes only platforms or load modes times out, as a
   `--cargo`-only one.
+- `--force-unload 0|1,...` sets `Line.Stop.stopConfig.forceUnload` ("unload all cargo on arrival", even when the
+  stock is full; the cargo filter window's checkbox): one 0 or 1 for every stop, in order. There is no "one for
+  all": a count that does not match the stops (`--stops`, or the line's own) is refused before anything is sent.
+  The stop's `StopConfig` is copied with only `forceUnload` changed (its loads, `maxLoad` and the destroy flags
+  kept, as the cargo filter window makes a new `StopConfig` and copies the rest in); `customFilters` is left as it
+  is. Via gui it goes through the base's `line_util` (the via's `passThroughStopData.stopConfig`, which
+  `autoAssignTerminals` copies into the stop); via cmd the line's own stops are copied and sent with
+  `makeLineUpdateCmd`, which is how the cargo filter window itself sends it. Neither moves money. `ok` is false
+  when a stop read back has another `forceUnload` than asked for; `lines` shows it per stop. Via gui without the
+  recipe's report, an update of `--force-unload` alone times out, as for `--load-mode`. **Not checked in game
+  yet** (written 2026-11-22): in particular whether a ship then unloads at a stop that loads nothing.
 - `line delete <line>` sells the vehicles first (only with `--sell-vehicles`), and sends `makeLineDestroyCmd` once
   the sale succeeded.
 - `--cargo <id or name>` loads only that cargo, at the stops whose station has it in an output stock, as the base

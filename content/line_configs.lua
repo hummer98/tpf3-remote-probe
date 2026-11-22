@@ -285,8 +285,19 @@ function M.checkTerminals(stops, terminals, need)
 	return common
 end
 
--- the per-stop settings of a request onto the stops (Line.Stop) about to be sent: station and terminal (r.terminals)
--- and loadMode (r.loadModes), by position. stops: a Lua list, changed in place. Errors when the counts differ.
+-- a copy of cfg (a StopConfig) with forceUnload set, as the cargo filter window makes a new StopConfig and sets
+-- forceUnload on it (cargofilter_window.tl makeCmd); the copy keeps load, maxLoad and the destroy flags. A copy
+-- rather than cfg.forceUnload = on: the stop's StopConfig is the engine's, and whether a write into it holds is not
+-- known (applyCargo copies the same way).
+function M.withForceUnload(cfg, on)
+	local out = api.type.Line.StopConfig.new(cfg)
+	out.forceUnload = on
+	return out
+end
+
+-- the per-stop settings of a request onto the stops (Line.Stop) about to be sent: station and terminal (r.terminals),
+-- loadMode (r.loadModes) and stopConfig.forceUnload (r.forceUnload), by position. stops: a Lua list, changed in
+-- place. Errors when the counts differ.
 function M.applyPerStop(stops, r)
 	if r.terminals and #r.terminals ~= #stops then
 		error(string.format("give a terminal for every stop (%d stops, %d terminals); nothing sent", #stops, #r.terminals), 0)
@@ -294,16 +305,20 @@ function M.applyPerStop(stops, r)
 	if r.loadModes and #r.loadModes ~= #stops then
 		error(string.format("give a load mode for every stop (%d stops, %d load modes); nothing sent", #stops, #r.loadModes), 0)
 	end
+	if r.forceUnload and #r.forceUnload ~= #stops then
+		error(string.format("give a force unload value for every stop (%d stops, %d values); nothing sent", #stops, #r.forceUnload), 0)
+	end
 	for i, s in ipairs(stops) do
 		if r.terminals then s.station, s.terminal = r.terminals[i].station, r.terminals[i].terminal end
 		-- a number, as the base's cargo filter window sets it (compStop.loadMode = newStopState.loadMode)
 		if r.loadModes then s.loadMode = r.loadModes[i] end
+		if r.forceUnload then s.stopConfig = M.withForceUnload(s.stopConfig, r.forceUnload[i]) end
 	end
 end
 
 -- the stops as built hold what the request asked for: the platforms given (checked again here, in the Lua state
--- that sends: the station may have changed since the guiUpdate script looked) and the load modes. Returns true, or
--- nil and why.
+-- that sends: the station may have changed since the guiUpdate script looked), the load modes and force unload.
+-- Returns true, or nil and why.
 function M.checkRequested(stops, r)
 	local list = toList(stops)
 	if r.terminals then
@@ -333,6 +348,17 @@ function M.checkRequested(stops, r)
 			if type(m) == "number" and m ~= r.loadModes[i] then
 				return nil, string.format("stop %d: built with load mode %s, not %d as asked; nothing sent", i,
 					tostring(m), r.loadModes[i])
+			end
+		end
+	end
+	if r.forceUnload then
+		if #r.forceUnload ~= #list then return nil, "the force unload values are not one per stop; nothing sent" end
+		for i, s in ipairs(list) do
+			local cfg = field(s, "stopConfig")
+			local f = cfg and field(cfg, "forceUnload")
+			if f ~= r.forceUnload[i] then
+				return nil, string.format("stop %d: built with force unload %s, not %s as asked; nothing sent", i,
+					tostring(f), tostring(r.forceUnload[i]))
 			end
 		end
 	end
@@ -434,8 +460,8 @@ function M.cmdLine(r)
 			end
 		end
 		comp.stops = stops
-	elseif r.terminals or r.loadModes then
-		-- an update of the line's own stops (waypoints kept): their platforms and load modes as given
+	elseif r.terminals or r.loadModes or r.forceUnload then
+		-- an update of the line's own stops (waypoints kept): their platforms, load modes and force unload as given
 		local stops = toList(comp.stops)
 		M.applyPerStop(stops, r)
 		comp.stops = stops
@@ -452,8 +478,9 @@ function M.cmdLine(r)
 end
 
 -- the per-stop settings onto the base's path (Line.ReactVia, waypoints skipped): station1 / terminal1 (1-based, as
--- makeNewStop's stationIndex1 / terminalIndex1) and passThroughStopData.loadMode, which autoAssignTerminals copies
--- into the Line.Stop (line_util.tl). With a platform on every stop, neither autoLoadConfig nor autoAssignTerminals
+-- makeNewStop's stationIndex1 / terminalIndex1), passThroughStopData.loadMode and passThroughStopData.stopConfig's
+-- forceUnload, which autoAssignTerminals copies into the Line.Stop (line_util.tl: newStop.stopConfig =
+-- passThroughStopData.stopConfig; autoLoadConfig after this changes only load and maxLoad). With a platform on every stop, neither autoLoadConfig nor autoAssignTerminals
 -- asks the engine for an assignment.
 local function applyPerStopVias(path, r)
 	local vias = {}
@@ -464,11 +491,18 @@ local function applyPerStopVias(path, r)
 	if r.loadModes and #r.loadModes ~= #vias then
 		error(string.format("give a load mode for every stop (%d stops, %d load modes); nothing sent", #vias, #r.loadModes), 0)
 	end
+	if r.forceUnload and #r.forceUnload ~= #vias then
+		error(string.format("give a force unload value for every stop (%d stops, %d values); nothing sent", #vias, #r.forceUnload), 0)
+	end
 	for i, stop in ipairs(vias) do
 		if r.terminals then stop.station1, stop.terminal1 = r.terminals[i].station + 1, r.terminals[i].terminal + 1 end
 		if r.loadModes then
 			stop.passThroughStopData = stop.passThroughStopData or {}
 			stop.passThroughStopData.loadMode = r.loadModes[i]
+		end
+		if r.forceUnload then
+			stop.passThroughStopData = stop.passThroughStopData or {}
+			stop.passThroughStopData.stopConfig = M.withForceUnload(stop.passThroughStopData.stopConfig, r.forceUnload[i])
 		end
 	end
 end
@@ -520,7 +554,7 @@ local function guiLine(lu, req, r)
 		applyPerStopVias(state.path, r)
 		-- autoLoadConfig assigns platforms only to stops without one, as after a click (none, when they are given)
 		lu.autoLoadConfig(state)
-	elseif r.terminals or r.loadModes then
+	elseif r.terminals or r.loadModes or r.forceUnload then
 		applyPerStopVias(state.path or {}, r)
 	end
 	local entity = state.entityAndRevision and state.entityAndRevision.entity or nil

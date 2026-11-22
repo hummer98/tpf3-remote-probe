@@ -766,9 +766,21 @@ function M.new(ctx)
 		return st
 	end
 
+	-- whether the vehicle is at a terminal now (TransportVehicle.state AT_TERMINAL): only the one field read, so
+	-- a fleet can be filtered before the full state of the few in port is read. nil when it cannot be told.
+	local function atTerminal(e)
+		local tv = vehicleComponent(e)
+		local enum = try(function() return api.type.enum.TransportVehicleState end)
+		local at = enum and try(function() return enum.AT_TERMINAL end)
+		if not tv or at == nil then return nil end
+		return try(function() return tv.state end) == at
+	end
+
 	-- args: line (only its vehicles), limit; entities (only these; gone ones under missing), state (add the
-	-- engine's stop and money fields under state, and the game time), since (with state: balanceSince). Without
-	-- the new args the answer is as it always was.
+	-- engine's stop and money fields under state, and the game time: GAME_TIME's gameTime, read once for the
+	-- answer, so every vehicle in it is of the same frame), since (with state: balanceSince), atTerminal (with
+	-- state: only those at a terminal now; total counts them, and one of entities that is not at a terminal is
+	-- neither listed nor missing). Without the new args the answer is as it always was.
 	function handlers.vehicles(c)
 		local a, err = core.vehicleListArgs(c.args)
 		if not a then return fail(c.id, err) end
@@ -792,7 +804,7 @@ function M.new(ctx)
 		local out, total = {}, 0
 		for _, e in ipairs(ids) do
 			local info = vehicleInfo(e)
-			if info and (a.line == nil or info.line == a.line) then
+			if info and (a.line == nil or info.line == a.line) and (not a.atTerminal or atTerminal(e) == true) then
 				total = total + 1
 				if #out < limit then
 					if a.state then info.state = vehicleState(e, now, a.since, names) end
@@ -805,6 +817,7 @@ function M.new(ctx)
 		local res = { ok = true, total = total, vehicles = core.array(out) }
 		if missing then res.missing = core.array(missing) end
 		if a.state then res.gameTime, res.since = now, a.since end
+		if a.atTerminal then res.atTerminal = true end
 		answer(c.id, res)
 	end
 

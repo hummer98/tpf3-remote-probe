@@ -459,6 +459,7 @@ function M.new(dir, opts)
 		for _, s in ipairs(l.stops or {}) do
 			local cfg = newStopConfig()
 			for id in pairs(cargoTypes) do cfg.load[id + 1] = s.loads and s.loads[id] == true or false; cfg.maxLoad[id + 1] = 1 end
+			if s.forceUnload ~= nil then cfg.forceUnload = s.forceUnload end
 			stops[#stops + 1] = { stationGroup = s.stationGroup, station = s.station or 0, terminal = s.terminal or 0,
 				stopConfig = cfg, alternativeTerminals = {}, waypoints = s.waypoints or {}, maxAdditionalWaitingTime = 60,
 				loadMode = s.loadMode or 0 }
@@ -507,6 +508,12 @@ function M.new(dir, opts)
 			local cfg = s.stopConfig or {}
 			if #(cfg.load or {}) ~= cargoCount or #(cfg.maxLoad or {}) ~= cargoCount then
 				g.crashed = "ASSERT: stop config of line stop " .. i .. " is not one entry per cargo type"
+				error(g.crashed)
+			end
+			-- a forceUnload that is no boolean (StopConfig.forceUnload : boolean, engine.d.tl): what the engine does
+			-- with one is not known, so the fake takes the worse
+			if type(cfg.forceUnload) ~= "boolean" then
+				g.crashed = "ASSERT: stop config of line stop " .. i .. " has forceUnload " .. tostring(cfg.forceUnload)
 				error(g.crashed)
 			end
 			-- a load mode outside the LoadMode enum (0..3, engine.d.tl)
@@ -1475,7 +1482,8 @@ function M.new(dir, opts)
 			local path = {}
 			for _, s in ipairs(l.stops) do
 				path[#path + 1] = { stop = { stationGroup = s.stationGroup, station1 = s.station + 1, terminal1 = s.terminal + 1,
-					alternativeTerminals = s.alternativeTerminals, passThroughStopData = { stopConfig = s.stopConfig,
+					-- a copy of the engine's StopConfig, as the base (api.type.Line.StopConfig.new(v.stopConfig))
+					alternativeTerminals = s.alternativeTerminals, passThroughStopData = { stopConfig = api.type.Line.StopConfig.new(s.stopConfig),
 					maxAdditionalWaitingTime = s.maxAdditionalWaitingTime, loadMode = s.loadMode } } }
 				for _, w in ipairs(s.waypoints or {}) do path[#path + 1] = { waypoint = w } end
 			end
