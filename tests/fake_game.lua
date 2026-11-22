@@ -1533,6 +1533,11 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_debug.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_town_grow.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
+		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
+		-- (MODHUB_PUBLISHED_IDS), taken out of that table in this game's own copy of remote_core.lua
+		if type(opts.modhub) == "table" and opts.modhub.firstUploadOf then
+			require("hummer_remote_probe::/remote_core.lua").MODHUB_PUBLISHED_IDS[opts.modhub.firstUploadOf] = nil
+		end
 		_G.data = nil
 		if g.menu then
 			-- launched with --script: the game calls data() and then update() every frame (a new game process:
@@ -2762,7 +2767,7 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			result = { messages = { { level = "Warning", file = "content/x.lua", message = "a warning" } },
 				levelPc = "Warning", levelConsole = "Warning" } },
 		{ folder = "example_mod_1", title = "Example" },
-	} } or nil
+	}, firstUploadOf = "hummer_force_unload_default_1" } or nil
 	-- modhub-update: the force unload one is on mod.io already (mod 6543965, public) and an upload updates it
 	if arg[4] == "modhub-update" then
 		modhub = { fileidDir = dir .. "/staging_area", staging = {

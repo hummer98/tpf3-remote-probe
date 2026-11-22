@@ -5998,6 +5998,14 @@ local function modhubGame(spec, opts)
 	opts = opts or {}
 	local ms = spec or {}
 	if ms.staging == nil then ms.staging = STAGING end
+	-- force unload without a mod.io id in the staging list: the tests' new mod, so the game's copy of the core
+	-- drops it from MODHUB_PUBLISHED_IDS (firstUploadOf). A refusal by that table shows only where a test keeps it:
+	-- give firstUploadOf yourself, or a staging entry with a modhubId
+	for _, e in ipairs(ms.staging) do
+		if e.folder == "hummer_force_unload_default_1" and e.modhubId == nil and ms.firstUploadOf == nil then
+			ms.firstUploadOf = e.folder
+		end
+	end
 	local g = newGame({ saves = SAVES, menu = opts.inGame ~= true, modhub = ms })
 	frames(g, 2)
 	return g
@@ -6450,6 +6458,16 @@ local function fuStaging(extra)
 	-- with the published mods around it, as in the real staging area
 	return { e, STAGING[3], { folder = "example_mod_1", title = "Example" } }
 end
+-- a core test that takes force unload as a new mod: out of MODHUB_PUBLISHED_IDS for its length
+local function unpinnedTest(name, fn)
+	test(name, function()
+		local keep = core.MODHUB_PUBLISHED_IDS[FU]
+		core.MODHUB_PUBLISHED_IDS[FU] = nil
+		local ok, err = pcall(fn)
+		core.MODHUB_PUBLISHED_IDS[FU] = keep
+		if not ok then error(err, 0) end
+	end)
+end
 local function publishCmd(extra)
 	local t = { string.format("folder = %q", FU), "public = true", "firstUpload = true",
 		string.format("changelog = %q", CHANGELOG) }
@@ -6457,15 +6475,24 @@ local function publishCmd(extra)
 	return "{ " .. table.concat(t, ", ") .. " }"
 end
 
-test("modhub core: publish args (one folder, first upload only, the visibility given, a changelog) and the validation gate", function()
+unpinnedTest("modhub core: publish args (one folder, first upload only, the visibility given, a changelog) and the validation gate", function()
 	local a = core.modhubPublishArgs({ folder = FU, public = true, firstUpload = true, changelog = "x" })
 	eq(a.folder, FU); eq(a.public, true); eq(a.timeout, 900); eq(a.dryRun, false); eq(a.messages, 50)
 	eq(core.modhubPublishArgs({ folder = FU, public = false, firstUpload = true, changelog = "x", dryRun = true }).public, false)
-	-- publish's list is its own: folders validate takes are not taken by that alone
-	for _, f in ipairs({ "example_mod_1", "hummer_industry_pollution_display_1", "hummer_cursor_altitude_tooltip_1",
-		"road_tunnel_ramp_1", "hummer_force_unload_default" }) do
+	-- publish's list is its own: folders validate takes are not taken by that alone (example_mod_1, a typo)
+	for _, f in ipairs({ "example_mod_1", "hummer_proto_models_1", "road_tunnel_ramp_1", "hummer_force_unload_default",
+		"hummer_cursor_altitude_tooltip", "Hummer_cursor_altitude_tooltip_1" }) do
 		local ok, err = core.modhubPublishArgs({ folder = f, public = true, firstUpload = true, changelog = "x" })
-		eq(ok, nil, f); truthy(err:find("publish takes only these staging folders: " .. FU), err)
+		eq(ok, nil, f); truthy(err:find("publish takes only these staging folders: "), err)
+	end
+	-- the author's mods already on mod.io, for their updates; exactly these four
+	local n = 0
+	for _ in pairs(core.MODHUB_PUBLISH_FOLDERS) do n = n + 1 end
+	eq(n, 4)
+	for _, f in ipairs({ FU, "hummer_cursor_altitude_tooltip_1", "hummer_construction_altitude_tooltip_1",
+		"hummer_industry_pollution_display_1" }) do
+		truthy(core.MODHUB_PUBLISH_FOLDERS[f], f)
+		truthy(core.MODHUB_VALIDATE_FOLDERS[f], f .. " is validated too")
 	end
 	local function why(t) return select(2, core.modhubPublishArgs(t)) end
 	truthy(why({ folder = FU, public = true, changelog = "x" }):find("firstUpload"))
@@ -6541,7 +6568,7 @@ end)
 test("modhub publish refuses folders outside its list, and a missing firstUpload or visibility, before making anything", function()
 	local g = modhubGame({ staging = fuStaging() })
 	local cases = {
-		{ "{ folder = \"hummer_industry_pollution_display_1\", public = true, firstUpload = true, changelog = \"x\" }", "only these staging folders" },
+		{ "{ folder = \"hummer_proto_models_1\", public = true, firstUpload = true, changelog = \"x\" }", "only these staging folders" },
 		{ "{ folder = \"example_mod_1\", public = true, firstUpload = true, changelog = \"x\", dryRun = true }", "only these staging folders" },
 		{ "{ folder = \"" .. FU .. "\", public = true, changelog = \"x\" }", "firstUpload" },
 		{ "{ folder = \"" .. FU .. "\", firstUpload = true, changelog = \"x\" }", "no default visibility" },
@@ -6564,7 +6591,8 @@ test("modhub publish refuses a mod with a mod.io id (an update, or one deleted o
 	}
 	for _, c in ipairs(cases) do
 		for _, dry in ipairs({ true, false }) do
-			local g = modhubGame({ staging = fuStaging(c[1]) })
+			-- the game's own check, with the pin out of the way (the pin refuses these before the game is asked)
+			local g = modhubGame({ staging = fuStaging(c[1]), firstUploadOf = FU })
 			send(g, 1411, "modhubPublish", publishCmd(dry and { "dryRun = true" } or nil))
 			frames(g, FIRST + 60)
 			local a = final(g, 1411)
@@ -6741,7 +6769,7 @@ local function updateCmd(extra)
 	return "{ " .. table.concat(t, ", ") .. " }"
 end
 
-test("modhub core: an update needs update = true and the mod.io id; a first upload and an update are never both or neither", function()
+unpinnedTest("modhub core: an update needs update = true and the mod.io id; a first upload and an update are never both or neither", function()
 	local a = core.modhubPublishArgs({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = "x" })
 	eq(a.update, true); eq(a.firstUpload, false); eq(a.modioId, FU_ID)
 	a = core.modhubPublishArgs({ folder = FU, public = true, firstUpload = true, changelog = "x" })
@@ -6759,8 +6787,92 @@ test("modhub core: an update needs update = true and the mod.io id; a first uplo
 	truthy(why({ folder = FU, public = true, update = true, modioId = FU_ID }):find("changelog"))
 	truthy(why({ folder = FU, public = true, update = true, modioId = FU_ID, changelog = " " }):find("changelog"))
 	-- the folder list holds for an update too
-	truthy(why({ folder = "hummer_industry_pollution_display_1", public = true, update = true, modioId = "6500003",
+	truthy(why({ folder = "example_mod_1", public = true, update = true, modioId = "6500003",
 		changelog = "x" }):find("only these staging folders"))
+end)
+
+unpinnedTest("modhub core: version X.Y.Z only with mod.json's revision, X*10000+Y*100+Z; no version, no additionalMetadata", function()
+	local base = { folder = FU, public = true, update = true, modioId = FU_ID, changelog = "x" }
+	local function with(t) local c = {}; for k, v in pairs(base) do c[k] = v end; for k, v in pairs(t) do c[k] = v end; return c end
+	local a = core.modhubPublishArgs(with({ version = "1.0.3", revision = 10003 }))
+	eq(a.version, "1.0.3"); eq(a.revision, 10003)
+	eq(core.modhubPublishArgs(with({ version = "0.0.1", revision = 1 })).version, "0.0.1")
+	eq(core.modhubPublishArgs(with({ version = "12.34.56", revision = 123456 })).version, "12.34.56")
+	a = core.modhubPublishArgs(base)
+	eq(a.version, nil); eq(a.revision, nil)
+	local function why(t) return select(2, core.modhubPublishArgs(with(t))) end
+	truthy(why({ version = "1.0.1", revision = 10003 }):find("version 1.0.1 is revision 10001, but mod.json's revision is 10003 %(that is 1.0.3%)"))
+	truthy(why({ version = "0.0.1", revision = 10001 }):find("is 10001"))
+	for _, bad in ipairs({ "1.0", "1.0.3.4", "v1.0.3", "1.0.3 ", "01.0.3", "1.00.3", "1.0.03", "1.100.0", "1.0.100",
+		"1.-1.0", "a.b.c", "", "1..3", "１.0.3" }) do
+		truthy(why({ version = bad, revision = 10003 }), "refused: " .. bad)
+	end
+	truthy(why({ version = 10003, revision = 10003 }):find("string"))
+	truthy(why({ version = "1.0.3" }):find("needs revision"))
+	truthy(why({ version = "1.0.3", revision = "10003" }):find("needs revision"))
+	truthy(why({ version = "1.0.3", revision = 10003.5 }):find("needs revision"))
+	truthy(why({ revision = 10003 }):find("only given with version"))
+	-- a first upload takes it as well
+	eq(core.modhubPublishArgs({ folder = FU, public = true, firstUpload = true, changelog = "x", version = "1.0.0",
+		revision = 10000 }).version, "1.0.0")
+end)
+
+test("modhub core: a folder on mod.io is held to its page: no first upload, an update only to its own id", function()
+	local ids = { [FU] = "6543965", hummer_cursor_altitude_tooltip_1 = "6523060",
+		hummer_construction_altitude_tooltip_1 = "6536988", hummer_industry_pollution_display_1 = "6536959" }
+	local n = 0
+	for f, id in pairs(core.MODHUB_PUBLISHED_IDS) do
+		n = n + 1
+		eq(id, ids[f], f); truthy(core.MODHUB_PUBLISH_FOLDERS[f], f .. " is in the publish list")
+	end
+	eq(n, 4)
+	local function why(t) return select(2, core.modhubPublishArgs(t)) end
+	for f, id in pairs(ids) do
+		local a = core.modhubPublishArgs({ folder = f, public = true, update = true, modioId = id, changelog = "x" })
+		truthy(a, f); eq(a.modioId, id)
+		truthy(why({ folder = f, public = true, firstUpload = true, changelog = "x" }):find("would make a second page"), f)
+		truthy(why({ folder = f, public = true, firstUpload = true, changelog = "x", dryRun = true }):find("second page"), f)
+		local other = f == FU and "6523060" or "6543965"
+		truthy(why({ folder = f, public = true, update = true, modioId = other, changelog = "x" }):find("is mod.io mod " .. id), f)
+	end
+	-- in a game: a first upload of a pinned folder is refused before anything is made
+	local g = modhubGame({ staging = { { folder = "hummer_industry_pollution_display_1", title = "IPD" } } })
+	send(g, 1463, "modhubPublish", (publishCmd({ "dryRun = true" }):gsub(FU, "hummer_industry_pollution_display_1")))
+	frames(g, FIRST + 60)
+	local a = final(g, 1463)
+	eq(a.ok, false); truthy(a.error:find("second page"), a.error); eq(g.helpersMade, 0)
+	noUploads(g)
+end)
+
+test("modhub publish update with a version: the dry run answers additionalMetadata; the upload sets it on PublishSettings", function()
+	local g = modhubGame({ staging = fuOnModio() })
+	send(g, 1460, "modhubPublish", updateCmd({ "dryRun = true", "version = \"1.0.3\"", "revision = 10003" }))
+	frames(g, FIRST + 60)
+	local a = final(g, 1460)
+	eq(a.ok, true, a.error); eq(a.publishCalled, false)
+	eq(a.settings.additionalMetadata.version, "1.0.3")
+	local n = 0
+	for _ in pairs(a.settings.additionalMetadata) do n = n + 1 end
+	eq(n, 1, "only version")
+	noUploads(g)
+	-- refused before anything is made when version and revision disagree
+	g = modhubGame({ staging = fuOnModio() })
+	send(g, 1461, "modhubPublish", updateCmd({ "version = \"1.0.2\"", "revision = 10003" }))
+	frames(g, FIRST + 60)
+	a = final(g, 1461)
+	eq(a.ok, false); truthy(a.error:find("revision is 10003"), a.error)
+	eq(g.helpersMade, 0)
+	noUploads(g)
+	-- the upload
+	g = modhubGame({ staging = fuOnModio() })
+	send(g, 1462, "modhubPublish", updateCmd({ "version = \"1.0.3\"", "revision = 10003" }))
+	frames(g, FIRST + 90)
+	eq(#g.publishCalls, 1)
+	local s = g.publishCalls[1].settings
+	eq(s.additionalMetadata.version, "1.0.3"); eq(s.changeLog, "Wording."); eq(s.isSavegame, false)
+	a = final(g, 1462)
+	eq(a.ok, true, a.error); eq(a.modId, FU_ID); eq(a.settings.additionalMetadata.version, "1.0.3")
+	eq(#g.forbidden, 0, table.concat(g.forbidden, ", "))
 end)
 
 test("modhub publish update dry run: the mod.io id, mod.io's name and version, the settings; publish never called", function()
@@ -6807,12 +6919,19 @@ test("modhub publish update refuses another mod.io id, a mod without one, one mo
 			noUploads(g)
 		end
 	end
-	-- a first upload of a mod already on mod.io is refused as before, and names the update
-	local g = modhubGame({ staging = fuOnModio() })
+	-- a first upload of a mod already on mod.io is refused as before by the game, and names the update (with the
+	-- pin out of the way); with the pin, before anything is made
+	local g = modhubGame({ staging = fuOnModio(), firstUploadOf = FU })
 	send(g, 1452, "modhubPublish", publishCmd())
 	frames(g, FIRST + 60)
 	local a = final(g, 1452)
 	eq(a.ok, false); truthy(a.error:find("already has a mod.io id %(6543965%)"), a.error); eq(a.mode, "firstUpload")
+	noUploads(g)
+	g = modhubGame({ staging = fuOnModio() })
+	send(g, 1452, "modhubPublish", publishCmd())
+	frames(g, FIRST + 60)
+	a = final(g, 1452)
+	eq(a.ok, false); truthy(a.error:find("would make a second page"), a.error); eq(g.helpersMade, 0)
 	noUploads(g)
 	-- a hidden mod on mod.io may stay hidden or turn public
 	for _, pub in ipairs({ "public = false", "public = true" }) do

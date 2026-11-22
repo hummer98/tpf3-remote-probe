@@ -92,9 +92,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
   tf3ctl.py modhub status [--folder F] | modhub validate F   # My Mods in the main menu (read; re-validate)
-  tf3ctl.py modhub publish F --public yes --changelog "..." --first-upload [--dry-run]   # one new mod to mod.io
-            # (one allowed folder; no fileid yet; a mark in $XDG_STATE_HOME/tf3ctl/ until the fileid appears)
-  tf3ctl.py modhub publish F --public yes --changelog "..." [--dry-run]   # update the mod.io page of its fileid
+  tf3ctl.py modhub publish F --public yes --changelog "..." --first-upload [--version X.Y.Z] [--dry-run]   # one new mod to mod.io
+            # (an allowed folder not on mod.io; no fileid yet; a mark in $XDG_STATE_HOME/tf3ctl/ until the fileid appears)
+  tf3ctl.py modhub publish F --public yes --changelog "..." [--version X.Y.Z] [--dry-run]   # update the mod.io page of its fileid
             # (the fileid there; mod.json's revision above the last one uploaded, from publish_history.jsonl or,
             # when that has none, --previous-revision N)
   tf3ctl.py modhub publish-clear --yes       # remove that mark, after looking at mod.io
@@ -2178,7 +2178,20 @@ def modhub_validate_args(ns):
 # mark goes only when the upload succeeded and the fileid file appeared with the same mod.io id, or by
 # `modhub publish-clear`.
 
-MODHUB_PUBLISH_FOLDERS = ("hummer_force_unload_default_1",)  # the same list as the mod's (MODHUB_PUBLISH_FOLDERS)
+# the same list as the mod's (MODHUB_PUBLISH_FOLDERS): the first mod uploaded this way, and the author's mods
+# already on mod.io (updates only: MODHUB_PUBLISHED_IDS below)
+MODHUB_PUBLISH_FOLDERS = ("hummer_force_unload_default_1", "hummer_cursor_altitude_tooltip_1",
+                          "hummer_construction_altitude_tooltip_1", "hummer_industry_pollution_display_1")
+# the folders already on mod.io, each held to its page (the same table as the mod's MODHUB_PUBLISHED_IDS): a first
+# upload of one is refused and an update goes only to that id, also when _metadata/mod.io_fileid.txt went missing
+# or was remade (then both this tool and the game would take the folder for a new mod and make a second page).
+# After a first upload, add the folder and its new id here and in the mod.
+MODHUB_PUBLISHED_IDS = {"hummer_force_unload_default_1": "6543965", "hummer_cursor_altitude_tooltip_1": "6523060",
+                        "hummer_construction_altitude_tooltip_1": "6536988",
+                        "hummer_industry_pollution_display_1": "6536959"}
+# --version X.Y.Z: sent as PublishSettings.additionalMetadata = {version = "X.Y.Z"} (a trial: whether mod.io's
+# file version takes it is not known). It must be mod.json's revision written X*10000 + Y*100 + Z.
+VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)")
 PENDING_NAME = "publish_pending.json"
 FILEID_NAME = "mod.io_fileid.txt"
 FILEID_WAIT_SEC = 60  # after a success, how long the game may take to write the fileid file
@@ -2371,7 +2384,31 @@ def publish_update_checks(name, mod_dir, modio_id, changelog, previous=None):
             "changelog": changelog}
 
 
-def publish_local_checks(name, folder=None, changelog=None, first_upload=True, previous=None):
+def version_revision(version):
+    """The revision a version X.Y.Z stands for (X*10000 + Y*100 + Z); ToolError when it is not X.Y.Z with whole
+    numbers (no leading zeros, Y and Z 0-99)."""
+    m = VERSION_RE.fullmatch(version or "")
+    if m is None or len(version) > 20:
+        raise ToolError("--version is X.Y.Z, whole numbers without leading zeros, Y and Z 0-99 (not %r); nothing was "
+                        "sent" % (version or "")[:40])
+    x, y, z = (int(g) for g in m.groups())
+    return x * 10000 + y * 100 + z
+
+
+def publish_version_checks(name, mod_dir, version):
+    """--version against mod.json's revision. Returns {"version", "additionalMetadata"}; ToolError when they differ."""
+    want = version_revision(version)
+    rev = read_revision(name, mod_dir)
+    if rev is None:
+        raise ToolError("%s: mod.json has no whole-number revision to check --version %s against; nothing was sent"
+                        % (name, version))
+    if rev != want:
+        raise ToolError("%s: --version %s is revision %d, but mod.json's revision is %d (that is %d.%d.%d); nothing "
+                        "was sent" % (name, version, want, rev, rev // 10000, rev // 100 % 100, rev % 100))
+    return {"version": version, "additionalMetadata": {"version": version}}
+
+
+def publish_local_checks(name, folder=None, changelog=None, first_upload=True, previous=None, version=None):
     """What only the files show. Returns the checks; ToolError when one fails (nothing is sent then). first_upload:
     a new mod (no fileid file may be there) or an update (the fileid file must be there; its id is answered as
     fileid, the update's checks as update)."""
@@ -2380,6 +2417,13 @@ def publish_local_checks(name, folder=None, changelog=None, first_upload=True, p
     if not os.path.isfile(os.path.join(mod_dir, "mod.json")):
         raise ToolError("no staging mod %s: %s has no mod.json" % (name, mod_dir))
     modio_id = read_fileid(name, meta)
+    pinned = MODHUB_PUBLISHED_IDS.get(name)
+    if pinned is not None and first_upload:
+        raise ToolError("%s is on mod.io already (mod %s): --first-upload would make a second page; nothing was sent"
+                        % (name, pinned))
+    if pinned is not None and modio_id != pinned:
+        raise ToolError("%s is mod.io mod %s, but _metadata/%s %s: not updated; nothing was sent"
+                        % (name, pinned, FILEID_NAME, "is missing" if modio_id is None else "says " + modio_id))
     if first_upload and modio_id is not None:
         raise ToolError("%s has _metadata/%s (mod.io mod %s): it was uploaded before, and --first-upload makes only "
                         "a new mod (a second mod.io page); leave out --first-upload to update that page; nothing "
@@ -2392,6 +2436,7 @@ def publish_local_checks(name, folder=None, changelog=None, first_upload=True, p
     if previous is not None and previous < 1:
         raise ToolError("--previous-revision is a revision, a whole number of 1 or more; nothing was sent")
     update = None if first_upload else publish_update_checks(name, mod_dir, modio_id, changelog, previous)
+    ver = publish_version_checks(name, mod_dir, version) if version is not None else None
     cover = os.path.join(meta, "0.png")
     if not os.path.isfile(cover):
         raise ToolError("%s has no _metadata/0.png: the page says \"No valid cover image found\"; nothing was sent" % name)
@@ -2408,6 +2453,9 @@ def publish_local_checks(name, folder=None, changelog=None, first_upload=True, p
     out = {"stagingFolder": name, "mode": "firstUpload" if first_upload else "update", "fileid": modio_id or False,
            "revision": read_revision(name, mod_dir),
            "cover": {"width": dims[0], "height": dims[1], "bytes": size}, "metadata": metadata}
+    if ver is not None:
+        out["version"] = ver["version"]
+        out["additionalMetadata"] = ver["additionalMetadata"]
     if update is not None:
         update["name"] = metadata.get("nameText")
         out["update"] = update
@@ -2459,6 +2507,8 @@ def modhub_publish_args(ns):
         raise ToolError("give --changelog TEXT")
     if ns.previous_revision is not None and ns.first_upload:
         raise ToolError("--previous-revision is only for an update (without --first-upload)")
+    if ns.version is not None:
+        version_revision(ns.version)  # the form; against mod.json's revision in publish_local_checks
     # firstUpload or update: which one also needs the staging files (cmd_modhub_publish adds modioId for an update)
     args = {"folder": ns.folder, "public": ns.public == "yes", "changelog": ns.changelog}
     if ns.first_upload:
@@ -2496,7 +2546,11 @@ def cmd_modhub_publish(ns):
     previous = ns.previous_revision
 
     def local_checks():
-        got = publish_local_checks(args["folder"], folder, args["changelog"], first_upload=first, previous=previous)
+        got = publish_local_checks(args["folder"], folder, args["changelog"], first_upload=first, previous=previous,
+                                   version=ns.version)
+        if ns.version is not None:
+            # the mod checks the version against the revision too (it cannot read mod.json)
+            args["version"], args["revision"] = got["version"], got["revision"]
         if not first:
             if "modioId" in args and args["modioId"] != got["fileid"]:
                 raise ToolError("%s changed meanwhile (%s, was %s); nothing was sent"
@@ -2520,6 +2574,13 @@ def cmd_modhub_publish(ns):
     pre["local"] = local
     if not first:
         pre["update"] = update_summary(local, pre)
+    pre["additionalMetadata"] = additional_metadata(pre)
+    if pre.get("ok") and pre["additionalMetadata"] != local.get("additionalMetadata"):
+        # a mod older than --version drops the version without a word: then it would go up without it
+        pre["ok"] = False
+        pre["error"] = ("the mod would send additionalMetadata %s, not %s (an older remote_probe in the game?); "
+                        "nothing was sent" % (json.dumps(pre["additionalMetadata"]),
+                                              json.dumps(local.get("additionalMetadata"))))
     if ns.dry_run or not pre.get("ok"):
         if not ns.dry_run:
             pre["preflight"] = True
@@ -2531,7 +2592,7 @@ def cmd_modhub_publish(ns):
         raise ToolError("a publish mark appeared meanwhile (%s); nothing was sent" % pending_path())
     path = write_pending({"v": 1, "folder": args["folder"], "owner": OWNER, "public": args["public"],
                           "firstUpload": first, "update": not first, "modioId": args.get("modioId"),
-                          "revision": local.get("revision"), "at": int(time.time()),
+                          "revision": local.get("revision"), "version": local.get("version"), "at": int(time.time()),
                           "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     def history(outcome, res=None, fileid=None):
         res = res or {}
@@ -2539,7 +2600,7 @@ def cmd_modhub_publish(ns):
         got = append_history({"v": 1, "at": int(time.time()), "atUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "owner": OWNER, "folder": args["folder"], "public": args["public"], "outcome": outcome,
                               "mode": "firstUpload" if first else "update", "modioId": args.get("modioId"),
-                              "revision": local.get("revision"),
+                              "revision": local.get("revision"), "version": local.get("version"),
                               "publishCalled": res.get("publishCalled"), "modId": res.get("modId"), "fileid": fileid,
                               "error": res.get("error")})
         if got:
@@ -2552,6 +2613,7 @@ def cmd_modhub_publish(ns):
     res["local"] = local
     if not first:
         res["update"] = update_summary(local, res)
+    res["additionalMetadata"] = additional_metadata(res)
     res["preflight"] = {"ok": True, "validation": pre.get("validation")}
     res["pendingMark"] = path
     result = res.get("result") if isinstance(res.get("result"), dict) else {}
@@ -2595,6 +2657,12 @@ def cmd_modhub_publish(ns):
     clear_pending()
     res["pendingCleared"] = True
     return res
+
+
+def additional_metadata(answer):
+    """The additionalMetadata the mod's settings say it sends (or sent): None when it sends none."""
+    settings = answer.get("settings") if isinstance(answer.get("settings"), dict) else {}
+    return settings.get("additionalMetadata")
 
 
 def update_summary(local, answer):
@@ -3651,6 +3719,8 @@ def make_parser():
                      + FILEID_NAME + "); without it, an update (refused when it has none)")
     mpu.add_argument("--previous-revision", type=int, help="an update only, when " + HISTORY_NAME + " records no "
                      "revision for that mod.io mod: the revision now on mod.io (mod.json's must be above it)")
+    mpu.add_argument("--version", help="X.Y.Z, sent as PublishSettings.additionalMetadata {version = X.Y.Z} (a "
+                     "trial); must be mod.json's revision X*10000+Y*100+Z")
     mpu.add_argument("--dry-run", action="store_true", help="check and validate, answer the settings; no upload")
     mpu.add_argument("--timeout", type=float, help="seconds for the mod's whole command (default 900, at most 3600); "
                                                    "past it the upload is not aborted and its outcome is unknown")

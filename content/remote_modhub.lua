@@ -458,10 +458,12 @@ function M.new(ctx)
 	-- default, so modinfo.json's name, summary and description go up again); changeLog from the text field
 	-- (1605-1609); at the button isSavegame =
 	-- params.disableValidator, nil on My Mods (5734-5743), and issuesConfirmed = false when no "Proceed Anyway"
-	-- was asked (1822-1826, 1868). additionalMetadata is only for savegames: not set.
+	-- was asked (1822-1826, 1868). additionalMetadata ("merged into the upload's metadata", the page sets it only
+	-- for savegames): set only when a version was given, { version = "X.Y.Z" }; whether mod.io's file version
+	-- takes it is a trial.
 	local function plannedSettings(args)
 		return { setPublic = args.public, updateMetadata = true, changeLog = args.changelog, isSavegame = false,
-			issuesConfirmed = false }
+			issuesConfirmed = false, additionalMetadata = args.version and { version = args.version } or nil }
 	end
 
 	local function publishPayload(job)
@@ -565,6 +567,7 @@ function M.new(ctx)
 			s.changeLog = p.changeLog
 			s.isSavegame = p.isSavegame
 			s.issuesConfirmed = p.issuesConfirmed
+			if p.additionalMetadata then s.additionalMetadata = p.additionalMetadata end
 			H.helper:publish(job.mid, s)
 		end)
 		return ok, err

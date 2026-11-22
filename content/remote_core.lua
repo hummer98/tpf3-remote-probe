@@ -2526,9 +2526,23 @@ M.MODHUB_VALIDATE_FOLDERS = {
 	hummer_force_unload_default_1 = true,
 }
 -- the staging folders publish takes: separate from validate's list, so a folder fit to validate is not fit to
--- upload by that alone. One mod, the first to go up this way; another is added only once a person decided it.
+-- upload by that alone. A folder is added only once a person decided it: the first to go up this way, then the
+-- author's mods already on mod.io (their updates; each has _metadata/mod.io_fileid.txt, checked by tf3ctl.py).
 M.MODHUB_PUBLISH_FOLDERS = {
 	hummer_force_unload_default_1 = true,
+	hummer_cursor_altitude_tooltip_1 = true,
+	hummer_construction_altitude_tooltip_1 = true,
+	hummer_industry_pollution_display_1 = true,
+}
+-- the folders already on mod.io, each held to its mod.io page: a first upload of one is refused, and an update only
+-- goes to that id. Without this, a lost or remade _metadata/mod.io_fileid.txt would make such a folder look new to
+-- both tf3ctl.py and the game, and a first upload would make a second page. The same table is in tf3ctl.py.
+-- After a first upload, add the folder and its new id to both.
+M.MODHUB_PUBLISHED_IDS = {
+	hummer_force_unload_default_1 = "6543965",
+	hummer_cursor_altitude_tooltip_1 = "6523060",
+	hummer_construction_altitude_tooltip_1 = "6536988",
+	hummer_industry_pollution_display_1 = "6536959",
 }
 M.MODHUB_PUBLISH_SEC = { default = 900, max = 3600 } -- s for the whole publish command (waits, validation, upload)
 M.MODHUB_CHANGELOG_MAX = 5000 -- characters; mod.io takes far more, a longer one here is a mistake
@@ -2606,8 +2620,9 @@ end
 -- args: folder (required, from MODHUB_PUBLISH_FOLDERS), public (true / false, required: no default visibility),
 -- one of firstUpload = true (a new mod page) or update = true with modioId (the mod.io id tools/tf3ctl.py read from
 -- the staging folder's _metadata/mod.io_fileid.txt: the update goes only to that page), changelog (text, required),
--- dryRun, timeout (s, the whole command), messages (validator messages listed). Both or neither of firstUpload and
--- update is refused: a new page and an update must never be taken for each other.
+-- dryRun, timeout (s, the whole command), messages (validator messages listed), version ("X.Y.Z", optional) with
+-- revision (mod.json's, which tools/tf3ctl.py reads: Lua has no io; required with version). Both or neither of
+-- firstUpload and update is refused: a new page and an update must never be taken for each other.
 function M.modhubPublishArgs(args)
 	args = type(args) == "table" and args or {}
 	local f, err = M.stagingFolderArg(args.folder)
@@ -2635,6 +2650,13 @@ function M.modhubPublishArgs(args)
 	elseif args.modioId ~= nil then
 		return nil, "modioId is only for an update: a first upload has no mod.io id yet"
 	end
+	local pinned = M.MODHUB_PUBLISHED_IDS[f]
+	if pinned and args.firstUpload then
+		return nil, f .. " is on mod.io already (mod " .. pinned .. "): a first upload would make a second page"
+	end
+	if pinned and modioId ~= pinned then
+		return nil, f .. " is mod.io mod " .. pinned .. ", not " .. tostring(modioId) .. ": not updated"
+	end
 	if type(args.public) ~= "boolean" then
 		return nil, "give public = true or false: there is no default visibility"
 	end
@@ -2655,8 +2677,40 @@ function M.modhubPublishArgs(args)
 			return nil, "messages must be a whole number 0-" .. M.MODHUB_MESSAGES.max
 		end
 	end
+	local version
+	if args.version ~= nil then
+		version, err = M.modhubVersionArg(args.version, args.revision)
+		if not version then return nil, err end
+	elseif args.revision ~= nil then
+		return nil, "revision is only given with version"
+	end
 	return { folder = f, public = args.public, firstUpload = args.firstUpload == true, update = args.update == true,
-		modioId = modioId, changelog = args.changelog, dryRun = args.dryRun == true, timeout = t, messages = n }
+		modioId = modioId, changelog = args.changelog, dryRun = args.dryRun == true, timeout = t, messages = n,
+		version = version, revision = version and args.revision or nil }
+end
+
+-- a version for PublishSettings.additionalMetadata: "X.Y.Z", whole numbers without leading zeros, Y and Z 0-99,
+-- and the same number as mod.json's revision (X*10000 + Y*100 + Z, the rule of the author's mods): a version
+-- that says one release and a revision that says another is refused. Whether mod.io's file version takes it is
+-- not known (the game sent "1.0" there for force unload 1.0.3, 2026-11-22).
+function M.modhubVersionArg(v, revision)
+	if type(v) ~= "string" then return nil, "version is a string X.Y.Z" end
+	local x, y, z = v:match("^(%d+)%.(%d+)%.(%d+)$")
+	if not x or #v > 20 then return nil, "version is X.Y.Z (whole numbers only): " .. v:sub(1, 40) end
+	for _, p in ipairs({ x, y, z }) do
+		if #p > 1 and p:sub(1, 1) == "0" then return nil, "version has no leading zeros: " .. v end
+	end
+	x, y, z = tonumber(x), tonumber(y), tonumber(z)
+	if y > 99 or z > 99 then return nil, "version's Y and Z are 0-99 (revision X*10000+Y*100+Z): " .. v end
+	if type(revision) ~= "number" or revision ~= math.floor(revision) or revision < 1 then
+		return nil, "version needs revision, mod.json's (a whole number of 1 or more)"
+	end
+	local want = x * 10000 + y * 100 + z
+	if want ~= revision then
+		return nil, string.format("version %s is revision %d, but mod.json's revision is %d (that is %d.%d.%d)", v,
+			want, revision, math.floor(revision / 10000), math.floor(revision / 100) % 100, revision % 100)
+	end
+	return v
 end
 
 -- whether a finished validation lets the upload go without a person. The base's Upload button needs a result
