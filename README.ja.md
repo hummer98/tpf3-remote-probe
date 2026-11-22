@@ -247,7 +247,9 @@ python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
 python3 tools/tf3ctl.py vehicles --entity 601 --state --at-terminal --every 2 --count 300   # gameTime 付きの JSON Lines
 python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # または --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
+python3 tools/tf3ctl.py models --mu [shinkansen]   # 読むだけ: 編成 (.mu.lua) の一覧と buy に渡す名前
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
+python3 tools/tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302 [--line 21] [--count 2]   # 編成 (multiple unit)
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
 python3 tools/tf3ctl.py replace --vehicle 601 --model bus_1920
 python3 tools/tf3ctl.py sell --vehicle 601
@@ -345,11 +347,12 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   (`--seed` か `--params` で変えられる) なので、同じ置き方は毎回同じ見た目になります。プローブは params に印
   `remote_probe_build = 1` を足します (`--remove` を参照)。建物の updateFn はこのキーを知らないので、使いません。
 - 答え: `entity` (できた建物)、`construction` (`fileName`、`name`、`depots`、`stations`、`industries`、`ends`: 建物自身の
-  道路・線路の空いた端と位置。`connect --from` の候補)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
+  道路・線路の空いた端と位置。`connect --from` の候補。`connectable`: `road` でつなげる所。`road` を参照)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
   `spent`、`errors`、`warnings`、`collisions` (邪魔をしている id)、送った `params`、`at` (使った z と `zFrom`)。断られた
   ときは `ok: false` で、エンジンの文言が `error` に入ります。
-- `--dry-run` は何も建てず、エンジンにも**聞きません**。エンジンの `makeProposalData` は完全な `Proposal` だけを受け、
-  `SimpleProposal` の版がない (`engine/util.d.tl:939`) ので、呼びません。プローブが確認するのは、名前・送る params・高さと、
+- `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は
+  `engine/util.d.tl:939` では `Proposal` 用ですが、GUI のスレッドでは `SimpleProposal` を受けます。建物のほうはまだ
+  聞いていません)。プローブが確認するのは、名前・送る params・高さと、
   点から 30 m の中の建物 (`near`。箱で見るだけの大まかなもの) です。答えは `checked: false` で、`buildable` はありません。
   エンジンが受け付けるか (衝突・地形・所持金) は、建てたときにしか分かりません。
 - `--remove` で取り除けるのは、プローブが建てたものだけです: この読み込みのあとに建てたもので、その id の下にエンジンが
@@ -414,6 +417,8 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
 
 ```
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # エンジンに聞く (ゲームを変える側)
+python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
 ```
 
 - 2点 (x,y[,z]、メートル。z が無ければ地形の高さ) の間に、まっすぐな道路を1本、クリック無しで建てます。
@@ -421,11 +426,25 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   `api.cmd.makeWorldBuildProposalCmd` で送ります。`build` が建物を送るのと同じ形です (同じ context: 何も壊さない、
   エラーを無視しない)。ゲームを変えるので、テスト用のセーブでだけ使ってください。
 - 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない。3次元で測るので、点の上にある橋の node は使わない)
-  以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。道路は octree
+  以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。点の近くの道路は octree
   (`api.engine.util.octree.findEntitiesInCircle` で BASE_EDGE、無ければ octree system の箱) から探し、道路だけ
-  (`roadType` が STREET。種類が読めないものは除く) の `node0` / `node1` を使います。node そのものは探さず、線路の node
-  についても聞きません。
-  建物の自分の道路の空いた端 (港の入口の道路: `build` の答えの `construction.ends`) もこの node です。なければ新しい node です。
+  (`roadType` が STREET。種類が読めないものは除く) の `node0` / `node1` を使います。線路の node については聞きません。道路は `--snap` より 25 m 広く探し
+  (町の道路の継ぎ目の node を、その真上から snap 3 m で取りこぼした。octree が node の近くでどちらの道路にも当たらなかった)、
+  端のうち `--snap` の中のものだけを使います。新しい node になった端には、その訳を `snapNote` に書きます (`--snap` の外で
+  いちばん近い道路の node とその距離、または道路が1本も無かったこと)。
+  つなぐ node にある道路は、そのあと street system (`streetSystem.getNodeStreetSegments`。答えの
+  `piecesFrom: "streetSystem"`) から読みます。それが無いか、エラーになるときだけ、octree の 1 m の中から探します
+  (`"octree"`)。産業の T 字では、octree はどれにも当たりませんでした。なければ新しい node です。新しい node が古い node の
+  真上 (0.1 m 以内。`--snap 0` のとき) になるときは、エンジンが proposal 全体を断る (Construction Not Possible) ので、
+  送る前に断ります。
+- 建物の道路: `build` の答えの `construction.connectable` に、道路をつなげる所を並べます。それぞれ `node`、`x` / `y` /
+  `z`、`edges` (そこにある道路の数)、`nodeConfig` があります。`kind: "mouth"` は凍結の道路の開いた端 (`frozenEdges` の
+  node のうち `frozenNodes` に無いもの。産業の道路の口はここで、自由な腕2本と T 字になる)、`kind: "arm"` は口から出る自由な
+  道路の先の端 (`from`: 口、`via`: その道路)。`ends` (凍結の道路の端) には腕が出ません。建物の node
+  (`streetConnectorSystem.getConstructionEntityForNode` が 0 以上か、そこに建物の凍結の edge がある) には、**交差点の
+  設定に触らずに**つなぎます (外しも作り直しもしない。Overpass Builder は建物の node でこれを断っています)。端には
+  `construction`、`nodeConfigKept: true`、`pieces` が付き、答えに `caution` が付きます。建物の凍結の node (口の内側の端)
+  は、dry-run も含めて、送る前に断ります。
 - 交差点の設定 (`BaseNodeConfig`。`nodeConfigsToAdd` / `nodeConfigsToRemove` で送る): 新しい node にはそれぞれ設定を付け
   (行き止まり: レーンのつながり無し)、つないだ node は元のつながりを残して、新しい道路の分を足します。足すのは新しい道路と
   そこにあるほかの道路の間だけで、node が2本になり、レーンの数が同じならレーンごとにまっすぐ、それ以外は入ってくる
@@ -444,17 +463,34 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   種類 NORMAL (`typeIndex` -1: 橋もトンネルも無し)、会社の `PlayerOwned` を付け、両端の tangent は2点を結ぶ線 (まっすぐ) です。
 - 答え: `from` / `to` (つないだときは `node` と `snapped`、ほかは `zFrom`)、`template`、`year`、`length`、`edges` /
   `nodes` (結果の新しい entity)、`edge`、`node0` / `node1`、`cost`、`spent`、断られたときはエンジンの `errors`・`warnings`・
-  `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。`--dry-run` は
-  何も送らず、計画だけを返します (`checked: false`)。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい
+  `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい
   道路が見つからないときは `warning` を付けます。template や `BaseEdgeType` / `RoadType` の enum が読めないときは、
   何も送らずに断ります。
+- `--dry-run` は何も送らず、エンジンにも聞きません。プローブが確かめた計画だけを返します (`checked: false`、
+  `engineCheck: "not asked (use --engine-check)"`)。ほかの dry-run と同じく、安全に使えます。
+- `--dry-run --engine-check` (`--engine-check` は `--dry-run` と一緒にだけ使う): 建てるときに送るのと同じ proposal
+  (設定も含む) も作り、
+  `api.engine.util.proposal.makeProposalData` (proposal だけ、だめなら context も渡す) でエンジンに聞きます。
+  呼ぶのは guiUpdate の中で、レシピの本体では呼びません。答えは `checked: true`、`engineCheck` (使った形)、`buildable`、
+  エンジンの `cost`・`errors`・`warnings`・`collisions`・`critical`、`balance`。エンジンが断るものは `ok: false` で、文言が
+  `error` に入ります。`makeProposalData` が無いか、どちらの形でもエラーになるときは、プローブの計画だけを返します
+  (`checked: false`、`engineCheck: "not available: ..."`)。エンジンの評価は pcall で守れないネイティブのコードを通る
+  (そこで assertion が出るとゲームが終わる) ので、tf3ctl はこれをゲームを変える命令に数えます。統括から時間をもらって、
+  テスト用のセーブでだけ使ってください。
+- `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
+  `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
+  (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ
+  `false`。あれば `laneConnections`・`crosswalks`・`trafficLightStates`・`doubleSlipSwitch`)、`octree`
+  (`findEntitiesInCircle` が 1・5・20 m の中で当たる道路と、それぞれがその node で終わるか。最大 40 本)、`road`
+  (その node を端にしたとき road がすること)。
 - 長さは 1 m から 2000 m まで。水の上や谷を渡るには橋が要りますが、これは橋を建てません (エンジンが断るか、地形に沿うか:
   未確認)。
 - 使い道: 港の歩行者用接続路だけでは、港は道路網につながりません。その横に、港の道路の空いた端から町の道路まで道路を
   通すとつながります (プレイヤーが建てるのと同じ)。
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): 特に、`api.type.NodeAndEntity` / `SegmentAndEntity` / `PlayerOwned`
-  がその名前で届くか (`api.type.Proposal.*` も試す)、初期のままの `streetEdge` で足りるか、建物の道路の node を端として
-  エンジンが受け付けるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
+  がその名前で届くか (`api.type.Proposal.*` も試す)、初期のままの `streetEdge` で足りるか、建物の node を、設定に
+  触らずに端としてエンジンが受け付け、そこで新しい道路のレーンをつなぐか (2026-11-23 に書いた。それまで伐採場の外側の端と
+  内側の端は断られた)、guiUpdate で makeProposalData が Overpass Builder の道具と同じように答えるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
   どうなるか (proposal に交差の node は入れていない: エンジンが足すか、断るか、重ねるか)。
 
 ### 長方形の範囲の地面 (`terrain`)
@@ -683,6 +719,51 @@ python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # 範囲の中
   言った entity についてだけ聞きます。
 - **ゲーム内では未確認** (2026-11-23 に書いた): 表と `PARCEL` コンポーネントが GUI のスクリプトで読めるか、欄の名前、
   値。
+
+### その場所へ行けるか (`reach`、読むだけ)
+
+```sh
+python3 tools/tf3ctl.py reach --api                       # エンジンの関数があるかだけを見る (何も呼ばない)
+python3 tools/tf3ctl.py reach --target 51                 # 産業・町の建物・駅・construction
+python3 tools/tf3ctl.py reach --town 11 [--limit 20]      # 町の行き先の集計と、町の問題
+python3 tools/tf3ctl.py reach --problems                  # 全部の町の問題 (Disconnected、Overlength)
+python3 tools/tf3ctl.py reach --from 4100 --to 51 [--mode walk|drive|lines|all] [--radius 40]
+python3 tools/tf3ctl.py reach --from=-120,880 --to 51 --mode walk   # 端に点 x,y も使える
+python3 tools/tf3ctl.py persons --town 11 [--limit 2000]  # 町の住民と、それぞれが届く行き先の数
+python3 tools/tf3ctl.py persons --destination 51          # その産業を行き先に持つ人 (働き手)
+```
+
+- 読むだけです (ほかのクライアントに警告は出ず、何も送りません)。町の人が働き先へ行かない理由を調べるために作りました。
+- `--target E`: エンジンの行き先の一覧 `api.engine.util.pathfinding.getTargetsByLandUse()` (命令ごとに1回。地図の
+  行き先が全部入っているので、全部読むのは聞かれたものだけ)。答えの `entries` は、その entity が入っている一覧ごとに
+  1つ: `isReachableWalk`・`isReachableDrive`・`isReachableLines`、`capacity`・`freeCapacity`・`destinationWeight`、
+  `edgeWalk` / `edgeDrive` (`entity`・`index`: 行き先へ通じる網の edge)、`landUseKey` (一覧そのもののキー) と
+  `landUseGuess`。`counts`。`landUse` (その entity の `PERSON_CAPACITY` の種類。推測の当否はこれで見る)。行き先で
+  ない (家、働き口の無い産業) ときは `found` が false で `why` が付きます。construction はその産業・町の建物・駅を、
+  町の建物はその PersonCapacity の entity も探します (`candidates`)。建物の町 (産業なら construction に一番近い町)
+  が分かれば `townProblems` (`api.engine.util.town.getTownProblems`: `problem` と相手の町 `with`) も付きます。
+- `--town T`: 町の建物 (`townBuildingSystem.getTown2BuildingMap`、5000 まで読む) を種類ごとに (`byKind`)、店と
+  働き口の行き先を数え (`counts`: `walk`・`drive`・`lines`・`none`)、`--limit` 件を届かないものから並べます。
+  `notTarget` は住宅でないのに行き先でない建物の数。`problems` は上と同じ。
+- `--from A --to B`: 道があるか。`api.engine.util.pathfinding.findPathNodeToNode` に `TransportMode.PERSON` (`walk`)
+  と `CAR` (`drive`) を渡し、mode ごとに1回探します。端は entity か点: 建物そのものの `PERSON_CAPACITY` の
+  `personNodes` (歩き) / `vehicleNodes` (車)、行き先なら `edgeWalk` / `edgeDrive` の node、
+  駅なら terminal (歩きは `personNodes`、車は `vehicleNodeId`)、ほかは位置または点から `--radius` m (初期設定 40、
+  500 まで) の中の網の node (`findTransportNetworkNodesInCircle`)。端ごとに 32 node まで。`paths` の mode ごとに:
+  `found` (端に node が無いときは null で `why`)、`edges`、`pieces` (経路の網の entity の数、最初の 50 が
+  `pieceIds`)、`ms`、node をどこから取ったか (`fromFrom` / `toFrom`)。見つからなかったときは、この探し方でそもそも
+  道が見つかるとゲームで分かるまで `unverified: true` が付きます (まず、つながっていると分かっている2点で試す)。
+  100 ms 以上かかった探索はログに出ます。費用はエンジンが返しません。路線の経路探しは
+  呼べる口が無いので、`lines` は行き先の `isReachableLines` だけです (`--mode lines` は探しません)。
+- `persons --town T` は、町の住宅を家にしている人 (建物ごとの `getSimPersonsForDestination`)、`persons
+  --destination E` は E を行き先に持つ人 (E に `PERSON_CAPACITY` が要る) を並べます。`persons` の各人に
+  `reachable` (`walkDrive`・`lines`: エンジンの `landUse2ReachableWalkDrive` / `landUse2ReachableLines`、土地利用
+  ごとに届く行き先の数) が付き、`summary.reach` は一覧の位置ごとに、1つでも届く人の数を数えます (`none`: どちらでも
+  何にも届かない人)。
+- **ゲーム内では未確認** (2026-11-23 に書いた): `getTargetsByLandUse` と `getTownProblems` が GUI のスクリプトにあるか
+  (`reach --api` で分かる)、`getTargetsByLandUse` の答えの形、どの一覧がどの土地利用か (一覧は2つ: 商業・工業と推測)
+  と `reachable` の2つの数も同じ、`findPathNodeToNode` がこの node どうしで歩きの道を見つけるか (別の MOD の覚え書き
+  には、駅の terminal の node どうしでは何も返らなかったとある)、大きな地図での1回の探索の時間。
 
 ### メインメニューからのマイMOD (`modhub`)
 
@@ -965,6 +1046,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
 - `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
+- `reach` と `persons --town` / `--destination` は全部 (読むだけ、「その場所へ行けるか」を参照)。
 - `modhub publish` の更新 (「MOD を上げる」を参照)。`modhub status`・`validate`・最初のアップロードは 2026-11-22 に
   確認済み。
 
@@ -1094,6 +1176,23 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
 - 船: 大型船 (mode SHIP) は、どの停車駅でも大型船着場が要ります。エンジンが小型船着場 (SMALL_SHIP だけ) を割り当てると、
   船は断られます (`NoSmallShip`)。船の路線は `line create --terminals` で大型船着場 (`stations` の `platforms` で
   `transportModes` に SHIP があるもの) を指定して作り、`lines --problems` で見てください。
+- 編成 (multiple unit): `--model` が `.mu.lua` で終わると (例 `shinkansen_0s.mu.lua`、公式の TGV の MOD の
+  `tgv.mu.lua`)、店の編成の行と同じくその編成を買います。ファイルに並ぶ車両を順に全部、`forward = false` の車両は
+  向きを逆にし、モデルは `api.res.modelRep.find` で引き、`vehicleGroups = { 両数 }` と `muFileNames = { ファイル名 }`
+  の 1 台として送ります (`vehicle_configs.muParts` / `newMuConfig`、`vehicle_store_window.tl` にならう)。名前は
+  `api.res.multipleUnitRep.getAll()` の各編成の 2 つの名前 (その値と `getName(id)`) と突き合わせます。全体の一致、
+  次に大文字小文字・フォルダ・`.mu.lua` / `.mu` を外した一致 (`shinkansen_0s.mu` でも可)、次にその一意な一部の順
+  です。`muFileNames` には店と同じく `getName` の名前を入れ、それが無い編成は断ります。`getAll()` が空なら
+  `getAll(true)` を数えてエラーに出し、`models --mu` に `invisible: true` で並べますが、そこからは買いません (店に
+  並ばないもの)。当たらないときは、編成の件数、問い合わせの一部を含む名前、最初の 5 件をエラーに出します。読むだけの
+  `models --mu [FILTER]` で一覧 (`id`・`fileName`・`getName`・`value` (getAll の値)・`name` (表示名)・`cars`・
+  `buyAs` (`--model` に渡す名前。同じファイル名の編成が 2 つあれば全体の名前)) が見られます。FILTER は名前か表示名に
+  当てます。送る前にファイル全体を調べ、車両が無い・
+  ゲームに無いモデル・車両でないモデルがあればエラーです。gui だけで (`--via cmd` は断ります)、`replace` は編成を
+  受けません。返事には `multipleUnit` (`id`・`fileName`・`name`・車両ごとの `modelId`・`name`・`forward` の `parts`)
+  が付き、`storeParts` と `storePriceTotal` は全車両の分、`sentParts` と `vehicles[].parts` は向きが逆の部品に
+  `reversed: true` を付けます (編成に限らず、どの車両でも)。編成で買った車両には、エンジンが持つ `vehicleGroups` と
+  `muFileNames` も付きます。フォルダを除いたファイル名が問い合わせと等しいものは、名前に含むだけのものより優先します。単独のモデルを手で並べた列車 (機関車と客車) は作れません。ゲーム内では未確認です。
 - `buy` は `--depot` が必須です (店は車庫から開いたときだけ車庫を決める)。台数は 1-20。`--line` の先頭の停車駅は
   0 番。`duplicate` は本体の複製と同じく config を写し、部品を purchaseTime 0・maintenanceState 1 にします。車庫と
   路線の既定は `findBestLineAndDepotForVehicle`。

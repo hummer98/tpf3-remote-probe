@@ -1,0 +1,267 @@
+-- Tests of reach (content/remote_reach.lua) and persons --town / --destination, run by tests/run.lua with its
+-- helpers: dofile(...)(t). The engine's side is tests/fake_reach.lua.
+return function(t)
+	local test, eq, truthy, fake, core = t.test, t.eq, t.truthy, t.fake, t.core
+	local newGame, send, frames, final, FIRST, SAVES = t.newGame, t.send, t.frames, t.final, t.FIRST, t.SAVES
+	local root = t.root
+	local R = require "hummer_remote_probe::/remote_reach.lua"
+	local fakeReach = dofile(root .. "/tests/fake_reach.lua")
+
+	test("reach args: the five forms, one at a time, and what is refused", function()
+		eq(R.args({ api = true }).form, "api"); eq(R.args({ problems = true }).form, "problems")
+		local a = R.args({ target = 51 }); eq(a.form, "target"); eq(a.target, 51)
+		a = R.args({ town = "11", limit = 0 }); eq(a.town, 11); eq(a.limit, 0)
+		a = R.args({ from = 41, to = "51" })
+		eq(a.form, "path"); eq(a.from.entity, 41); eq(a.to.entity, 51); eq(#a.modes, 2); eq(a.radius, R.RADIUS_DEFAULT)
+		a = R.args({ from = "-100.5, 20", to = { 3, 4 }, mode = "walk", radius = 500 })
+		eq(a.from.x, -100.5); eq(a.from.y, 20); eq(a.to.x, 3); eq(a.to.y, 4); eq(a.modes[1], "walk"); eq(#a.modes, 1)
+		eq(a.radius, 500)
+		a = R.args({ from = 1, to = 2, mode = "lines" }); eq(#a.modes, 0); eq(a.linesOnly, true)
+		local bad = { { {}, "give one of" }, { nil, "give one of" }, { { api = true, target = 1 }, "one form at a time" },
+			{ { target = -1 }, "target must be" }, { { target = 1.5 }, "target must be" }, { { town = "x" }, "town must be" },
+			{ { town = 1, limit = 201 }, "limit must be" }, { { town = 1, limit = -1 }, "limit must be" },
+			{ { from = 1 }, "both from and to" }, { { to = 1 }, "both from and to" },
+			{ { from = "a,b", to = 1 }, "from must be" }, { { from = 1, to = "1,2,3" }, "to must be" },
+			{ { from = 1, to = "nan,1" }, "to must be" }, { { from = 1, to = 2, mode = "fly" }, "mode must be" },
+			{ { from = 1, to = 2, radius = 0 }, "radius must be" }, { { from = 1, to = 2, radius = 501 }, "radius must be" },
+			{ { api = "yes" }, "give one of" } }
+		for _, b in ipairs(bad) do
+			local ok, err = R.args(b[1])
+			truthy(ok == nil and err and err:find(b[2], 1, true), tostring(err) .. " (wanted " .. b[2] .. ")")
+		end
+		truthy(select(2, R.args({ target = 1, limit = 3 })):find("limit goes with town"))
+		eq(core.COMMANDS.reach, true); eq(core.CHANGES_GAME.reach, nil); eq(core.MENU_COMMANDS.reach, nil)
+	end)
+
+	test("reach shapes: target lists (targets field, a list, keys from 0), guesses, edges, counts, town problems", function()
+		local lists, how = R.targetLists({ targets = { { entries = { { entity = 1 } } }, { entries = {} } } }, core)
+		eq(#lists, 2); eq(how, "targets"); eq(lists[1].key, 1)
+		lists, how = R.targetLists({ [0] = { entries = {} }, [1] = { entries = {} }, [2] = { entries = {} } }, core)
+		eq(#lists, 3); eq(how, "top"); eq(lists[1].key, 0, "a table keyed by the land use value: in key order")
+		eq(#R.targetLists(nil, core), 0)
+		eq(R.landUseGuess(1, 2), "commercial"); eq(R.landUseGuess(2, 2), "industrial"); eq(R.landUseGuess(1, 3), "residential")
+		eq(R.landUseGuess(1, 4), nil)
+		local idx = R.targetIndex({ targets = { { entries = { { entity = 5 }, { entity = 6 } } }, { { entity = 5 } } } }, core)
+		eq(idx.total, 3); eq(#idx.byEntity[5], 2, "an entity in both lists"); eq(idx.byEntity[5][2].key, 2)
+		eq(idx.lists[2].entries, 1, "a TargetData that is itself the list of entries")
+		eq(R.targetIndex({}, core).total, 0)
+		eq(R.edgeOf({ 7, 3 }, core).entity, 7); eq(R.edgeOf({ entity = 7, index = 0 }, core).index, 0)
+		eq(R.edgeOf({ -1, -1 }, core), nil, "no edge"); eq(R.edgeOf(nil, core), nil)
+		local p = R.entryPlain({ entity = 9, isReachableWalk = true }, core)
+		eq(p.entity, 9); eq(p.isReachableWalk, true); eq(p.isReachableLines, nil, "a field that is not there stays out")
+		local c = R.reachCounts({ { isReachableWalk = true, isReachableDrive = true }, { isReachableWalk = false, isReachableDrive = false,
+			isReachableLines = false }, {} })
+		eq(c.targets, 3); eq(c.walk, 1); eq(c.drive, 1); eq(c.lines, 0); eq(c.none, 1); eq(c.unknown, 1)
+		eq(R.reachCounts(nil).targets, 0)
+		local tp = R.townProblems({ { { 11, 12 }, 0 }, { towns = { 13 }, problem = 1 } }, core, function(v) return v == 0 and "Disconnected" or "Overlength" end)
+		eq(#tp, 2); eq(tp[1].towns[2], 12); eq(tp[1].problem, "Disconnected"); eq(tp[2].towns[1], 13); eq(tp[2].problem, "Overlength")
+		eq(#R.townProblems(nil, core), 0)
+		local s = core.reachSummary({ { reachable = { walkDrive = { 3, 0 }, lines = { 0, 0 } } },
+			{ reachable = { walkDrive = { 0, 0 }, lines = { 0, 0 } } }, { reachable = { walkDrive = { 1, 2 }, lines = { 0, 1 } } }, {} })
+		eq(s.persons, 3); eq(s.walkDrive[1], 2); eq(s.walkDrive[2], 1); eq(s.lines[2], 1); eq(s.none, 1)
+		eq(core.reachSummary({ {} }), nil, "nobody with the counts: nothing"); eq(core.reachSummary(nil), nil)
+	end)
+
+	-- Emsworth (11): homes 1101 (its own PERSON_CAPACITY) and 1102 (through its PersonCapacity entity 1192), a shop
+	-- 1103 (reachable walking), an industrial building 1104 that is no target; Empty (12): no buildings. Quarry A
+	-- (51, construction 5100, closest town 11): a target out of reach every way, its walking edge on network 700,
+	-- its driving edge on 702; 52: an industry without workplaces. Station 4100: people wait on 701:0, vehicles stop
+	-- at 701:1. Walking 701:0 -> 701:1 only; driving 701:1 -> 702:0. Point (0, 0) has node 701:0.
+	local function reachSpec(extra)
+		local s = {
+			towns = { [11] = "Emsworth", [12] = "Empty" },
+			buildings = { [1101] = { town = 11, kind = "RESIDENTIAL", capacity = 10 },
+				[1102] = { town = 11, kind = "RESIDENTIAL", capacity = 8, pc = 1192 },
+				[1103] = { town = 11, kind = "COMMERCIAL", capacity = 5 }, [1104] = { town = 11, kind = "INDUSTRIAL", capacity = 4 } },
+			industries = { [51] = { name = "Quarry A", construction = 5100, capacity = 20 }, [52] = { name = "Depot" } },
+			constructions = { [5100] = { industries = { 51 }, town = 11 } },
+			targets = { { entries = { { entity = 1103, capacity = 5, walk = true, edgeWalk = { 701, 0 } } } },
+				{ entries = { { entity = 51, capacity = 20, walk = false, drive = false, lines = false, edgeWalk = { 700, 0 },
+					edgeDrive = { 702, 0 } } } } },
+			tn = { [700] = { edges = { { 0, 1 } } }, [701] = { edges = { { 0, 1 } } }, [702] = { edges = { { 0, 1 } } } },
+			graph = { walk = { ["701:0"] = { "701:1" } }, drive = { ["701:1"] = { "702:0" } } },
+			stations = { [4100] = { terminals = { { personNodes = { "701:0" }, vehicleNode = "701:1" } } } },
+			circle = { { 0, 0, node = "701:0" } },
+			problems = { { towns = { 11, 12 }, problem = "Disconnected" } },
+			persons = { [9001] = { home = 1101, walkDrive = { 3, 0 }, lines = { 0, 0 } },
+				[9002] = { home = 1192, walkDrive = { 2, 1 }, lines = { 0, 1 } },
+				[9003] = { destinations = { 1101, 1103, 51 }, walkDrive = { 1, 1 }, lines = { 0, 0 } },
+				[9004] = { home = 1101 } },
+		}
+		for k, v in pairs(extra or {}) do s[k] = v end
+		return s
+	end
+	local function reachGame(extra)
+		local g = newGame({ saves = SAVES })
+		fakeReach.install(g, reachSpec(extra))
+		frames(g, 1)
+		return g
+	end
+	local nextId = 3000
+	local function run(g, cmd, argsLua, first)
+		nextId = nextId + 1
+		send(g, nextId, cmd, argsLua)
+		frames(g, first and FIRST or 20)
+		return final(g, nextId)
+	end
+
+	test("reach --target: an industry out of reach every way, its town's problem; by its construction too", function()
+		local g = reachGame()
+		local guiBefore = core.json(fake.guiSave)
+		local a = run(g, "reach", "{ target = 51 }", true)
+		truthy(a.ok, a.error); truthy(a.note:find("not checked in a game"), a.note)
+		eq(a.found, true); eq(#a.entries, 1); eq(a.landUse, "industrial"); eq(a.capacity, 20)
+		local e = a.entries[1]
+		eq(e.entity, 51); eq(e.isReachableWalk, false); eq(e.isReachableDrive, false); eq(e.isReachableLines, false)
+		eq(e.landUseKey, 2); eq(e.landUseGuess, "industrial"); eq(e.edgeWalk.entity, 700); eq(e.edgeWalk.index, 0)
+		eq(a.counts.none, 1); eq(a.targetsTotal, 2); eq(#a.targetLists, 2); eq(a.targetLists[1].landUseGuess, "commercial")
+		eq(a.town, 11); eq(a.townName, "Emsworth"); eq(#a.townProblems, 1); eq(a.townProblems[1].problem, "Disconnected")
+		eq(a.townProblems[1].with[1], 12)
+		local b = run(g, "reach", "{ target = 5100 }")
+		truthy(b.ok, b.error); eq(b.found, true); eq(b.entries[1].entity, 51, "the construction's industry")
+		truthy(table.concat(b.kinds, ","):find("construction"))
+		eq(b.town, 11, "a construction's closest town"); eq(b.townProblems[1].problem, "Disconnected")
+		local h = run(g, "reach", "{ target = 1102 }")
+		truthy(h.ok, h.error); eq(h.found, false, "a home is no target"); truthy(h.why:find("not among"), h.why)
+		eq(h.candidates[2], 1192, "its PersonCapacity entity was looked for too"); eq(h.town, 11)
+		local n = run(g, "reach", "{ target = 52 }")
+		truthy(n.ok, n.error); eq(n.found, false); eq(#n.entries, 0); eq(n.capacity, nil, "no workplaces")
+		local x = run(g, "reach", "{ target = 424242 }")
+		eq(x.ok, false); truthy(x.error:find("no such entity"), x.error)
+		eq(g.reachCalls.targets, 4, "once a command (none for an id that is not there)")
+		eq(core.json(fake.guiSave), guiBefore, "no GUI save data written"); eq(#g.commands, 0); truthy(not g.crashed, g.crashed)
+	end)
+
+	test("reach --town: buildings by kind, targets counted, those out of reach first; an empty town; not a town", function()
+		local g = reachGame()
+		local a = run(g, "reach", "{ town = 11 }", true)
+		truthy(a.ok, a.error); eq(a.name, "Emsworth"); eq(a.buildings, 4)
+		eq(a.byKind.residential, 2, "1102 by its PersonCapacity entity"); eq(a.byKind.commercial, 1); eq(a.byKind.industrial, 1)
+		eq(a.counts.targets, 1); eq(a.counts.walk, 1); eq(a.notTarget, 1, "the industrial building is no target")
+		eq(#a.entries, 1); eq(a.entries[1].building, 1103); eq(a.entries[1].kind, "commercial")
+		eq(#a.problems, 1); eq(a.problems[1].with[1], 12)
+		local z = run(g, "reach", "{ town = 11, limit = 0 }")
+		truthy(z.ok, z.error); eq(#z.entries, 0); eq(z.counts.targets, 1, "counted, not listed")
+		local e = run(g, "reach", "{ town = 12 }")
+		truthy(e.ok, e.error); eq(e.buildings, 0); eq(e.counts.targets, 0); eq(#e.entries, 0); eq(e.problems[1].with[1], 11)
+		local n = run(g, "reach", "{ town = 51 }")
+		eq(n.ok, false); truthy(n.error:find("is no town"), n.error)
+		local p = run(g, "reach", "{ problems = true }")
+		truthy(p.ok, p.error); eq(p.count, 1); eq(p.problems[1].names[1], "Emsworth"); eq(p.problems[1].problem, "Disconnected")
+		local api_ = run(g, "reach", "{ api = true }")
+		truthy(api_.ok); eq(api_.functions.getTargetsByLandUse, "function"); eq(api_.functions.findPath, "nil")
+		truthy(not g.crashed, g.crashed); eq(#g.commands, 0)
+	end)
+
+	test("reach --from --to: walking and driving searches from a station and a point to an industry; lines mode", function()
+		local g = reachGame()
+		local a = run(g, "reach", "{ from = 4100, to = 51 }", true)
+		truthy(a.ok, a.error)
+		local w, d = a.paths.walk, a.paths.drive
+		eq(w.found, false, "no footway to the quarry's edge"); eq(w.fromNodes, 1); eq(w.toNodes, 2); eq(w.fromFrom.terminal, 1)
+		eq(w.toFrom.target, 2)
+		eq(d.found, true); eq(d.edges, 1); eq(d.pieces, 1); eq(d.pieceIds[1], 702)
+		eq(a.to.name, "Quarry A"); eq(a.to.targets[1].isReachableWalk, false); eq(a.from.kinds[1], "station")
+		eq(a.lines.targetIsReachableLines, false)
+		eq(g.pathModes[1], api.type.enum.TransportMode.PERSON); eq(g.pathModes[2], api.type.enum.TransportMode.CAR)
+		local p = run(g, "reach", '{ from = "0,0", to = 4100, mode = "walk" }')
+		truthy(p.ok, p.error); eq(p.paths.walk.found, true, "point -> the station's waiting nodes")
+		eq(p.paths.walk.sameNode, true); eq(p.from.circle.found, 1); eq(p.paths.drive, nil)
+		local q = run(g, "reach", '{ from = "500,500", to = 51, mode = "walk" }')
+		truthy(q.ok, q.error); eq(q.paths.walk.found, nil, "nothing near the point: no search"); truthy(q.paths.walk.why)
+		local calls = g.reachCalls.path
+		local l = run(g, "reach", '{ from = 4100, to = 51, mode = "lines" }')
+		truthy(l.ok, l.error); eq(next(l.paths), nil); eq(l.lines.targetIsReachableLines, false)
+		eq(g.reachCalls.path, calls, "lines: no path search")
+		local h = run(g, "reach", '{ from = 4100, to = 1101, mode = "lines" }')
+		truthy(h.ok, h.error); eq(h.lines.targetIsReachableLines, nil); truthy(h.lines.note:find("no target"))
+		local n = run(g, "reach", "{ from = 52, to = 51 }")
+		truthy(n.ok, n.error); eq(n.paths.walk.found, nil); truthy(n.paths.walk.why:find("no nodes"), n.paths.walk.why)
+		local x = run(g, "reach", "{ from = 424242, to = 51 }")
+		eq(x.ok, false); truthy(x.error:find("no such entity"), x.error)
+		local y = run(g, "reach", '{ from = 424242, to = 51, mode = "lines" }')
+		eq(y.ok, false); truthy(y.error:find("no such entity"), y.error)
+		truthy(not g.crashed, g.crashed); eq(#g.commands, 0)
+	end)
+
+	test("reach: the engine's userdata (vectors read within their size), a list without targets, no function", function()
+		local g = reachGame({ userdata = true })
+		local a = run(g, "reach", "{ target = 51 }", true)
+		truthy(a.ok, a.error); eq(a.found, true); eq(a.entries[1].edgeWalk.entity, 700)
+		local b = run(g, "reach", "{ from = 4100, to = 51 }")
+		truthy(b.ok, b.error); eq(b.paths.drive.found, true); eq(b.paths.walk.found, false)
+		local c = run(g, "reach", "{ town = 11 }")
+		truthy(c.ok, c.error); eq(c.counts.targets, 1); eq(c.byKind.residential, 2)
+		local p = run(g, "reach", "{ problems = true }")
+		truthy(p.ok, p.error); eq(p.problems[1].towns[2], 12)
+		truthy(not g.crashed, g.crashed)
+		-- an edge index past the network's edges: not read (an engine vector read past its end is an assertion here)
+		local o = reachGame({ userdata = true, targets = { { entries = {} }, { entries = { { entity = 51, edgeWalk = { 700, 5 } } } } } })
+		local r = run(o, "reach", '{ from = 4100, to = 51, mode = "walk" }', true)
+		truthy(r.ok, r.error); eq(r.paths.walk.toNodes, 0); truthy(not o.crashed, o.crashed)
+		local l = reachGame({ targetsShape = "list" })
+		local la = run(l, "reach", "{ target = 51 }", true)
+		truthy(la.ok, la.error); eq(la.found, true); eq(la.read, "top")
+		local nt = reachGame({ noTargets = true })
+		local na = run(nt, "reach", "{ target = 51 }", true)
+		eq(na.ok, false); truthy(na.error:find("getTargetsByLandUse is not there"), na.error)
+		local nb = run(nt, "reach", "{ from = 4100, to = \"0,0\", mode = \"walk\" }")
+		truthy(nb.ok, nb.error); truthy(nb.targetsError:find("not there")); eq(nb.paths.walk.found, true)
+		local te = reachGame({ targetsError = true })
+		local ta = run(te, "reach", "{ town = 11 }", true)
+		eq(ta.ok, false); truthy(ta.error:find("targets boom"), ta.error)
+		for _, gg in ipairs({ o, l, nt, te }) do truthy(not gg.crashed, gg.crashed) end
+	end)
+
+	test("reach --from --to: a home's own doors, a place found by its position, the node cap, a search that fails", function()
+		local circle = { { 0, 0, node = "701:0" }, { 300, 300, node = "703:0" } }
+		for i = 1, 40 do circle[#circle + 1] = { 1000 + i, 1000, node = "704:" .. i } end
+		local g = reachGame({ circle = circle, positions = { [52] = { 300, 300 } },
+			buildings = { [1101] = { town = 11, kind = "RESIDENTIAL", capacity = 10, personNodes = { "701:1" } } },
+			graph = { walk = { ["701:1"] = { "703:0" } }, drive = {} } })
+		local a = run(g, "reach", '{ from = 1101, to = 52, mode = "walk" }', true)
+		truthy(a.ok, a.error); local w = a.paths.walk
+		eq(w.fromFrom.personCapacity, 1, "the home's personNodes, not a circle"); eq(w.toFrom.circle, 1, "52 by its position")
+		eq(a.to.position.x, 300); eq(w.found, true); eq(w.unverified, nil)
+		local b = run(g, "reach", '{ from = "1020,1000", to = 52, mode = "walk", radius = 100 }')
+		truthy(b.ok, b.error); eq(b.paths.walk.fromNodes, R.PATH_NODES_MAX); eq(b.from.truncated, true); eq(b.from.circle.found, 40)
+		eq(b.paths.walk.found, false); eq(b.paths.walk.unverified, true, "a miss is marked until checked in a game")
+		local e = reachGame({ pathError = true })
+		local c = run(e, "reach", '{ from = 4100, to = 51, mode = "drive" }', true)
+		truthy(c.ok, c.error); eq(c.paths.drive.found, nil); truthy(c.paths.drive.why:find("path boom"), c.paths.drive.why)
+		for _, gg in ipairs({ g, e }) do truthy(not gg.crashed, gg.crashed) end
+	end)
+
+	test("reach in the main menu: refused, needs a game", function()
+		local g = newGame({ saves = SAVES, menu = true })
+		frames(g, 2)
+		send(g, 3990, "reach", "{ api = true }")
+		frames(g, FIRST)
+		truthy(final(g, 3990).error:find("needs a running game"))
+	end)
+
+	test("persons --town / --destination: residents with the counts of what they reach, summary.reach", function()
+		local g = reachGame()
+		local a = run(g, "persons", "{ town = 11 }", true)
+		truthy(a.ok, a.error); eq(a.town, 11); eq(a.total, 4, "homes 1101 and 1192 (1102's PersonCapacity)")
+		local byId = {}
+		for _, p in ipairs(a.persons) do byId[p.id] = p end
+		eq(byId[9001].reachable.walkDrive[1], 3); eq(byId[9002].reachable.lines[2], 1); eq(byId[9004].reachable, nil)
+		local s = a.summary.reach
+		eq(s.persons, 3); eq(s.walkDrive[1], 3); eq(s.walkDrive[2], 2); eq(s.lines[1], 0); eq(s.lines[2], 1); eq(s.none, 0)
+		local d = run(g, "persons", "{ destination = 51 }")
+		truthy(d.ok, d.error); eq(d.total, 1); eq(d.persons[1].id, 9003); eq(d.destination, 51)
+		local e = run(g, "persons", "{ town = 12 }")
+		truthy(e.ok, e.error); eq(e.total, 0); eq(e.summary.reach, nil)
+		local bad = { { "{ destination = 52 }", "no person capacity" }, { "{ destination = 424242 }", "no such entity" },
+			{ "{ town = 51 }", "is no town" }, { "{ town = 11, line = 1 }", "not both" }, { "{ destination = -2 }", "destination must be" } }
+		for _, b in ipairs(bad) do
+			local r = run(g, "persons", b[1])
+			truthy(r.ok ~= true and r.error and r.error:find(b[2], 1, true), b[1] .. " -> " .. tostring(r.error))
+		end
+		local u = reachGame({ userdata = true })
+		local ua = run(u, "persons", "{ town = 11, limit = 2 }", true)
+		truthy(ua.ok, ua.error); eq(ua.total, 4); eq(#ua.persons, 2); eq(ua.summary.reach.persons, 2)
+		for _, gg in ipairs({ g, u }) do truthy(not gg.crashed, gg.crashed); eq(#gg.commands, 0) end
+	end)
+end

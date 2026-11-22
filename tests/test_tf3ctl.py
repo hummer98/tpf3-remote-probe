@@ -1499,6 +1499,51 @@ class QuitLaunchTest(unittest.TestCase):
                 tf3ctl.main(["parcels"])
         self.assertEqual(sent, [("parcels", {"edge": 12}), ("parcels", {"rect": [-5.0, -5.0, 5.0, 5.0], "list": True})])
 
+    def test_reach_args_and_main(self):
+        parse = tf3ctl.make_parser().parse_args
+
+        def args(*a):
+            return tf3ctl.reach_args(parse(["reach"] + list(a)))
+        self.assertEqual(args("--api"), {"api": True})
+        self.assertEqual(args("--problems"), {"problems": True})
+        self.assertEqual(args("--target", "51"), {"target": 51})
+        self.assertEqual(args("--town", "11", "--limit", "0"), {"town": 11, "limit": 0})
+        self.assertEqual(args("--from", "41", "--to", "51"), {"from": 41, "to": 51})
+        self.assertEqual(args("--from=-100.5,20", "--to", "51", "--mode", "walk", "--radius", "80"),
+                         {"from": "-100.5,20.0", "to": 51, "mode": "walk", "radius": 80.0})
+        for bad in ([], ["--api", "--problems"], ["--target", "1", "--town", "2"], ["--target", "-1"],
+                    ["--from", "1"], ["--to", "1"], ["--from", "a,b", "--to", "1"], ["--from", "1", "--to", "1,2,3"],
+                    ["--from", "1", "--to", "nan,1"], ["--from", "1", "--to", "2", "--radius", "0"],
+                    ["--from", "1", "--to", "2", "--radius", "501"], ["--target", "1", "--mode", "walk"],
+                    ["--target", "1", "--limit", "3"], ["--town", "1", "--limit", "201"], ["--api", "--radius", "5"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                args(*bad)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse(["reach", "--from", "1", "--to", "2", "--mode", "fly"])
+        self.assertNotIn("reach", tf3ctl.CHANGES_GAME)
+        got = mod_reads(tf3ctl.command_text(9, "reach", {"from": "-1.5,2.0", "to": 51, "mode": "all"}))
+        self.assertEqual(got["args"], {"from": "-1.5,2.0", "to": 51, "mode": "all"})
+        # persons --town / --destination
+        self.assertEqual(tf3ctl.persons_args(parse(["persons", "--town", "11"])), {"town": 11})
+        self.assertEqual(tf3ctl.persons_args(parse(["persons", "--destination", "51", "--limit", "9"])),
+                         {"destination": 51, "limit": 9})
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse(["persons", "--town", "1", "--destination", "2"])
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["reach", "--target", "51"]), 0)
+            self.assertEqual(tf3ctl.main(["reach", "--from", "0,0", "--to", "51", "--mode", "drive"]), 0)
+            self.assertEqual(tf3ctl.main(["persons", "--town", "11"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["reach"]), 2, "refused before sending")
+        self.assertEqual(sent, [("reach", {"target": 51}), ("reach", {"from": "0.0,0.0", "to": 51, "mode": "drive"}),
+                                ("persons", {"town": 11})])
+
     def test_stock_and_steps_args_and_main(self):
         def ns(**kw):
             base = dict(action="set", entity=51, stock=0, amount=100, cargo=None, dry_run=False)
@@ -1716,9 +1761,29 @@ class QuitLaunchTest(unittest.TestCase):
                     ["--from", "0,0", "--to", "1,1", "--snap", "-1"], ["--from", "0,0", "--to", "1,1", "--type", " "]):
             with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
                 tf3ctl.road_args(p.parse_args(["road"] + bad))
-        with self.assertRaises(SystemExit):
-            with contextlib.redirect_stderr(io.StringIO()):
-                p.parse_args(["road", "--from", "0,0"])
+        # --engine-check: with --dry-run only; it counts as changing the game, a plain dry run does not
+        rd = p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--engine-check"])
+        args = tf3ctl.road_args(rd)
+        self.assertEqual(args["engineCheck"], True)
+        self.assertTrue(tf3ctl.changes_game("road", args))
+        self.assertFalse(tf3ctl.changes_game("road", {"from": [0, 0], "to": [1, 1], "dryRun": True}))
+        self.assertTrue(tf3ctl.changes_game("road", {"from": [0, 0], "to": [1, 1]}))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--engine-check"]))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--engine-check"]))
+        # --from and --to: required unless --inspect-node (checked after parsing)
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_args(p.parse_args(["road", "--from", "0,0"]))
+        # --inspect-node: read only, alone
+        self.assertNotIn("roadInspect", tf3ctl.CHANGES_GAME, "read only")
+        self.assertEqual(tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "4077"])), {"node": 4077})
+        for bad in (["--inspect-node", "-1"], ["--inspect-node", "5", "--from", "0,0"], ["--inspect-node", "5", "--dry-run"],
+                    ["--inspect-node", "5", "--to", "1,1"], ["--inspect-node", "5", "--snap", "2"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                tf3ctl.road_inspect_args(p.parse_args(["road"] + bad))
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            p.parse_args(["road", "--inspect-node", "x"])
         self.assertEqual(p.parse_args(["water", "--grid", "0,0,1,1,1"]).grid, "0,0,1,1,1")
         sent = []
 
@@ -1729,6 +1794,10 @@ class QuitLaunchTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             code = tf3ctl.main(["water", "--at=-100,50"])
         self.assertEqual((code, sent), (0, [("water", {"at": [-100.0, 50.0]})]))
+        del sent[:]
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = tf3ctl.main(["road", "--inspect-node", "4077"])
+        self.assertEqual((code, sent), (0, [("roadInspect", {"node": 4077})]))
 
     def test_terrain_args_and_probe_api(self):
         p = tf3ctl.make_parser()
@@ -1996,6 +2065,11 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(tf3ctl.vehicle_args(ns(via="cmd", vehicle=7)), {"via": "cmd", "vehicle": 7})
         got = mod_reads(tf3ctl.command_text(8, "buy", {"via": "cmd", "model": "101", "depot": 301, "line": 21}))
         self.assertEqual(got["args"], {"via": "cmd", "model": "101", "depot": 301, "line": 21})
+        # a multiple unit goes as the model text: the mod tells it by its .mu.lua ending
+        mu = tf3ctl.make_parser().parse_args(["buy", "--model", "shinkansen_0s.mu.lua", "--depot", "302"])
+        self.assertEqual(tf3ctl.vehicle_args(mu), {"via": "gui", "model": "shinkansen_0s.mu.lua", "depot": 302, "count": 1})
+        got = mod_reads(tf3ctl.command_text(9, "buy", tf3ctl.vehicle_args(mu)))
+        self.assertEqual(got["args"]["model"], "shinkansen_0s.mu.lua")
         self.assertTrue({"buy", "duplicate", "replace", "sell", "money"} <= tf3ctl.CHANGES_GAME)
         self.assertEqual(tf3ctl.money_args(ns(set=5, add=None)), {"set": 5})
         self.assertEqual(tf3ctl.money_args(ns(set=None, add=-3)), {"add": -3})
@@ -2029,6 +2103,14 @@ class QuitLaunchTest(unittest.TestCase):
             tf3ctl.models_args(parse(["models", "--grep", ""]))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse(["models", "--carrier", "boat"])
+        # --mu: the multiple units, all of them or those whose name holds the filter
+        self.assertEqual(tf3ctl.models_args(parse(["models", "--mu"])), {"limit": 200, "mu": True})
+        self.assertEqual(tf3ctl.models_args(parse(["models", "--mu", "shinkansen"])), {"limit": 200, "mu": "shinkansen"})
+        got = mod_reads(tf3ctl.command_text(10, "models", {"limit": 200, "mu": True}))
+        self.assertEqual(got["args"], {"limit": 200, "mu": True})
+        for bad in (["--mu", ""], ["--mu", "--carrier", "rail"], ["--mu", "--grep", "x"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.models_args(parse(["models"] + bad))
         # read only: no "who changed the game" entry, no warning about another owner
         self.assertFalse({"models", "vehicles"} & tf3ctl.CHANGES_GAME)
 
@@ -4604,6 +4686,58 @@ class OwnerCheckTest(unittest.TestCase):
         tf3ctl.OWNER = "bob"
         with self.assertRaises(tf3ctl.OwnerRefused):
             tf3ctl.check_game_owner("save", {"name": "x"})
+
+
+class NoAbbrevTest(unittest.TestCase):
+    """Only whole option names: the game guard outside reads the flags as typed, so --eng must not mean --engine-check."""
+
+    def refused(self, argv):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            tf3ctl.make_parser().parse_args(argv)
+        self.assertEqual(cm.exception.code, 2, argv)
+        return err.getvalue()
+
+    def test_every_parser_is_strict(self):
+        seen = []
+
+        def walk(pr, path):
+            seen.append(path)
+            self.assertFalse(pr.allow_abbrev, path)
+            for a in pr._actions:
+                if isinstance(a, tf3ctl.argparse._SubParsersAction):
+                    for name, sp in a.choices.items():
+                        walk(sp, path + [name])
+        walk(tf3ctl.make_parser(), [])
+        for nested in (["town", "develop"], ["modhub", "publish"], ["line", "create"], ["stock", "set"]):
+            self.assertIn(nested, seen, "the nested parsers are walked too")
+
+    def test_abbreviations_are_refused(self):
+        for argv, short in ((["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--eng"], "--eng"),
+                            (["camera", "--se", "1,2"], "--se"),
+                            (["--own", "me", "status"], "--own"),
+                            (["--other", "speed", "1"], "--other"),
+                            (["town", "develop", "--at", "1,2", "--stre"], "--stre"),
+                            (["modhub", "publish", "f", "--public", "yes", "--changelog", "c", "--first"], "--first"),
+                            (["line", "create", "--stops", "1,2", "--force-un", "1"], "--force-un"),
+                            (["stock", "set", "--ent", "1", "--stock", "0", "--amount", "5"], "--ent")):
+            with self.subTest(argv=argv):
+                self.assertIn(short, self.refused(argv), argv)
+
+    def test_whole_names_still_parse(self):
+        p = tf3ctl.make_parser()
+        self.assertTrue(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--engine-check"]).engine_check)
+        self.assertEqual(p.parse_args(["camera", "--set", "1,2"]).set, "1,2")
+        self.assertEqual(p.parse_args(["camera", "--set=1,2"]).set, "1,2", "--name=value stays")
+        self.assertEqual(p.parse_args(["--owner", "me", "status"]).owner, "me")
+        ns = p.parse_args(["town", "develop", "--at", "1,2", "--streets"])
+        self.assertEqual((ns.town_action, ns.grow_streets), ("develop", True))
+        ns = p.parse_args(["modhub", "publish", "f", "--public", "yes", "--changelog", "c", "--first-upload"])
+        self.assertEqual((ns.action, ns.folder, ns.first_upload), ("publish", "f", True))
+        self.assertTrue(p.parse_args(["--other-owner-ok", "speed", "1"]).other_owner_ok)
+        ns = p.parse_args(["line", "create", "--stops", "1,2", "--force-unload", "1"])
+        self.assertEqual((ns.action, ns.force_unload), ("create", "1"))
+        self.assertEqual(p.parse_args(["stock", "set", "--entity", "1", "--stock", "0", "--amount", "5"]).entity, 1)
 
 
 if __name__ == "__main__":

@@ -256,7 +256,9 @@ python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
 python3 tools/tf3ctl.py vehicles --entity 601 --state --at-terminal --every 2 --count 300   # JSON Lines with gameTime
 python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # or --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
+python3 tools/tf3ctl.py models --mu [shinkansen]   # read only: the multiple units (.mu.lua) and the names buy takes
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
+python3 tools/tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302 [--line 21] [--count 2]   # a multiple unit
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
 python3 tools/tf3ctl.py replace --vehicle 601 --model bus_1920
 python3 tools/tf3ctl.py sell --vehicle 601
@@ -364,11 +366,12 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   construction's updateFn does not know the key and leaves it alone.
 - The answer: `entity` (the new construction), `construction` (`fileName`, `name`, `depots`, `stations`,
   `industries`, and `ends`: the free ends of its own road or track pieces with their positions, candidates for
-  `connect --from`), `cost` (the engine's), `balanceBefore` / `balanceAfter` / `spent`, `errors`, `warnings`,
+  `connect --from`; and `connectable`: where a `road` can join it, see `road`), `cost` (the engine's), `balanceBefore` / `balanceAfter` / `spent`, `errors`, `warnings`,
   `collisions` (ids in the way), `params` as sent, `at` (with the z used, `zFrom`). A refusal is `ok: false` with
   the engine's messages in `error`.
-- `--dry-run` builds nothing and does **not** ask the engine: its `makeProposalData` takes a full `Proposal` and has
-  no `SimpleProposal` form (`engine/util.d.tl:939`), so it is not called. The probe checks the name, the params it
+- `--dry-run` builds nothing and does **not** ask the engine (`road --dry-run --engine-check` does: `makeProposalData` takes a
+  `SimpleProposal` on the GUI thread, though `engine/util.d.tl:939` types it for a `Proposal`; a construction's is
+  not asked yet). The probe checks the name, the params it
   would send and the height, and lists the constructions within 30 m of the point (`near`, a rough look by their
   boxes). The answer has `checked: false` and no `buildable`: whether the engine takes it (collisions, terrain,
   money) is known only from a build.
@@ -436,6 +439,8 @@ python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner  
 
 ```
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # asks the engine (changes the game)
+python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
 ```
 
 - Builds one straight road piece between two points (x,y[,z], metres; no z: the terrain's height), with no click:
@@ -444,11 +449,25 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   knocked down, errors not ignored). Changes the game: test saves only.
 - An end within `--snap` metres (default 5, at most 20, 0: never; measured in three dimensions, so a bridge's
   node above the point is not taken) of an end of a road piece is that node, so the piece joins the road there.
-  The pieces are found in the octree (`api.engine.util.octree.findEntitiesInCircle` with BASE_EDGE, else the
-  octree system's box), roads only (`roadType` STREET; one whose type does not read is left out), and their
-  `node0` / `node1` taken: nodes are not looked up by themselves, and no track node is asked about.
-  A free end of a construction's own road (a harbour's entrance road: `construction.ends` in the `build` answer)
-  is such a node. Otherwise the end is a new node.
+  The pieces near the point are found in the octree (`api.engine.util.octree.findEntitiesInCircle` with
+  BASE_EDGE, else the octree system's box), roads only (`roadType` STREET; one whose type does not read is left
+  out), and their `node0` / `node1` taken; no track node is asked about. The pieces are looked for 25 m beyond
+  `--snap` (a town road's seam node was missed from right on it with a snap of 3 m: the octree met neither piece
+  near the node); only their ends within `--snap` count. An end that becomes a new node says why in `snapNote`
+  (the nearest road node beyond `--snap` and its distance, or that no road piece was met). The pieces at the joined node are then
+  read from the street system (`streetSystem.getNodeStreetSegments`; the answer's `piecesFrom: "streetSystem"`),
+  and only when that is not there or raises from the octree within 1 m (`"octree"`): at an industry's T the
+  octree met none of them. Otherwise the end is a new node; a new node right on an old one (within 0.1 m: with
+  `--snap 0`) is refused before sending, as the engine refuses the whole proposal (Construction Not Possible).
+- A construction's road: the `build` answer's `construction.connectable` lists where a road can join it, each
+  with `node`, `x` / `y` / `z`, `edges` (street pieces there) and `nodeConfig`: `kind: "mouth"`, the open end of
+  a frozen piece (a node of its `frozenEdges` not among its `frozenNodes`; an industry's road stub ends there in
+  a T with two free arms), and `kind: "arm"`, the far end of a free piece leaving a mouth (`from`: the mouth,
+  `via`: the piece). `ends` (the frozen pieces' ends) does not show the arms. A node that is the construction's
+  (`streetConnectorSystem.getConstructionEntityForNode` 0 or more, or a frozen edge of a construction there) is
+  joined **without touching its junction set-up** (neither removed nor remade: Overpass Builder refuses that for
+  a construction's node): the end gets `construction`, `nodeConfigKept: true` and `pieces`, the answer a
+  `caution`. A construction's frozen node (the stub's inner end) is refused before sending, dry run too.
 - Junction set-ups (`BaseNodeConfig`, sent as `nodeConfigsToAdd` / `nodeConfigsToRemove`): each new node gets
   one (a dead end: no lane connections), and a joined node keeps its own connections and gets the new piece's:
   between the new piece and each other piece there, straight on lane for lane where the node then has two
@@ -474,14 +493,32 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   `errors`, `warnings` and `collisions` when refused. Without ids in the result, or with no callback in 30 s, the
   piece is looked for between the two ends, leaving out the pieces that were there before it was sent; built with
   no new piece found gives a `warning`. A template or the `BaseEdgeType` / `RoadType` enum that does not read
-  refuses the command before anything is sent. `--dry-run` sends nothing and answers the plan (`checked: false`).
+  refuses the command before anything is sent.
+- `--dry-run` sends nothing and does not ask the engine: it answers the plan, checked by the probe only
+  (`checked: false`, `engineCheck: "not asked (use --engine-check)"`), so it is safe to run as other dry runs.
+- `--dry-run --engine-check` (`--engine-check` goes with `--dry-run` only): it also makes the same proposal the
+  road's build sends (set-ups included) and asks the engine about it with `api.engine.util.proposal.makeProposalData` (the proposal alone, else with a context), in
+  the guiUpdate (never in a recipe's body). The answer has `checked: true`, `engineCheck` (the form taken),
+  `buildable`, the engine's `cost`, `errors`, `warnings`, `collisions`, `critical`, and `balance`; one the engine
+  would refuse is `ok: false` with its messages in `error`. When `makeProposalData` is not there or raises both
+  ways, the answer is the probe's own plan (`checked: false`, `engineCheck: "not available: ..."`). The engine's
+  evaluation runs native code a `pcall` cannot guard (an assertion there would end the game), so tf3ctl counts
+  this as changing the game: ask for the game first, test saves only.
+- `--inspect-node ID` (read only, alone): the node's position, `streetSegments` (each piece's `edge`, `node0` /
+  `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
+  (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,
+  `nodeConfig` (`false` when none; else its `laneConnections`, `crosswalks`, `trafficLightStates`,
+  `doubleSlipSwitch`), `octree` (the pieces `findEntitiesInCircle` meets within 1, 5 and 20 m, whether each ends
+  at the node, at most 40 listed) and `road`: what the road command would do with the node as an end.
 - Between 1 m and 2000 m long. A piece across water or a valley needs a bridge, which this does not build (the
   engine refuses or follows the terrain: not known).
 - Use: a harbour's pedestrian link alone does not join it to the road network; a road along it, from the
   harbour's free road end to the town's road, does (as players build it).
 - **Not checked in game yet** (written 2026-11-22): in particular whether `api.type.NodeAndEntity` /
   `SegmentAndEntity` / `PlayerOwned` are reachable under those names (the probe also tries `api.type.Proposal.*`),
-  whether the default `streetEdge` is enough, whether the engine takes a node of a construction's road as an end,
+  whether the default `streetEdge` is enough, whether the engine takes a construction's node as an end with its
+  set-up left alone and joins the new piece's lanes there (written 2026-11-23; a forest's outer end and inner end
+  were refused before), whether makeProposalData answers in the guiUpdate as in Overpass Builder's tool,
   what the callback's entities hold, whether nodes are indeed not in the octree, and what becomes of a town road
   the new piece crosses (the proposal adds no crossing node: does the engine add one, refuse, or lay one over
   the other).
@@ -730,6 +767,57 @@ python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # every street
   entities the engine says exist.
 - **Not checked in game yet** (written 2026-11-23): whether the map and the `PARCEL` component read in the GUI
   script, the field names, and the values.
+
+### Whether a place can be got to (`reach`, read only)
+
+```
+python3 tools/tf3ctl.py reach --api                       # which engine functions are there (calls none)
+python3 tools/tf3ctl.py reach --target 51                 # an industry / town building / station / construction
+python3 tools/tf3ctl.py reach --town 11 [--limit 20]      # a town's targets counted, its problems
+python3 tools/tf3ctl.py reach --problems                  # every town's problems (Disconnected, Overlength)
+python3 tools/tf3ctl.py reach --from 4100 --to 51 [--mode walk|drive|lines|all] [--radius 40]
+python3 tools/tf3ctl.py reach --from=-120,880 --to 51 --mode walk   # a point x,y as an end
+python3 tools/tf3ctl.py persons --town 11 [--limit 2000]  # a town's residents, with what they reach
+python3 tools/tf3ctl.py persons --destination 51          # those with the industry as a destination (its workers)
+```
+
+- Reads only (no warning to others, nothing sent). Made to find out why a town's people do not go to a workplace.
+- `--target E`: the engine's destinations, `api.engine.util.pathfinding.getTargetsByLandUse()` (read once per
+  command; every target of the map is in it, only the entries asked about are read in full). The answer has
+  `entries`: one per list the entity is in, with `isReachableWalk`, `isReachableDrive`, `isReachableLines`,
+  `capacity`, `freeCapacity`, `destinationWeight`, `edgeWalk` / `edgeDrive` (`entity`, `index`: the network edge
+  the target is reached by), `landUseKey` (the list's own key) and `landUseGuess`; `counts`; `landUse` (the
+  entity's own `PERSON_CAPACITY` type, to check the guess by); `found` false with `why` when it is no target (a
+  home, an industry without workplaces). A construction stands for its industries, town buildings and stations, a
+  town building also for its PersonCapacity entity (`candidates`). With the building's town (or the closest town
+  of an industry's construction) come `townProblems` (`api.engine.util.town.getTownProblems`: `problem` and the
+  towns it is `with`).
+- `--town T`: its buildings (`townBuildingSystem.getTown2BuildingMap`, at most 5000 read) by kind (`byKind`), the
+  target entries of its shops and workplaces counted (`counts`: `walk`, `drive`, `lines`, `none`) and the first
+  `--limit` listed, those out of reach first; `notTarget` counts the non-residential buildings that are no target;
+  `problems` as above.
+- `--from A --to B`: whether there is a path, by `api.engine.util.pathfinding.findPathNodeToNode` with
+  `TransportMode.PERSON` (`walk`) and `CAR` (`drive`), one search per mode. An end is an entity or a point: the
+  building's own `PERSON_CAPACITY` `personNodes` (walking) / `vehicleNodes` (driving), a target's `edgeWalk` /
+  `edgeDrive` nodes, a station's terminals (`personNodes` walking, `vehicleNodeId` driving),
+  else the network nodes within `--radius` m (default 40, at most 500) of its position or the point
+  (`findTransportNetworkNodesInCircle`); at most 32 nodes an end. Per mode in `paths`: `found` (null when an end
+  has no nodes: `why`), `edges`, `pieces` (network entities on the path; the first 50 in `pieceIds`), `ms`, and
+  where the nodes came from (`fromFrom` / `toFrom`); a miss has `unverified: true` until a game shows the search
+  finds such paths at all (first try two places known to connect); a search of 100 ms or more is logged. The
+  engine gives no cost. There is no line path search to
+  call: `lines` gives the target's `isReachableLines` only (`--mode lines` does no search).
+- `persons --town T` lists the people whose home is one of the town's residential buildings
+  (`getSimPersonsForDestination` of each); `persons --destination E` those with E as a destination (E must have
+  a `PERSON_CAPACITY`). Every person of `persons` now has `reachable` (`walkDrive`, `lines`: the engine's
+  `landUse2ReachableWalkDrive` / `landUse2ReachableLines`, how many destinations of each land use the person
+  reaches), and `summary.reach` counts, per place of those lists, how many listed persons reach at least one
+  (`none`: nothing either way).
+- **Not checked in game yet** (written 2026-11-23): whether `getTargetsByLandUse` and `getTownProblems` are there
+  in the GUI script (`reach --api` tells), the shape of `getTargetsByLandUse`'s answer, which land use each of its
+  lists is (two lists: guessed commercial, industrial) and the same for the two numbers of `reachable`, whether
+  `findPathNodeToNode` finds walking paths between these nodes (another mod's notes say it gave nothing between
+  station terminal nodes), how long a search takes on a large map.
 
 ### My Mods from the main menu (`modhub`)
 
@@ -1039,6 +1127,7 @@ Not checked yet:
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `parcels`, entirely (read only, see "Town building parcels along a road").
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
+- `reach` and `persons --town` / `--destination`, entirely (read only, see "Whether a place can be got to").
 - `modhub publish` of an update (see "Uploading a mod"). `modhub status`, `validate` and a first upload were
   checked on 2026-11-22.
 
@@ -1174,6 +1263,25 @@ up after 20 s with "no answer". Relayed means fired, not that a
 - Ships: a large ship (mode SHIP) needs a large pier at every stop; the engine may assign a small one (SMALL_SHIP
   only) and refuse the ship (`NoSmallShip`). Make ship lines with `line create --terminals`, picking large piers
   (`transportModes` with SHIP in `stations` platforms), and check them with `lines --problems`.
+- Multiple units: a `--model` ending in `.mu.lua` (e.g. `shinkansen_0s.mu.lua`, or the official TGV mod's
+  `tgv.mu.lua`) buys that multiple unit, as the store's multiple-unit row does: every car its file lists, in order,
+  each turned round where the file says `forward = false`, its model found by `api.res.modelRep.find`, sent as one
+  vehicle with `vehicleGroups = { n }` and `muFileNames = { <the file's name> }` (`vehicle_configs.muParts` /
+  `newMuConfig`, after `vehicle_store_window.tl`). The name is matched against both names of each unit `api.res.multipleUnitRep.getAll()`
+  lists (its value, and `getName(id)`): the whole name, then without case, folder and `.mu.lua` / `.mu`
+  (`shinkansen_0s.mu` works too), then a unique part of that. `muFileNames` gets `getName`'s, as the store sends it;
+  a unit without one is refused. When `getAll()` is empty, `getAll(true)` is counted in the error and listed by
+  `models --mu` (`invisible: true`), never bought from (the store does not offer those). A miss says how many units
+  there are, those whose names hold a piece of the query, and the first 5. `models --mu [FILTER]` (read only)
+  lists them: `id`, `fileName`, `getName`, `value` (getAll's), `name` (shown), `cars`, `buyAs` (what `--model`
+  takes: the whole name when two units share a file name); FILTER matches a name or the shown name. The whole file is checked before anything is sent: no cars, a car the game has no
+  model for, or one that is no vehicle model, is an error. Via gui only (`--via cmd` is refused), and `replace` takes
+  no multiple unit. The answer adds `multipleUnit` (`id`, `fileName`, `name`, `parts` with each car's `modelId`, `name`,
+  `forward`); `storeParts` and `storePriceTotal` cover every car; `sentParts` and `vehicles[].parts` mark any
+  turned-round part with `reversed: true` (for any vehicle, not only a multiple unit), and each vehicle bought this
+  way carries the engine's `vehicleGroups` and `muFileNames`. A file name (the folder left out) that equals the
+  query wins over names that only contain it. A train of single models put together by hand (a locomotive and its coaches) is not offered.
+  Not checked in game yet.
 - `buy` needs `--depot` (the store only picks a depot when opened from one); count 1-20; with `--line` the first
   stop is stop 0. `duplicate` copies the config with parts at `purchaseTime` 0 and maintenance 1, as the base
   clone does; depot and line default to `findBestLineAndDepotForVehicle`.

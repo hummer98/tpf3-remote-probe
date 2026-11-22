@@ -1152,6 +1152,7 @@ local build = (ug_require or require)(MOD .. "::/remote_build.lua").new({ core =
 handlers.build = build.handle
 handlers.water = build.water
 handlers.road = build.road
+handlers.roadInspect = build.roadInspect -- (read only)
 -- terrain (remote_terrain.lua, terrain_work.lua): a rectangle made flat or a slope; terrainApi looks at the functions
 local terrain = (ug_require or require)(MOD .. "::/remote_terrain.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say, publishUi = publishUi, mod = MOD,
@@ -1195,6 +1196,10 @@ for k, fn in pairs(parcels.handlers) do handlers[k] = fn end
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })
 for k, fn in pairs(modhub.handlers) do handlers[k] = fn end
+-- reach (remote_reach.lua): read only, whether a place can be got to (the engine's targets, town problems, a path)
+local reach = (ug_require or require)(MOD .. "::/remote_reach.lua").new({ core = core, answer = answer, fail = fail,
+	try = try, appTime = appTime, say = say, posOf = function(e) return lines.posOf(e) end })
+handlers.reach = reach.handle
 
 -- args: entity (one industry; none: all). Read only. Per industry: its capacity (PERSON_CAPACITY), the sims that
 -- have it as their destination (what the base window shows as n/capacity, entity_window_util.tl

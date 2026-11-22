@@ -28,10 +28,12 @@ local function field(t, k)
 	return nil
 end
 
--- one part as the store builds it (vehicle_util.makePart); the base function itself when it loads
-function M.makePart(req, modelId)
+-- one part as the store builds it (vehicle_util.makePart); the base function itself when it loads.
+-- forward: false turns the part round (a multiple unit's end car); nil is forward, as a single model is bought
+function M.makePart(req, modelId, forward)
+	if forward == nil then forward = true end
 	local okU, vu = pcall(req, M.VEHICLE_UTIL)
-	if okU and type(vu) == "table" and type(vu.makePart) == "function" then return vu.makePart(modelId, true, nil) end
+	if okU and type(vu) == "table" and type(vu.makePart) == "function" then return vu.makePart(modelId, forward, nil) end
 	local part = api.type.TransportVehiclePart.new()
 	part.part.modelId = modelId
 	local tv = api.res.modelRep.get(modelId).metadata.transportVehicle
@@ -41,7 +43,7 @@ function M.makePart(req, modelId)
 		lc.loadConfigIndex = 0
 		lcs[#lcs + 1] = lc
 	end
-	part.part.reversed = false
+	part.part.reversed = not forward
 	part.part.compartment2loadConfig = lcs
 	return part
 end
@@ -52,6 +54,54 @@ function M.newConfig(req, modelId)
 	config.vehicles = { M.makePart(req, modelId) }
 	config.vehicleGroups = { 1 } -- not a multiple unit
 	config.muFileNames = {}
+	return config
+end
+
+-- multiple unit muId (api.res.multipleUnitRep) as the store's cart opens it (vehicle_store_window.tl,
+-- addVehicleToCart): each of mu.vehicles in order, its model by api.res.modelRep.find(name), turned round when
+-- forward is false. Returns { id, fileName (the unit's name: what the store puts in muFileNames), name,
+-- parts = { { modelId, forward, name } } } or nil and why. Everything is checked here, before anything is sent:
+-- a part the engine cannot build would be its assertion, not a refusal.
+-- muFileNames gets getName's name only, as the store puts it in (vehicle_store_window.tl, elemStatic.path): a
+-- unit without one is refused, since the store could not send it either.
+function M.muParts(muId)
+	local okM, mu = pcall(function() return api.res.multipleUnitRep.get(muId) end)
+	if not okM or mu == nil then return nil, "no multiple unit " .. tostring(muId) end
+	local okN, fileName = pcall(function() return api.res.multipleUnitRep.getName(muId) end)
+	if not okN or type(fileName) ~= "string" or fileName == "" then
+		return nil, "multiple unit " .. tostring(muId) .. " has no file name"
+	end
+	local out = { id = muId, fileName = fileName, parts = {} }
+	local okT, title = pcall(function() return mu.name end)
+	if okT and type(title) == "string" then out.name = title end
+	local vehicles = toList(field(mu, "vehicles"))
+	if #vehicles == 0 then return nil, fileName .. " lists no vehicles" end
+	for i, v in ipairs(vehicles) do
+		local name = field(v, "name")
+		if type(name) ~= "string" or name == "" then
+			return nil, string.format("%s: vehicle %d has no model name", fileName, i)
+		end
+		local okF, id = pcall(function() return api.res.modelRep.find(name) end)
+		id = okF and tonumber(id) or nil
+		if id == nil or id < 0 then return nil, string.format("%s: vehicle %d (%s) is no model the game has", fileName, i, name) end
+		local okV, tv = pcall(function() return api.res.modelRep.get(id).metadata.transportVehicle end)
+		if not okV or tv == nil then
+			return nil, string.format("%s: vehicle %d (%s) is no vehicle model", fileName, i, name)
+		end
+		out.parts[i] = { modelId = id, forward = field(v, "forward") == true, name = name }
+	end
+	return out
+end
+
+-- a multiple unit (muParts) as the store's buy button sends it (onClickBuyWithCart): all its parts in order, one
+-- group of that many, with the unit's file name
+function M.newMuConfig(req, mu)
+	local config = api.type.TransportVehicleConfig.new()
+	local parts = {}
+	for i, p in ipairs(mu.parts) do parts[i] = M.makePart(req, p.modelId, p.forward) end
+	config.vehicles = parts
+	config.vehicleGroups = { #parts }
+	config.muFileNames = { mu.fileName }
 	return config
 end
 
@@ -87,12 +137,17 @@ function M.fitAutoLoad(config)
 	return config
 end
 
--- { modelId, purchaseTime } per part, in order: a pair, so a part without one of them cannot shift the rest
+-- { modelId, purchaseTime, reversed } per part, in order: a record, so a part without one of them cannot shift the
+-- rest. reversed only on a part turned round (any such part: a multiple unit's end car, a locomotive the other way
+-- round in a duplicated train): the answers of parts all forward keep their shape
 function M.partsOf(list)
 	local out = {}
 	for _, p in ipairs(toList(list)) do
 		local part = field(p, "part")
-		out[#out + 1] = { modelId = tonumber(part and field(part, "modelId")), purchaseTime = tonumber(field(p, "purchaseTime")) }
+		local reversed = part and field(part, "reversed")
+		if reversed ~= true then reversed = nil end
+		out[#out + 1] = { modelId = tonumber(part and field(part, "modelId")), purchaseTime = tonumber(field(p, "purchaseTime")),
+			reversed = reversed }
 	end
 	return out
 end
@@ -192,7 +247,11 @@ function M.performGui(req, r, report)
 	local config, changes
 	if r.kind == "buy" or r.kind == "duplicate" then
 		local entity = -1 -- the store marks a new vehicle with a negative entity; the clone button with -source-1
-		if r.kind == "buy" then
+		if r.kind == "buy" and r.mu then
+			local mu, err = M.muParts(r.mu)
+			if not mu then error(err, 0) end
+			config = M.newMuConfig(req, mu)
+		elseif r.kind == "buy" then
 			config = M.newConfig(req, r.modelId)
 		else
 			local tv = api.engine.getComponent(r.vehicle, api.type.ComponentType.TRANSPORT_VEHICLE)

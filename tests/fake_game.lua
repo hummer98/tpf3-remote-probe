@@ -362,6 +362,7 @@ function M.new(dir, opts)
 		[200] = { name = "building/bus_house.mdl", price = 1 },
 	}
 	g.models = models -- a test may change a cost, as a price mod rewrites metadata.cost
+	local multipleUnits = opts.multipleUnits or {}
 	g.balance = opts.balance or 1000000
 	g.cam = { x = 0, y = 0, distance = 500, angle = 0.5, pitch = 0.6 }
 	g.fleet = copy(opts.fleet or {})
@@ -566,6 +567,43 @@ function M.new(dir, opts)
 		-- TF3 asserts this in UpdateConfigFromModelIds (vehicle_util_engine.cpp:353) and dies, uncatchable: a cmd buy
 		-- with autoLoadConfig left empty crashed the game, 2026-11-16 13:21 JST
 		if cmd.config then
+			-- the groups (TransportVehicleConfig, type.d.tl: "The sum of all entries must be the total of vehicles"),
+			-- a multiple unit's group as its file lists it, and muFileNames empty (a single model, as the store sends
+			-- it) or one per group: what the engine does with a mismatch is not known, the fake takes the worse
+			local groups, names, sum = cmd.config.vehicleGroups or {}, cmd.config.muFileNames or {}, 0
+			for _, n in ipairs(groups) do
+				if n < 1 then g.crashed = "Assertion: a vehicle group of " .. tostring(n); error(g.crashed) end
+				sum = sum + n
+			end
+			if sum ~= #cmd.config.vehicles then
+				g.crashed = string.format("Assertion: vehicleGroups sum to %d for %d vehicles", sum, #cmd.config.vehicles)
+				error(g.crashed)
+			end
+			if #names ~= 0 and #names ~= #groups then
+				g.crashed = string.format("Assertion: %d muFileNames for %d vehicleGroups", #names, #groups)
+				error(g.crashed)
+			end
+			local first = 1
+			for i, n in ipairs(groups) do
+				local fileName = names[i]
+				if fileName and fileName ~= "" then
+					local mu
+					for _, m in pairs(multipleUnits) do if m.fileName == fileName then mu = m end end
+					if not mu or #mu.vehicles ~= n then
+						g.crashed = "Assertion: group " .. i .. " is not multiple unit " .. tostring(fileName)
+						error(g.crashed)
+					end
+					for k, v in ipairs(mu.vehicles) do
+						local p = cmd.config.vehicles[first + k - 1]
+						local m = models[p.part.modelId]
+						if not m or m.name:match("([^/]+)$") ~= v.name:match("([^/]+)$") or p.part.reversed ~= (v.forward ~= true) then
+							g.crashed = string.format("Assertion: part %d is not car %d of %s", first + k - 1, k, fileName)
+							error(g.crashed)
+						end
+					end
+				end
+				first = first + n
+			end
 			for _, p in ipairs(cmd.config.vehicles) do
 				if #(p.autoLoadConfig or {}) ~= #p.part.compartment2loadConfig then
 					g.crashed = "Assertion 'autoLoadConfig.size() == compartment2loadConfig.size()' failed"
@@ -1285,6 +1323,29 @@ function M.new(dir, opts)
 					end
 				end
 			end,
+		}, multipleUnitRep = {
+			-- opts.multipleUnits = { [id] = { fileName, name, vehicles = { { name, forward } } } } (a .mu.lua as loaded);
+			-- broken = true: get raises, as for a file that did not load
+			-- mu.invisible: only getAll(true) lists it; opts.muGetAllNoNames: getAll's values are no names (true),
+			-- so only getName tells them; opts.muNoGetName: getName gives nothing
+			getAll = function(includeInvisible)
+				local out = {}
+				for id, mu in pairs(multipleUnits) do
+					if includeInvisible == true or not mu.invisible then
+						out[id] = opts.muGetAllNoNames and true or mu.fileName
+					end
+				end
+				return out
+			end,
+			getName = function(id)
+				if opts.muNoGetName then return nil end
+				return multipleUnits[id] and multipleUnits[id].fileName
+			end,
+			get = function(id)
+				local mu = multipleUnits[id]
+				if mu and mu.broken then error("multiple unit " .. tostring(id) .. " did not load") end
+				return mu and copy(mu) or nil
+			end,
 		}, modelRep = {
 			getAll = function()
 				local out = {}
@@ -1292,6 +1353,14 @@ function M.new(dir, opts)
 				return out
 			end,
 			getName = function(id) return models[id] and models[id].name end,
+			-- by resource name, as a .mu.lua names its cars ("x_front.mdl", the folder left out): the full name or the
+			-- file name; -1 when there is none (what the engine gives is not known; the probe takes nil and < 0 alike)
+			find = function(name)
+				name = tostring(name)
+				for id, m in pairs(models) do if m.name == name then return id end end
+				for id, m in pairs(models) do if m.name:match("([^/]+)$") == name then return id end end
+				return -1
+			end,
 			get = function(id)
 				local m = models[id]
 				if not m then return nil end
@@ -1536,6 +1605,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_company.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_town_connect.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_parcels.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_reach.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
 		-- (MODHUB_PUBLISHED_IDS), taken out of that table in this game's own copy of remote_core.lua
@@ -1680,8 +1750,20 @@ end
 -- g.built[e] = { fileName, params, transf, name, player, frozenEdges, ... }; g.buildCmds: every proposal sent.
 -- Like the engine: a list element written into a proposal is lost (only a whole list assigned counts), an unknown
 -- file name or a transf that is no Mat4f is an assertion (the game would die), a refused proposal builds nothing,
--- and makeProposalData takes no SimpleProposal (engine/util.d.tl:939 types it for a Proposal; g.proposalDataCalls).
+-- and makeProposalData takes a SimpleProposal alone or with a Context (Overpass Builder's notes: build 40408 takes a
+-- SimpleProposal on the GUI thread, though engine/util.d.tl:939 types it for a Proposal) and gives what a build's
+-- callback would, building nothing (g.proposalDataCalls); spec.noSimpleProposalData: it raises for a SimpleProposal
+-- (as bus_loops' notes say it does); spec.proposalDataOneArg: it raises when a Context is given too;
+-- spec.proposalDataTwoArgs: it raises without a Context.
 -- The octree finds the constructions in g.built by their transf's position.
+-- A construction's shape may have free pieces (shape.free = { { i, j } }: an industry's arms, street_cross_01 / 02,
+-- not among its frozenEdges) and frozen nodes (shape.frozenNodes = { i }: CONSTRUCTION.frozenNodes, the inner end
+-- of a stub). streetConnectorSystem.getConstructionEntityForNode gives the construction for the nodes of its frozen
+-- pieces (the mouth too) and -1 for the far ends of free pieces (spec.armEndsOwned: those too); spec.noNodeOwner:
+-- it is not there (the probe goes through getConstructionEntityForEdge: the construction for its frozen pieces, -1
+-- for its free ones). Like the engine (a guess from Overpass Builder's refusal and a forest in a game, 2026-11-23): a
+-- construction's node set-up removed or added is an assertion; a piece to a frozen node, or a new node on an old
+-- node (within 0.01 m), is refused (Construction not possible).
 function M.installBuild(g, spec)
 	spec = spec or {}
 	local cons = spec.cons or {}
@@ -1894,20 +1976,55 @@ function M.installBuild(g, spec)
 		return out
 	end
 
+	g.conNode, g.conEdge, g.frozenNode = {}, {}, {}
+	-- (the road network's nodes and pieces and the constructions exist, as entityExists says)
+	local existsBefore = api.engine.entityExists
+	api.engine.entityExists = function(e)
+		if g.nodes[e] or g.edges[e] or g.built[e] then return true end
+		return existsBefore and existsBefore(e) or false
+	end
+	api.engine.system.streetConnectorSystem = api.engine.system.streetConnectorSystem or {}
+	local scs = api.engine.system.streetConnectorSystem
+	local conForEdge = scs.getConstructionEntityForEdge
+	scs.getConstructionEntityForEdge = function(e)
+		if g.conEdge[e] then return g.conEdge[e] end
+		if g.edges[e] then return -1 end
+		if conForEdge then return conForEdge(e) end
+		crash("getConstructionEntityForEdge: no edge " .. tostring(e))
+	end
+	if spec.noNodeOwner then
+		scs.getConstructionEntityForNode = nil
+	else
+		scs.getConstructionEntityForNode = function(n)
+			if not g.nodes[n] then crash("getConstructionEntityForNode: no node " .. tostring(n)) end
+			return g.conNode[n] or -1
+		end
+	end
+
 	-- what the engine makes of a proposal: errors, collisions, cost (and the constructions to add, as plain values)
-	local function evaluate(p)
+	local function evaluate(p, dry)
 		local st = getmetatable(p).store
 		local adds, removes = {}, copy(st.constructionsToRemove or {})
 		local data = { errorState = { critical = false, messages = {}, warnings = {} }, collisionInfo = { collisionEntities = {} },
 			costs = 0 }
 		local street = getmetatable(st.streetProposal).store
 		local newNodes = {}
-		for _, n in ipairs(street.nodesToAdd or {}) do newNodes[n.entity] = n.comp.position end
+		for _, n in ipairs(street.nodesToAdd or {}) do
+			newNodes[n.entity] = n.comp.position
+			local q = n.comp.position
+			for _, o in pairs(g.nodes) do
+				if (o.x - q.x) ^ 2 + (o.y - q.y) ^ 2 + (o.z - q.z) ^ 2 <= 0.0001 then
+					data.errorState.critical = true
+					table.insert(data.errorState.messages, "Construction not possible")
+				end
+			end
+		end
 		-- junction set-ups (as the engine might assert; the checks are a guess): a set-up removed must be there; one
 		-- added to a node that keeps one, twice, or to no node, dies; a connection must name a piece at that node and
 		-- a lane it has
 		local removing, adding = {}, {}
 		for _, n in ipairs(street.nodeConfigsToRemove or {}) do
+			if g.conNode[n] then crash("nodeConfigsToRemove: node " .. tostring(n) .. " is a construction's") end
 			if not (g.nodes[n] and g.nodeConfig[n]) then crash("nodeConfigsToRemove: node " .. tostring(n) .. " has no set-up") end
 			removing[n] = true
 		end
@@ -1917,6 +2034,7 @@ function M.installBuild(g, spec)
 			local n = nc.entity
 			if not (newNodes[n] or g.nodes[n]) then crash("nodeConfigsToAdd: no node " .. tostring(n)) end
 			if adding[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " twice") end
+			if g.conNode[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " is a construction's") end
 			if g.nodes[n] and g.nodeConfig[n] and not removing[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " keeps its set-up") end
 			adding[n] = true
 			for _, lc in ipairs((nc.comp or {}).laneConnections or {}) do
@@ -1943,7 +2061,13 @@ function M.installBuild(g, spec)
 				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
-			g.streetCmds[#g.streetCmds + 1] = copy(e)
+			if not dry then g.streetCmds[#g.streetCmds + 1] = copy(e) end
+			for _, k in ipairs({ "node0", "node1" }) do
+				if g.frozenNode[c[k]] then
+					data.errorState.critical = true
+					table.insert(data.errorState.messages, "Construction not possible")
+				end
+			end
 			if #(c.laneConfigs or {}) == 0 then
 				data.errorState.critical = true
 				table.insert(data.errorState.messages, "Invalid lane configuration")
@@ -1984,7 +2108,14 @@ function M.installBuild(g, spec)
 	g.proposalDataCalls = 0
 	api.engine.util.proposal = { makeProposalData = function(p, ctx)
 		g.proposalDataCalls = g.proposalDataCalls + 1
-		error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)")
+		if spec.noSimpleProposalData then
+			error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)")
+		end
+		if spec.proposalDataOneArg and ctx ~= nil then error("bad argument #2 to 'makeProposalData' (no such overload)") end
+		if spec.proposalDataTwoArgs and ctx == nil then error("bad argument #2 to 'makeProposalData' (Context expected)") end
+		if type(p) ~= "userdata" then crash("makeProposalData: no proposal") end
+		-- (nothing built, nothing paid: plain values, as the engine's ProposalData reads)
+		return (evaluate(p, true))
 	end }
 	api.type.Box3 = { new = function(lo, hi) return { min = lo, max = hi } end }
 	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
@@ -2023,7 +2154,20 @@ function M.installBuild(g, spec)
 				if a and b then
 					local dx, dy = b.x - a.x, b.y - a.y
 					local l2 = dx * dx + dy * dy
-					local t = l2 > 0 and math.max(0, math.min(1, ((c.x - a.x) * dx + (c.y - a.y) * dy) / l2)) or 0
+					-- spec.octreeGap = m: a piece's shape drawn back m from a node where two or more pieces meet (a
+					-- town road's seam, an industry's T: what the octree met in the game, 2026-11-23, a guess at why)
+					local t0, t1 = 0, 1
+					if spec.octreeGap and l2 > 0 then
+						local function joined(n)
+							local k = 0
+							for _, o in pairs(g.edges) do if o.node0 == n or o.node1 == n then k = k + 1 end end
+							return k >= 2
+						end
+						local f = spec.octreeGap / math.sqrt(l2)
+						if joined(ed.node0) then t0 = math.min(0.5, f) end
+						if joined(ed.node1) then t1 = math.max(0.5, 1 - f) end
+					end
+					local t = l2 > 0 and math.max(t0, math.min(t1, ((c.x - a.x) * dx + (c.y - a.y) * dy) / l2)) or 0
 					local px, py = a.x + t * dx, a.y + t * dy
 					if (px - c.x) ^ 2 + (py - c.y) ^ 2 <= r * r then out[#out + 1] = e end
 				end
@@ -2056,6 +2200,8 @@ function M.installBuild(g, spec)
 				local ed = g.edges[edge]
 				g.nodes[ed.node0], g.nodes[ed.node1], g.edges[edge] = nil, nil, nil
 			end
+			for _, edge in ipairs(g.built[e].freeEdges or {}) do g.edges[edge] = nil end
+			for _, n in ipairs(g.built[e].nodeIds or {}) do g.nodes[n], g.conNode[n], g.frozenNode[n] = nil, nil, nil end
 			g.built[e], names[e] = nil, nil
 		end
 		-- a street proposal: new nodes, then the pieces between them
@@ -2103,7 +2249,24 @@ function M.installBuild(g, spec)
 			for _, ed in ipairs((c.shape or {}).edges or {}) do
 				g.nextEntity = g.nextEntity + 1
 				edgeIds[#edgeIds + 1] = g.nextEntity
+				-- (ed.track: a track piece, as a station's)
+				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]], roadType = ed.track and "TRACK" or nil }
+				g.conEdge[g.nextEntity] = e
+				g.conNode[nodeIds[ed[1]]], g.conNode[nodeIds[ed[2]]] = e, e
+			end
+			local freeIds = {}
+			for _, ed in ipairs((c.shape or {}).free or {}) do
+				g.nextEntity = g.nextEntity + 1
+				freeIds[#freeIds + 1] = g.nextEntity
 				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]] }
+				if spec.armEndsOwned then
+					for _, k in ipairs({ 1, 2 }) do g.conNode[nodeIds[ed[k]]] = g.conNode[nodeIds[ed[k]]] or e end
+				end
+			end
+			local frozenNodes = {}
+			for _, i in ipairs((c.shape or {}).frozenNodes or {}) do
+				frozenNodes[#frozenNodes + 1] = nodeIds[i]
+				g.frozenNode[nodeIds[i]] = e
 			end
 			local depots = {}
 			for _ = 1, c.depots or 0 do g.nextEntity = g.nextEntity + 1; depots[#depots + 1] = g.nextEntity end
@@ -2116,6 +2279,7 @@ function M.installBuild(g, spec)
 			end
 			g.built[e] = { fileName = ce.fileName, params = copy(ce.params), transf = copy(t), name = ce.name,
 				player = ce.playerEntity, autoFillSlots = ce.autoFillSlots, frozenEdges = edgeIds, depots = depots,
+				freeEdges = freeIds, frozenNodes = frozenNodes, nodeIds = nodeIds,
 				stations = stations }
 			if ce.name ~= "" then names[e] = ce.name end
 			if not c.notInResult then results[#results + 1] = { e, 1 } end
@@ -2148,7 +2312,7 @@ function M.installBuild(g, spec)
 			local b = g.built[e]
 			local pn = copy(b.params)
 			return { fileName = b.fileName, params = copy(b.params), params_native = { asTable = function() return copy(pn) end },
-				transf = copy(b.transf), frozenEdges = copy(b.frozenEdges),
+				transf = copy(b.transf), frozenEdges = copy(b.frozenEdges), frozenNodes = (not spec.noFrozenNodes) and copy(b.frozenNodes or {}) or nil,
 				depots = copy(b.depots), stations = copy(b.stations or {}), industries = {} }
 		end
 		if kind == "STATION" and g.buildStations[e] then
