@@ -1410,6 +1410,24 @@ function M.new(dir, opts)
 	-- the base's vehicle_react_util.HandleVehicleChanges, as in 40444 (stamp, autoload, then the engine command);
 	-- opts.noGuiModule: it does not load. opts.vehicleUtil: vehicle_util.tl loads too (else the probe builds parts)
 	M.guiModules = {}
+	-- the base's difficulty_util.tl getScale, as in 40444 (only the three new-game densities): 1.0 outside the
+	-- range, and like the real one it errors on a nil level. opts.noDifficultyUtil: it does not load (as when the
+	-- probe looked it up with a missing require, 2026-11-22); opts.difficultyUtil: this module instead
+	if opts.difficultyUtil then
+		M.guiModules["/base/difficulty_util.tl"] = opts.difficultyUtil
+	elseif not opts.noDifficultyUtil then
+		local scales = {
+			["locations.towns.frequency"] = { 0.2, 0.3, 0.4, 0.65, 1.0 },
+			["locations.towns.populationDensity"] = { 0.5, 0.75, 1.0, 1.5, 2.0 },
+			["locations.industry.initialIndustryDensity"] = { 2 / 3, 5 / 6, 1.0, 6 / 5, 3 / 2 },
+		}
+		M.guiModules["/base/difficulty_util.tl"] = { getScale = function(key, level)
+			local s = scales[key]
+			if s == nil then return 1.0 end
+			if #s < level or level < 1 then return 1.0 end
+			return s[level]
+		end }
+	end
 	if not opts.noGuiModule then
 		M.guiModules["/gui/line_vehicle_mgmt/vehicle_react_util.tl"] = { HandleVehicleChanges = function(changes, protected,
 				getLineAndDepot, getFirstStopToSendTo, onBuy, onFail)
@@ -1591,6 +1609,7 @@ function M.new(dir, opts)
 
 	-- a fresh copy of the script, as after a game load
 	function g.boot()
+		package.loaded["/base/difficulty_util.tl"] = nil
 		package.loaded["/gui/line_vehicle_mgmt/vehicle_react_util.tl"] = nil
 		package.loaded["/gui/line_vehicle_mgmt/line_util.tl"] = nil
 		package.loaded["hummer_remote_probe::/remote_lines.lua"] = nil

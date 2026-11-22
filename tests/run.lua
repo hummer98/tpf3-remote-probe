@@ -1540,6 +1540,139 @@ test("newgame: placement for towns and industries as the base page builds it", f
 	eq(L.town.maxNumberPerArea, 0.2); eq(L.industry.absoluteMinimum, 24); eq(L.makeInitialStreets, true)
 end)
 
+-- the base params the base new-game page starts from (1-based levels: the menu's initial setting)
+local MENU_BASE = { ["locations.towns.frequency"] = 3, ["locations.towns.populationDensity"] = 3,
+	["locations.industry.initialIndustryDensity"] = 3, ["gameTimeConfig.timeOfDayMode"] = 1,
+	["weatherConfig.dynamicWeather"] = 1 }
+local function near(a, b, msg) truthy(type(a) == "number" and math.abs(a - b) < 1e-9, (msg or "") .. ": " .. tostring(a) .. " ~= " .. tostring(b)) end
+
+test("core.newGameStart: the menu's densities, time and clouds; the copy when difficulty_util is missing", function()
+	local du = { getScale = function(k, l) return core.DENSITY_SCALES[k][l] end }
+	local s, w = core.newGameStart(MENU_BASE, du)
+	eq(#w, 0, table.concat(w, "; "))
+	eq(s.source, "difficulty_util")
+	near(s.locations.townFrequency, 0.4, "towns"); near(s.locations.populationDensity, 1.0, "population")
+	near(s.locations.industryDensity, 1.0, "industry")
+	eq(s.locations.maxNumberPerArea, 0.2); eq(s.locations.absoluteMinimum, 24); eq(s.locations.makeInitialStreets, true)
+	eq(s.timeOfDaySeconds, 14 * 3600); eq(s.cloudCoverage, 0)
+	-- not loadable: the same values from the copy, with a warning
+	s, w = core.newGameStart(MENU_BASE, nil, "module not found")
+	eq(s.source, "copy")
+	near(s.locations.townFrequency, 0.4); near(s.locations.industryDensity, 1.0)
+	truthy(#w == 1 and w[1]:find("difficulty_util not available %(module not found%)"), table.concat(w, "; "))
+	-- other levels, as the menu's tables give them
+	local b = { ["locations.towns.frequency"] = 5, ["locations.towns.populationDensity"] = 1,
+		["locations.industry.initialIndustryDensity"] = 4, ["gameTimeConfig.timeOfDayMode"] = 7,
+		["weatherConfig.dynamicWeather"] = 3 }
+	s, w = core.newGameStart(b, du)
+	eq(#w, 0)
+	near(s.locations.townFrequency, 1.0); near(s.locations.populationDensity, 0.5); near(s.locations.industryDensity, 1.2)
+	eq(s.timeOfDaySeconds, 23 * 3600); eq(s.cloudCoverage, 0.25)
+	b["gameTimeConfig.timeOfDayMode"] = 4
+	eq(core.newGameStart(b, du).timeOfDaySeconds, 7 * 3600)
+end)
+
+test("core.newGameStart: missing, out-of-range and failing cases warn and never break", function()
+	-- nothing known about the base: the menu defaults, one warning per param
+	local s, w = core.newGameStart(nil, nil, "x")
+	near(s.locations.townFrequency, 0.4); near(s.locations.populationDensity, 1.0); near(s.locations.industryDensity, 1.0)
+	eq(s.timeOfDaySeconds, 14 * 3600); eq(s.cloudCoverage, 0)
+	eq(#w, 6, table.concat(w, "; "))
+	truthy(table.concat(w, "; "):find("locations.towns.frequency missing: taken as the menu default 3"))
+	-- out of range: 1.0 as the base's getScale gives, and difficulty_util is not asked; time and clouds the first
+	local called = 0
+	local du = { getScale = function() called = called + 1; return 9 end }
+	s, w = core.newGameStart({ ["locations.towns.frequency"] = 6, ["locations.towns.populationDensity"] = 0,
+		["locations.industry.initialIndustryDensity"] = 2.5, ["gameTimeConfig.timeOfDayMode"] = 8,
+		["weatherConfig.dynamicWeather"] = "x" }, du)
+	eq(called, 0)
+	near(s.locations.townFrequency, 1.0); near(s.locations.populationDensity, 1.0); near(s.locations.industryDensity, 1.0)
+	eq(s.timeOfDaySeconds, 14 * 3600); eq(s.cloudCoverage, 0)
+	eq(#w, 5, table.concat(w, "; "))
+	truthy(table.concat(w, "; "):find("frequency = 6 is outside 1%-5"))
+	truthy(w[1]:find("frequency = 6"), "in a fixed order: the town frequency first")
+	s, w = core.newGameStart({}, nil, "gone")
+	truthy(w[1]:find("difficulty_util not available"), "the load failure comes first: " .. w[1])
+	-- a getScale that errors (as with no log in its state) or answers nonsense: the copy, with a warning each
+	s, w = core.newGameStart(MENU_BASE, { getScale = function(k) if k:find("towns") then error("log is nil") end return "x" end })
+	eq(s.source, "copy")
+	near(s.locations.townFrequency, 0.4); near(s.locations.industryDensity, 1.0)
+	eq(#w, 3, table.concat(w, "; "))
+	truthy(table.concat(w, "; "):find("log is nil"))
+	-- a module without getScale counts as not loaded
+	s, w = core.newGameStart(MENU_BASE, {})
+	eq(s.source, "copy"); truthy(w[1]:find("no getScale"))
+end)
+
+test("newgame: densities and start time as the menu computes them, with difficulty_util loaded", function()
+	-- difficulty_util is really asked: its answers (100 + level) reach locationsConfig
+	local g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE },
+		difficultyUtil = { getScale = function(k, l) return 100 + l end } })
+	frames(g, 2)
+	send(g, 148, "newgame", '{ size = "tiny", unsafe = true }')
+	frames(g, FIRST)
+	local ack = answerText(g, 148, "ack") or ""
+	truthy(not ack:find('"warnings"'), ack)
+	local p = g.started[1]
+	eq(p.locationsConfig.town.townFrequency, 103); eq(p.locationsConfig.town.populationDensity, 103)
+	eq(p.locationsConfig.industry.industryDensity, 103)
+	eq(p.startTimeOfDaySeconds, 14 * 3600); eq(p.startCloudCoverage, 0)
+	-- the fake's copy of the base module: the menu's 0.4, 1.0, 1.0
+	g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE } })
+	frames(g, 2)
+	send(g, 149, "newgame", '{ size = "tiny", unsafe = true }')
+	frames(g, FIRST)
+	local L = g.started[1].locationsConfig
+	near(L.town.townFrequency, 0.4); near(L.town.populationDensity, 1.0); near(L.industry.industryDensity, 1.0)
+	eq(L.town.maxNumberPerArea, 0.2); eq(L.town.allowInRoughTerrain, false); eq(L.industry.industryProductivity, 1)
+end)
+
+test("newgame: difficulty_util not loadable gives the same values from the copy, and a warning in the answer", function()
+	-- before 2026-11-23 this case (always: an undefined req) left Locations.new()'s values and only logged it
+	local g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE }, noDifficultyUtil = true })
+	frames(g, 2)
+	send(g, 150, "newgame", '{ size = "tiny", unsafe = true }')
+	frames(g, FIRST)
+	local ack = answerText(g, 150, "ack") or ""
+	truthy(ack:find('"warnings":%["difficulty_util not available'), ack)
+	truthy(ack:find('"locationsSource":"copy"'), ack)
+	local L = g.started[1].locationsConfig
+	near(L.town.townFrequency, 0.4); near(L.town.populationDensity, 1.0); near(L.industry.industryDensity, 1.0)
+end)
+
+test("newgame: --param on the base densities and time-of-day mode changes them as in the menu", function()
+	local g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE } })
+	frames(g, 2)
+	send(g, 151, "newgame", '{ size = "tiny", unsafe = true, params = { [""] = { ["locations.towns.frequency"] = 5, '
+		.. '["locations.towns.populationDensity"] = 1, ["locations.industry.initialIndustryDensity"] = 4, '
+		.. '["gameTimeConfig.timeOfDayMode"] = 6, ["weatherConfig.dynamicWeather"] = 4 } } }')
+	frames(g, FIRST)
+	truthy(answerText(g, 151, "ack"), answerText(g, 151, "error"))
+	local p = g.started[1]
+	near(p.locationsConfig.town.townFrequency, 1.0); near(p.locationsConfig.town.populationDensity, 0.5)
+	near(p.locationsConfig.industry.industryDensity, 1.2)
+	eq(p.startTimeOfDaySeconds, 18 * 3600); eq(p.startCloudCoverage, 0.5)
+	eq(p.modParams[""]["locations.towns.frequency"], 5, "the params themselves still go to the game")
+end)
+
+test("newgame dryRun: the locationsConfig values, levels, start time and clouds in the plan", function()
+	local g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE } })
+	frames(g, 2)
+	send(g, 152, "newgame", '{ size = "tiny", dryRun = true, params = { [""] = { ["locations.towns.frequency"] = 4 } } }')
+	frames(g, FIRST)
+	local a = answerText(g, 152) or ""
+	truthy(a:find('"townFrequency":0.65') and a:find('"populationDensity":1') and a:find('"industryDensity":1'), a)
+	truthy(a:find('"maxNumberPerArea":0.2') and a:find('"timeOfDaySeconds":50400') and a:find('"cloudCoverage":0'), a)
+	truthy(a:find('"locations.towns.frequency":4') and a:find('"locationsSource":"difficulty_util"'), a)
+	eq(#g.started, 0)
+	-- not loadable: the dry run says so too
+	g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE }, noDifficultyUtil = true })
+	frames(g, 2)
+	send(g, 153, "newgame", '{ size = "tiny", dryRun = true }')
+	frames(g, FIRST)
+	truthy((answerText(g, 153) or ""):find('"warnings":%["difficulty_util not available'), answerText(g, 153))
+end)
+
 test("newgame / load: an answer when the call returns but the game does not change", function()
 	local g = newGame({ saves = SAVES, startNoop = true })
 	frames(g, 2)
@@ -2311,6 +2444,8 @@ test("menu: newgame takes the base's and each mod's defaults, as the base new-ga
 	eq(p.other_mod.show_window, 2)
 	eq(p.hummer_remote_probe.pollIdle, 2)
 	eq(next(p.unknown_mod or {}), nil, "a mod without a description gets no params")
+	near(g.started[1].locationsConfig.town.townFrequency, 0.4, "a missing base density: the menu default level 3")
+	eq(g.started[1].startTimeOfDaySeconds, 14 * 3600)
 	-- descriptions already 1-based (pollIdle 2): no shift
 	g = newGame({ saves = SAVES, menu = true, modDescs = {
 		[""] = { { key = "map.size", defaultIndex = 3 } }, hummer_remote_probe = { { key = "pollIdle", defaultIndex = 2 } } } })

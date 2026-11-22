@@ -909,17 +909,29 @@ def company_init_after_newgame():
     return res
 
 
+def print_start_warnings(res):
+    """A newgame's plan came out other than the menu would make it (the mod's warnings: difficulty_util not
+    loaded, a base param missing or out of range): on stderr too, so it is not missed in the JSON."""
+    warnings = res.get("warnings") if isinstance(res, dict) else None
+    if isinstance(warnings, list):
+        for w in warnings:
+            print("warning: " + str(w), file=sys.stderr)
+
+
 def replace_game(cmd, args, answer_only, timeout, company_init=True):
     """load / newgame: the mod acks, the next frame ends its game, and the new game's mod writes a new hello.
     A newgame (not the map editor) then gets company init unless company_init is False."""
     folder = exchange_dir()
     before = current_stamp(folder)
     if answer_only:
-        return send(cmd, args, timeout=90, folder=folder)
+        res = send(cmd, args, timeout=90, folder=folder)
+        print_start_warnings(res)
+        return res
     ack = send(cmd, args, timeout=90, final_tag="ack", folder=folder)
     try:
         if not ack.get("ok"):
             return ack
+        print_start_warnings(ack)
         held = bool(args.get("waitForStart"))
         print("loading ..." if cmd == "load" else "starting a new game ...", file=sys.stderr)
         if held:

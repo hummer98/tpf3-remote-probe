@@ -1011,6 +1011,14 @@ local function officialMods()
 	return core.officialMods(names)
 end
 
+-- the base's difficulty_util (what the base new-game page computes the densities with), or nil and why. Its
+-- getScale only reads tables; a failed load leaves remote_core's copy of them (newGameStart)
+local function difficultyUtil()
+	local ok, du = pcall(ug_require or require, core.DIFFICULTY_UTIL)
+	if ok and type(du) == "table" and type(du.getScale) == "function" then return du end
+	return nil, ok and ("not a module: " .. type(du)) or tostring(du)
+end
+
 -- args: climate, generator, size, year, seed, towns, industries, mods, params, list, dryRun, editor (the map
 -- editor: StartGameParams.isMapEditor)
 function handlers.newgame(c)
@@ -1044,36 +1052,37 @@ function handlers.newgame(c)
 	local plan, err = core.newGamePlan(c.args, { climates = catalog, mods = mods, modParams = current, selfId = MOD,
 		time = os.time and os.time() or 0 })
 	if not plan then return fail(c.id, err) end
-	if c.args.dryRun then return answer(c.id, { ok = true, dryRun = true, plan = plan }) end
+	-- the densities, start time and clouds as the base new-game page derives them from the base params
+	local du, duError = difficultyUtil()
+	local start, warnings = core.newGameStart(plan.modParams[""], du, duError)
+	plan.locations, plan.timeOfDaySeconds, plan.cloudCoverage = start.locations, start.timeOfDaySeconds,
+		start.cloudCoverage
+	plan.startLevels, plan.locationsSource = start.levels, start.source
+	if #warnings == 0 then warnings = nil else
+		for _, w in ipairs(warnings) do say("newgame: " .. w) end
+	end
+	if c.args.dryRun then return answer(c.id, { ok = true, dryRun = true, plan = plan, warnings = warnings }) end
 	local busy = waitingReplace() or (modhub.blocks() and ("newgame " .. modhub.blocks()))
 	if busy then return fail(c.id, busy) end
 	cancelRun("newgame command " .. c.id)
 	modhub.cancel("newgame command " .. c.id)
-	answer(c.id, { ok = true, starting = true, plan = plan }, "ack")
+	answer(c.id, { ok = true, starting = true, plan = plan, warnings = warnings }, "ack")
 	-- start on the next frame, after the answer is on disk: starting ends this script's game
 	G.pendingStart = { id = c.id, plan = plan }
 end
 
 -- town and industry placement as the base new-game page builds it (new_game_or_map_settings_page.tl,
--- makeMapPreviewInputs): without it the generator may place none
-local function locationsFor(baseParams)
+-- makeMapPreviewInputs), from the plan's values (core.newGameStart): without it the generator may place none
+local function locationsFor(v)
 	local L = api.type.BaseConfig.Locations.new()
-	L.town.maxNumberPerArea = 0.2
-	L.town.allowInRoughTerrain = false
-	L.industry.absoluteMinimum = 24
-	L.industry.industryProductivity = 1
-	L.makeInitialStreets = true
-	local okD, du = pcall(function() return req "/base/difficulty_util.tl" end)
-	if okD and du and du.getScale then
-		baseParams = baseParams or {}
-		L.town.townFrequency = du.getScale("locations.towns.frequency", baseParams["locations.towns.frequency"])
-		L.town.populationDensity = du.getScale("locations.towns.populationDensity",
-			baseParams["locations.towns.populationDensity"])
-		L.industry.industryDensity = du.getScale("locations.industry.initialIndustryDensity",
-			baseParams["locations.industry.initialIndustryDensity"])
-	else
-		say("difficulty_util not available: town and industry densities left at their defaults")
-	end
+	L.town.maxNumberPerArea = v.maxNumberPerArea
+	L.town.allowInRoughTerrain = v.allowInRoughTerrain
+	L.town.townFrequency = v.townFrequency
+	L.town.populationDensity = v.populationDensity
+	L.industry.absoluteMinimum = v.absoluteMinimum
+	L.industry.industryProductivity = v.industryProductivity
+	L.industry.industryDensity = v.industryDensity
+	L.makeInitialStreets = v.makeInitialStreets
 	return L
 end
 
@@ -1094,13 +1103,14 @@ local function stepStart()
 		p.modParams = plan.modParams
 		p.seed = plan.seed
 		p.startDate = api.type.Date.new(plan.year, 1, 1)
-		p.startTimeOfDaySeconds = 12 * 3600
-		p.startCloudCoverage = 0
+		-- the menu's start for the base params' time-of-day and weather modes (14:00, clear by default)
+		p.startTimeOfDaySeconds = plan.timeOfDaySeconds
+		p.startCloudCoverage = plan.cloudCoverage
 		p.isMapEditor = plan.editor == true
 		p.generateTowns = plan.towns
 		p.generateIndustries = plan.industries
 		p.generateAssets = true
-		local okL, loc = pcall(locationsFor, plan.modParams[""])
+		local okL, loc = pcall(locationsFor, plan.locations)
 		if okL then p.locationsConfig = loc else say("locationsConfig not set: " .. tostring(loc)) end
 		-- no setWaitForStartReadyGame: it would hold the loading screen until a click (see stepLoad)
 		app.startGame(p)

@@ -1147,6 +1147,10 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 0, res)
         self.assertEqual(res["plan"]["numTiles"], [16, 16])
         self.assertIn("m9", res["plan"]["mods"])
+        loc = res["plan"]["locations"]  # the values sent as locationsConfig, to compare with the menu's
+        for key in ("townFrequency", "populationDensity", "industryDensity", "maxNumberPerArea"):
+            self.assertIsInstance(loc[key], (int, float), key)
+        self.assertEqual(res["plan"]["timeOfDaySeconds"], 14 * 3600)
         code, res = self.ctl("newgame", "--size", "tiny")
         self.assertEqual(code, 2, "refused: it crashes the game from inside a save")
         before = tf3ctl.current_stamp(self.dir)
@@ -1994,6 +1998,37 @@ class QuitLaunchTest(unittest.TestCase):
             res = tf3ctl.replace_game("newgame", {"towns": False}, False, 30)
             self.assertTrue(res["ok"] and res["companyInit"]["noPopulation"])
             self.assertIn("no town population", err.getvalue())
+
+    def test_newgame_warnings_go_to_stderr_too(self):
+        """The mod's warnings on a newgame (difficulty_util not loaded, a base param missing) are printed, for the
+        dry run's answer and for the start's ack; none when the plan came out as in the menu."""
+        answers = {}
+
+        def fake_send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
+            if cmd == "companyInit":
+                return {"ok": True, "sent": False}
+            return answers[cmd]
+
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), \
+                unittest.mock.patch.object(tf3ctl, "exchange_dir", lambda: "/nonexistent"), \
+                unittest.mock.patch.object(tf3ctl, "current_stamp", lambda folder: "a"), \
+                unittest.mock.patch.object(tf3ctl, "wait_new_hello", lambda *a: {"stamp": "b"}), \
+                unittest.mock.patch.object(tf3ctl, "remove", lambda *a: None), \
+                unittest.mock.patch.object(tf3ctl, "answer_files", lambda *a: []):
+            answers["newgame"] = {"ok": True, "dryRun": True, "plan": {}, "warnings": ["difficulty_util not available (x)"]}
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                res = tf3ctl.replace_game("newgame", {"dryRun": True}, True, 30)
+            self.assertEqual(res["warnings"], ["difficulty_util not available (x)"])
+            self.assertIn("warning: difficulty_util not available (x)", err.getvalue())
+            answers["newgame"] = {"ok": True, "id": 7, "plan": {}, "warnings": ["base param a missing", "b"]}
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                res = tf3ctl.replace_game("newgame", {}, False, 30)
+            self.assertTrue(res["ok"])
+            self.assertIn("warning: base param a missing\nwarning: b\n", err.getvalue())
+            answers["newgame"] = {"ok": True, "id": 7, "plan": {}}
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                tf3ctl.replace_game("newgame", {}, False, 30)
+            self.assertNotIn("warning", err.getvalue())
 
     def test_town_connect_args(self):
         p = tf3ctl.make_parser()
