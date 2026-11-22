@@ -3514,8 +3514,21 @@ def cmd_log(ns):
     return None
 
 
+class _ExactParser(argparse.ArgumentParser):
+    """A parser that takes only whole option names (no --eng for --engine-check).
+
+    The game guard outside tf3ctl tells read-only from game-changing calls by the flags as typed; an abbreviation
+    would read as one thing there and as another here. add_subparsers makes every sub parser (and theirs) of this
+    class, so the rule holds at every level.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)
+
+
 def make_parser():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = _ExactParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--owner", default=os.environ.get("TF3CTL_OWNER"),
                    help="name of the client sending commands; game-changing commands go only to the game this owner "
                         "started (launch / restart)")
