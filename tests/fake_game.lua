@@ -382,6 +382,7 @@ function M.new(dir, opts)
 	-- booster, boostFactor } }; opts.constructionComps = { [construction] = { fileName, params } } (params handed
 	-- out as params_native, asTable, as the engine does; noNative = true: only the params record)
 	local industries = opts.industries or {}
+	g.industries = industries -- (installDebug sets their stocks)
 	-- persons (the persons command): opts.persons = { [entity] = { happiness, destinations = { home, shop, work },
 	-- targetOrAtEntity, good (isGoodQuality), atVehicle = { vehicle, part, place, expectedArrivalTime } (also puts
 	-- it in getVehicle2Cargo2SimEntitesMap under the passengers), trip = { line, lineStop0, lineStop1, vehicle }
@@ -1529,6 +1530,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_vehicles.lua"] = nil
 		package.loaded["hummer_remote_probe::/vehicle_configs.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_core.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_debug.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		_G.data = nil
 		if g.menu then
@@ -2467,6 +2469,147 @@ end
 M.dateOf = dateOf
 M.DAY_TICKS = DAY_TICKS
 
+-- The engine's side of the debug commands (remote_debug.lua): api.cmd.debug's makeStockSetCargoAmountCmd and
+-- makeGamePerformSimulationStepsCmd, the stocks of entities that are no industry (stations), and the GAME_TIME
+-- update count. spec.stockLists = { [entity] = { stocks = { { type, cargoType, capacity, count, cargoTypes = { ids },
+-- byCargo = { [cargo] = n } } } } }; spec.owners = { [entity] = { kind = "INDUSTRY"|"TOWN_BUILDING", stockList } }
+-- (an owner whose own entity has no STOCK_LIST). spec.missing = { stockSet = true, steps = true }: that function nil;
+-- spec.callableApi / opaqueApi: the functions as callable tables (opaque: their metatable locked, as the engine's);
+-- spec.refuse = { stockSet = true, steps = true }: the callback says no success; spec.makeRaises / sendRaises: this
+-- text raised; spec.noCallback: the callback never comes; spec.stepMs: game time per step (200).
+-- g.debugCmds: every debug command sent, as made (nargs: the arguments make got). A stock id or cargo the list does
+-- not have is the engine's assertion (g.crashed).
+function M.installDebug(g, spec)
+	spec = spec or {}
+	local lists = spec.stockLists or {}
+	local owners = spec.owners or {}
+	g.debugCmds, g.updateCount = {}, g.updateCount or 1000
+	local function crash(msg) g.crashed = msg; error(msg) end
+	local function callable(f)
+		if not spec.callableApi and not spec.opaqueApi then return f end
+		local mt = { __call = function(_, ...) return f(...) end }
+		if spec.opaqueApi then mt.__metatable = "locked" end
+		return setmetatable({}, mt)
+	end
+	local missing = spec.missing or {}
+	local debug = {}
+	if not missing.stockSet then
+		debug.makeStockSetCargoAmountCmd = callable(function(...)
+			if spec.makeRaises then error(spec.makeRaises) end
+			local e, stock, amount, cargo = ...
+			return { kind = "debugStock", entity = e, stock = stock, amount = amount, cargoType = cargo, nargs = select("#", ...) }
+		end)
+	end
+	if not missing.steps then
+		debug.makeGamePerformSimulationStepsCmd = callable(function(...)
+			if spec.makeRaises then error(spec.makeRaises) end
+			return { kind = "debugSteps", amount = (...), nargs = select("#", ...) }
+		end)
+	end
+	api.cmd.debug = debug
+	local cargoId = {}
+	for id, name in pairs(api.res.cargoTypeRep.getAll()) do cargoId[name] = id end
+	-- the stock as this fake holds it: a stockLists entry, else the industry's (the base fake's getStockCount)
+	local function stockOf(e, id)
+		local l = lists[e]
+		if l then
+			local st = l.stocks[id + 1]
+			if not st then crash("ASSERT: no stock " .. tostring(id) .. " at " .. tostring(e)) end
+			return st
+		end
+		return nil
+	end
+	local function apply(cmd)
+		if cmd.kind == "debugSteps" then
+			g.gameTime = g.gameTime + cmd.amount * (spec.stepMs or 200)
+			g.updateCount = g.updateCount + cmd.amount
+			return not (spec.refuse or {}).steps
+		end
+		if (spec.refuse or {}).stockSet then return false end
+		if cmd.stock == -1 then
+			local c = g.fleet[cmd.entity]
+			if not c then crash("ASSERT: no transport vehicle " .. tostring(cmd.entity)) end
+			local id = cargoId[cmd.cargoType]
+			if id == nil then crash("ASSERT: no cargo type " .. tostring(cmd.cargoType)) end
+			c.live = c.live or {}
+			c.live.loaded = c.live.loaded or {}
+			c.live.loaded[id] = cmd.amount
+			return true
+		end
+		local st = stockOf(cmd.entity, cmd.stock)
+		if st == nil then
+			-- an industry's own stock (the base fake's opts.industries): through its getStockCount's table
+			local ok = pcall(api.engine.system.simEntityAtStockSystem.getStockCount, cmd.entity, cmd.stock)
+			if not ok then crash("ASSERT: no stock " .. tostring(cmd.stock) .. " at " .. tostring(cmd.entity)) end
+			g.industries[cmd.entity].stocks[cmd.stock + 1].count = cmd.amount
+			return true
+		end
+		if cmd.cargoType ~= nil then
+			if cargoId[cmd.cargoType] == nil then crash("ASSERT: no cargo type " .. tostring(cmd.cargoType)) end
+			st.byCargo = st.byCargo or {}
+			st.byCargo[cargoId[cmd.cargoType]] = cmd.amount
+			local sum = 0
+			for _, n in pairs(st.byCargo) do sum = sum + n end
+			st.count = sum
+		else
+			st.count = cmd.amount
+		end
+		return true
+	end
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		if type(cmd) ~= "table" or (cmd.kind ~= "debugStock" and cmd.kind ~= "debugSteps") then return send(cmd, cb) end
+		if spec.sendRaises then error("sendCommand: " .. spec.sendRaises) end
+		g.commands[#g.commands + 1] = cmd
+		g.debugCmds[#g.debugCmds + 1] = cmd
+		local success = apply(cmd)
+		if cb and not spec.noCallback then cb(cmd, success) end
+	end
+	-- the stock lists and their owners
+	local exists, getComponent = api.engine.entityExists, api.engine.getComponent
+	api.engine.entityExists = function(e) return lists[e] ~= nil or owners[e] ~= nil or exists(e) end
+	api.engine.getComponent = function(e, kind)
+		if kind == "GAME_TIME" then
+			local t = getComponent(e, kind)
+			t.updateCount, t.tickCount = g.updateCount, g.updateCount + 7
+			return t
+		end
+		local l = lists[e]
+		if kind == "STOCK_LIST" and l then
+			local stocks = {}
+			for k, st in ipairs(l.stocks) do
+				stocks[k] = { type = st.type or 0, cargoType = st.cargoType or -1, capacity = st.capacity or 0 }
+			end
+			return { stocks = stocks }
+		end
+		local o = owners[e]
+		if o and kind == o.kind then return { stockList = o.stockList } end
+		if o or l then return nil end
+		return getComponent(e, kind)
+	end
+	local sys = api.engine.system.simEntityAtStockSystem
+	local count = sys.getStockCount
+	sys.getStockCount = function(e, id)
+		local st = stockOf(e, id)
+		if st then return st.count or 0 end
+		return count(e, id)
+	end
+	sys.getStockCountForCargoType = function(e, id, cargo)
+		local st = stockOf(e, id)
+		if st then return (st.byCargo or {})[cargo] or 0 end
+		-- an industry's (the base fake's): its whole count for a cargo type the stock takes, else 0
+		local n = count(e, id)
+		for _, c in ipairs(api.engine.util.stock.getStockCargoTypes(e, id)) do if c == cargo then return n end end
+		return 0
+	end
+	local cargoTypesOf = api.engine.util.stock.getStockCargoTypes
+	api.engine.util.stock.getStockCargoTypes = function(e, id)
+		local st = stockOf(e, id)
+		if st then return st.cargoTypes or (st.cargoType and st.cargoType >= 0 and { st.cargoType }) or {} end
+		return cargoTypesOf(e, id)
+	end
+end
+
 -- real-time mode for the Python end-to-end test
 if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 	local ffi = require "ffi"
@@ -2520,6 +2663,8 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		water = function(x) return x >= 1000 end, waterLevel = 5,
 		streets = { ["::/infrastructure/street/town/town_old_medium.street_template"] = { yearTo = 1940, cost = 10 },
 			["::/infrastructure/street/town/town_new_medium.street_template"] = { yearFrom = 1940, cost = 20 } } })
+	-- the debug commands (stock set, steps): the industry's stocks, 200 ms of game time a step
+	M.installDebug(g, {})
 	local start = os.clock()
 	local wall = 0
 	local speedControl

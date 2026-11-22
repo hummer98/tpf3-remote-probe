@@ -1003,6 +1003,32 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("build-tool", "--menu", "rail", "--template", "1")
         self.assertEqual(code, 1, "template needs res: refused by the mod")
 
+    def test_9xz_debug_stock_and_steps(self):
+        code, res = self.ctl("stock", "list", "--entity", "51")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["stockList"], res["stocks"][0]["stockId"], res["stocks"][0]["cargo"],
+                          res["stocks"][0]["count"]), (51, 0, "COAL", 37))
+        code, res = self.ctl("stock", "set", "--entity", "51", "--stock", "0", "--amount", "100", "--dry-run")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["sent"], res["before"], res["functionPresent"]), (False, 37, True))
+        code, res = self.ctl("stock", "set", "--entity", "51", "--stock", "0", "--amount", "100")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["sent"], res["success"], res["before"], res["after"]), (True, True, 37, 100))
+        code, res = self.ctl("stock", "set", "--entity", "51", "--stock", "3", "--amount", "1")
+        self.assertEqual(code, 1, res)
+        self.assertIn("no stock 3", res["error"])
+        code, res = self.ctl("stock", "set", "--entity", "51", "--stock", "0", "--amount", "37")  # back as it was
+        self.assertEqual((code, res["after"]), (0, 37), res)
+        code, res = self.ctl("steps", "20", "--dry-run")
+        self.assertEqual((code, res["sent"], res["count"]), (0, False, 20), res)
+        code, res = self.ctl("steps", "20")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["sent"], res["success"], res["updateCountDelta"]), (True, True, 20), res)
+        self.assertGreaterEqual(res["gameTimeDelta"], 20 * 200, "the steps' game time, and what ran meanwhile")
+        code, res = self.ctl("stock", "list", "--entity", "999999")
+        self.assertEqual(code, 1, res)
+        self.assertIn("no such entity", res["error"])
+
     def test_9y_screenshot_waits_for_the_file(self):
         code, res = self.ctl("screenshot", "--scale", "0", "--timeout", "10")
         self.assertEqual(code, 0, res)
@@ -1327,6 +1353,48 @@ class QuitLaunchTest(unittest.TestCase):
             code = tf3ctl.main(["rename", "Petworth", "--entity", "48118"])
         self.assertEqual(code, 0)
         self.assertEqual(sent, [("rename", {"entity": 48118, "name": "Petworth"})])
+
+    def test_stock_and_steps_args_and_main(self):
+        def ns(**kw):
+            base = dict(action="set", entity=51, stock=0, amount=100, cargo=None, dry_run=False)
+            base.update(kw)
+            return tf3ctl.argparse.Namespace(**base)
+        self.assertEqual(tf3ctl.stock_args(ns()), {"entity": 51, "stock": 0, "amount": 100})
+        self.assertEqual(tf3ctl.stock_args(ns(entity=601, stock=-1, amount=0, cargo="COAL", dry_run=True)),
+                         {"entity": 601, "stock": -1, "amount": 0, "cargo": "COAL", "dryRun": True})
+        self.assertEqual(tf3ctl.stock_args(ns(action="list", stock=None, amount=None)), {"entity": 51})
+        for bad in (dict(entity=-1), dict(stock=-2), dict(amount=-1), dict(amount=tf3ctl.STOCK_MAX_AMOUNT + 1),
+                    dict(stock=-1), dict(cargo=""), dict(cargo="CO AL"), dict(action="list", entity=-5)):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.stock_args(ns(**bad))
+        sns = tf3ctl.argparse.Namespace
+        self.assertEqual(tf3ctl.steps_args(sns(count=1, dry_run=False)), {"count": 1})
+        self.assertEqual(tf3ctl.steps_args(sns(count=tf3ctl.STEPS_MAX, dry_run=True)),
+                         {"count": tf3ctl.STEPS_MAX, "dryRun": True})
+        for bad in (0, -1, tf3ctl.STEPS_MAX + 1):
+            with self.assertRaises(tf3ctl.ToolError):
+                tf3ctl.steps_args(sns(count=bad, dry_run=False))
+        self.assertIn("stockSet", tf3ctl.CHANGES_GAME)
+        self.assertIn("steps", tf3ctl.CHANGES_GAME)
+        self.assertNotIn("stockList", tf3ctl.CHANGES_GAME)
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args, timeout))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["stock", "list", "--entity", "47"]), 0)
+            self.assertEqual(tf3ctl.main(["stock", "set", "--entity", "47", "--stock", "1", "--amount", "100",
+                                          "--cargo", "COAL"]), 0)
+            self.assertEqual(tf3ctl.main(["steps", "500", "--dry-run"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["steps", "0"]), 2, "refused before sending")
+            self.assertEqual(tf3ctl.main(["stock", "set", "--entity", "47", "--stock", "-1", "--amount", "5"]), 2)
+        self.assertEqual(sent, [("stockList", {"entity": 47}, 20),
+                                ("stockSet", {"entity": 47, "stock": 1, "amount": 100, "cargo": "COAL"},
+                                 tf3ctl.STOCK_TIMEOUT_SEC),
+                                ("steps", {"count": 500, "dryRun": True}, tf3ctl.STEPS_TIMEOUT_SEC)])
 
     def test_build_args_and_main(self):
         def ns(**kw):

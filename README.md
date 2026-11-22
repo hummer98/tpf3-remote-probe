@@ -538,6 +538,45 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   whether it works outside the map editor, whether `landUse2CargoNeeds` takes, the needs command, how the engine
   answers a place with roads or buildings on it, the population right after.
 
+### Stocks and simulation steps (`stock`, `steps`: debug commands, test saves only)
+
+```sh
+python3 tools/tf3ctl.py stock list --entity 51                       # read only
+python3 tools/tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]
+python3 tools/tf3ctl.py stock set --entity 601 --stock -1 --amount 30 --cargo <cargo>   # a vehicle's load
+python3 tools/tf3ctl.py steps 500 [--dry-run]
+```
+
+- **Use these on test saves only.** They send the game's debug commands (`api.cmd.debug`), which change the game
+  as no player can: cargo appears from nowhere, the simulation runs on without the clock. They are meant to cut the
+  waiting on maps made for tests (a harbour's stock filling up, a vehicle arriving full, a town growing). They warn
+  other clients as game-changing commands (their dry runs too).
+- `stock list` reads a stock list as the base's debug panel does: the entity's `STOCK_LIST` component, stock ids
+  0-based (the ids `stock set --stock` takes), each stock's `type`, `cargoType` and `cargo` (the cargo type's
+  name), `capacity`, `count` (`getStockCount`) and `cargoTypes` (per cargo type the stock takes: its name and
+  `count`). An industry, town building or warehouse whose own entity has no `STOCK_LIST` is followed to its
+  `stockList` entity (`via`). A vehicle has no stock list: `kind` is `vehicle`, with `cargo` per cargo type it has
+  room for (`capacity`, `count`; passengers left out and refused, as the base panel does), set with
+  `--stock -1 --cargo NAME`. `--cargo` takes the `cargo` field exactly as `stock list` shows it. Ids come from `industry-stocks`, `stations`
+  and `vehicles`.
+- `stock set` sends `api.cmd.debug.makeStockSetCargoAmountCmd(stock list entity, stock, amount[, cargo])` (the cargo
+  only when given, as the base panel leaves it out for a stock list's stock). Refused before anything is sent: a
+  stock id the list does not have, an amount over the stock's capacity (or the vehicle's for that cargo, or
+  100000; in a mixed stock with the other cargo there counted), passengers, a cargo the stock or vehicle does not
+  take, an entity the engine does not have. The answer: `before`,
+  `after` (read a couple of frames after the callback), `success`, `engineResult` (what the callback handed back),
+  `stockList` (the entity it went to); `--dry-run` sends nothing and answers `before` and `functionPresent`.
+- `steps N` (1-10000) sends `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)`. The answer: `before` and
+  `after` (`gameTime`, `updateCount`, `tickCount`, `date`), `gameTimeDelta`, `updateCountDelta`,
+  `gameTimePerStep`, `callbackSec`, `success`, `engineResult`. The game time also moves on by itself between the
+  two reads when the game is not paused: pause it first (`pause`) for a clean count.
+- A debug function the game does not have (nil) is not called: the answer says so (`functionPresent` false,
+  `sent` false). The engine's refusal (`success` false), an error raised while making or sending the command, and
+  no callback in 30 s (`steps`: 150 s) are errors with the engine's own words where it gives any.
+- **Not checked in game yet** (written 2026-11-22): whether a release build has these debug functions, whether it
+  runs them or refuses them, whether a station holds a stock list of its own, what one step is in game time, and
+  how long a large `steps` holds the game up.
+
 ### My Mods from the main menu (`modhub`)
 
 ```
@@ -729,6 +768,8 @@ languages get English. The name, summary, description and cover in the game's mo
   after the click carries a `note`, and a load that times out names the button as the likely cause.
 - `line delete` refuses a line with vehicles unless `--sell-vehicles` is given. It skips the base checks for
   missions and protected entities (it is meant for test saves).
+- `stock set` and `steps` are the game's debug commands: use them on test saves only (nothing tells a test
+  save from a player's; they are not checked in game yet).
 - `money` books an "other" journal entry, which shows in the finance tables and charts.
 - `buy` can buy models outside their years (the store's availability check is not applied).
 
@@ -765,6 +806,7 @@ Not checked yet:
   `stations --catchment`.
 - `terrain`, `terrain --probe-api` and `newgame --editor`, entirely (see "The ground in a rectangle").
 - `town`, entirely (see "One town").
+- `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `modhub publish`, entirely (see "Uploading one new mod"). `modhub status` and `validate` were checked on
   2026-11-22.

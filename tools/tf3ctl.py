@@ -76,6 +76,12 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             [--in-game] [--dry-run]   # one town (createTowns, as the map editor): the map editor only (--in-game:
             # a new test game); first needs from the economy's lowest tier unless --needs / --no-needs. Answers the
             # town's entity, name, position, population, the engine's proposal, the needs read back
+  tf3ctl.py stock list --entity 51          # read only: a stock list's stocks (ids 0-based), counts per cargo; an
+            # industry, town building or warehouse, a station, or a vehicle (its load per cargo, stock -1)
+  tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]   # debug command: test saves
+            # only; a vehicle's load: --stock -1 --cargo NAME. Answers before / after and the engine's success
+  tf3ctl.py steps 500 [--dry-run]           # debug command: the simulation 1-10000 steps on; test saves only.
+            # Answers the game time and update count before and after
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
@@ -130,7 +136,8 @@ PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); lon
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
-                "build", "road", "terrain", "town", "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
+                "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
+                "stockSet", "steps"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -1516,6 +1523,37 @@ def rename_args(ns):
     return {"entity": ns.entity, "name": ns.name}
 
 
+def stock_args(ns):
+    """stock list / stock set: checked here as the mod checks them (the stock itself is checked in the game)."""
+    if ns.entity < 0:
+        raise ToolError("--entity must be an id (0 or more)")
+    if ns.action == "list":
+        return {"entity": ns.entity}
+    if ns.stock < -1:
+        raise ToolError("--stock must be a stock's id (0, 1, ... as stock list shows them; -1 for a vehicle's load)")
+    if not 0 <= ns.amount <= STOCK_MAX_AMOUNT:
+        raise ToolError("--amount must be from 0 to %d" % STOCK_MAX_AMOUNT)
+    args = {"entity": ns.entity, "stock": ns.stock, "amount": ns.amount}
+    if ns.cargo is not None:
+        if not ns.cargo or re.search(r"\s", ns.cargo):
+            raise ToolError("--cargo must be a cargo type's name as stock list shows it (e.g. COAL)")
+        args["cargo"] = ns.cargo
+    elif ns.stock == -1:
+        raise ToolError("--stock -1 (a vehicle's load) needs --cargo")
+    if ns.dry_run:
+        args["dryRun"] = True
+    return args
+
+
+def steps_args(ns):
+    if not 1 <= ns.count <= STEPS_MAX:
+        raise ToolError("the step count must be from 1 to %d" % STEPS_MAX)
+    args = {"count": ns.count}
+    if ns.dry_run:
+        args["dryRun"] = True
+    return args
+
+
 def build_args(ns):
     """build: one construction at --at (x,y[,z]), or --remove / --remove-all; checked here as the mod checks them."""
     if ns.remove is not None or ns.remove_all:
@@ -1747,6 +1785,10 @@ TERRAIN_TIMEOUT_SEC = 180  # the mod waits 120 s for the replacement's callback
 WATER_MAX_POINTS = 400  # the mod's core.WATER_MAX_POINTS
 WATER_MIN_STEP = 0.1  # core.WATER_MIN_STEP: a smaller step overflows the point count before the limit is checked
 BUILD_TIMEOUT_SEC = 60  # the mod waits 30 s for the engine's callback
+STOCK_TIMEOUT_SEC = 60  # stock set: the mod waits 30 s for the engine's callback
+STEPS_TIMEOUT_SEC = 200  # steps: the mod waits 150 s for the engine's callback
+STEPS_MAX = 10000  # as the mod's core.STEPS_MAX
+STOCK_MAX_AMOUNT = 100000  # as the mod's core.STOCK_MAX_AMOUNT
 LOG_ERRORS_MAX = 10  # entries of the game's log added to a build's answer
 LOG_ERROR_CHARS = 600
 
@@ -3201,6 +3243,25 @@ def make_parser():
             vb.add_argument("--count", type=int, default=1)
         vb.add_argument("--via", choices=["gui", "cmd"], default="gui",
                         help="gui: the base's HandleVehicleChanges (stamps purchaseTime); cmd: the engine command alone")
+    sk = sub.add_parser("stock", help="a stock list's stocks: list (read only), set (a debug command: test saves "
+                                      "only, not checked in a game yet)")
+    ssub = sk.add_subparsers(dest="action", required=True)
+    skl = ssub.add_parser("list", help="read only: the stocks (ids 0-based), cargo, capacity, counts per cargo; a "
+                                       "vehicle's load per cargo")
+    skl.add_argument("--entity", type=int, required=True, help="an industry, station, town building or vehicle "
+                                                               "(industry-stocks, stations, vehicles)")
+    sks = ssub.add_parser("set", help="set a stock's amount (api.cmd.debug.makeStockSetCargoAmountCmd): test saves only")
+    sks.add_argument("--entity", type=int, required=True, help="as stock list")
+    sks.add_argument("--stock", type=int, required=True, help="the stock's id as stock list shows it (0-based); -1: "
+                                                              "a vehicle's load (with --cargo)")
+    sks.add_argument("--amount", type=int, required=True, help="0-%d, at most the stock's capacity" % STOCK_MAX_AMOUNT)
+    sks.add_argument("--cargo", help="a cargo type's name exactly as stock list shows it (its cargo field); a stock "
+                                     "list's stock: optional")
+    sks.add_argument("--dry-run", action="store_true", help="check and show the before, send nothing")
+    st = sub.add_parser("steps", help="run the simulation N steps on (api.cmd.debug.makeGamePerformSimulationStepsCmd): "
+                                      "test saves only, not checked in a game yet")
+    st.add_argument("count", type=int, help="1-%d" % STEPS_MAX)
+    st.add_argument("--dry-run", action="store_true", help="check and show the game time, send nothing")
     mo = sub.add_parser("money", help="set or change the company's balance (a journal entry of category OTHER, "
                                       "as the sandbox money editor)")
     mg = mo.add_mutually_exclusive_group(required=True)
@@ -3491,6 +3552,13 @@ def main(argv=None):
                 res = send("tool", tool_args(ns))
         elif ns.cmd in ("buy", "duplicate", "replace", "sell"):
             res = send(ns.cmd, vehicle_args(ns), timeout=VEHICLE_TIMEOUT_SEC)
+        elif ns.cmd == "stock":
+            if ns.action == "list":
+                res = send("stockList", stock_args(ns))
+            else:
+                res = send("stockSet", stock_args(ns), timeout=STOCK_TIMEOUT_SEC)
+        elif ns.cmd == "steps":
+            res = send("steps", steps_args(ns), timeout=STEPS_TIMEOUT_SEC)
         elif ns.cmd == "money":
             res = send("money", money_args(ns), timeout=VEHICLE_TIMEOUT_SEC)  # the mod's own wait is 60 s
         elif ns.cmd == "depots":
