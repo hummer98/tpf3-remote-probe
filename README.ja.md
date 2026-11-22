@@ -262,6 +262,7 @@ python3 tools/tf3ctl.py sell --vehicle 601
 python3 tools/tf3ctl.py money --set 10000000 | --add -5000
 python3 tools/tf3ctl.py stations [--name cent] [--near 11 --radius 800]
 python3 tools/tf3ctl.py stations --catchment 47   # 駅 (かグループ) の範囲: 町の建物、産業
+python3 tools/tf3ctl.py stations --catchment 47 --paths 5   # となぜか: 円、近い家、歩き
 python3 tools/tf3ctl.py lines [--name probe]
 python3 tools/tf3ctl.py lines --problems [--line 23]   # 経路の問題、ホームの transportModes、路線の mode の和
 python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--cargo coal] [--via gui|cmd]
@@ -1332,6 +1333,33 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   (`id`・`name`。産業そのものの id か、INDUSTRY の stockList から)、`other` (何か分からなかった id)。グループなら
   その駅すべての和。ゲーム内では未確認です: エンジンが返すのがどれか (建物そのもの、その PersonCapacity、その
   StockList の entity。3つとも引く) と、種類の数がその enum と合うか。
+  答えには、なぜそれだけを拾うのか (旅客について) も付きます (content/remote_catchment.lua):
+  - `diagnosis`: 1行。例 `0 town buildings in the circle (150 m); nearest residential 462 m (312 m outside the
+    circle) in Emsworth, ...` (遠すぎる) や `3 town buildings in the circle (150 m: residential 2, commercial 1), 2 not
+    in the engine's catchment; on foot 1 of 2 checked have no path to the station` (円の中だが届かない)。
+  - `circles` (`station`・`x`・`y`・`radius`・`frame`) と `radiusSource`: エンジンの `STATION.catchmentAreas`
+    (範囲を持つモジュールごとに円1つ)。本体は中心をコンストラクションの中の座標で作ります。エンジンがそのまま持つかは
+    分かっていないので、読んだままの中心 (`frame: "world"`) と、コンストラクションの `transf` を通した中心
+    (`"construction"`) の両方を出し、駅の箱の中心に近いほうを使います (読んだ位置は `readX` / `readY`)。transf が
+    読めないときは、駅から半径+1000 m より遠い円を駅のまわりの円として扱います (`"station"`)。エンジンが円を返さない
+    ときは `--radius M` の円を使います (`radiusSource` に出ます)。本体の値 (駅のファイル): 鉄道の本屋
+    150 / 175 / 200 m (小・中・大。旅客も貨物も)、脇の建物 50 / 60 / 70、階段 100。道路の駅の出入口 175。道路の
+    小さな停留所 160。港の旅客の桟橋 150 (25x25) と 250 (50x50・100x50)。港の貨物の桟橋は本体のファイルに値が
+    ありません。
+  - `near`: 駅にいちばん近い `TOWNS_READ` (4) の町の建物 (位置の読めない町が1つでもあれば全部の町。
+    `townsUnplaced`)、最大 1500 棟 (`buildingsRead`・`truncated`・`townsTotal`・`distance` 付きの `towns`・`readMs`・
+    `buildingsError`・`positionError`)。種類ごとの `nearest` (`building`・`town`・`townName`・円の中心までの `distance`・`outside`: 円の縁から
+    外へ何 m か、中ならマイナス)。`inCircle` (`total`・種類ごと・`caught` / `notCaught`: エンジンの旅客の
+    catchables に入っているか・`nearRim`: 縁から 10 m 以内)。`notCaught` (建物。円の奥のものから。`rim`: 縁から何 m 内側か・
+    `walk`: `path`・`none`・`unknown`・`why`) と `walk` (`checked`・`found`・`noPath`・`unknown`・`unverified`・
+    `limit`・`ms`・`maxMs` (いちばん長かった探索)・`truncated`・`control`: 拾われている建物 3 棟までに同じ探索を
+    したもの。それも1つも見つからないなら探索は当てにならず、拾われている建物が無いときは「道が無い」は未確認。
+    どちらも `diagnosis` に出ます)。旅客のホームが無い駅 (全部のホームの印が読めたとき) は、貨物の catchables と
+    比べ (`cargoOnly`)、歩きの探索はしません。歩きの探索は reach のもの
+    (`reach --from <建物> --to <駅> --mode walk`) で、`--paths N` 棟まで (初期設定 20、0 でしない)、合わせて 300 ms
+    で打ち切ります。円の中かどうかは建物の箱の中心で決めます。エンジンは入口や道から測るかもしれません。
+  - ゲーム内では未確認 (2026-11-23): `catchmentAreas` が読めるか、どの座標か、歩きの探索がこの node の間の道を
+    見つけるか。
 - `lines` は自社の路線を返します: 停車駅 (駅グループ、駅とホーム、0 始まり、`loadMode`: 0 available、1 満載
   (どれか)、2 満載 (全部))、車両、乗り物の種類、`customFilters`、`loads` (どこかの停車駅で積む貨物)、`vehicleCargo`
   (路線の車両が積める貨物)。`--line N` でその路線だけを返します (自社の路線でなければエラー)。停車駅ごとに、

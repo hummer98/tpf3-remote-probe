@@ -4360,6 +4360,7 @@ test("stations --catchment: town buildings per town and kind, industries, for pa
 	eq(#k.industries, 1); eq(k.industries[1].id, 51, "the mine by its stock list")
 	eq(#k.towns, 1); eq(k.towns[1].commercial, 1, "the shop by its stock list")
 	eq(#k.other, 1); eq(k.other[1], 9999)
+	truthy(type(c.diagnosis) == "string" and not c.diagnosis:find("failed", 1, true), tostring(c.diagnosis))
 	-- a station alone: its own catchment, and its group named
 	send(g, 776, "stations", "{ catchment = 481 }")
 	frames(g, 10)
@@ -10691,6 +10692,9 @@ end)
 -- reach and persons --town / --destination (tests/run_reach.lua, its fake tests/fake_reach.lua)
 dofile(root .. "/tests/run_reach.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
 	newGame = newGame, send = send, frames = frames, final = final, FIRST = FIRST, SAVES = SAVES })
+-- the diagnosis of stations --catchment (tests/run_catchment.lua)
+dofile(root .. "/tests/run_catchment.lua")({ test = test, eq = eq, truthy = truthy, core = core, root = root,
+	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
 
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it

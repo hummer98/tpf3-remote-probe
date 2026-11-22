@@ -911,6 +911,18 @@ function M.new(ctx)
 		answer(c.id, res)
 	end
 
+	-- a walking search from one entity to another (stations --catchment: a town building to its station), as reach
+	-- --from --to --mode walk finds their nodes: { found = true | false | nil, why, ms, edges }
+	function R.walkBetween(fromEntity, toEntity)
+		local from, ferr = endNodes({ entity = fromEntity }, "walk", nil, M.RADIUS_DEFAULT)
+		if not from then return { why = "from: " .. ferr } end
+		local to, terr = endNodes({ entity = toEntity }, "walk", nil, M.RADIUS_DEFAULT)
+		if not to then return { why = "to: " .. terr } end
+		local p = searchPath(from, to, "walk")
+		return { found = p.found, why = p.why, ms = p.ms, edges = p.edges, fromNodes = p.fromNodes, toNodes = p.toNodes,
+			unverified = p.unverified, sameNode = p.sameNode }
+	end
+
 	function R.handle(c)
 		local a, err = M.args(c.args, core.MAX_ENTITY_ID)
 		if not a then return fail(c.id, err) end

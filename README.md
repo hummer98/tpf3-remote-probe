@@ -273,6 +273,7 @@ python3 tools/tf3ctl.py sell --vehicle 601
 python3 tools/tf3ctl.py money --set 10000000 | --add -5000
 python3 tools/tf3ctl.py stations [--name cent] [--near 11 --radius 800]
 python3 tools/tf3ctl.py stations --catchment 47   # what a station (or group) reaches: town buildings, industries
+python3 tools/tf3ctl.py stations --catchment 47 --paths 5   # and why: circles, nearest houses, walking
 python3 tools/tf3ctl.py lines [--name probe]
 python3 tools/tf3ctl.py lines --problems [--line 23]   # path problems, platform modes, the line's mode union
 python3 tools/tf3ctl.py line create --stops Central,42 [--name "[probe] A"] [--cargo coal] [--via gui|cmd]
@@ -1433,6 +1434,35 @@ All unchecked in game. There is no command to build stations.
   `name`; by the industry's own id or its INDUSTRY stockList) and `other` (ids it could not place). For a group,
   the union of its stations. Not checked in game: which entities the engine gives (a building itself, its
   PersonCapacity or its StockList entity; all three are looked up) and whether the kind's numbers match the enum.
+  The answer also says why it catches what it does (content/remote_catchment.lua), for passengers:
+  - `diagnosis`: one line, e.g. `0 town buildings in the circle (150 m); nearest residential 462 m (312 m outside
+    the circle) in Emsworth, ...` (too far) or `3 town buildings in the circle (150 m: residential 2, commercial 1),
+    2 not in the engine's catchment; on foot 1 of 2 checked have no path to the station` (in the circle, not reached).
+  - `circles` (`station`, `x`, `y`, `radius`, `frame`) and `radiusSource`: the engine's `STATION.catchmentAreas`
+    (one circle per module that has one). The base makes the centre in the construction's frame; whether the
+    engine keeps it so is not known, so the centre as read (`frame: "world"`) and through the construction's
+    `transf` (`"construction"`) are both worked out and the one nearer the station's box centre is used (the
+    position read in `readX` / `readY`). Without a transf, a centre more than its radius and 1000 m from the
+    station is taken round the station (`"station"`). When the engine gives none, `--radius M` gives the circle
+    (`radiusSource` says so). The base's values (its station files): rail main buildings 150 / 175 /
+    200 m (small / medium / large, passenger and cargo alike), side buildings 50 / 60 / 70, stairs 100; street
+    station entrances 175; small street stops 160; harbour passenger docks 150 (25x25) and 250 (50x50, 100x50);
+    the harbour's cargo docks have none in the base's files.
+  - `near`: the town buildings of the `TOWNS_READ` (4) towns nearest the station (every town when one has no
+    position: `townsUnplaced`), at most 1500 of them (`buildingsRead`, `truncated`, `townsTotal`, `towns` with
+    their `distance`, `readMs`, `buildingsError`, `positionError`); `nearest` per kind (`building`, `town`, `townName`,
+    `distance` to the circle's centre, `outside`: metres past its rim, negative inside); `inCircle` (`total`, per
+    kind, `caught` / `notCaught`: in the engine's passenger catchables or not, `nearRim`: within 10 m of the rim);
+    `notCaught` (the buildings, deepest in the circle first: `rim` metres inside, `walk`: `path`, `none` or
+    `unknown`, `why`) and `walk` (`checked`, `found`, `noPath`, `unknown`, `unverified`, `limit`, `ms`, `maxMs`
+    (the longest search), `truncated`, `control`: the same search for up to 3 caught buildings; when it finds none
+    of those either, the search is not to be trusted, and with no caught building a missing path is unverified,
+    which `diagnosis` says). A station with no passenger terminal (every terminal's flags read) is held against its
+    cargo catchables instead (`cargoOnly`), with no walking search. The walking search is reach's (`reach --from
+    <building> --to <station> --mode walk`), for at most `--paths N` buildings (default 20, 0: none), and stops
+    after 300 ms. A building is in a circle by its box centre; the engine may measure from its door or street.
+  - Not checked in a game yet (2026-11-23): whether `catchmentAreas` reads, in which frame, and whether the walking
+    search finds paths between these nodes.
 - `lines` lists the company's lines: stops (station group, station and terminal, 0-based, and `loadMode`: 0
   available, 1 full load any, 2 full load all), vehicles, carriers, `customFilters`, `loads` (cargo some stop
   loads) and `vehicleCargo` (cargo the line's vehicles can carry). `--line N` lists that line only (an error when

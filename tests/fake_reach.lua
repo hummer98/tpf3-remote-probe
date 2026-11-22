@@ -4,7 +4,7 @@
 -- spec.towns = { [town] = name }; spec.buildings = { [b] = { town, kind = "RESIDENTIAL" | "COMMERCIAL" | "INDUSTRIAL"
 --   (nil: no PERSON_CAPACITY), capacity, pc (a PersonCapacity entity of its own, which holds the PERSON_CAPACITY
 --   instead) } }; spec.industries = { [i] = { name, construction, capacity } } (PERSON_CAPACITY INDUSTRIAL);
--- spec.constructions = { [c] = { industries = {}, townBuildings = {}, stations = {} } };
+-- spec.constructions = { [c] = { industries = {}, townBuildings = {}, stations = {}, transf = { 16 numbers } } };
 -- spec.targets = { { entries = { { entity, capacity, walk, drive, lines, edgeWalk = { tn, index }, edgeDrive } } },
 --   ... }: getTargetsByLandUse's lists in order (spec.targetsShape = "list": the lists without the targets field;
 --   spec.noTargets: the function is not there; spec.targetsError: it raises);
@@ -13,7 +13,8 @@
 -- spec.graph = { walk = { ["a:0"] = { "a:1", ... } }, drive = { ... } }: directed links per mode (PERSON: walk, CAR:
 --   drive); findPathNodeToNode does a breadth-first search and gives the edges as { { { entity = tn, index = k },
 --   true } ... } (the tn of the node it reached);
--- spec.stations = { [st] = { terminals = { { personNodes = { "a:0" }, vehicleNode = "a:1" } } } };
+-- spec.stations = { [st] = { terminals = { { personNodes = { "a:0" }, vehicleNode = "a:1" } }, catchmentAreas =
+--   { { x, y, radius } } } };
 -- spec.circle = { { x, y, node = "a:0" } }: the nodes findTransportNetworkNodesInCircle finds;
 -- spec.positions = { [e] = { x, y } } (BOUNDING_VOLUME);
 -- spec.problems = { { towns = { 11, 12 }, problem = "Disconnected" } };
@@ -101,7 +102,7 @@ function M.install(g, spec)
 		if kind == "CONSTRUCTION" and cons[e] then
 			local c = cons[e]
 			return wrap({ industries = wrap(c.industries or {}), townBuildings = wrap(c.townBuildings or {}),
-				stations = wrap(c.stations or {}), fileName = "x.con" })
+				stations = wrap(c.stations or {}), fileName = "x.con", transf = c.transf and wrap(c.transf) or nil })
 		end
 		if kind == "STATION" and stations[e] then
 			local ts = {}
@@ -109,8 +110,20 @@ function M.install(g, spec)
 				local pn = {}
 				for j, s in ipairs(t.personNodes or {}) do pn[j] = node(s) end
 				ts[i] = wrap({ personNodes = wrap(pn), vehicleNodeId = t.vehicleNode and node(t.vehicleNode) or nil })
+				-- t.cargo: a cargo terminal (its load flags read so); else no flags
+				if t.cargo then
+					ts[i] = wrap({ personNodes = wrap(pn), passengersLoad = false, passengersUnload = false, cargoLoad = true,
+						cargoUnload = true })
+				end
 			end
-			return wrap({ terminals = wrap(ts), cargo = false })
+			-- catchmentAreas = { { x, y, r } }: CatchmentArea { position (a Vec3f; spec.areaShape "list": { x, y, z }),
+			-- radius }
+			local areas = {}
+			for i, a in ipairs(stations[e].catchmentAreas or {}) do
+				local pos = spec.areaShape == "list" and wrap({ a[1], a[2], 0 }) or wrap({ x = a[1], y = a[2], z = 0 })
+				areas[i] = wrap({ position = pos, radius = a[3] })
+			end
+			return wrap({ terminals = wrap(ts), cargo = false, catchmentAreas = wrap(areas) })
 		end
 		if kind == "TRANSPORT_NETWORK" and tn[e] then
 			local edges = {}
@@ -343,6 +356,11 @@ function M.install(g, spec)
 	sys.streetConnectorSystem.getConstructionEntityForSubconstruction = function(e)
 		if industries[e] then return industries[e].construction or -1 end
 		return sub and sub(e) or -1
+	end
+	-- spec.stationConstruction = { [station] = construction }
+	sys.streetConnectorSystem.getConstructionEntityForStation = function(st)
+		if not stations[st] then crash("ASSERT: construction of " .. tostring(st) .. ", no station") end
+		return (spec.stationConstruction or {})[st] or -1
 	end
 	sys.streetConnectorSystem.getConstructionClosestTown = function(c)
 		if not cons[c] then crash("ASSERT: closest town of " .. tostring(c) .. ", no construction") end
