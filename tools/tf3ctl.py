@@ -76,6 +76,11 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             [--in-game] [--dry-run]   # one town (createTowns, as the map editor): the map editor only (--in-game:
             # a new test game); first needs from the economy's lowest tier unless --needs / --no-needs. Answers the
             # town's entity, name, position, population, the engine's proposal, the needs read back
+  tf3ctl.py town develop --at 120,-40 [--count 30] [--streets] [--upgrade] [--radius 250] [--dry-run]
+            # test saves only: makeTownDevelopAtCmd N times (1-200), one after another; answers sent / succeeded /
+            # failed and the town buildings (residential, commercial, industrial) before / after, all and near
+  tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] [--dry-run]   # test saves only: the town's
+            # size factors (makeTownUpdateSizeCmd); answers the factors and the town's buildings before / after
   tf3ctl.py stock list --entity 51          # read only: a stock list's stocks (ids 0-based), counts per cargo; an
             # industry, town building or warehouse, a station, or a vehicle (its load per cargo, stock -1)
   tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]   # debug command: test saves
@@ -141,7 +146,7 @@ RECENT_SEC = 600  # another owner's game-changing command this recent gets a war
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
-                "stockSet", "steps"}  # window: what the player sees  # poll: only the mod's file reads
+                "stockSet", "steps", "townDevelop", "townSize"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -1692,6 +1697,8 @@ def terrain_args(ns):
 def town_args(ns):
     """town: --at x,y, --name, and --size, --capacity, --needs / --no-needs, --via, --in-game, --dry-run as given
     (the mod checks all of it again)."""
+    if ns.at is None:
+        raise ToolError("give --at x,y (metres)")
     try:
         at = [float(x) for x in (ns.at or "").split(",")]
     except ValueError:
@@ -1733,6 +1740,69 @@ def town_args(ns):
     return args
 
 
+TOWN_PLAIN_OPTIONS = ("at", "name", "size", "capacity", "needs", "via")
+TOWN_PLAIN_FLAGS = ("no_needs", "in_game", "dry_run")
+
+
+def town_grow_args(ns):
+    """town develop / town size: checked here as the mod checks them. -> (command, args). An option of the plain
+    town given before the word (town --dry-run develop ...) would be dropped by argparse, so it is refused."""
+    given = [o for o in TOWN_PLAIN_OPTIONS if getattr(ns, o, None) is not None]
+    given += [o for o in TOWN_PLAIN_FLAGS if getattr(ns, o, False)]
+    if given:
+        raise ToolError("town %s: put its options after the word (%s given before it)"
+                        % (ns.town_action, ", ".join("--" + o.replace("_", "-") for o in given)))
+    if ns.town_action == "develop":
+        try:
+            at = [float(x) for x in ns.grow_at.split(",")]
+        except ValueError:
+            raise ToolError("--at must be numbers: x,y (for a negative x write --at=-100,50)")
+        if len(at) != 2 or any(x != x or abs(x) == float("inf") for x in at):
+            raise ToolError("--at must be x,y (finite numbers; for a negative x write --at=-100,50)")
+        if not 1 <= ns.grow_count <= TOWN_DEVELOP_MAX:
+            raise ToolError("--count must be 1-%d" % TOWN_DEVELOP_MAX)
+        args = {"at": at, "count": ns.grow_count}
+        if ns.grow_radius is not None:
+            if ns.grow_radius != ns.grow_radius or not 0 < ns.grow_radius <= TOWN_GROW_RADIUS_MAX:
+                raise ToolError("--radius must be above 0 and at most %g metres" % TOWN_GROW_RADIUS_MAX)
+            args["radius"] = ns.grow_radius
+        if ns.grow_streets:
+            args["streets"] = True
+        if ns.grow_upgrade:
+            args["upgrade"] = True
+        if ns.grow_dry_run:
+            args["dryRun"] = True
+        return "townDevelop", args
+    if ns.grow_entity < 0:
+        raise ToolError("--entity must be a town's id (entities --kind town)")
+    try:
+        f = [float(x) for x in ns.grow_factors.split(",")]
+    except ValueError:
+        raise ToolError("--factors must be numbers: residential,commercial,industrial")
+    if len(f) != 3 or any(x != x or not 0 <= x <= TOWN_GROW_SIZE_MAX for x in f):
+        raise ToolError("--factors must be 3 numbers, each 0-%g: residential,commercial,industrial" % TOWN_GROW_SIZE_MAX)
+    args = {"entity": ns.grow_entity, "factors": f}
+    if ns.grow_update_all:
+        args["updateAll"] = True
+    if ns.grow_dry_run:
+        args["dryRun"] = True
+    return "townSize", args
+
+
+def town_grow_timeout(cmd, args):
+    """The mod sends a develop's commands one after another (a frame or two each) and waits 30 s for a missing
+    callback: room for both."""
+    if cmd == "townDevelop":
+        return TOWN_GROW_TIMEOUT_SEC + args.get("count", 1) * TOWN_DEVELOP_SEC_EACH
+    return TOWN_GROW_TIMEOUT_SEC
+
+
+TOWN_DEVELOP_MAX = 200  # the mod's core.TOWN_DEVELOP_MAX
+TOWN_GROW_RADIUS = 250  # core.TOWN_GROW_RADIUS
+TOWN_GROW_RADIUS_MAX = 2000  # core.TOWN_GROW_RADIUS_MAX
+TOWN_GROW_SIZE_MAX = 5  # core.TOWN_GROW_SIZE_MAX
+TOWN_GROW_TIMEOUT_SEC = 60
+TOWN_DEVELOP_SEC_EACH = 0.5
 TOWN_NAME_MAX = 64  # the mod's core.TOWN_NAME_MAX
 TOWN_SIZE = (0.1, 2.5)  # core.TOWN_SIZE
 TOWN_MAX_CAPACITY = 1000  # core.TOWN_MAX_CAPACITY
@@ -3312,8 +3382,8 @@ def make_parser():
     te.add_argument("--dry-run", action="store_true", help="the grid and the heights, nothing sent")
     tw = sub.add_parser("town", help="one town at a point (createTowns and makeTownCreateCmd, as the map editor's "
                         "towns window); in the map editor only, unless --in-game")
-    tw.add_argument("--at", required=True, metavar="X,Y", help="metres (for a negative x write --at=-100,50)")
-    tw.add_argument("--name", required=True, help="the town's name")
+    tw.add_argument("--at", metavar="X,Y", help="metres (for a negative x write --at=-100,50); required")
+    tw.add_argument("--name", help="the town's name; required")
     tw.add_argument("--size", type=float, help="the size factor of each district (%g-%g, default 1 as the base "
                     "import; Real World Map Importer: 0.5 for 500 inhabitants, 1 for 5000)" % TOWN_SIZE)
     tw.add_argument("--capacity", type=int, help="the average initial capacity per district (1-%d): the engine's "
@@ -3330,6 +3400,28 @@ def make_parser():
                     "it works in a game is not known")
     tw.add_argument("--dry-run", action="store_true", help="nothing sent: the needs and, in the editor or with "
                     "--in-game, the engine's proposal for the place")
+    # town develop / town size: their own options (other dests, so an option given before the word is caught in
+    # town_grow_args instead of being dropped)
+    tws = tw.add_subparsers(dest="town_action", required=False, metavar="{develop,size}")
+    td = tws.add_parser("develop", help="test saves only: new buildings or street segments at a point "
+                        "(api.cmd.makeTownDevelopAtCmd), N times one after another; not checked in a game yet")
+    td.add_argument("--at", dest="grow_at", required=True, metavar="X,Y",
+                    help="metres (for a negative x write --at=-100,50)")
+    td.add_argument("--streets", dest="grow_streets", action="store_true", help="develop streets too")
+    td.add_argument("--upgrade", dest="grow_upgrade", action="store_true", help="upgrade buildings")
+    td.add_argument("--count", dest="grow_count", type=int, default=1, help="commands to send, 1-%d (default 1)"
+                    % TOWN_DEVELOP_MAX)
+    td.add_argument("--radius", dest="grow_radius", type=float, help="metres round the point the buildings near it "
+                    "are counted in (default %g, a harbour's circle; at most %g)" % (TOWN_GROW_RADIUS, TOWN_GROW_RADIUS_MAX))
+    td.add_argument("--dry-run", dest="grow_dry_run", action="store_true", help="the counts, nothing sent")
+    tz = tws.add_parser("size", help="test saves only: a town's size factors, residential, commercial, industrial "
+                        "(api.cmd.makeTownUpdateSizeCmd); not checked in a game yet")
+    tz.add_argument("--entity", dest="grow_entity", type=int, required=True, help="the town (entities --kind town)")
+    tz.add_argument("--factors", dest="grow_factors", required=True, metavar="R,C,I",
+                    help="residential,commercial,industrial, each 0-%g (1 as a new town)" % TOWN_GROW_SIZE_MAX)
+    tz.add_argument("--update-all", dest="grow_update_all", action="store_true",
+                    help="take every building to its target capacity")
+    tz.add_argument("--dry-run", dest="grow_dry_run", action="store_true", help="the town as it is, nothing sent")
     wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
                                        "terrain's height (to find a shore for a harbour)")
     wg = wa.add_mutually_exclusive_group(required=True)
@@ -3707,6 +3799,9 @@ def main(argv=None):
                 res = send("terrainApi", {}, timeout=30)
             else:
                 res = send("terrain", terrain_args(ns), timeout=TERRAIN_TIMEOUT_SEC)
+        elif ns.cmd == "town" and ns.town_action:
+            gcmd, gargs = town_grow_args(ns)
+            res = send(gcmd, gargs, timeout=town_grow_timeout(gcmd, gargs))
         elif ns.cmd == "town":
             res = send("town", town_args(ns), timeout=TOWN_TIMEOUT_SEC)
         elif ns.cmd == "tool":

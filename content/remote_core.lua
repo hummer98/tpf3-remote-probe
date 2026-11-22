@@ -19,7 +19,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
 	modhubValidate = true, modhubPublish = true, water = true, road = true, terrain = true, terrainApi = true,
-	town = true, stockList = true, stockSet = true, steps = true }
+	town = true, stockList = true, stockSet = true, steps = true, townDevelop = true, townSize = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -33,7 +33,9 @@ M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame =
 	terrain = true, -- also its dry run, as build's (terrainApi only looks whether functions exist)
 	town = true, -- also its dry run (it asks the engine for a town proposal, as the editor's preview)
 	-- the debug commands (remote_debug.lua): test saves only; their dry runs too, as build's (stockList only reads)
-	stockSet = true, steps = true }
+	stockSet = true, steps = true,
+	-- town develop / town size (remote_town_grow.lua): test saves only; their dry runs too, as build's
+	townDevelop = true, townSize = true }
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true,
@@ -2810,6 +2812,117 @@ function M.stepsDone(before, now, count)
 	end
 	if not readable then return nil end
 	return false
+end
+
+
+---------------------------------------------------------------------------------------------------------------------
+-- town develop / town size (remote_town_grow.lua does the game side): buildings added at a point
+-- (makeTownDevelopAtCmd) and a town's size factors set (makeTownUpdateSizeCmd), to give a test map's harbour or
+-- station the houses and shops round it without running years of steps. Test saves only.
+
+M.TOWN_GROW_FUNCTIONS = { develop = "api.cmd.makeTownDevelopAtCmd", size = "api.cmd.makeTownUpdateSizeCmd",
+	vec2f = "api.type.Vec2f.new", send = "api.cmd.sendCommand" }
+M.TOWN_DEVELOP_MAX = 200 -- commands in one town develop
+M.TOWN_GROW_RADIUS = 250 -- default circle the buildings near the point are counted in (a harbour's catchment)
+M.TOWN_GROW_RADIUS_MAX = 2000
+-- a size factor's upper bound: the base's growth script raises the factors step by step from 1; a big jump with
+-- updateAll would ask the engine for very many buildings at once
+M.TOWN_GROW_SIZE_MAX = 5
+
+local function flagArg(args, key)
+	local v = args[key]
+	if v ~= nil and type(v) ~= "boolean" then return nil, key .. " must be true or false" end
+	return v == true
+end
+
+-- townDevelop: at ("x,y" or a list, metres), count (1..TOWN_DEVELOP_MAX, default 1), streets, upgrade (booleans,
+-- default false), radius (m, for the counts near the point), dryRun. -> the request, or nil and why
+function M.townDevelopRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.at == nil then return nil, "give at (x,y in metres)" end
+	local p, err = M.numberList(args.at, 2)
+	if not p then return nil, "at: " .. err end
+	if #p ~= 2 then return nil, "at needs x,y (finite numbers)" end
+	local L = M.BUILD_LIMITS.xy
+	if math.abs(p[1]) > L or math.abs(p[2]) > L then return nil, "at: x and y must be within " .. L end
+	local n = args.count == nil and 1 or wholeNumber(args.count)
+	if n == nil or n < 1 or n > M.TOWN_DEVELOP_MAX then
+		return nil, "count must be a whole number from 1 to " .. M.TOWN_DEVELOP_MAX
+	end
+	local radius = args.radius == nil and M.TOWN_GROW_RADIUS or tonumber(args.radius)
+	if not finite(radius) or radius <= 0 or radius > M.TOWN_GROW_RADIUS_MAX then
+		return nil, "radius must be a number above 0 and at most " .. M.TOWN_GROW_RADIUS_MAX .. " (m)"
+	end
+	local r = { at = { x = p[1], y = p[2] }, count = n, radius = radius }
+	for _, k in ipairs({ "streets", "upgrade", "dryRun" }) do
+		local v, ferr = flagArg(args, k)
+		if v == nil then return nil, ferr end
+		r[k] = v
+	end
+	return r
+end
+
+-- townSize: entity (a town), factors ("r,c,i" or a list: residential, commercial, industrial, each
+-- 0..TOWN_GROW_SIZE_MAX, as the town's sizeFactors), updateAll (boolean: all buildings to their target capacity),
+-- dryRun. -> the request, or nil and why
+function M.townSizeRequest(args)
+	args = type(args) == "table" and args or {}
+	local e = wholeNumber(args.entity)
+	if e == nil or e < 0 or e > M.MAX_ENTITY_ID then return nil, "give the town's entity id (entities --kind town)" end
+	if args.factors == nil then return nil, "give factors: residential,commercial,industrial (e.g. 1.5,1.2,1)" end
+	local f, err = M.numberList(args.factors, 3)
+	if not f then return nil, "factors: " .. err end
+	if #f ~= 3 then return nil, "factors needs 3 numbers: residential,commercial,industrial" end
+	for i = 1, 3 do
+		if f[i] < 0 or f[i] > M.TOWN_GROW_SIZE_MAX then
+			return nil, "factors: each from 0 to " .. M.TOWN_GROW_SIZE_MAX .. " (the town's sizeFactors; 1 as a new town)"
+		end
+	end
+	local r = { entity = e, factors = f }
+	for _, k in ipairs({ "updateAll", "dryRun" }) do
+		local v, ferr = flagArg(args, k)
+		if v == nil then return nil, ferr end
+		r[k] = v
+	end
+	return r
+end
+
+-- town building counts: list of { town, kind ("residential" / "commercial" / "industrial" / nil), capacity, near
+-- (true when within the circle) } -> { [town] = { buildings, residential, commercial, industrial, unknownKind,
+-- capacity = {...}, near = { same, without capacity } } }, totals, nearTotals
+local function emptyCount()
+	return { buildings = 0, residential = 0, commercial = 0, industrial = 0, unknownKind = 0,
+		capacity = { residential = 0, commercial = 0, industrial = 0 } }
+end
+local function addTo(c, b)
+	c.buildings = c.buildings + 1
+	if b.kind and c[b.kind] then
+		c[b.kind] = c[b.kind] + 1
+		c.capacity[b.kind] = c.capacity[b.kind] + (tonumber(b.capacity) or 0)
+	else
+		c.unknownKind = c.unknownKind + 1
+	end
+end
+function M.townBuildingCounts(list)
+	local towns, total, near = {}, emptyCount(), emptyCount()
+	for _, b in ipairs(list or {}) do
+		local t = b.town or -1
+		towns[t] = towns[t] or emptyCount()
+		addTo(towns[t], b)
+		addTo(total, b)
+		if b.near then addTo(near, b) end
+	end
+	return towns, total, near
+end
+
+-- the difference of two counts (after - before) in the plain kinds, nil when either is missing
+function M.townCountDelta(before, after)
+	if not before or not after then return nil end
+	local d = {}
+	for _, k in ipairs({ "buildings", "residential", "commercial", "industrial" }) do
+		d[k] = (after[k] or 0) - (before[k] or 0)
+	end
+	return d
 end
 
 return M

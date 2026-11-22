@@ -8650,5 +8650,187 @@ test("debug commands: the engine's refusal, a raise and a missing callback come 
 	truthy(not g.crashed and not m.crashed and not s.crashed and not n.crashed)
 end)
 
+-- town develop / town size (remote_town_grow.lua)
+test("core.townDevelopRequest / townSizeRequest: ranges, shapes and defaults", function()
+	local r = core.townDevelopRequest({ at = "100,-50" })
+	eq(r.at.x, 100); eq(r.at.y, -50); eq(r.count, 1); eq(r.streets, false); eq(r.upgrade, false); eq(r.dryRun, false)
+	eq(r.radius, core.TOWN_GROW_RADIUS)
+	local v = core.townDevelopRequest({ at = { 1, 2 }, count = core.TOWN_DEVELOP_MAX, streets = true, upgrade = true,
+		dryRun = true, radius = 100 })
+	eq(v.count, core.TOWN_DEVELOP_MAX); eq(v.streets, true); eq(v.upgrade, true); eq(v.dryRun, true); eq(v.radius, 100)
+	for _, bad in ipairs({ {}, { at = "1" }, { at = "1,2,3" }, { at = "a,b" }, { at = "nan,1" }, { at = "1e9,0" },
+		{ at = "1,2", count = 0 }, { at = "1,2", count = core.TOWN_DEVELOP_MAX + 1 }, { at = "1,2", count = 1.5 },
+		{ at = "1,2", streets = "yes" }, { at = "1,2", upgrade = 1 }, { at = "1,2", dryRun = "true" },
+		{ at = "1,2", radius = 0 }, { at = "1,2", radius = core.TOWN_GROW_RADIUS_MAX + 1 } }) do
+		local ok, err = core.townDevelopRequest(bad)
+		eq(ok, nil); truthy(err, "an error for a bad develop")
+	end
+	truthy(select(2, core.townDevelopRequest(nil)))
+	local s = core.townSizeRequest({ entity = 801, factors = "1.5,1.2,1" })
+	eq(s.entity, 801); eq(s.factors[1], 1.5); eq(s.factors[2], 1.2); eq(s.factors[3], 1); eq(s.updateAll, false)
+	local s2 = core.townSizeRequest({ entity = "802", factors = { 0, core.TOWN_GROW_SIZE_MAX, 2 }, updateAll = true,
+		dryRun = true })
+	eq(s2.entity, 802); eq(s2.factors[2], core.TOWN_GROW_SIZE_MAX); eq(s2.updateAll, true); eq(s2.dryRun, true)
+	for _, bad in ipairs({ {}, { entity = 801 }, { entity = -1, factors = "1,1,1" }, { entity = 1.5, factors = "1,1,1" },
+		{ entity = 801, factors = "1,1" }, { entity = 801, factors = "1,1,1,1" }, { entity = 801, factors = "1,x,1" },
+		{ entity = 801, factors = "-0.1,1,1" }, { entity = 801, factors = "1,1," .. (core.TOWN_GROW_SIZE_MAX + 0.1) },
+		{ entity = 801, factors = "1,1,1", updateAll = "yes" } }) do
+		local ok, err = core.townSizeRequest(bad)
+		eq(ok, nil); truthy(err, "an error for a bad size")
+	end
+	-- both change the game (and warn other owners), neither runs in the main menu
+	eq(core.COMMANDS.townDevelop, true); eq(core.COMMANDS.townSize, true)
+	eq(core.CHANGES_GAME.townDevelop, true); eq(core.CHANGES_GAME.townSize, true)
+	eq(core.MENU_COMMANDS.townDevelop, nil); eq(core.MENU_COMMANDS.townSize, nil)
+end)
+
+test("core.townBuildingCounts / townCountDelta: per town, total, near, unknown kinds; empty and nil", function()
+	local towns, total, near = core.townBuildingCounts({
+		{ town = 801, kind = "residential", capacity = 10, near = true },
+		{ town = 801, kind = "commercial", capacity = 4, near = false },
+		{ town = 802, kind = nil, near = true }, { kind = "industrial", capacity = 2 } })
+	eq(towns[801].buildings, 2); eq(towns[801].residential, 1); eq(towns[801].capacity.residential, 10)
+	eq(towns[802].unknownKind, 1); eq(towns[-1].industrial, 1)
+	eq(total.buildings, 4); eq(near.buildings, 2); eq(near.residential, 1)
+	local _, none = core.townBuildingCounts({})
+	eq(none.buildings, 0)
+	local _, none2 = core.townBuildingCounts(nil)
+	eq(none2.buildings, 0)
+	local d = core.townCountDelta({ buildings = 1, residential = 1 }, { buildings = 3, residential = 2, commercial = 1 })
+	eq(d.buildings, 2); eq(d.residential, 1); eq(d.commercial, 1); eq(d.industrial, 0)
+	eq(core.townCountDelta(nil, {}), nil)
+end)
+
+-- two towns: 801 (Harbourside, round 0,0: two buildings by the harbour, one far off) and 802 (Inland, at 3000,0)
+local function townGrowGame(spec, opts)
+	opts = opts or {}
+	opts.entities = opts.entities or { TOWN = { 801, 802 } }
+	opts.names = opts.names or { [801] = "Harbourside", [802] = "Inland" }
+	opts.townBuildings = opts.townBuildings or {
+		[7001] = { town = 801, kind = "RESIDENTIAL", capacity = 10, pos = { x = 50, y = 0 } },
+		[7002] = { town = 801, kind = "COMMERCIAL", capacity = 4, pos = { x = 0, y = 100 } },
+		[7003] = { town = 801, kind = "RESIDENTIAL", capacity = 8, pos = { x = 900, y = 0 } },
+		[7004] = { town = 802, kind = "INDUSTRIAL", capacity = 8, pos = { x = 3000, y = 0 } } }
+	local g = vehicleGame(opts)
+	spec = spec or {}
+	spec.towns = spec.towns or { [801] = { sizeFactors = { 1, 1, 1 } }, [802] = { sizeFactors = { 1.2, 1, 1 } } }
+	spec.townPos = spec.townPos or { [801] = { x = 0, y = 0 }, [802] = { x = 3000, y = 0 } }
+	fake.installTownGrow(g, opts, spec)
+	return g
+end
+local function townGrowRun(g, id, cmd, argsLua, n)
+	send(g, id, cmd, argsLua)
+	frames(g, n or FIRST + 20)
+	return final(g, id)
+end
+
+test("town develop: N commands one after another, each a Vec2f and two booleans; counts before and after", function()
+	local g = townGrowGame()
+	local a = townGrowRun(g, 2301, "townDevelop", '{ at = { 10, 20 }, count = 4, streets = true }', FIRST + 40)
+	truthy(a.ok, a.error); eq(a.sent, 4); eq(a.succeeded, 4); eq(a.failed, 0); eq(a.count, 4)
+	eq(#g.townGrowCmds, 4)
+	local c = g.townGrowCmds[1]
+	eq(c.kind, "townDevelop"); eq(c.position.x, 10); eq(c.position.y, 20); eq(c.developStreets, true)
+	eq(c.upgradeBuildings, false); eq(c.nargs, 3)
+	eq(a.before.total.buildings, 4); eq(a.after.total.buildings, 8); eq(a.delta.total.buildings, 4)
+	-- near: within 250 m of 10,20 (7001 and 7002 before; the 4 new ones at the point after)
+	eq(a.before.near.buildings, 2); eq(a.after.near.buildings, 6); eq(a.delta.near.buildings, 4)
+	eq(a.before.near.residential, 1); eq(a.before.near.commercial, 1)
+	-- only the town that changed is listed, with its name
+	eq(#a.towns, 1); eq(a.towns[1].town, 801); eq(a.towns[1].name, "Harbourside"); eq(a.towns[1].delta.buildings, 4)
+	eq(a.engineResult.kind, "townDevelop", "the callback's data comes back")
+	truthy(a.note:find("not checked in a game"), a.note)
+	-- upgrade only: sent, nothing new
+	local u = townGrowRun(g, 2302, "townDevelop", '{ at = "10,20", upgrade = true }')
+	truthy(u.ok, u.error); eq(g.townGrowCmds[5].upgradeBuildings, true); eq(g.townGrowCmds[5].developStreets, false)
+	eq(u.delta.total.buildings, 0); eq(#u.towns, 0)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("town develop / size: a dry run sends nothing and shows the counts", function()
+	local g = townGrowGame()
+	local a = townGrowRun(g, 2311, "townDevelop", '{ at = "0,0", count = 50, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.sent, 0); eq(a.dryRun, true); eq(#g.townGrowCmds, 0)
+	eq(a.before.total.buildings, 4); eq(a.before.near.buildings, 2); eq(#a.towns, 2, "all towns in a dry run")
+	eq(a.functions.develop, true); eq(a.functions.vec2f, true)
+	local s = townGrowRun(g, 2312, "townSize", '{ entity = 801, factors = "2,1.5,1", updateAll = true, dryRun = true }')
+	truthy(s.ok, s.error); eq(s.sent, 0); eq(#g.townGrowCmds, 0)
+	eq(s.townBefore.sizeFactors[1], 1); eq(s.before.buildings, 3); eq(s.name, "Harbourside")
+	-- a dry run still says what is missing, without failing
+	local m = townGrowGame({ missing = { develop = true } })
+	local d = townGrowRun(m, 2313, "townDevelop", '{ at = "0,0", dryRun = true }')
+	truthy(d.ok, d.error); eq(d.functions.develop, false)
+	truthy(not g.crashed and not m.crashed)
+end)
+
+test("town size: the town, a list of 3 numbers and the flag; factors and buildings read back", function()
+	local g = townGrowGame()
+	local a = townGrowRun(g, 2321, "townSize", '{ entity = 801, factors = "3,1.5,1", updateAll = true }')
+	truthy(a.ok, a.error); eq(a.sent, 1); eq(a.succeeded, 1)
+	local c = g.townGrowCmds[1]
+	eq(c.kind, "townSize"); eq(c.townEntity, 801); eq(#c.landUseSizeFactors, 3); eq(c.landUseSizeFactors[1], 3)
+	eq(c.landUseSizeFactors[2], 1.5); eq(c.updateAllBuildings, true); eq(c.nargs, 3)
+	eq(a.townBefore.sizeFactors[1], 1); eq(a.townAfter.sizeFactors[1], 3)
+	eq(a.before.buildings, 3); eq(a.after.buildings, 5); eq(a.delta.buildings, 2)
+	-- not a town, not there: refused before anything is sent (an unknown id may be the engine's assertion)
+	local x = townGrowRun(g, 2323, "townSize", '{ entity = 99999, factors = "1,1,1" }')
+	eq(x.ok, false); truthy(x.error:find("no such entity"), x.error)
+	local y = townGrowRun(g, 2324, "townSize", '{ entity = 7001, factors = "1,1,1" }')
+	eq(y.ok, false); truthy(y.error:find("no town"), y.error)
+	eq(#g.townGrowCmds, 1)
+	truthy(not g.crashed, g.crashed)
+	-- a town with no buildings yet: counts of 0, not missing
+	-- (a new fake game replaces the global api: the one above is done with)
+	local h = townGrowGame(nil, { townBuildings = {} })
+	local b = townGrowRun(h, 2322, "townSize", '{ entity = 802, factors = "1,1,1" }')
+	truthy(b.ok, b.error); eq(b.before.buildings, 0); eq(b.after.buildings, 0); eq(h.townGrowCmds[1].updateAllBuildings, false)
+	truthy(not h.crashed, h.crashed)
+end)
+
+test("town develop / size: a missing function, the engine's refusal, a raise and a missing callback", function()
+	for _, k in ipairs({ "develop", "vec2f" }) do
+		local m = townGrowGame({ missing = { [k] = true } })
+		local a = townGrowRun(m, 2331, "townDevelop", '{ at = "0,0", count = 3 }')
+		eq(a.ok, false); eq(a.sent, 0); truthy(a.error:find("not there"), a.error); eq(#m.townGrowCmds, 0)
+		truthy(not m.crashed, m.crashed)
+	end
+	local ms = townGrowGame({ missing = { size = true } })
+	local s = townGrowRun(ms, 2332, "townSize", '{ entity = 801, factors = "1,1,1" }')
+	eq(s.ok, false); eq(s.sent, 0); truthy(s.error:find("makeTownUpdateSizeCmd"), s.error)
+	-- the engine says no to the 2nd of 3: the others count, the failure is listed
+	local r = townGrowGame({ refuse = { develop = 2 } })
+	local a = townGrowRun(r, 2333, "townDevelop", '{ at = "0,0", count = 3 }', FIRST + 40)
+	truthy(a.ok, a.error); eq(a.sent, 3); eq(a.succeeded, 2); eq(a.failed, 1); eq(a.failures[1].index, 2)
+	eq(a.failures[1].success, false); eq(a.delta.total.buildings, 2)
+	-- all refused: an error
+	local all = townGrowGame({ refuse = { develop = true, size = true } })
+	local b = townGrowRun(all, 2334, "townDevelop", '{ at = "0,0", count = 2 }', FIRST + 40)
+	eq(b.ok, false); eq(b.succeeded, 0); eq(b.failed, 2); truthy(b.error:find("refused all 2"), b.error)
+	local bs = townGrowRun(all, 2335, "townSize", '{ entity = 801, factors = "2,1,1" }')
+	eq(bs.ok, false); truthy(bs.error:find("refused the command"), bs.error); eq(bs.townAfter.sizeFactors[1], 1)
+	-- making or sending raises: nothing sent
+	local mr = townGrowGame({ makeRaises = "no towns here" })
+	local c = townGrowRun(mr, 2336, "townDevelop", '{ at = "0,0", count = 5 }')
+	eq(c.ok, false); eq(c.sent, 0); truthy(c.error:find("no towns here", 1, true), c.error)
+	local sr = townGrowGame({ sendRaises = "queue closed" })
+	local d = townGrowRun(sr, 2337, "townSize", '{ entity = 801, factors = "1,1,1" }')
+	eq(d.ok, false); eq(d.sent, 0); truthy(d.error:find("queue closed", 1, true), d.error)
+	-- the callable tables the engine has (their metatable locked) are found and called
+	local ct = townGrowGame({ callableApi = true })
+	local e = townGrowRun(ct, 2338, "townDevelop", '{ at = "0,0", count = 2 }', FIRST + 40)
+	truthy(e.ok, e.error); eq(e.succeeded, 2)
+	-- no callback: one error at the deadline, not a hang; a new command waits its turn meanwhile
+	local n = townGrowGame({ noCallback = true })
+	send(n, 2339, "townDevelop", '{ at = "0,0", count = 3 }')
+	frames(n, FIRST + 10)
+	eq(select(2, final(n, 2339)), 0, "no answer before the deadline")
+	local busy = townGrowRun(n, 2340, "townSize", '{ entity = 801, factors = "1,1,1" }')
+	eq(busy.ok, false); truthy(busy.error:find("still running"), busy.error)
+	frames(n, 31 * 30, 1 / 30)
+	local f, count = final(n, 2339)
+	eq(count, 1); eq(f.ok, false); eq(f.sent, 1); truthy(f.error:find("no callback"), f.error)
+	for _, gg in ipairs({ ms, r, all, mr, sr, ct, n }) do truthy(not gg.crashed, gg.crashed) end
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 os.exit(failures == 0 and 0 or 1)

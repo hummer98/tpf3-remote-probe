@@ -1531,6 +1531,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/vehicle_configs.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_core.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_debug.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_town_grow.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		_G.data = nil
 		if g.menu then
@@ -2628,6 +2629,118 @@ function M.installDebug(g, spec)
 		local st = stockOf(e, id)
 		if st then return st.cargoTypes or (st.cargoType and st.cargoType >= 0 and { st.cargoType }) or {} end
 		return cargoTypesOf(e, id)
+	end
+end
+
+-- The engine's side of town develop / town size (remote_town_grow.lua): makeTownDevelopAtCmd and
+-- makeTownUpdateSizeCmd, towns with a TOWN component and town buildings with a bounding box. g's opts.townBuildings
+-- (stations --catchment's shape, plus pos = { x, y }) is where new buildings go.
+-- spec.towns = { [entity] = { sizeFactors = { r, c, i }, initial = { r, c, i } } }. A develop adds one building of
+-- the nearest town (by spec.townPos) at the point, its kind going round residential, commercial, industrial, and with
+-- upgrade nothing new (the levels only); updateAll adds one building per factor step over 1. spec.missing =
+-- { develop = true, size = true, vec2f = true }: that function nil; spec.refuse = { develop = true | n, size = true }:
+-- the callback says no success (n: only the n-th develop); spec.makeRaises / sendRaises: this text raised;
+-- spec.noCallback: never a callback; spec.callableApi: the functions as locked callable tables. The arguments are
+-- checked as the types have them (a Vec2f from api.type.Vec2f.new, booleans, 3 numbers, a town entity): anything else
+-- is the engine's assertion (g.crashed). g.townGrowCmds: every command sent, as made.
+function M.installTownGrow(g, opts, spec)
+	spec = spec or {}
+	opts.townBuildings = opts.townBuildings or {}
+	local towns = spec.towns or {}
+	local missing = spec.missing or {}
+	g.townGrowCmds = {}
+	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
+	local function callable(f)
+		if not spec.callableApi then return f end
+		return setmetatable({}, { __call = function(_, ...) return f(...) end, __metatable = "locked" })
+	end
+	local vecs = setmetatable({}, { __mode = "k" })
+	api.type.Vec2f = nil
+	if not missing.vec2f then
+		api.type.Vec2f = { new = callable(function(x, y)
+			if type(x) ~= "number" or type(y) ~= "number" then crash("Vec2f.new: two numbers") end
+			local v = { x = x, y = y }
+			vecs[v] = true
+			return v
+		end) }
+	end
+	api.cmd.makeTownDevelopAtCmd = not missing.develop and callable(function(...)
+		if spec.makeRaises then error(spec.makeRaises) end
+		local pos, streets, upgrade = ...
+		if not vecs[pos] then crash("makeTownDevelopAtCmd: position is no Vec2f") end
+		if type(streets) ~= "boolean" or type(upgrade) ~= "boolean" then crash("makeTownDevelopAtCmd: booleans") end
+		return { kind = "townDevelop", position = { x = pos.x, y = pos.y }, developStreets = streets,
+			upgradeBuildings = upgrade, nargs = select("#", ...) }
+	end) or nil
+	api.cmd.makeTownUpdateSizeCmd = not missing.size and callable(function(...)
+		if spec.makeRaises then error(spec.makeRaises) end
+		local e, f, all = ...
+		if not towns[e] then crash("makeTownUpdateSizeCmd: no town " .. tostring(e)) end
+		if type(f) ~= "table" or #f ~= 3 then crash("makeTownUpdateSizeCmd: 3 size factors") end
+		for i = 1, 3 do if type(f[i]) ~= "number" then crash("makeTownUpdateSizeCmd: 3 numbers") end end
+		if type(all) ~= "boolean" then crash("makeTownUpdateSizeCmd: updateAllBuildings a boolean") end
+		return { kind = "townSize", townEntity = e, landUseSizeFactors = copy(f), updateAllBuildings = all,
+			nargs = select("#", ...) }
+	end) or nil
+	local nextId, kinds, developed = 90001, { "RESIDENTIAL", "COMMERCIAL", "INDUSTRIAL" }, 0
+	local function addBuilding(town, x, y)
+		local b = nextId
+		nextId = nextId + 1
+		local n = 0
+		for _ in pairs(opts.townBuildings) do n = n + 1 end
+		opts.townBuildings[b] = { town = town, kind = kinds[n % 3 + 1], capacity = 4, pos = { x = x, y = y } }
+	end
+	local function apply(cmd)
+		if cmd.kind == "townDevelop" then
+			developed = developed + 1
+			local r = (spec.refuse or {}).develop
+			if r == true or r == developed then return false end
+			if cmd.upgradeBuildings then return true end
+			local best, bd
+			for t, p in pairs(spec.townPos or {}) do
+				local d = (p.x - cmd.position.x) ^ 2 + (p.y - cmd.position.y) ^ 2
+				if not bd or d < bd then best, bd = t, d end
+			end
+			if best then addBuilding(best, cmd.position.x, cmd.position.y) end
+			return true
+		end
+		if (spec.refuse or {}).size then return false end
+		local t = towns[cmd.townEntity]
+		local old = t.sizeFactors
+		t.sizeFactors = copy(cmd.landUseSizeFactors)
+		if cmd.updateAllBuildings then
+			for i = 1, 3 do
+				for _ = 1, math.max(0, math.floor(cmd.landUseSizeFactors[i] - (old[i] or 1))) do
+					addBuilding(cmd.townEntity, 0, 0)
+				end
+			end
+		end
+		return true
+	end
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		if type(cmd) ~= "table" or (cmd.kind ~= "townDevelop" and cmd.kind ~= "townSize") then return send(cmd, cb) end
+		if spec.sendRaises then error("sendCommand: " .. spec.sendRaises) end
+		g.townGrowCmds[#g.townGrowCmds + 1] = cmd
+		local success = apply(cmd)
+		if cb and not spec.noCallback then cb(cmd, success) end
+	end
+	local exists, getComponent = api.engine.entityExists, api.engine.getComponent
+	api.engine.entityExists = function(e) return towns[e] ~= nil or opts.townBuildings[e] ~= nil or exists(e) end
+	api.engine.getComponent = function(e, kind)
+		if kind == "TOWN" then
+			local t = towns[e]
+			if not t then return nil end
+			return { sizeFactors = copy(t.sizeFactors or { 1, 1, 1 }), initialLandUseCapacities = copy(t.initial or { 100, 50, 50 }),
+				developmentActive = true }
+		end
+		if kind == "BOUNDING_VOLUME" then
+			local tb = opts.townBuildings[e]
+			if tb and tb.pos then
+				return { bbox = { min = { x = tb.pos.x - 5, y = tb.pos.y - 5, z = 0 }, max = { x = tb.pos.x + 5, y = tb.pos.y + 5, z = 10 } } }
+			end
+		end
+		return getComponent(e, kind)
 	end
 end
 

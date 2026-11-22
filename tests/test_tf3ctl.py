@@ -1639,6 +1639,65 @@ class QuitLaunchTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(tf3ctl.main(["terrain", "--probe-api", "--rect", "0,0,1,1"]), 2)
 
+    def test_town_develop_and_size_args_and_main(self):
+        p = tf3ctl.make_parser()
+
+        def grow(*argv):
+            return tf3ctl.town_grow_args(p.parse_args(["town"] + list(argv)))
+        self.assertEqual(grow("develop", "--at=-100,50"), ("townDevelop", {"at": [-100.0, 50.0], "count": 1}))
+        self.assertEqual(grow("develop", "--at", "10,20", "--count", "200", "--streets", "--upgrade", "--radius", "300",
+                              "--dry-run"),
+                         ("townDevelop", {"at": [10.0, 20.0], "count": 200, "radius": 300.0, "streets": True,
+                                          "upgrade": True, "dryRun": True}))
+        self.assertEqual(grow("size", "--entity", "801", "--factors", "2,1.5,1"),
+                         ("townSize", {"entity": 801, "factors": [2.0, 1.5, 1.0]}))
+        self.assertEqual(grow("size", "--entity", "801", "--factors", "0,5,1", "--update-all", "--dry-run"),
+                         ("townSize", {"entity": 801, "factors": [0.0, 5.0, 1.0], "updateAll": True, "dryRun": True}))
+        for bad in (["develop", "--at", "1"], ["develop", "--at", "a,b"], ["develop", "--at", "nan,1"],
+                    ["develop", "--at", "1,2", "--count", "0"], ["develop", "--at", "1,2", "--count", "201"],
+                    ["develop", "--at", "1,2", "--radius", "0"], ["develop", "--at", "1,2", "--radius", "2001"],
+                    ["size", "--entity", "-1", "--factors", "1,1,1"], ["size", "--entity", "1", "--factors", "1,1"],
+                    ["size", "--entity", "1", "--factors", "1,x,1"], ["size", "--entity", "1", "--factors", "1,1,5.1"],
+                    ["size", "--entity", "1", "--factors", "-1,1,1"], ["size", "--entity", "1", "--factors", "nan,1,1"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                grow(*bad)
+        # an option of the plain town before the word would be dropped: refused, never sent as a real command
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.town_grow_args(p.parse_args(["town", "--dry-run", "develop", "--at", "1,2"]))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.town_grow_args(p.parse_args(["town", "--at", "1,2", "size", "--entity", "1", "--factors", "1,1,1"]))
+        for argv in (["town", "develop"], ["town", "size", "--entity", "1"], ["town", "size", "--factors", "1,1,1"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                p.parse_args(argv)
+        self.assertIn("townDevelop", tf3ctl.CHANGES_GAME)
+        self.assertIn("townSize", tf3ctl.CHANGES_GAME)
+        self.assertEqual(tf3ctl.town_grow_timeout("townDevelop", {"count": 200}),
+                         tf3ctl.TOWN_GROW_TIMEOUT_SEC + 200 * tf3ctl.TOWN_DEVELOP_SEC_EACH)
+        self.assertEqual(tf3ctl.town_grow_timeout("townSize", {}), tf3ctl.TOWN_GROW_TIMEOUT_SEC)
+        # the mod reads the point and the factors as lists of numbers, the flags as booleans
+        got = mod_reads(tf3ctl.command_text(9, "townDevelop", grow("develop", "--at", "10,-20", "--streets")[1]))
+        self.assertEqual((got["args"]["at"][1], got["args"]["streets"], got["args"]["count"]), (-20, True, 1))
+        got = mod_reads(tf3ctl.command_text(9, "townSize", grow("size", "--entity", "8", "--factors", "2,1.5,1")[1]))
+        self.assertEqual((got["args"]["entity"], got["args"]["factors"][1]), (8, 1.5))
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args, timeout))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["town", "develop", "--at", "1,2", "--count", "3", "--dry-run"]), 0)
+            self.assertEqual(tf3ctl.main(["town", "size", "--entity", "801", "--factors", "2,1,1", "--update-all"]), 0)
+            self.assertEqual(tf3ctl.main(["town", "--at", "1,2", "--name", "N", "--dry-run"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["town", "develop", "--at", "1,2", "--count", "999"]), 2, "refused before sending")
+            self.assertEqual(tf3ctl.main(["town", "--dry-run", "develop", "--at", "1,2"]), 2)
+        self.assertEqual(sent, [("townDevelop", {"at": [1.0, 2.0], "count": 3, "dryRun": True},
+                                 tf3ctl.town_grow_timeout("townDevelop", {"count": 3})),
+                                ("townSize", {"entity": 801, "factors": [2.0, 1.0, 1.0], "updateAll": True},
+                                 tf3ctl.TOWN_GROW_TIMEOUT_SEC),
+                                ("town", {"at": [1.0, 2.0], "name": "N", "dryRun": True}, tf3ctl.TOWN_TIMEOUT_SEC)])
+
     def test_town_args(self):
         p = tf3ctl.make_parser()
 
@@ -1663,8 +1722,11 @@ class QuitLaunchTest(unittest.TestCase):
                 args(*bad)
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             p.parse_args(["town", "--at", "0,0", "--name", "N", "--needs", "com:fish", "--no-needs"])
-        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            p.parse_args(["town", "--at", "0,0"])
+        # --at and --name are checked in town_args (town develop / size take neither)
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.town_args(p.parse_args(["town", "--at", "0,0"]))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.town_args(p.parse_args(["town", "--name", "N"]))
         self.assertIn("town", tf3ctl.CHANGES_GAME)
         # the mod reads the point as a list of numbers and the name as a string
         got = mod_reads(tf3ctl.command_text(9, "town", args("--at", "10,-20", "--name", "N", "--needs", "com:fish")))

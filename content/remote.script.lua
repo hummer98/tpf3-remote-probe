@@ -1169,6 +1169,10 @@ handlers.town = town.handle
 local debugCmds = (ug_require or require)(MOD .. "::/remote_debug.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })
 for k, fn in pairs(debugCmds.handlers) do handlers[k] = fn end
+-- town develop / town size (remote_town_grow.lua): buildings added at a point, a town's size factors set
+local townGrow = (ug_require or require)(MOD .. "::/remote_town_grow.lua").new({ core = core, answer = answer,
+	fail = fail, appTime = appTime, try = try, say = say })
+for k, fn in pairs(townGrow.handlers) do handlers[k] = fn end
 -- My Mods (remote_modhub.lua): the staging area, validate and the one upload, in the main menu only
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })
@@ -1397,6 +1401,7 @@ local function init()
 		build.reset()
 		terrain.reset()
 		town.reset()
+		townGrow.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1509,6 +1514,7 @@ local function step()
 	terrain.step()
 	town.step()
 	debugCmds.step()
+	townGrow.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()

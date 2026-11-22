@@ -506,6 +506,40 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   外で効くか、`landUse2CargoNeeds` が効くか、需要のコマンド、道路や建物のある場所にエンジンがどう答えるか、
   作った直後の人口。
 
+### 町を1か所で育てる (`town develop`・`town size`: 試験用のセーブだけ)
+
+```sh
+python3 tools/tf3ctl.py town develop --at 120,-40 --count 30 [--streets] [--upgrade] [--radius 250] [--dry-run]
+python3 tools/tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] [--dry-run]
+```
+
+- **試験用のセーブだけで使ってください。** プレイヤーには置けない建物を足します。港や駅の円に、`steps` で何年も
+  進めずに住宅や店を置くためのものです。ゲームを変える命令として、ほかのクライアントに警告が出ます (dry run も)。
+  オプションは語のあとに書きます (`town develop --dry-run ...`)。語の前に普通の `town` のオプションがあると断るので、
+  そこに書いた `--dry-run` が落ちることはありません。
+- `town develop` は `api.cmd.makeTownDevelopAtCmd(api.type.Vec2f.new(x, y), streets, upgrade)` を `--count` 回
+  (1〜200、初期設定 1)、1つずつ送ります。次の命令は、前の命令の callback の1フレームあとです。型の説明は「新しい建物か
+  道路の区間が、その位置に足される」。`--streets` は道路も、`--upgrade` は建物の格上げ (どちらも初期設定は false)。
+- `town size` は `api.cmd.makeTownUpdateSizeCmd(town, { 住宅, 商業, 工業 }, updateAll)` を送ります。町の size factor
+  (それぞれ 0〜5。新しい町は 1) で、バニラの町の成長のスクリプトが送るのと同じ形です。`--update-all` は全部の建物を
+  目標の容量まで上げます。町はエンジンにある、`TOWN` の component を持つものだけです。バニラの町の成長のスクリプトは、
+  町が育つと町自身の factor から大きさを送り直す (上げるだけ) ので、それより低くした factor はまた上げられることが
+  あります。
+- 数え方: 全部の町の建物 (`townBuildingSystem.getTown2BuildingMap`)。種類はそれぞれの `PERSON_CAPACITY` の type
+  (`LandUseType`) で、`stations --catchment` と同じ数え方です: `buildings`・`residential`・`commercial`・
+  `industrial`・`unknownKind`・種類ごとの `capacity`。`town develop` は、全部の町の合計 (`total`) と、bounding box の
+  真ん中がその点から `--radius` (初期設定 250 m、港の円) の中にある建物 (`near`) の `before`・`after`・`delta`、
+  数が変わった町の一覧 `towns` (id と名前) を答えます。`town size` は、その町の `before`・`after`・`delta` と、
+  `townBefore`・`townAfter` (`sizeFactors`・`initialLandUseCapacities`・`developmentActive`・`personCapacities`)。
+  数えるのは最後の callback の5フレームあとで、それより後に建つ建物は入りません。
+- 答えにはほかに `sent`・`succeeded`・`failed`・`failures` (index・success・engineResult、最初の 20 件)・
+  `engineResult` (最初の callback が返したもの)・`waitedSec`・`functions` (関数があるか)。`--dry-run` は何も送らず、
+  数だけを答えます (develop は全部の町)。ゲームに無い (nil の) 関数は呼びません。命令を作る・送るときのエラー、
+  30 秒 callback が来ないとき、全部の命令が断られたとき (`success` が false) はエラーです。`town develop` と
+  `town size` は1つずつで、動いている間の次の命令は断ります。
+- **ゲーム内では未確認** (2026-11-22 に書いたもの): guiUpdate の状態にこれらの関数があり、ゲームの中でエンジンが受けるか、
+  develop がどこにどれだけの速さで建てるか、`--update-all` がすぐに建てるか。
+
 ### 在庫とシミュレーションの歩み (`stock`・`steps`: debug の命令、試験用のセーブだけ)
 
 ```sh
