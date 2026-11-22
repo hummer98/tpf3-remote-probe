@@ -1083,28 +1083,51 @@ M.TERRAIN_LOOKS = { "api.gui.map.setMapSeedText", "api.gui.map.reloadMaterialInd
 	"api.engine.mapgen.createTowns", "api.engine.mapgen.createIndustries", "api.cmd.makeTownCreateCmd",
 	"api.gui.game.isMapEditor", "api.engine.terrain.getHeightAt" }
 
--- "a.b.c" under the global table: its type() ("nil" where a step is missing), nothing called
-function M.typeAt(path, root)
+-- "a.b.c" under the global table: the value there, nil where a step is missing; nothing called
+local function valueAt(path, root)
 	local v = root or _G
 	for part in path:gmatch("[^%.]+") do
-		if type(v) ~= "table" and type(v) ~= "userdata" then return "nil" end
+		if type(v) ~= "table" and type(v) ~= "userdata" then return nil end
 		local ok, nv = pcall(function() return v[part] end)
-		if not ok then return "nil" end
+		if not ok then return nil end
 		v = nv
 	end
-	return type(v)
+	return v
 end
 
--- { [path] = type } for the needs and the looks; second value: the needs missing (a list, empty when all are there)
+-- "a.b.c": its type() ("nil" where a step is missing), nothing called
+function M.typeAt(path, root)
+	return type(valueAt(path, root))
+end
+
+-- can it be called: a function, or a table / userdata with a __call (the engine's api entries are such tables, so
+-- type() says "table" for them). Looked at, never called. Without getmetatable, a table or userdata counts as callable.
+function M.isCallable(v)
+	local t = type(v)
+	if t == "function" then return true end
+	if t ~= "table" and t ~= "userdata" then return false end
+	if type(getmetatable) ~= "function" then return true end
+	local ok, mt = pcall(getmetatable, v)
+	if not ok then return true end
+	if type(mt) ~= "table" then return false end
+	local okC, c = pcall(function() return mt.__call end)
+	return okC and c ~= nil
+end
+
+-- { [path] = type } and { [path] = callable } for the needs and the looks; third value: the needs missing (a list,
+-- empty when all are there). Missing means not callable: a type() of "table" for an api entry is not a miss.
 function M.terrainFunctions(root)
-	local out, missing = {}, {}
+	local out, callable, missing = {}, {}, {}
 	for _, list in ipairs({ M.TERRAIN_NEEDS, M.TERRAIN_LOOKS }) do
-		for _, p in ipairs(list) do out[p] = M.typeAt(p, root) end
+		for _, p in ipairs(list) do
+			local v = valueAt(p, root)
+			out[p], callable[p] = type(v), M.isCallable(v)
+		end
 	end
 	for _, p in ipairs(M.TERRAIN_NEEDS) do
-		if out[p] ~= "function" then missing[#missing + 1] = p end
+		if not callable[p] then missing[#missing + 1] = p end
 	end
-	return out, missing
+	return out, callable, missing
 end
 
 M.TERRAIN_VIAS = { auto = true, update = true, gui = true }

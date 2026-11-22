@@ -7155,7 +7155,7 @@ end)
 test("core.terrainFunctions: type() of each path, nothing called; the needs missing", function()
 	local called = false
 	local root = { api = { engine = { terrain = { makeMapFromGame = function() called = true end } } } }
-	local f, missing = core.terrainFunctions(root)
+	local f, _, missing = core.terrainFunctions(root)
 	eq(f["api.engine.terrain.makeMapFromGame"], "function"); eq(f["api.cmd.makeWorldReplaceTerrainCmd"], "nil")
 	eq(f["api.type.Map.new"], "nil"); eq(called, false)
 	truthy(#missing > 0 and missing[1] == "api.engine.terrain.getBoundingBox", missing[1])
@@ -7185,6 +7185,22 @@ local function hAt(g, x, y)
 	assert(i % 1 == 0 and j % 1 == 0, "not a grid point: " .. x .. "," .. y)
 	return g.heights[j * 129 + i + 1]
 end
+
+test("core.isCallable: a function, a table or userdata with __call; a plain table or a number is not", function()
+	local callable = setmetatable({}, { __call = function() end })
+	local u = newproxy(true); getmetatable(u).__call = function() end
+	eq(core.isCallable(function() end), true); eq(core.isCallable(callable), true); eq(core.isCallable(u), true)
+	eq(core.isCallable({}), false, "a plain table"); eq(core.isCallable(setmetatable({}, {})), false, "a metatable with no __call")
+	eq(core.isCallable(5), false); eq(core.isCallable(nil), false); eq(core.isCallable("f"), false)
+	-- terrainFunctions: a callable table is there (type "table", callable true), a plain table is missing
+	local root = { api = { engine = { terrain = { makeMapFromGame = callable, getBoundingBox = {} } } } }
+	local f, c, missing = core.terrainFunctions(root)
+	eq(f["api.engine.terrain.makeMapFromGame"], "table"); eq(c["api.engine.terrain.makeMapFromGame"], true)
+	eq(c["api.engine.terrain.getBoundingBox"], false); eq(missing[1], "api.engine.terrain.getBoundingBox")
+	local hit = false
+	for _, p in ipairs(missing) do if p == "api.engine.terrain.makeMapFromGame" then hit = true end end
+	eq(hit, false, "a callable table is not missing")
+end)
 
 test("terrain flat: the rect's points at the height, the rest as it was; one replacement, no towns in it; read back", function()
 	local g = terrainGame({ height = function(x, y) return 10 + x / 100 end })
@@ -7260,6 +7276,33 @@ test("terrain: a road, a construction or a town in or by the rect: refused, noth
 	-- clear ground: goes through
 	local d = terrainRun(g, 1013, '{ rect = "0,-200,100,-100", flat = 5 }')
 	truthy(d.ok, d.error); eq(#g.terrainCmds, 1)
+end)
+
+test("terrain with callable api entries (tables with __call): the update way and the recipe's way both send", function()
+	local g = terrainGame({ callableApi = true })
+	local a = terrainRun(g, 1060, '{ rect = "-100,-100,100,100", flat = 25, via = "update" }')
+	truthy(a.ok, a.error)
+	eq(a.via, "update"); eq(a.sent, true); eq(a.success, true); eq(a.readBackOk, true)
+	eq(#g.terrainCmds, 1); eq(hAt(g, 0, 0), 25)
+	eq(a.functionsUpdate["api.engine.terrain.makeMapFromGame"], "table")
+	eq(a.callableUpdate["api.engine.terrain.makeMapFromGame"], true)
+	truthy(not g.crashed, g.crashed)
+	local r = terrainGame({ callableApi = true, reactOnly = true })
+	local b = terrainRun(r, 1061, '{ rect = "-100,-100,100,100", flat = 30 }')
+	truthy(b.ok, b.error)
+	eq(b.via, "gui"); eq(b.sent, true); eq(b.success, true); eq(b.readBackOk, true)
+	eq(#r.terrainCmds, 1); eq(hAt(r, 0, 0), 30)
+	eq(b.callableGui["api.engine.terrain.makeMapFromGame"], true)
+	eq(b.callableUpdate["api.engine.terrain.makeMapFromGame"], false, "nil in the guiUpdate state")
+	truthy(not r.crashed, r.crashed)
+	-- terrainApi: the callable flags of both states
+	send(r, 1062, "terrainApi")
+	frames(r, FIRST + 10)
+	local c = final(r, 1062)
+	truthy(c and c.ok, c and c.error)
+	eq(c.callable.gui["api.engine.terrain.makeMapFromGame"], true); eq(c.callable.update["api.engine.terrain.makeMapFromGame"], false)
+	eq(c.callable.gui["api.type.Map.new"], true); eq(c.needs[1], "api.engine.terrain.makeMapFromGame")
+	eq(#r.terrainCmds, 1, "nothing called by the probe")
 end)
 
 test("terrain --dry-run: the numbers, nothing sent, nothing changed", function()

@@ -153,6 +153,7 @@ function M.new(ctx)
 			mapPoints = rep.mapPoints, rect = r.rect, mode = r.mode,
 			z = r.z, pct = r.pct, base = r.base, blend = r.blend, keepAssets = true, note = NOTE,
 			functionsUpdate = job.here, functionsGui = job.via == "gui" and rep.functions or nil,
+			callableUpdate = job.hereCallable, callableGui = job.via == "gui" and rep.callable or nil,
 			map = rep.map, grid = rep.grid, target = rep.target, before = rep.before, written = rep.written,
 			changed = rep.changed, waterLevel = rep.waterLevel, seedText = rep.seedText,
 			reloadMaterials = rep.reloadMaterials, sent = rep.sent, success = rep.success,
@@ -199,8 +200,8 @@ function M.new(ctx)
 		if not r then return fail(c.id, err) end
 		local found, n, warnings = blockersIn(r.rect)
 		if not found then return fail(c.id, n) end
-		local here, missing = core.terrainFunctions()
-		local job = { id = c.id, r = r, here = here, warnings = warnings, started = appTime() }
+		local here, hereCallable, missing = core.terrainFunctions()
+		local job = { id = c.id, r = r, here = here, hereCallable = hereCallable, warnings = warnings, started = appTime() }
 		if n > 0 then
 			job.via = "none"
 			local out = payload(job)
@@ -233,10 +234,10 @@ function M.new(ctx)
 
 	-- terrainApi (read only): which functions each state has, looked at with type()
 	function T.api(c)
-		local here = core.terrainFunctions()
+		local here, hereCallable = core.terrainFunctions()
 		requests[c.id] = { id = c.id, kind = "probe" }
 		publishRequests()
-		jobs[#jobs + 1] = { id = c.id, probe = true, here = here, started = appTime() }
+		jobs[#jobs + 1] = { id = c.id, probe = true, here = here, hereCallable = hereCallable, started = appTime() }
 	end
 
 	local function stepJob(job)
@@ -245,12 +246,14 @@ function M.new(ctx)
 			if rep and rep.done then
 				retire(job)
 				answer(job.id, { ok = true, cmd = "terrainApi", update = job.here, gui = rep.functions,
+					callable = { update = job.hereCallable, gui = rep.callable },
 					needs = core.array(core.TERRAIN_NEEDS), mapEditor = mapEditor() })
 				return true
 			end
 			if appTime() - job.started > PROBE_SEC then
 				retire(job)
 				answer(job.id, { ok = true, cmd = "terrainApi", update = job.here, gui = nil,
+					callable = { update = job.hereCallable, gui = nil },
 					needs = core.array(core.TERRAIN_NEEDS), mapEditor = mapEditor(),
 					guiNote = string.format("the speed control's recipe did not answer in %d s (is a game on screen?)", PROBE_SEC) })
 				return true

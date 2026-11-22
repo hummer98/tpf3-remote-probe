@@ -53,8 +53,8 @@ end
 -- target, before, written, changed, samples, waterLevel, seedText / reloadMaterials (true / the error), sent; and
 -- success from the command's callback (later). An error raised here is the caller's to report.
 function M.work(r, report)
-	local functions, missing = core.terrainFunctions()
-	report.functions = functions
+	local functions, callable, missing = core.terrainFunctions()
+	report.functions, report.callable = functions, callable
 	if #missing > 0 then error("missing here: " .. table.concat(missing, ", "), 0) end
 	local box = api.engine.terrain.getBoundingBox()
 	-- the map's size first: its whole heightmap becomes a Lua table below
@@ -131,7 +131,7 @@ end
 -- the recipe's side (gui way): a probe looks at the functions there; an apply runs the work
 function M.performGui(req, r, report)
 	if r.kind == "probe" then
-		report.functions = core.terrainFunctions()
+		report.functions, report.callable = core.terrainFunctions()
 		report.done = true
 		return
 	end

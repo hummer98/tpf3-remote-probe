@@ -2067,8 +2067,14 @@ end
 -- Like the engine: GameMap.heightmap hands out a copy on each read (an element written into it is lost; only a whole
 -- table assigned counts), a map that lists towns is an assertion in ReplaceTerrain, so is a heightmap of the wrong
 -- size. g.heights: the engine's heights; g.terrainCmds: each replacement sent; g.seedTexts, g.materialReloads.
+-- spec.callableApi: the api entries the replacement uses are callable tables (a __call, type() says "table"), as the
+-- engine's api entries are: each one calls the function it wraps.
 function M.installTerrain(g, spec)
 	spec = spec or {}
+	local function callableIf(f)
+		if not spec.callableApi then return f end
+		return setmetatable({}, { __call = function(_, ...) return f(...) end })
+	end
 	local tx, ty = (spec.tiles or {})[1] or 2, (spec.tiles or {})[2] or 2
 	local step = 4
 	local w, h = tx * 256 / step + 1, ty * 256 / step + 1
@@ -2134,16 +2140,17 @@ function M.installTerrain(g, spec)
 		end,
 		isOnWater = function(v) return heightAt(v.x, v.y) < level end,
 	}
+	for k, f in pairs(hidden) do hidden[k] = callableIf(f) end
 	local function shown(k) return hidden[k] ~= nil and (not spec.reactOnly or M.inReact) end
 	api.engine.terrain = setmetatable(terrain, { __index = function(_, k) if shown(k) then return hidden[k] end end })
 	local cfg = { terrainConfig = true }
-	api.res.getBaseConfig = function() return { terrain = cfg } end
+	api.res.getBaseConfig = callableIf(function() return { terrain = cfg } end)
 	g.mapCopies = 0
-	api.type.Map = { new = function(m)
+	api.type.Map = { new = callableIf(function(m)
 		if not maps[m] then crash("Map.new: no GameMap") end
 		g.mapCopies = g.mapCopies + 1
 		return newMap(nil, nil, maps[m])
-	end }
+	end) }
 	api.engine.mapgen = { createTowns = function() return { toAdd = {} } end, createIndustries = function() return { toAdd = {} } end }
 	api.gui.map = { setMapSeedText = function(t) g.seedTexts[#g.seedTexts + 1] = t end,
 		reloadMaterialIndexManagerPipeline = function() g.materialReloads = g.materialReloads + 1 end }
@@ -2154,6 +2161,7 @@ function M.installTerrain(g, spec)
 		return { kind = "replaceTerrain", heights = copy(st.heightmap), towns = copy(st.towns), seed = seed,
 			world = world, keepAssets = keepAssets }
 	end
+	replaceCmd = callableIf(replaceCmd)
 	if spec.reactOnly then
 		setmetatable(api.cmd, { __index = function(_, k) if k == "makeWorldReplaceTerrainCmd" and M.inReact then return replaceCmd end end })
 	else
@@ -2170,6 +2178,7 @@ function M.installTerrain(g, spec)
 		if not spec.replaceFails then g.heights = copy(cmd.heights) end
 		if cb and not spec.lostCallback then cb({}, not spec.replaceFails) end
 	end
+	api.cmd.sendCommand = callableIf(api.cmd.sendCommand)
 	-- what stands on the map
 	local ents = spec.entities or {}
 	api.engine.system = api.engine.system or {}
