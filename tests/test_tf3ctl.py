@@ -1120,6 +1120,22 @@ class EndToEndTest(unittest.TestCase):
         self.assertTrue(res["path"].endswith("_0.png"), res)
         self.assertTrue(os.path.exists(res["path"]))
 
+    def test_8_town_connections_and_connect(self):
+        code, res = self.ctl("town", "connections")
+        self.assertEqual(code, 0, res)
+        self.assertEqual([t["id"] for t in res["towns"]], [11, 12])
+        self.assertEqual(res["towns"][0]["industries"][0]["id"], 51, "the coal mine's closest town")
+        self.assertEqual(res["connections"], [])
+        code, res = self.ctl("--owner", "t", "town", "connect", "--build", "--default", "--dry-run")
+        self.assertEqual(code, 0, res)
+        self.assertIs(res["sent"], False)
+        self.assertEqual(res["connectionsSent"], [[0, 1]])
+        code, res = self.ctl("--owner", "t", "town", "connect", "--build", "--default")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["after"]["towns"][0]["connectedTowns"][0]["id"], 12)
+        code, res = self.ctl("town", "connections", "--entity", "51")
+        self.assertEqual(code, 1, "an industry is no town")
+
     def test_9z_newgame_list_dry_run_and_start(self):  # runs last: it replaces the game
         self._newgame()
 
@@ -1138,6 +1154,19 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 0, res)
         self.assertNotEqual(res["hello"]["stamp"], before)
         self.assertEqual(res["hello"]["state"]["date"]["year"], 1930)
+        # app.startGame sends the base's initNewGameFromMap to no script: the tool sends it after the start
+        ci = res["companyInit"]
+        self.assertTrue(ci["ok"], ci)
+        self.assertIs(ci["sent"], True)
+        self.assertFalse(ci["before"]["company"]["initialized"])
+        self.assertEqual(ci["after"]["company"]["basePopulation"], 140, "the fake's residential capacity")
+        code, res = self.ctl("company")
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["company"]["initialized"])
+        code, res = self.ctl("--owner", "t", "company", "init")
+        self.assertEqual(code, 0, res)
+        self.assertIs(res["sent"], False, "already there: nothing sent")
+        self.assertTrue(res["alreadyInitialized"])
         code, res = self.ctl("newgame", "--climate", "arctic", "--dry-run")
         self.assertEqual(code, 1)
         self.assertIn("known:", res["error"])
@@ -1917,6 +1946,82 @@ class QuitLaunchTest(unittest.TestCase):
             code = tf3ctl.main(["town", "--at", "1,2", "--name", "T", "--dry-run"])
         self.assertEqual(code, 0)
         self.assertEqual(sent, [("town", {"at": [1.0, 2.0], "name": "T", "dryRun": True}, tf3ctl.TOWN_TIMEOUT_SEC)])
+
+    def test_company_init_after_newgame_only_for_a_game(self):
+        """replace_game sends companyInit after a newgame, not after the map editor, a load, a dry run, or with
+        company_init False; a failed one is kept in the answer, the start still ok."""
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
+            sent.append(cmd)
+            if cmd == "companyInit":
+                return {"ok": False, "error": "nope"} if fail else {"ok": True, "sent": True}
+            return {"ok": True, "id": 7}
+
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), \
+                unittest.mock.patch.object(tf3ctl, "exchange_dir", lambda: "/nonexistent"), \
+                unittest.mock.patch.object(tf3ctl, "current_stamp", lambda folder: "a"), \
+                unittest.mock.patch.object(tf3ctl, "wait_new_hello", lambda *a: {"stamp": "b"}), \
+                unittest.mock.patch.object(tf3ctl, "remove", lambda *a: None), \
+                unittest.mock.patch.object(tf3ctl, "answer_files", lambda *a: []), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            fail = False
+            res = tf3ctl.replace_game("newgame", {"size": "tiny"}, False, 30)
+            self.assertEqual(sent, ["newgame", "companyInit"])
+            self.assertTrue(res["ok"] and res["companyInit"]["ok"])
+            for cmd, args, only, ci in (("newgame", {"editor": True}, False, True), ("load", {"save": "s"}, False, True),
+                                        ("newgame", {"dryRun": True}, True, True), ("newgame", {}, False, False)):
+                sent.clear()
+                res = tf3ctl.replace_game(cmd, args, only, 30, company_init=ci)
+                self.assertNotIn("companyInit", sent, (cmd, args, ci))
+                self.assertNotIn("companyInit", res)
+            fail = True
+            sent.clear()
+            res = tf3ctl.replace_game("newgame", {}, False, 30)
+            self.assertTrue(res["ok"], "the game started either way")
+            self.assertFalse(res["companyInit"]["ok"])
+            self.assertIn("company init failed (nope)", err.getvalue())
+
+    def test_town_connect_args(self):
+        p = tf3ctl.make_parser()
+
+        def args(*argv):
+            return tf3ctl.town_grow_args(p.parse_args(["town"] + list(argv)))
+        self.assertEqual(args("connections"), ("townConnections", {}))
+        self.assertEqual(args("connections", "--entity", "801"), ("townConnections", {"entity": 801}))
+        self.assertEqual(args("connections", "--index-base", "1"), ("townConnections", {"indexBase": 1}))
+        self.assertEqual(args("connect", "--auto", "--index-base", "0"), ("townConnect", {"auto": True, "indexBase": 0}))
+        self.assertEqual(args("connect", "--auto", "--entity", "801,802"),
+                         ("townConnect", {"auto": True, "entities": [801, 802]}))
+        self.assertEqual(args("connect", "--build", "--pairs", "801:802,802:803", "--default", "--no-keep",
+                              "--index-base", "1", "--dry-run"),
+                         ("townConnect", {"build": True, "pairs": [[801, 802], [802, 803]], "default": True,
+                                          "keep": False, "indexBase": 1, "dryRun": True}))
+        self.assertEqual(args("connect", "--build"), ("townConnect", {"build": True}), "keep left to the mod")
+        for bad in (["connect", "--auto", "--pairs", "1:2"], ["connect", "--auto", "--no-keep"],
+                    ["connect", "--build", "--pairs", "1:1"], ["connect", "--build", "--pairs", "1-2"],
+                    ["connect", "--build", "--entity", "1,1"], ["connect", "--build", "--entity", "x"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                args(*bad)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            p.parse_args(["town", "connect"])  # --auto or --build is required
+        self.assertIn("townConnect", tf3ctl.CHANGES_GAME)
+        self.assertNotIn("townConnections", tf3ctl.CHANGES_GAME)
+
+    def test_company_commands_parse(self):
+        p = tf3ctl.make_parser()
+        ns = p.parse_args(["company"])
+        self.assertIsNone(ns.company_action)
+        ns = p.parse_args(["company", "init", "--dry-run"])
+        self.assertEqual((ns.company_action, ns.company_dry_run), ("init", True))
+        self.assertTrue(p.parse_args(["company", "init", "--force"]).company_force)
+        self.assertTrue(p.parse_args(["newgame", "--no-company-init"]).no_company_init)
+        self.assertTrue(p.parse_args(["restart", "--new", "--no-company-init"]).no_company_init)
+        self.assertFalse(p.parse_args(["launch", "--new"]).no_company_init)
+        self.assertIn("companyInit", tf3ctl.CHANGES_GAME)
+        self.assertNotIn("company", tf3ctl.CHANGES_GAME)
+        self.assertFalse(tf3ctl.changes_game("companyInit", {"dryRun": True}))
+        self.assertTrue(tf3ctl.changes_game("companyInit", {}))
 
     def test_newgame_and_launch_editor(self):
         p = tf3ctl.make_parser()
@@ -3185,6 +3290,8 @@ class LaunchEndToEndTest(unittest.TestCase):
         self.assertTrue(res["launch"]["hello"]["menu"])
         self.assertFalse(res["newgame"]["hello"]["menu"], "the new game's own probe")
         self.assertEqual(res["newgame"]["hello"]["state"]["date"]["year"], 1930)
+        self.assertTrue(res["newgame"]["companyInit"]["ok"], res["newgame"].get("companyInit"))
+        self.assertIs(res["newgame"]["companyInit"]["sent"], True)
         code, res = self.ctl("status")
         self.assertEqual(code, 0, res)
         self.assertFalse(res["menu"])

@@ -46,6 +46,14 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py lines --problems [--line 23]    # + each stop's path problems, platform modes, the line's mode union
   tf3ctl.py industry-workers [--entity 51]  # industries: capacity, sims headed there, last visitors (boost), town
   tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # stocks, rules, construction params
+  tf3ctl.py town connections [--entity 801]   # read only: towns the engine counts as connected, each industry's
+            # town (the closest one)
+  tf3ctl.py town connect --auto | --build [--entity 801,802] [--pairs 801:802] [--default] [--no-keep] [--dry-run]
+            # test saves only: the map editor's Auto-detect connections / Generate (streets to all industries)
+  tf3ctl.py company                         # read only: the base's company progression (basePopulation, level,
+            # ticket price multiplier) and what is missing
+  tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's new-game event (initNewGameFromMap) sent
+            # by hand to a game app.startGame started without it; newgame sends it itself (--no-company-init: not)
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
             # building parcels left and right of a road piece (count, built on, centre, area), whether the piece is in
             # a construction; a rect: each street piece with an end or its middle in it, and totals
@@ -165,7 +173,7 @@ RECENT_SEC = 600  # another owner's game-changing command this recent gets a war
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
-                "stockSet", "steps", "townDevelop", "townSize"}  # window: what the player sees  # poll: only the mod's file reads
+                "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -879,8 +887,27 @@ WAIT_FOR_START_SLOW = ("most likely the loading screen is waiting at the Start G
                        "which only a person can press; the mod takes no commands, not even quit, until then")
 
 
-def replace_game(cmd, args, answer_only, timeout):
-    """load / newgame: the mod acks, the next frame ends its game, and the new game's mod writes a new hello."""
+COMPANY_INIT_TIMEOUT_SEC = 45  # the mod waits 15 s for company.gs's state
+
+
+def company_init_after_newgame():
+    """After a newgame (app.startGame, which sends the base's initNewGameFromMap to no script): company init, so
+    the company level, perks and ticket price multiplier work as after the base's new-game page. Its answer is
+    kept in the newgame's; a failure is a warning, the game is started either way."""
+    try:
+        res = send("companyInit", {}, timeout=COMPANY_INIT_TIMEOUT_SEC)
+    except ToolError as e:
+        res = {"ok": False, "error": str(e)}
+    if not (isinstance(res, dict) and res.get("ok")):
+        why = res.get("error") if isinstance(res, dict) else res
+        print("warning: the new game started, but company init failed (%s): the base's company progression may "
+              "not work (tf3ctl company)" % why, file=sys.stderr)
+    return res
+
+
+def replace_game(cmd, args, answer_only, timeout, company_init=True):
+    """load / newgame: the mod acks, the next frame ends its game, and the new game's mod writes a new hello.
+    A newgame (not the map editor) then gets company init unless company_init is False."""
     folder = exchange_dir()
     before = current_stamp(folder)
     if answer_only:
@@ -897,6 +924,8 @@ def replace_game(cmd, args, answer_only, timeout):
         res = after if after.get("ok") is False else {"ok": True, "plan": ack, "hello": after}
         if held and res.get("ok"):  # a failed loadGame never reached the button
             res = dict(res, note=WAIT_FOR_START_DONE)
+        if cmd == "newgame" and res.get("ok") and company_init and not args.get("editor"):
+            res["companyInit"] = company_init_after_newgame()
         return res
     finally:
         if ack.get("id") is not None:
@@ -933,6 +962,8 @@ def newgame_args(ns):
     return args
 
 
+NO_COMPANY_INIT_HELP = ("leave out company init after the start (the base's initNewGameFromMap, which app.startGame "
+                        "does not send): the game then has no company level, perks or ticket price multiplier")
 TUTORIAL_PARAM = "guideSystemConfig.tutorial"
 TUTORIAL_OFF = 1
 
@@ -1578,7 +1609,8 @@ def cmd_start(ns, restart):
         print("error: " + out["error"], file=sys.stderr)
         return out
     if plan:
-        res = replace_game(plan[0], plan[1], False, ns.timeout)
+        res = replace_game(plan[0], plan[1], False, ns.timeout,
+                           company_init=not getattr(ns, "no_company_init", False))
         out[plan[0]] = res
         out["ok"] = bool(res.get("ok"))
         if res.get("note"):
@@ -1872,6 +1904,13 @@ def town_grow_args(ns):
     if given:
         raise ToolError("town %s: put its options after the word (%s given before it)"
                         % (ns.town_action, ", ".join("--" + o.replace("_", "-") for o in given)))
+    if ns.town_action == "connections":
+        args = {"entity": ns.conn_entity} if ns.conn_entity is not None else {}
+        if ns.conn_index_base is not None:
+            args["indexBase"] = ns.conn_index_base
+        return "townConnections", args
+    if ns.town_action == "connect":
+        return town_connect_args(ns)
     if ns.town_action == "develop":
         try:
             at = [float(x) for x in ns.grow_at.split(",")]
@@ -1907,6 +1946,47 @@ def town_grow_args(ns):
     if ns.grow_dry_run:
         args["dryRun"] = True
     return "townSize", args
+
+
+TOWN_CONNECT_TIMEOUT_SEC = 150  # the mod waits 120 s for the engine's callback (a street network to build)
+
+
+def town_connect_args(ns):
+    """town connect --auto | --build: checked here as the mod checks them. -> ("townConnect", args)"""
+    if ns.conn_auto == ns.conn_build:
+        raise ToolError("give --auto (detect the connections over the roads there are) or --build (streets)")
+    args = {"auto": True} if ns.conn_auto else {"build": True}
+    if ns.conn_entities is not None:
+        try:
+            ids = [int(x) for x in ns.conn_entities.split(",")]
+        except ValueError:
+            raise ToolError("--entity must be town ids separated by commas (entities --kind town)")
+        if not ids or any(i < 0 for i in ids) or len(set(ids)) != len(ids):
+            raise ToolError("--entity must be distinct town ids (0 or more)")
+        args["entities"] = ids
+    if ns.conn_auto and (ns.conn_pairs or ns.conn_default or ns.conn_no_keep):
+        raise ToolError("--pairs, --default and --no-keep go with --build (--auto builds nothing)")
+    if ns.conn_pairs:
+        pairs = []
+        for part in ns.conn_pairs.split(","):
+            a, sep, b = part.partition(":")
+            try:
+                pair = [int(a), int(b)]
+            except ValueError:
+                raise ToolError("--pairs must be town:town,... (town ids, e.g. 801:802)")
+            if not sep or pair[0] == pair[1] or min(pair) < 0:
+                raise ToolError("--pairs must be town:town,... with two different towns (e.g. 801:802)")
+            pairs.append(pair)
+        args["pairs"] = pairs
+    if ns.conn_default:
+        args["default"] = True
+    if ns.conn_no_keep:
+        args["keep"] = False
+    if ns.conn_index_base is not None:
+        args["indexBase"] = ns.conn_index_base
+    if ns.conn_dry_run:
+        args["dryRun"] = True
+    return "townConnect", args
 
 
 def town_grow_timeout(cmd, args):
@@ -3660,6 +3740,7 @@ def make_parser():
     ng.add_argument("--unsafe", action="store_true", help="start it although it crashes the game from inside a save")
     ng.add_argument("--editor", action="store_true", help="the map editor instead of a game (isMapEditor); its mods: "
                     "the official ones (ug_*) and the probe, not the running game's")
+    ng.add_argument("--no-company-init", action="store_true", help=NO_COMPANY_INIT_HELP)
     fr = sub.add_parser("frame", help="the game's picture with UI, from Steam's background recording")
     fr.add_argument("--out", required=True, help="image to write (.png or .jpg)")
     fr.add_argument("--crop", help="WxH+X+Y in the recording's pixels, e.g. 1150x170+2690+1450 for the speed row")
@@ -3780,7 +3861,7 @@ def make_parser():
                     "--in-game, the engine's proposal for the place")
     # town develop / town size: their own options (other dests, so an option given before the word is caught in
     # town_grow_args instead of being dropped)
-    tws = tw.add_subparsers(dest="town_action", required=False, metavar="{develop,size}")
+    tws = tw.add_subparsers(dest="town_action", required=False, metavar="{develop,size,connections,connect}")
     td = tws.add_parser("develop", help="test saves only: new buildings or street segments at a point "
                         "(api.cmd.makeTownDevelopAtCmd), N times one after another; not checked in a game yet")
     td.add_argument("--at", dest="grow_at", required=True, metavar="X,Y",
@@ -3800,6 +3881,30 @@ def make_parser():
     tz.add_argument("--update-all", dest="grow_update_all", action="store_true",
                     help="take every building to its target capacity")
     tz.add_argument("--dry-run", dest="grow_dry_run", action="store_true", help="the town as it is, nothing sent")
+    tcs = tws.add_parser("connections", help="read only: the towns the engine counts as connected (the map's "
+                         "townConnections, between towns) and each industry's town (the closest one)")
+    tcs.add_argument("--entity", dest="conn_entity", type=int, help="one town (entities --kind town)")
+    tcs.add_argument("--index-base", dest="conn_index_base", type=int, choices=(0, 1),
+                     help="how the engine numbers towns in its connections, when the map does not tell")
+    tcn = tws.add_parser("connect", help="test saves only: the map editor's connection commands; --auto detects "
+                         "the connections over the roads there are (builds nothing), --build makes streets between "
+                         "the connected towns and to all industries; not checked in a game yet")
+    tcm = tcn.add_mutually_exclusive_group(required=True)
+    tcm.add_argument("--auto", dest="conn_auto", action="store_true",
+                     help="api.cmd.makeTownAutoDetectConnectionsCmd (the editor's Auto-detect connections)")
+    tcm.add_argument("--build", dest="conn_build", action="store_true",
+                     help="api.cmd.makeTownConnectWithIndustriesCmd (the editor's Generate): the map's connections, "
+                     "--default and --pairs, and streets to every industry (no list of industries goes in)")
+    tcn.add_argument("--entity", dest="conn_entities", metavar="TOWN,...", help="these towns only (default: all)")
+    tcn.add_argument("--pairs", dest="conn_pairs", metavar="A:B,...", help="--build: town pairs to connect (town ids)")
+    tcn.add_argument("--default", dest="conn_default", action="store_true",
+                     help="--build: add the engine's default connections (the editor's Propose Default Connections)")
+    tcn.add_argument("--no-keep", dest="conn_no_keep", action="store_true",
+                     help="--build: remove the street connections there are (keep is the default)")
+    tcn.add_argument("--index-base", dest="conn_index_base", type=int, choices=(0, 1),
+                     help="how the engine numbers towns in its connections, when the map does not tell (--auto: "
+                     "for the answer's before / after only)")
+    tcn.add_argument("--dry-run", dest="conn_dry_run", action="store_true", help="what would be sent, nothing sent")
     wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
                                        "terrain's height (to find a shore for a harbour)")
     wg = wa.add_mutually_exclusive_group(required=True)
@@ -3829,6 +3934,7 @@ def make_parser():
         st.add_argument("--no-industries", action="store_true")
         st.add_argument("--tutorial", action="store_true", help="with --new: start with the base tutorial (off by default)")
         st.add_argument("--editor", action="store_true", help="with --new: the map editor (the official mods and the probe)")
+        st.add_argument("--no-company-init", action="store_true", help="with --new: " + NO_COMPANY_INIT_HELP)
         st.add_argument("--timeout", type=float, default=900, help="for the load or new game")
         st.add_argument("--launch-timeout", type=float, default=LAUNCH_TIMEOUT_SEC)
         st.add_argument("--lang", metavar="CODE", help="start in this language (de, en, ja, ...): profile.lua is "
@@ -3944,6 +4050,16 @@ def make_parser():
     ist.add_argument("--entity", type=int, help="one industry's id (entities --kind industry); none: all")
     ist.add_argument("--grep", help="a part of the name, any case")
     ist.add_argument("--all-params", action="store_true", help="every param of the construction too")
+    co = sub.add_parser("company", help="read only: the base's company progression (company.gs basePopulation, the "
+                        "company's level and ticket price multiplier) and what is missing; company init: test saves "
+                        "only")
+    cos = co.add_subparsers(dest="company_action", required=False, metavar="{init}")
+    ci = cos.add_parser("init", help="test saves only: send the base's new-game event initNewGameFromMap (as the "
+                        "engine does after the base's new-game page) to a game whose company.gs has no basePopulation; "
+                        "it also resets the towns' cached ratings, the subventions and the notifications")
+    ci.add_argument("--dry-run", dest="company_dry_run", action="store_true", help="the states, nothing sent")
+    ci.add_argument("--force", dest="company_force", action="store_true", help="send again after a send that timed "
+                    "out (its event may still run, and a second one resets the progression again)")
     pa = sub.add_parser("parcels", help="read only: the town building parcels on the left and right of a road "
                                         "piece (count, built on, centre, area), from the engine's parcel system; "
                                         "not checked in a game yet")
@@ -4151,7 +4267,8 @@ def main(argv=None):
                 raise ToolError("newgame crashes the game when started from inside a save (StartGame asserts that "
                                 "no game is running): use restart --new. --list and --dry-run still work; --unsafe "
                                 "sends it anyway.")
-            res = replace_game("newgame", newgame_args(ns), ns.dry_run or ns.list, ns.timeout)
+            res = replace_game("newgame", newgame_args(ns), ns.dry_run or ns.list, ns.timeout,
+                               company_init=not ns.no_company_init)
         elif ns.cmd == "screenshot":
             res = cmd_screenshot(ns)
         elif ns.cmd == "entities":
@@ -4222,7 +4339,10 @@ def main(argv=None):
                 res = send("terrain", terrain_args(ns), timeout=TERRAIN_TIMEOUT_SEC)
         elif ns.cmd == "town" and ns.town_action:
             gcmd, gargs = town_grow_args(ns)
-            res = send(gcmd, gargs, timeout=town_grow_timeout(gcmd, gargs))
+            if gcmd == "townConnect":
+                res = send(gcmd, gargs, timeout=TOWN_CONNECT_TIMEOUT_SEC)
+            else:
+                res = send(gcmd, gargs, timeout=town_grow_timeout(gcmd, gargs))
         elif ns.cmd == "town":
             res = send("town", town_args(ns), timeout=TOWN_TIMEOUT_SEC)
         elif ns.cmd == "tool":
@@ -4259,6 +4379,14 @@ def main(argv=None):
             res = send("industryWorkers", industry_workers_args(ns))
         elif ns.cmd == "industry-stocks":
             res = send("industryStocks", industry_stocks_args(ns))
+        elif ns.cmd == "company":
+            if ns.company_action == "init":
+                cargs = {"dryRun": True} if ns.company_dry_run else {}
+                if ns.company_force:
+                    cargs["force"] = True
+                res = send("companyInit", cargs, timeout=COMPANY_INIT_TIMEOUT_SEC)
+            else:
+                res = send("company")
         elif ns.cmd == "parcels":
             res = send("parcels", parcels_args(ns))
         elif ns.cmd == "persons":

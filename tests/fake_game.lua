@@ -1602,6 +1602,8 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_core.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_debug.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_town_grow.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_company.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_town_connect.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_parcels.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_reach.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
@@ -1659,6 +1661,7 @@ function M.new(dir, opts)
 			g.gameTime = ((p.startDate.year - 1900) * 365) * DAY_TICKS
 			g.time = g.time + 5
 			g.menu = false
+			if g.onStart then g.onStart(p) end
 			if self then g.boot() else g.script = nil end
 		end
 		if g.pendingLoad then
@@ -3144,6 +3147,143 @@ function M.installTownGrow(g, opts, spec)
 end
 
 -- real-time mode for the Python end-to-end test
+-- The base's company scripts (remote_company.lua): company.gs and company_progression.gs as GAME_SCRIPT entities
+-- with a .state, and what the base's handlers do with initNewGameFromMap (game_mechanics/company, read 2026-11-23).
+-- spec.company / spec.growth: their states at the start (nil: {} as after app.startGame, which sends no start
+-- event; false: that script not running). spec.delivers (default true): a sent initNewGameFromMap with src "" and
+-- id "" reaches the scripts: company gets basePopulation = the residential capacities summed (as
+-- computeWorldPopulation) and companyStates = {}, growth an empty companyState; spec.growthPlayer: then also the
+-- player's entry (as company_growth's update makes it). spec.refuse: the callback says no success.
+-- spec.mission: hasStartedAsMission. g.companyEvents: every script event sent with id "".
+-- An event of another id, or a name the base has no start for, changes nothing. A newgame (app.startGame)
+-- empties both states again, as such a game has them.
+M.COMPANY_ENTITY, M.GROWTH_ENTITY = 4501, 4502
+function M.installCompany(g, opts, spec)
+	spec = spec or {}
+	local st = { company = spec.company, growth = spec.growth }
+	if st.company == nil then st.company = {} end
+	if st.growth == nil then st.growth = {} end
+	g.companyState = st
+	g.companyEvents = {}
+	-- a new game started (app.startGame): no start event, so empty states again
+	g.onStart = function() st.company, st.growth = {}, {} end
+	local gss = api.engine.system.gameScriptSystem
+	local getEntity = gss.getEntityForGameScript
+	gss.getEntityForGameScript = function(name)
+		if name == "::/game_mechanics/company/company.gs" then return st.company == false and -1 or M.COMPANY_ENTITY end
+		-- the base's util spells it without the slash (company_progression_util.tl)
+		if name == "::game_mechanics/company/company_progression.gs" then
+			return st.growth == false and -1 or M.GROWTH_ENTITY
+		end
+		return getEntity(name)
+	end
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		if kind == "GAME_SCRIPT" and e == M.COMPANY_ENTITY and st.company then return { state = copy(st.company) } end
+		if kind == "GAME_SCRIPT" and e == M.GROWTH_ENTITY and st.growth then return { state = copy(st.growth) } end
+		return getComponent(e, kind)
+	end
+	api.engine.util.hasStartedAsMission = function() return spec.mission == true end
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		-- (fake_tc.lua makes script events of its own kind, tcEvent)
+		local ev = type(cmd) == "table" and (cmd.kind == "scriptEvent" or cmd.kind == "tcEvent")
+		if not ev or cmd.id ~= "" then return send(cmd, cb) end
+		g.commands[#g.commands + 1] = cmd
+		g.companyEvents[#g.companyEvents + 1] = cmd
+		if spec.refuse then if cb then cb(cmd, false) end return end
+		if cmd.src == "" and cmd.name == "initNewGameFromMap" and spec.delivers ~= false then
+			local pop = 0
+			for _, caps in pairs(opts.townCapacities or {}) do pop = pop + (caps[1] or 0) end
+			if st.company then
+				st.company = { companyStates = {}, basePopulation = pop, version = 3 }
+				g.speedup = 1 -- company.script sends makeGameSetSpeedCmd(1) on this event
+			end
+			if st.growth then
+				st.growth = { companyState = {} }
+				if spec.growthPlayer then st.growth.companyState[99] = copy(spec.growthPlayer) end
+			end
+		end
+		if cb then cb(cmd, true) end
+	end
+end
+
+-- The engine's side of town connections / town connect (remote_town_connect.lua). spec.towns: the map's towns in
+-- its order { { entity, name, x, y } }; spec.connections: the map's townConnections, index pairs in spec.base's
+-- numbering (default 0); spec.defaults: what getDefaultTownConnections gives; spec.detect: the connections an auto
+-- detect leaves; spec.closest = { [construction] = town }; spec.missing = { map, defaults, auto, build = true }: nil;
+-- spec.refuse: the callback says no success; spec.noCallback. The commands check what the engine would assert: towns
+-- that are towns, index pairs in range in spec.base's numbering, keep a boolean (anything else: g.crashed). A build
+-- adds its connections to the map (and keep false removes the others). g.townConnectCmds: every command sent.
+function M.installTownConnect(g, opts, spec)
+	spec = spec or {}
+	local base = spec.base or 0
+	local missing = spec.missing or {}
+	local conns = copy(spec.connections or {})
+	g.townConnectCmds = {}
+	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
+	local isTown = {}
+	for _, t in ipairs(spec.towns or {}) do isTown[t.entity] = true end
+	local function mapIndex(e)
+		for i, t in ipairs(spec.towns or {}) do if t.entity == e then return i - 1 + base end end
+	end
+	api.engine.terrain = api.engine.terrain or {}
+	api.engine.terrain.makeMapFromGame = not missing.map and function(h, towns, inds, assets)
+		if h ~= false or towns ~= true then crash("makeMapFromGame: this fake knows (false, true, ...) only") end
+		local list = {}
+		for i, t in ipairs(spec.towns or {}) do
+			list[i] = { existing = t.entity, name = t.name, pos = { x = t.x or 0, y = t.y or 0 } }
+		end
+		return { towns = list, townConnections = copy(conns) }
+	end or nil
+	api.engine.mapgen = api.engine.mapgen or {}
+	api.engine.mapgen.getDefaultTownConnections = not missing.defaults and function(towns)
+		if type(towns) ~= "table" then crash("getDefaultTownConnections: a town list") end
+		return copy(spec.defaults or {})
+	end or nil
+	local sc = api.engine.system.streetConnectorSystem
+	sc.getConstructionClosestTown = function(c) return (spec.closest or {})[c] or -1 end
+	local function townList(list)
+		if type(list) ~= "table" then crash("a list of towns") end
+		for _, e in ipairs(list) do if not isTown[e] then crash("no town " .. tostring(e)) end end
+	end
+	api.cmd.makeTownAutoDetectConnectionsCmd = not missing.auto and function(list)
+		townList(list)
+		return { kind = "townAutoDetect", townEntities = copy(list) }
+	end or nil
+	api.cmd.makeTownConnectWithIndustriesCmd = not missing.build and function(list, cs, keep)
+		townList(list)
+		if type(keep) ~= "boolean" then crash("keep: a boolean") end
+		for _, p in ipairs(cs) do
+			for k = 1, 2 do
+				local i = p[k]
+				if type(i) ~= "number" or i < base or i > #list - 1 + base then crash("connection index out of range: " .. tostring(i)) end
+			end
+		end
+		return { kind = "townConnectBuild", townEntities = copy(list), connections = copy(cs), keep = keep }
+	end or nil
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		if type(cmd) ~= "table" or (cmd.kind ~= "townAutoDetect" and cmd.kind ~= "townConnectBuild") then
+			return send(cmd, cb)
+		end
+		g.commands[#g.commands + 1] = cmd
+		g.townConnectCmds[#g.townConnectCmds + 1] = cmd
+		if spec.noCallback then return end
+		if spec.refuse then if cb then cb(cmd, false) end return end
+		if cmd.kind == "townAutoDetect" then
+			conns = copy(spec.detect or conns)
+		else
+			if not cmd.keep then conns = {} end
+			for _, p in ipairs(cmd.connections) do
+				local a, b = cmd.townEntities[p[1] + 1 - base], cmd.townEntities[p[2] + 1 - base]
+				conns[#conns + 1] = { mapIndex(a), mapIndex(b) }
+			end
+		end
+		if cb then cb(cmd, true) end
+	end
+end
+
 if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 	local ffi = require "ffi"
 	ffi.cdef "int usleep(unsigned int usec);"
@@ -3207,6 +3347,12 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			["::/infrastructure/street/town/town_new_medium.street_template"] = { yearFrom = 1940, cost = 20 } } })
 	-- the debug commands (stock set, steps): the industry's stocks, 200 ms of game time a step
 	M.installDebug(g, { stepsPerFrame = 5 })
+	-- the base's company scripts: a save with its state (basePopulation 500); a newgame has none until company init
+	-- town connections: the two towns in the map's order, not connected; the coal mine is Emsworth's
+	M.installTownConnect(g, {}, { towns = { { entity = 11, name = "Emsworth" }, { entity = 12, name = "Emsworth Bay", x = 2000 } },
+		connections = {}, defaults = { { 0, 1 } }, closest = { [5100] = 11 } })
+	M.installCompany(g, { townCapacities = { [11] = { 140, 20, 30 } } },
+		{ company = { basePopulation = 500, companyStates = {}, version = 3 }, growth = { companyState = {} } })
 	-- parcels: a street 9010 with two parcels on the left (one built on) and one on the right, and a piece 9011 of
 	-- construction 9900 with none, far from the build fake's pieces (y 5000)
 	M.installParcels(g, { nodes = { [9001] = { 0, 5000, 0 }, [9002] = { 100, 5000, 0 }, [9003] = { 200, 5000, 0 } },

@@ -107,6 +107,36 @@ their default settings. `status` answers `mapEditor` (`gui`: `api.gui.game.isMap
 `isMapEditor`). **Not checked in game yet** (written 2026-11-22): whether the editor opens this way, and whether
 the probe answers inside it.
 
+`newgame` (and `launch` / `restart --new`) start with `app.startGame`, which the type calls "a new test game". It
+sends the scripts no `initNewGameFromMap`, the event a game started from the base's new-game page gets
+(`app.startGame2` with a map its preview widget generated): without it the base's company progression never starts
+(no company rank, no perks, no ticket price multiplier; the bottom-left company button shows "Achievements" instead
+of the rank, and `company_growth.script` logs an error at every ticket price). So after a new game (not the map
+editor) the tool sends `company init` (below) and keeps its answer as `companyInit`; `--no-company-init` leaves it
+out. A failed `company init` is a warning: the game is started either way. `app.startGame2` is not used: a generated
+map for it comes only from the menu's map preview widget (no Lua call runs a terrain generator into a map), and a
+flat map made in Lua would lose the generator and the generated towns and industries.
+
+```
+python3 tools/tf3ctl.py company                       # read only: the base's company progression and what is missing
+python3 tools/tf3ctl.py company init [--dry-run] [--force]   # test saves only: send the base's initNewGameFromMap by hand
+```
+
+- `company` reads the state of `::/game_mechanics/company/company.gs` (`basePopulation`, `version`, `companies`)
+  and of `company_progression.gs` (the player's `level`, `potentialLevel`, `experience`, `ticketPriceMultiplier`),
+  the world population as the base counts it, `rankButton` (`rank` or `achievements`: what the company button
+  shows; the rank only for an entry with experience above 0) and a one-line `diagnosis`.
+- `company init` sends `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` when `company.gs` has
+  no `basePopulation`, and answers once it has one (`before` / `after`), at most 15 s. Already set: nothing is sent
+  (`alreadyInitialized`). Refused in the map editor and in a mission. In the base this event also resets the
+  towns' cached ratings, the subventions and the notifications, sets the game speed to 1 (as a base new game starts) and the welcome flag,
+  and other mods' scripts may listen to it: test saves only (a game `newgame` started and saves made from one).
+  After a send that timed out, another is refused unless `--force`: its event may still run later, and a second
+  one would reset the progression again. A map with no town population gets `basePopulation` 0, and the base
+  then never gives a rank (as in the base).
+- **Not checked in game yet** (written 2026-11-23): whether a sent event reaches the scripts at all (they subscribe
+  to event names, and none of the base's subscribes to this one), and whether the game runs it while paused.
+
 `--param mod:key=index` takes the 1-based index into that setting's `values` in the mod's `mod.json` (as mod
 presets store them); base game settings are `:key=index`. This mod always stays enabled: without it nobody would
 answer.
@@ -591,6 +621,35 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   whether it works outside the map editor, whether `landUse2CargoNeeds` takes, the needs command, how the engine
   answers a place with roads or buildings on it, the population right after.
 
+### Town connections (`town connections`, `town connect`: test saves only)
+
+```
+python3 tools/tf3ctl.py town connections [--entity 801] [--index-base 0|1]   # read only
+python3 tools/tf3ctl.py town connect --auto [--entity 801,802] [--dry-run]
+python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802] [--default] [--no-keep] [--dry-run]
+```
+
+- What the engine has (api types and the base map editor's Connections tab, read 2026-11-23): connections are
+  between towns, not between a town and an industry. A map's `townConnections` (from
+  `api.engine.terrain.makeMapFromGame(false, true, false, false)`, as the editor reads them) are pairs of indices
+  into the map's towns. An industry's town is the closest one (`streetConnectorSystem.getConstructionClosestTown`
+  of its construction).
+- `town connections` answers each town (`id`, `name`, `mapIndex`, `connectedTowns`, `industries`: those whose
+  closest town it is), `industriesWithoutTown`, the raw `connections` with the towns they resolve to, and
+  `indexBase` (0 or 1: how the engine numbers the towns, when the map's own pairs tell it).
+- `town connect --auto` sends `api.cmd.makeTownAutoDetectConnectionsCmd(towns)` (the editor's "Auto-detect
+  connections": connections over the roads there are; it builds nothing).
+- `town connect --build` sends `api.cmd.makeTownConnectWithIndustriesCmd(towns, connections, keep)` (the editor's
+  "Generate"): streets between the connected towns and to **all** industries; no list of industries goes in.
+  The connections are the map's, plus the engine's default ones with `--default` (the editor's "Propose Default
+  Connections"), plus `--pairs` (town ids), re-numbered for the towns sent. Keep is on; `--no-keep` removes the
+  street connections there are. With none of `--entity`, `--default` and `--pairs` the map's towns and pairs go as
+  they are (`asMap`, as the editor sends them); otherwise, when the map does not tell the numbering,
+  `--index-base 0|1` is needed (also taken by `town connections` and `--auto`, for the pairs in the answer).
+- Both answer `before` / `after` (as `town connections`) and wait at most 120 s for the engine's callback.
+- **Not checked in game yet** (written 2026-11-23): whether these work in a game outside the map editor, the
+  numbering, and what `--build` does to the roads there are.
+
 ### Growing a town at a point (`town develop`, `town size`: test saves only)
 
 ```sh
@@ -1063,6 +1122,8 @@ Not checked yet:
   `stations --catchment`.
 - `terrain`, `terrain --probe-api` and `newgame --editor`, entirely (see "The ground in a rectangle").
 - `town`, entirely (see "One town").
+- `town connections` and `town connect`, entirely (see "Town connections").
+- `company` and `company init`, entirely (see the new game's company progression under "Saves and new games").
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `parcels`, entirely (read only, see "Town building parcels along a road").
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.

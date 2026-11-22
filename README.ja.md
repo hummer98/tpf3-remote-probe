@@ -105,6 +105,35 @@ python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-indust
 初期値。`status` は `mapEditor` を答えます (`gui`: `api.gui.game.isMapEditor()`、`modParams`: 本体の `isMapEditor`)。
 **ゲーム内では未確認** (2026-11-22 に書いたもの): この形でエディタが開くか、エディタの中で probe が答えるか。
 
+`newgame` (と `launch` / `restart --new`) は `app.startGame` で始めます。型の説明では「試験用の新しいゲーム」です。
+これはスクリプトに `initNewGameFromMap` を送りません。本体の新しいゲームの画面から始めたゲーム (プレビューの部品が
+作った地図を `app.startGame2` に渡す) が受ける出来事です。これが無いと本体の会社の成長が始まりません (会社のランク・
+特典・運賃の倍率が無く、左下の会社のボタンがランクの代わりに「実績」と出て、`company_growth.script` が運賃のたびに
+エラーを出す)。そこで新しいゲーム (マップエディタでないもの) のあと、ツールが `company init` (下) を送り、その答えを
+`companyInit` に入れます。`--no-company-init` で送りません。`company init` が失敗しても警告だけで、ゲームは始まった
+ままです。`app.startGame2` を使わないのは、生成した地図はメニューの地図のプレビューの部品しか作れず (地形の生成器で
+地図を作る Lua の関数はありません)、Lua で作れる平らな地図では generator と生成される町・産業が失われるためです。
+
+```
+python3 tools/tf3ctl.py company                       # 読むだけ: 本体の会社の成長の状態と、足りないもの
+python3 tools/tf3ctl.py company init [--dry-run] [--force]   # 試験用のセーブだけ: 本体の initNewGameFromMap を手で送る
+```
+
+- `company` は `::/game_mechanics/company/company.gs` の状態 (`basePopulation`・`version`・`companies`) と
+  `company_progression.gs` の状態 (プレイヤーの `level`・`potentialLevel`・`experience`・`ticketPriceMultiplier`)、
+  本体の数え方の世界の人口、`rankButton` (`rank` か `achievements`: 会社のボタンに出るもの。経験が 0 より多い
+  記録があるときだけランク)、1 行の `diagnosis` を答えます。
+- `company init` は、`company.gs` に `basePopulation` が無いときに
+  `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` を送り、それが入ったら答えます (`before`・
+  `after`、最長 15 秒)。入っていれば何も送りません (`alreadyInitialized`)。マップエディタとミッションでは断ります。
+  本体ではこの出来事で町の評価の控え・補助金・通知も初めからになり、ゲームの速度が 1 になり (本体の新しいゲームの
+  始まりと同じ)、ようこその印も立ちます。ほかの MOD のスクリプトも受けることがあるので、試験用のセーブだけで使います
+  (`newgame` で始めたゲームと、そこから作ったセーブ)。待ちきれずに終わった送信のあとは、`--force` なしの次の送信を
+  断ります (その出来事があとで動くことがあり、二度目で会社の成長がまた初めからになるため)。町の人口の無い地図では
+  `basePopulation` が 0 になり、本体はランクを出しません (本体と同じ)。
+- **ゲーム内では未確認** (2026-11-23 に書いたもの): 送った出来事がスクリプトに届くか (スクリプトは出来事の名前で
+  受け取りを登録し、本体のどれもこの名前を登録していない)、止めているときにも処理されるか。
+
 `--param mod:key=index` の index は、その MOD の `mod.json` にある設定の `values` の 1 始まりの番号です (MOD
 プリセットと同じ形)。本体の設定は `:key=index`。この MOD は常に有効のまま残ります (外すと誰も答えなくなるため)。
 
@@ -554,6 +583,34 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   外で効くか、`landUse2CargoNeeds` が効くか、需要のコマンド、道路や建物のある場所にエンジンがどう答えるか、
   作った直後の人口。
 
+### 町のつながり (`town connections`・`town connect`: 試験用のセーブだけ)
+
+```
+python3 tools/tf3ctl.py town connections [--entity 801] [--index-base 0|1]   # 読むだけ
+python3 tools/tf3ctl.py town connect --auto [--entity 801,802] [--dry-run]
+python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802] [--default] [--no-keep] [--dry-run]
+```
+
+- エンジンにあるもの (api の型と本体のマップエディタの Connections のタブ、2026-11-23 に読んだ): つながりは町と町の間で、
+  町と産業の間ではありません。地図の `townConnections` (`api.engine.terrain.makeMapFromGame(false, true, false, false)`
+  から。エディタと同じ読み方) は、地図の町の一覧の番号の組です。産業の町は一番近い町です (産業の construction の
+  `streetConnectorSystem.getConstructionClosestTown`)。
+- `town connections` は町ごとに (`id`・`name`・`mapIndex`・`connectedTowns`・`industries`: その町が一番近い産業)、
+  `industriesWithoutTown`、生の `connections` とそれが指す町、`indexBase` (0 か 1: エンジンが町に振る番号の始まり。
+  地図の組から分かるとき) を答えます。
+- `town connect --auto` は `api.cmd.makeTownAutoDetectConnectionsCmd(町)` を送ります (エディタの「Auto-detect connections」:
+  今ある道路でのつながりを見つける。何も建てません)。
+- `town connect --build` は `api.cmd.makeTownConnectWithIndustriesCmd(町, つながり, keep)` を送ります (エディタの
+  「Generate」): つながった町の間と、**すべての**産業へ道路を作ります。産業の一覧は渡せません。つながりは地図のものに、
+  `--default` でエンジンの初期のつながり (エディタの「Propose Default Connections」)、`--pairs` (町の id) を足し、送る町に合わせて
+  番号を振り直します。keep は入り、`--no-keep` で今ある道路のつながりを消します。地図から番号の始まりが分からない
+  ときは `--index-base 0|1` が要ります (`town connections` と `--auto` も、答えの組を町に直すために受けます)。
+  `--entity`・`--default`・`--pairs` のどれも無いときは、地図の町と組をそのまま送るので (`asMap`、エディタと同じ)、
+  番号の始まりは要りません。
+- どちらも `before`・`after` (`town connections` と同じ形) を答え、エンジンの callback を最長 120 秒待ちます。
+- **ゲーム内では未確認** (2026-11-23 に書いたもの): マップエディタの外のゲームで動くか、番号の振り方、`--build` が
+  今ある道路に何をするか。
+
 ### 町を1か所で育てる (`town develop`・`town size`: 試験用のセーブだけ)
 
 ```sh
@@ -984,6 +1041,8 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - gui で買った車両を MOD が自分で路線に送ることと、断られたときの理由。`lines --problems`。`stations --catchment`。
 - `terrain`・`terrain --probe-api`・`newgame --editor` は全部 (「長方形の範囲の地面」を参照)。
 - `town` は全部 (「町を1つ」を参照)。
+- `town connections` と `town connect` は全部 (「町のつながり」を参照)。
+- `company` と `company init` は全部 (「セーブと新しいゲーム」の会社の成長)。
 - `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
 - `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
