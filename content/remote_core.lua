@@ -1073,8 +1073,11 @@ function M.roadRequest(args)
 	if args.engineCheck == true and args.dryRun ~= true then
 		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
 	end
+	if args.removeFields ~= nil and type(args.removeFields) ~= "boolean" then
+		return nil, "removeFields must be true or false"
+	end
 	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true,
-		engineCheck = args.engineCheck == true }
+		engineCheck = args.engineCheck == true, removeFields = args.removeFields == true }
 end
 
 -- road --inspect-node (read only): one node's id

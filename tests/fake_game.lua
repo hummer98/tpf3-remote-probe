@@ -1999,7 +1999,8 @@ function M.installBuild(g, spec)
 	end
 
 	-- what the engine makes of a proposal: errors, collisions, cost (and the constructions to add, as plain values)
-	local function evaluate(p, dry)
+	-- ctx: the proposal's Context (its gatherFields: a field in the way is removed, a warning, instead of a collision)
+	local function evaluate(p, dry, ctx)
 		local st = getmetatable(p).store
 		local adds, removes = {}, copy(st.constructionsToRemove or {})
 		local data = { errorState = { critical = false, messages = {}, warnings = {} }, collisionInfo = { collisionEntities = {} },
@@ -2078,6 +2079,20 @@ function M.installBuild(g, spec)
 				table.insert(data.errorState.messages, "Collision")
 				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
 			end
+			-- spec.fields(x, y) -> { field entities } in the piece's way: with the Context's gatherFields they are
+			-- removed (a warning: "N fields will be removed", the game's "3 個の畑が取り除かれます"), else a collision
+			-- with each (2026-11-23 in a game: a forest's fields, refused with gatherFields off)
+			local fl = spec.fields and spec.fields((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
+			if fl and #fl > 0 then
+				if ctx and ctx.gatherFields then
+					table.insert(data.errorState.warnings, #fl .. " fields will be removed")
+					if not dry then g.fieldsRemoved = (g.fieldsRemoved or 0) + #fl end
+				else
+					data.errorState.critical = true
+					table.insert(data.errorState.messages, "Collision")
+					for _, f in ipairs(fl) do table.insert(data.collisionInfo.collisionEntities, { entity = f }) end
+				end
+			end
 		end
 		for _, ce in ipairs(st.constructionsToAdd or {}) do
 			local c = cons[ce.fileName]
@@ -2112,7 +2127,9 @@ function M.installBuild(g, spec)
 		if spec.proposalDataTwoArgs and ctx == nil then error("bad argument #2 to 'makeProposalData' (Context expected)") end
 		if type(p) ~= "userdata" then crash("makeProposalData: no proposal") end
 		-- (nothing built, nothing paid: plain values, as the engine's ProposalData reads)
-		return (evaluate(p, true))
+		-- (the proposal alone: the GUI's own context, which gathers fields, as the game's answer read: a warning
+		-- that fields go, where the build with gatherFields off collided, 2026-11-23; with a Context: that one)
+		return (evaluate(p, true, ctx or { gatherFields = true }))
 	end }
 	api.type.Box3 = { new = function(lo, hi) return { min = lo, max = hi } end }
 	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
@@ -2175,7 +2192,7 @@ function M.installBuild(g, spec)
 	end
 
 	local function apply(cmd)
-		local data, adds, removes = evaluate(cmd.proposal)
+		local data, adds, removes = evaluate(cmd.proposal, false, cmd.context)
 		if data.errorState.critical and not cmd.ignoreErrors then return false, data, {} end
 		-- a construction whose own script fails its check (scriptFails): the engine logs "Error during construction
 		-- update" and still says success, with no errors, no entities, nothing paid and nothing built (2026-11-22, a

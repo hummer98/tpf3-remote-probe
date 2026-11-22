@@ -474,6 +474,14 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road read
   ways, the answer is the probe's own plan (`checked: false`, `engineCheck: "not available: ..."`). The engine's
   evaluation runs native code a `pcall` cannot guard (an assertion there would end the game), so tf3ctl counts
   this as changing the game: ask for the game first, test saves only.
+  `verdict` is `buildable`, `buildable with warnings` or `refused`. With the proposal alone the engine judges it
+  in its own context, not the build's (`engineContext` says which): that one gathers farm fields, so a field in
+  the way is only a warning ("3 fields will be removed") where the build without `--remove-fields` collides with
+  it (2026-11-23, a road by a forest). Then the answer has a `caution`.
+- `--remove-fields` lets the road take farm fields in its way: the build's context gathers fields
+  (`gatherFields`, as Track Connector's does; buildings are still not gathered), so the engine removes them and
+  builds. Anything else in the way (buildings, tracks, constructions) is still refused. A road refused for a
+  collision without it gets a `hint`. Changes the game: test saves only.
 - `--inspect-node ID` (read only, alone): the node's position, `streetSegments` (each piece's `edge`, `node0` /
   `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
   (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,

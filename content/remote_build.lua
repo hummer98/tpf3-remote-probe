@@ -187,11 +187,15 @@ function M.new(ctx)
 		return api.type.Mat4f.new(V(c, s, 0, 0), V(-s, c, 0, 0), V(0, 0, 1, 0), V(x, y, z, 1))
 	end
 
-	local function context()
+	-- fields: let the proposal take farm fields in its way (gatherFields, as Track Connector's and the road upgrade
+	-- brush's contexts do; the base's tools warn "fields will be removed" and build). Without it a field in the
+	-- way is a collision: a road by a forest was refused so although the dry run had said buildable with that
+	-- warning (2026-11-23)
+	local function context(fields)
 		local c = api.type.Context.new()
 		c.player = player()
 		-- nothing of the player's or a town's is knocked down for it: what is in the way is a refusal
-		c.cleanupStreetGraph, c.gatherBuildings, c.gatherFields = false, false, false
+		c.cleanupStreetGraph, c.gatherBuildings, c.gatherFields = false, false, fields == true
 		return c
 	end
 
@@ -632,6 +636,11 @@ function M.new(ctx)
 			out.ok = false
 			local msgs = out.errors and #out.errors > 0 and table.concat(out.errors, "; ") or "no message"
 			out.error = "the engine refused it: " .. msgs
+			if job.kind == "road" and not out.removeFields and out.collisions then
+				-- (what a dry run's buildable with warnings meant, 2026-11-23: fields in the way)
+				out.hint = "a collision: if it is with farm fields (road --dry-run --engine-check warns that fields will " ..
+					"be removed), --remove-fields lets them go; buildings and tracks are still refused"
+			end
 			say("build " .. job.kind .. " (command " .. job.id .. "): refused: " .. msgs, 1)
 			return answer(job.id, out, "error")
 		end
@@ -1111,14 +1120,14 @@ function M.new(ctx)
 	-- Connector calls it in its game script with the proposal and a Context, tried second here). Never from a recipe's body (api.util /
 	-- api.gui there killed the game, BUG.md 2026-11-15). -> the verdict (as a build's) and the form taken, or nil and
 	-- why (not there, or it raised both ways)
-	local function engineCheck(sp)
+	local function engineCheck(sp, fields)
 		local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
 		if mpd == nil then return nil, "api.engine.util.proposal.makeProposalData is not there" end
 		-- (the proposal alone first: the form Overpass Builder uses on the GUI thread; with a Context only after)
 		local ok, data = pcall(mpd, sp)
 		if ok and data ~= nil then return verdict(data), "SimpleProposal" end
 		local first = ok and "nothing given back" or tostring(data)
-		ok, data = pcall(mpd, sp, context())
+		ok, data = pcall(mpd, sp, context(fields))
 		if ok and data ~= nil then return verdict(data), "SimpleProposal, Context" end
 		return nil, "makeProposalData (proposal): " .. first .. "; (proposal, context): " ..
 			(ok and "nothing given back" or tostring(data))
@@ -1250,7 +1259,7 @@ function M.new(ctx)
 		if r.dryRun then
 			-- (engineCheck) the same proposal a build sends, asked of the engine and not sent
 			out.dryRun = true
-			local v, form = engineCheck(sp)
+			local v, form = engineCheck(sp, r.removeFields)
 			if not v then
 				out.ok, out.checked = true, false
 				out.engineCheck = "not available: " .. tostring(form)
@@ -1262,6 +1271,21 @@ function M.new(ctx)
 			for k, val in pairs(v) do out[k] = val end
 			out.checked, out.engineCheck = true, "makeProposalData (" .. form .. ")"
 			out.buildable = not v.critical
+			local warned = v.warnings ~= nil and #v.warnings > 0
+			out.verdict = v.critical and "refused" or (warned and "buildable with warnings" or "buildable")
+			-- the proposal alone is judged in the engine's own context, not the build's: that one gathers fields
+			-- (its warning "fields will be removed") where the build, without --remove-fields, does not and collides
+			if form == "SimpleProposal" then
+				out.engineContext = "the engine's own (the proposal alone): not the build's, whose gatherFields is " ..
+					tostring(r.removeFields == true)
+				if warned and not r.removeFields then
+					out.caution = "the engine warned (" .. table.concat(v.warnings, "; ") .. ") in its own context; the " ..
+						"build gathers no fields and may be refused for what a warning lets through here (a field " ..
+						"in the way: a collision). If the warning is that fields will be removed, give --remove-fields"
+				end
+			else
+				out.engineContext = "the build's"
+			end
 			out.balance = balance()
 			if v.critical then
 				out.ok = false
@@ -1272,9 +1296,10 @@ function M.new(ctx)
 			out.ok = true
 			return answer(c.id, out)
 		end
+		out.removeFields = r.removeFields or nil
 		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
 			piecesBefore = piecesAround(a, b) }
-		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(), false, true), function(data, success, entities)
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields), false, true), function(data, success, entities)
 			local ok, cerr = pcall(function()
 				local v = verdict(try(function() return data.resultProposalData end))
 				local list = ids(try(function() return data.resultEntities end))

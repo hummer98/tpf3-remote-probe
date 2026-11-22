@@ -8435,6 +8435,58 @@ test("road --dry-run: the plan, nothing sent; no ids in the result or no callbac
 end)
 
 -- road --dry-run asks the engine (makeProposalData) about the very proposal a build would send
+-- 2026-11-23 in a game: a road by a forest. The dry run with --engine-check said buildable with the warning
+-- "3 個の畑が取り除かれます" (3 fields will be removed); the build was refused (a collision with the forest's new
+-- entities): the dry run (the proposal alone) was judged in the engine's own context, the build in the probe's,
+-- which gathered no fields. --remove-fields gathers them (as Track Connector's context does); anything else in the
+-- way still refuses
+test("road --remove-fields: fields in the way go (gatherFields); without it a collision with a hint; others still refuse", function()
+	local FIELDS = { 9594, 9598, 9600 }
+	local function world(extra)
+		local spec = { height = function() return 0 end,
+			fields = function(x, y) if y > 1000 and y < 1200 and x < 1000 then return FIELDS end end,
+			blocked = function(x, y) return x > 5000 and 4343 or nil end }
+		for k, v in pairs(extra or {}) do spec[k] = v end
+		return roadWorld(spec)
+	end
+	local g = world()
+	-- the dry run (the proposal alone: the engine's own context gathers fields): buildable with warnings, and why
+	-- the build may differ
+	local a = roadRun(g, 1120, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.buildable, true); eq(a.verdict, "buildable with warnings")
+	eq(a.warnings[1], "3 fields will be removed")
+	truthy(a.engineContext:find("not the build's, whose gatherFields is false", 1, true), a.engineContext)
+	truthy(a.caution:find("--remove-fields", 1, true), a.caution)
+	-- the build without it: refused, the fields among the collisions, a hint; nothing removed
+	a = roadRun(g, 1121, '{ from = "60,1000", to = "60,1129.5" }')
+	eq(a.ok, false); truthy(a.error:find("Collision", 1, true), a.error); eq(a.collisions[1], 9594)
+	truthy(tostring(a.hint):find("--remove-fields", 1, true), tostring(a.hint)); eq(g.fieldsRemoved, nil)
+	eq(g.buildCmds[#g.buildCmds].context.gatherFields, false, "no fields gathered by default")
+	-- with it: the dry run without the caution, then built, the fields gone
+	a = roadRun(g, 1122, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true, removeFields = true }')
+	truthy(a.ok, a.error); eq(a.verdict, "buildable with warnings"); eq(a.caution, nil)
+	a = roadRun(g, 1123, '{ from = "60,1000", to = "60,1129.5", removeFields = true }')
+	truthy(a.ok, a.error); eq(a.removeFields, true); eq(g.fieldsRemoved, 3); truthy(a.edge)
+	eq(g.buildCmds[#g.buildCmds].context.gatherFields, true); eq(g.buildCmds[#g.buildCmds].context.gatherBuildings, false)
+	-- something else in the way: still refused with it, and no hint
+	a = roadRun(g, 1124, '{ from = "5100,0", to = "5200,0", removeFields = true }')
+	eq(a.ok, false); eq(a.collisions[1], 4343); eq(a.hint, nil)
+	-- no fields and no warnings: buildable
+	a = roadRun(g, 1125, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.verdict, "buildable"); eq(a.caution, nil)
+	-- the form with a Context (the build's own): refused without --remove-fields, as the build would be
+	g = world({ proposalDataTwoArgs = true })
+	a = roadRun(g, 1126, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true }')
+	eq(a.ok, false); eq(a.verdict, "refused"); eq(a.engineContext, "the build's"); eq(a.collisions[1], 9594)
+	a = roadRun(g, 1127, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true, removeFields = true }')
+	truthy(a.ok, a.error); eq(a.verdict, "buildable with warnings")
+	-- the request: a boolean only
+	local no, why = core.roadRequest({ from = "0,0", to = "10,0", removeFields = "yes" })
+	eq(no, nil); truthy(why:find("removeFields must be", 1, true), why)
+	eq(core.roadRequest({ from = "0,0", to = "10,0" }).removeFields, false)
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on the proposal a build sends; refused ones; nothing sent", function()
 	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end })
 	local a = roadRun(g, 1010, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')

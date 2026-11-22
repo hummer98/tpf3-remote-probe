@@ -448,6 +448,13 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの nod
   (`checked: false`、`engineCheck: "not available: ..."`)。エンジンの評価は pcall で守れないネイティブのコードを通る
   (そこで assertion が出るとゲームが終わる) ので、tf3ctl はこれをゲームを変える命令に数えます。統括から時間をもらって、
   テスト用のセーブでだけ使ってください。
+  `verdict` は `buildable`・`buildable with warnings`・`refused` のどれかです。proposal だけの形では、エンジンは build の
+  context ではなく、自分の context で判定します (どちらかは `engineContext`)。その context は畑を取り除くので、道に畑がある
+  ときは警告 (「3 個の畑が取り除かれます」) だけになりますが、`--remove-fields` の無い build ではその畑と衝突します
+  (2026-11-23、伐採場のそばの道路)。そのときは答えに `caution` が付きます。
+- `--remove-fields`: 道にある畑を取り除いて建てます。build の context で畑を集めます (`gatherFields`。Track Connector と
+  同じ。建物は集めない)。エンジンが畑を取り除いて建てます。畑以外 (建物・線路・建物の construction) は、今までどおり断り
+  ます。これを付けずに衝突で断られた道路には `hint` が付きます。ゲームを変えるので、テスト用のセーブでだけ使ってください。
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ
