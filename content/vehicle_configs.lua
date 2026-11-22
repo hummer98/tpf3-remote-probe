@@ -59,9 +59,11 @@ end
 
 -- multiple unit muId (api.res.multipleUnitRep) as the store's cart opens it (vehicle_store_window.tl,
 -- addVehicleToCart): each of mu.vehicles in order, its model by api.res.modelRep.find(name), turned round when
--- forward is false. Returns { id, fileName (multipleUnitRep.getName: what the store puts in muFileNames), name,
+-- forward is false. Returns { id, fileName (the unit's name: what the store puts in muFileNames), name,
 -- parts = { { modelId, forward, name } } } or nil and why. Everything is checked here, before anything is sent:
 -- a part the engine cannot build would be its assertion, not a refusal.
+-- muFileNames gets getName's name only, as the store puts it in (vehicle_store_window.tl, elemStatic.path): a
+-- unit without one is refused, since the store could not send it either.
 function M.muParts(muId)
 	local okM, mu = pcall(function() return api.res.multipleUnitRep.get(muId) end)
 	if not okM or mu == nil then return nil, "no multiple unit " .. tostring(muId) end

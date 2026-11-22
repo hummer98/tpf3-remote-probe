@@ -1998,6 +1998,14 @@ class QuitLaunchTest(unittest.TestCase):
             tf3ctl.models_args(parse(["models", "--grep", ""]))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse(["models", "--carrier", "boat"])
+        # --mu: the multiple units, all of them or those whose name holds the filter
+        self.assertEqual(tf3ctl.models_args(parse(["models", "--mu"])), {"limit": 200, "mu": True})
+        self.assertEqual(tf3ctl.models_args(parse(["models", "--mu", "shinkansen"])), {"limit": 200, "mu": "shinkansen"})
+        got = mod_reads(tf3ctl.command_text(10, "models", {"limit": 200, "mu": True}))
+        self.assertEqual(got["args"], {"limit": 200, "mu": True})
+        for bad in (["--mu", ""], ["--mu", "--carrier", "rail"], ["--mu", "--grep", "x"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.models_args(parse(["models"] + bad))
         # read only: no "who changed the game" entry, no warning about another owner
         self.assertFalse({"models", "vehicles"} & tf3ctl.CHANGES_GAME)
 

@@ -218,6 +218,7 @@ python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
 python3 tools/tf3ctl.py vehicles --entity 601 --state --at-terminal --every 2 --count 300   # gameTime 付きの JSON Lines
 python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # または --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
+python3 tools/tf3ctl.py models --mu [shinkansen]   # 読むだけ: 編成 (.mu.lua) の一覧と buy に渡す名前
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
 python3 tools/tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302 [--line 21] [--count 2]   # 編成 (multiple unit)
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
@@ -1120,7 +1121,14 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   `tgv.mu.lua`)、店の編成の行と同じくその編成を買います。ファイルに並ぶ車両を順に全部、`forward = false` の車両は
   向きを逆にし、モデルは `api.res.modelRep.find` で引き、`vehicleGroups = { 両数 }` と `muFileNames = { ファイル名 }`
   の 1 台として送ります (`vehicle_configs.muParts` / `newMuConfig`、`vehicle_store_window.tl` にならう)。名前は
-  `api.res.multipleUnitRep` の名前 (全体、または一意な一部) と突き合わせます。送る前にファイル全体を調べ、車両が無い・
+  `api.res.multipleUnitRep.getAll()` の各編成の 2 つの名前 (その値と `getName(id)`) と突き合わせます。全体の一致、
+  次に大文字小文字・フォルダ・`.mu.lua` / `.mu` を外した一致 (`shinkansen_0s.mu` でも可)、次にその一意な一部の順
+  です。`muFileNames` には店と同じく `getName` の名前を入れ、それが無い編成は断ります。`getAll()` が空なら
+  `getAll(true)` を数えてエラーに出し、`models --mu` に `invisible: true` で並べますが、そこからは買いません (店に
+  並ばないもの)。当たらないときは、編成の件数、問い合わせの一部を含む名前、最初の 5 件をエラーに出します。読むだけの
+  `models --mu [FILTER]` で一覧 (`id`・`fileName`・`getName`・`value` (getAll の値)・`name` (表示名)・`cars`・
+  `buyAs` (`--model` に渡す名前。同じファイル名の編成が 2 つあれば全体の名前)) が見られます。FILTER は名前か表示名に
+  当てます。送る前にファイル全体を調べ、車両が無い・
   ゲームに無いモデル・車両でないモデルがあればエラーです。gui だけで (`--via cmd` は断ります)、`replace` は編成を
   受けません。返事には `multipleUnit` (`id`・`fileName`・`name`・車両ごとの `modelId`・`name`・`forward` の `parts`)
   が付き、`storeParts` と `storePriceTotal` は全車両の分、`sentParts` と `vehicles[].parts` は向きが逆の部品に
