@@ -3,6 +3,7 @@
 The end-to-end cases run the real content/remote.script.lua in tests/fake_game.lua (real time, own process) and talk
 to it through real files, exactly as with the game.
 """
+import atexit
 import contextlib
 import glob
 import importlib.util
@@ -19,6 +20,27 @@ import unittest
 import unittest.mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Every tempfile.mkdtemp() here (many tests make one and leave it) lands in one folder for this run, which goes at the
+# end, even when tests fail or raise: tearDownModule, and atexit for a run stopped early. The folder is under
+# $REMOTE_PROBE_TEST_TMP, else $TMPDIR, else tests/.tmp (gitignored) -- not /tmp unless asked for, a small tmpfs that
+# once ran out of inodes with test leftovers. Set before anything else asks tempfile for a folder; the luajit
+# processes the tests start inherit it through $TMPDIR.
+_TEST_BASE = os.path.join(os.environ.get("REMOTE_PROBE_TEST_TMP") or os.environ.get("TMPDIR")
+                          or os.path.join(ROOT, "tests", ".tmp"), "remote_probe_tests")
+os.makedirs(_TEST_BASE, exist_ok=True)
+TEST_RUN_DIR = tempfile.mkdtemp(prefix="py-", dir=_TEST_BASE)
+tempfile.tempdir = TEST_RUN_DIR
+os.environ["TMPDIR"] = TEST_RUN_DIR
+
+
+def _remove_test_run_dir():
+    shutil.rmtree(TEST_RUN_DIR, ignore_errors=True)
+    with contextlib.suppress(OSError):
+        os.rmdir(_TEST_BASE)  # only when no other run is using it
+
+
+atexit.register(_remove_test_run_dir)
 spec = importlib.util.spec_from_file_location("tf3ctl", os.path.join(ROOT, "tools", "tf3ctl.py"))
 tf3ctl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tf3ctl)
@@ -41,6 +63,7 @@ def tearDownModule():
     shutil.rmtree(NO_PROFILE_DIR, ignore_errors=True)
     shutil.rmtree(RUNTIME_DIR, ignore_errors=True)
     shutil.rmtree(STATE_DIR, ignore_errors=True)
+    _remove_test_run_dir()
 
 
 # what the mod makes of a command file: remote_core.readCommand over loadUserdata's table, as JSON

@@ -3,6 +3,37 @@
 local root = (arg and arg[0] or "tests/run.lua"):match("^(.*)/tests/[^/]*$") or "."
 package.path = root .. "/?.lua;" .. package.path
 
+-- Every fake game gets a folder of its own (some hundred a run). They all go into one folder for this run, which is
+-- removed at the end whatever happens: os.tmpname's /tmp is a small tmpfs, and once a run left ~500 folders behind
+-- each time until /tmp ran out of inodes. The folder is under $REMOTE_PROBE_TEST_TMP, else $TMPDIR, else tests/.tmp
+-- (gitignored) -- never /tmp unless asked for. This file runs itself under xpcall so an error outside a test, or ^C,
+-- still cleans up.
+if not RP_TEST_RUN_DIR then
+	local function shq(s)
+		assert(not s:find("'", 1, true), "a quote in the test folder's path: " .. s)
+		return "'" .. s .. "'"
+	end
+	-- 0 in Lua 5.1, true in LuaJIT built with 5.2 compatibility
+	local function run(cmd) local r = os.execute(cmd); return r == 0 or r == true end
+	local function env(name) local v = os.getenv(name); if v and v ~= "" then return v end end
+	local base = (env("REMOTE_PROBE_TEST_TMP") or env("TMPDIR") or (root .. "/tests/.tmp")):gsub("/+$", "")
+	base = base .. "/remote_probe_tests"
+	assert(run("mkdir -p " .. shq(base)), "cannot make " .. base)
+	math.randomseed(os.time() + math.floor(os.clock() * 1e6))
+	for _ = 1, 100 do
+		local d = string.format("%s/run-%d-%06d", base, os.time(), math.random(0, 999999))
+		-- mkdir without -p fails when it exists: the folder is this run's alone
+		if run("mkdir " .. shq(d) .. " 2>/dev/null") then RP_TEST_RUN_DIR = d; break end
+	end
+	assert(RP_TEST_RUN_DIR, "cannot make a folder for this run under " .. base)
+	local ok, err = xpcall(function() return dofile(root .. "/tests/run.lua") end, debug.traceback)
+	local d = RP_TEST_RUN_DIR
+	if d:match("/remote_probe_tests/run%-%d+%-%d+$") then os.execute("rm -rf " .. shq(d)) end
+	os.execute("rmdir " .. shq(base) .. " 2>/dev/null") -- only when no other run is using it
+	if not ok then print("ERROR outside a test\n" .. tostring(err)); os.exit(2) end
+	os.exit(RP_TEST_FAILURES == 0 and 0 or 1)
+end
+
 local failures, passes = 0, 0
 local function test(name, fn)
 	local ok, err = pcall(fn)
@@ -165,10 +196,11 @@ end)
 ---------------------------------------------------------------------------------------------------------------------
 -- the real script over the fake game
 
-local tmpBase = os.getenv("TMPDIR") or "/tmp"
+-- a new folder under this run's folder (see the top): removed with it at the end
+local tempCount = 0
 local function tempDir()
-	local d = os.tmpname()
-	os.remove(d)
+	tempCount = tempCount + 1
+	local d = RP_TEST_RUN_DIR .. "/g" .. tempCount
 	os.execute("mkdir -p '" .. d .. "'")
 	return d
 end
@@ -8952,4 +8984,4 @@ test("town develop / size: a missing function, the engine's refusal, a raise and
 end)
 
 print(string.format("\n%d passed, %d failed", passes, failures))
-os.exit(failures == 0 and 0 or 1)
+RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it
