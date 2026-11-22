@@ -1687,9 +1687,29 @@ class QuitLaunchTest(unittest.TestCase):
                     ["--from", "0,0", "--to", "1,1", "--snap", "-1"], ["--from", "0,0", "--to", "1,1", "--type", " "]):
             with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
                 tf3ctl.road_args(p.parse_args(["road"] + bad))
-        with self.assertRaises(SystemExit):
-            with contextlib.redirect_stderr(io.StringIO()):
-                p.parse_args(["road", "--from", "0,0"])
+        # --engine-check: with --dry-run only; it counts as changing the game, a plain dry run does not
+        rd = p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--engine-check"])
+        args = tf3ctl.road_args(rd)
+        self.assertEqual(args["engineCheck"], True)
+        self.assertTrue(tf3ctl.changes_game("road", args))
+        self.assertFalse(tf3ctl.changes_game("road", {"from": [0, 0], "to": [1, 1], "dryRun": True}))
+        self.assertTrue(tf3ctl.changes_game("road", {"from": [0, 0], "to": [1, 1]}))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--engine-check"]))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--engine-check"]))
+        # --from and --to: required unless --inspect-node (checked after parsing)
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_args(p.parse_args(["road", "--from", "0,0"]))
+        # --inspect-node: read only, alone
+        self.assertNotIn("roadInspect", tf3ctl.CHANGES_GAME, "read only")
+        self.assertEqual(tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "4077"])), {"node": 4077})
+        for bad in (["--inspect-node", "-1"], ["--inspect-node", "5", "--from", "0,0"], ["--inspect-node", "5", "--dry-run"],
+                    ["--inspect-node", "5", "--to", "1,1"], ["--inspect-node", "5", "--snap", "2"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                tf3ctl.road_inspect_args(p.parse_args(["road"] + bad))
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            p.parse_args(["road", "--inspect-node", "x"])
         self.assertEqual(p.parse_args(["water", "--grid", "0,0,1,1,1"]).grid, "0,0,1,1,1")
         sent = []
 
@@ -1700,6 +1720,10 @@ class QuitLaunchTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             code = tf3ctl.main(["water", "--at=-100,50"])
         self.assertEqual((code, sent), (0, [("water", {"at": [-100.0, 50.0]})]))
+        del sent[:]
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = tf3ctl.main(["road", "--inspect-node", "4077"])
+        self.assertEqual((code, sent), (0, [("roadInspect", {"node": 4077})]))
 
     def test_terrain_args_and_probe_api(self):
         p = tf3ctl.make_parser()

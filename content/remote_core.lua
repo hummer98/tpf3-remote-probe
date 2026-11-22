@@ -18,7 +18,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
-	modhubValidate = true, modhubPublish = true, water = true, road = true, terrain = true, terrainApi = true,
+	modhubValidate = true, modhubPublish = true, water = true, road = true, roadInspect = true, terrain = true, terrainApi = true,
 	town = true, stockList = true, stockSet = true, steps = true, townDevelop = true, townSize = true, parcels = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
@@ -1066,7 +1066,20 @@ function M.roadRequest(args)
 		end
 		t = t:match("^%s*(.-)%s*$")
 	end
-	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true }
+	-- engineCheck: the dry run asks the engine (makeProposalData); only with a dry run (a build is the engine's own)
+	if args.engineCheck == true and args.dryRun ~= true then
+		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
+	end
+	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true,
+		engineCheck = args.engineCheck == true }
+end
+
+-- road --inspect-node (read only): one node's id
+function M.roadInspectRequest(args)
+	args = type(args) == "table" and args or {}
+	local n = tonumber(args.node)
+	if n == nil or n ~= math.floor(n) or n < 0 or n > 2 ^ 31 then return nil, "node must be a node's entity id (0 or more)" end
+	return { node = n }
 end
 
 function M.waterRequest(args)

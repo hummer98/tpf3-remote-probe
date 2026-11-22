@@ -1152,6 +1152,7 @@ local build = (ug_require or require)(MOD .. "::/remote_build.lua").new({ core =
 handlers.build = build.handle
 handlers.water = build.water
 handlers.road = build.road
+handlers.roadInspect = build.roadInspect -- (read only)
 -- terrain (remote_terrain.lua, terrain_work.lua): a rectangle made flat or a slope; terrainApi looks at the functions
 local terrain = (ug_require or require)(MOD .. "::/remote_terrain.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say, publishUi = publishUi, mod = MOD,

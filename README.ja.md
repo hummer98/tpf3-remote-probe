@@ -317,11 +317,12 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   (`--seed` か `--params` で変えられる) なので、同じ置き方は毎回同じ見た目になります。プローブは params に印
   `remote_probe_build = 1` を足します (`--remove` を参照)。建物の updateFn はこのキーを知らないので、使いません。
 - 答え: `entity` (できた建物)、`construction` (`fileName`、`name`、`depots`、`stations`、`industries`、`ends`: 建物自身の
-  道路・線路の空いた端と位置。`connect --from` の候補)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
+  道路・線路の空いた端と位置。`connect --from` の候補。`connectable`: `road` でつなげる所。`road` を参照)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
   `spent`、`errors`、`warnings`、`collisions` (邪魔をしている id)、送った `params`、`at` (使った z と `zFrom`)。断られた
   ときは `ok: false` で、エンジンの文言が `error` に入ります。
-- `--dry-run` は何も建てず、エンジンにも**聞きません**。エンジンの `makeProposalData` は完全な `Proposal` だけを受け、
-  `SimpleProposal` の版がない (`engine/util.d.tl:939`) ので、呼びません。プローブが確認するのは、名前・送る params・高さと、
+- `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は
+  `engine/util.d.tl:939` では `Proposal` 用ですが、GUI のスレッドでは `SimpleProposal` を受けます。建物のほうはまだ
+  聞いていません)。プローブが確認するのは、名前・送る params・高さと、
   点から 30 m の中の建物 (`near`。箱で見るだけの大まかなもの) です。答えは `checked: false` で、`buildable` はありません。
   エンジンが受け付けるか (衝突・地形・所持金) は、建てたときにしか分かりません。
 - `--remove` で取り除けるのは、プローブが建てたものだけです: この読み込みのあとに建てたもので、その id の下にエンジンが
@@ -386,6 +387,8 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
 
 ```
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # エンジンに聞く (ゲームを変える側)
+python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
 ```
 
 - 2点 (x,y[,z]、メートル。z が無ければ地形の高さ) の間に、まっすぐな道路を1本、クリック無しで建てます。
@@ -393,11 +396,25 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   `api.cmd.makeWorldBuildProposalCmd` で送ります。`build` が建物を送るのと同じ形です (同じ context: 何も壊さない、
   エラーを無視しない)。ゲームを変えるので、テスト用のセーブでだけ使ってください。
 - 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない。3次元で測るので、点の上にある橋の node は使わない)
-  以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。道路は octree
+  以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。点の近くの道路は octree
   (`api.engine.util.octree.findEntitiesInCircle` で BASE_EDGE、無ければ octree system の箱) から探し、道路だけ
-  (`roadType` が STREET。種類が読めないものは除く) の `node0` / `node1` を使います。node そのものは探さず、線路の node
-  についても聞きません。
-  建物の自分の道路の空いた端 (港の入口の道路: `build` の答えの `construction.ends`) もこの node です。なければ新しい node です。
+  (`roadType` が STREET。種類が読めないものは除く) の `node0` / `node1` を使います。線路の node については聞きません。道路は `--snap` より 25 m 広く探し
+  (町の道路の継ぎ目の node を、その真上から snap 3 m で取りこぼした。octree が node の近くでどちらの道路にも当たらなかった)、
+  端のうち `--snap` の中のものだけを使います。新しい node になった端には、その訳を `snapNote` に書きます (`--snap` の外で
+  いちばん近い道路の node とその距離、または道路が1本も無かったこと)。
+  つなぐ node にある道路は、そのあと street system (`streetSystem.getNodeStreetSegments`。答えの
+  `piecesFrom: "streetSystem"`) から読みます。それが無いか、エラーになるときだけ、octree の 1 m の中から探します
+  (`"octree"`)。産業の T 字では、octree はどれにも当たりませんでした。なければ新しい node です。新しい node が古い node の
+  真上 (0.1 m 以内。`--snap 0` のとき) になるときは、エンジンが proposal 全体を断る (Construction Not Possible) ので、
+  送る前に断ります。
+- 建物の道路: `build` の答えの `construction.connectable` に、道路をつなげる所を並べます。それぞれ `node`、`x` / `y` /
+  `z`、`edges` (そこにある道路の数)、`nodeConfig` があります。`kind: "mouth"` は凍結の道路の開いた端 (`frozenEdges` の
+  node のうち `frozenNodes` に無いもの。産業の道路の口はここで、自由な腕2本と T 字になる)、`kind: "arm"` は口から出る自由な
+  道路の先の端 (`from`: 口、`via`: その道路)。`ends` (凍結の道路の端) には腕が出ません。建物の node
+  (`streetConnectorSystem.getConstructionEntityForNode` が 0 以上か、そこに建物の凍結の edge がある) には、**交差点の
+  設定に触らずに**つなぎます (外しも作り直しもしない。Overpass Builder は建物の node でこれを断っています)。端には
+  `construction`、`nodeConfigKept: true`、`pieces` が付き、答えに `caution` が付きます。建物の凍結の node (口の内側の端)
+  は、dry-run も含めて、送る前に断ります。
 - 交差点の設定 (`BaseNodeConfig`。`nodeConfigsToAdd` / `nodeConfigsToRemove` で送る): 新しい node にはそれぞれ設定を付け
   (行き止まり: レーンのつながり無し)、つないだ node は元のつながりを残して、新しい道路の分を足します。足すのは新しい道路と
   そこにあるほかの道路の間だけで、node が2本になり、レーンの数が同じならレーンごとにまっすぐ、それ以外は入ってくる
@@ -416,17 +433,34 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   種類 NORMAL (`typeIndex` -1: 橋もトンネルも無し)、会社の `PlayerOwned` を付け、両端の tangent は2点を結ぶ線 (まっすぐ) です。
 - 答え: `from` / `to` (つないだときは `node` と `snapped`、ほかは `zFrom`)、`template`、`year`、`length`、`edges` /
   `nodes` (結果の新しい entity)、`edge`、`node0` / `node1`、`cost`、`spent`、断られたときはエンジンの `errors`・`warnings`・
-  `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。`--dry-run` は
-  何も送らず、計画だけを返します (`checked: false`)。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい
+  `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい
   道路が見つからないときは `warning` を付けます。template や `BaseEdgeType` / `RoadType` の enum が読めないときは、
   何も送らずに断ります。
+- `--dry-run` は何も送らず、エンジンにも聞きません。プローブが確かめた計画だけを返します (`checked: false`、
+  `engineCheck: "not asked (use --engine-check)"`)。ほかの dry-run と同じく、安全に使えます。
+- `--dry-run --engine-check` (`--engine-check` は `--dry-run` と一緒にだけ使う): 建てるときに送るのと同じ proposal
+  (設定も含む) も作り、
+  `api.engine.util.proposal.makeProposalData` (proposal だけ、だめなら context も渡す) でエンジンに聞きます。
+  呼ぶのは guiUpdate の中で、レシピの本体では呼びません。答えは `checked: true`、`engineCheck` (使った形)、`buildable`、
+  エンジンの `cost`・`errors`・`warnings`・`collisions`・`critical`、`balance`。エンジンが断るものは `ok: false` で、文言が
+  `error` に入ります。`makeProposalData` が無いか、どちらの形でもエラーになるときは、プローブの計画だけを返します
+  (`checked: false`、`engineCheck: "not available: ..."`)。エンジンの評価は pcall で守れないネイティブのコードを通る
+  (そこで assertion が出るとゲームが終わる) ので、tf3ctl はこれをゲームを変える命令に数えます。統括から時間をもらって、
+  テスト用のセーブでだけ使ってください。
+- `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
+  `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
+  (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ
+  `false`。あれば `laneConnections`・`crosswalks`・`trafficLightStates`・`doubleSlipSwitch`)、`octree`
+  (`findEntitiesInCircle` が 1・5・20 m の中で当たる道路と、それぞれがその node で終わるか。最大 40 本)、`road`
+  (その node を端にしたとき road がすること)。
 - 長さは 1 m から 2000 m まで。水の上や谷を渡るには橋が要りますが、これは橋を建てません (エンジンが断るか、地形に沿うか:
   未確認)。
 - 使い道: 港の歩行者用接続路だけでは、港は道路網につながりません。その横に、港の道路の空いた端から町の道路まで道路を
   通すとつながります (プレイヤーが建てるのと同じ)。
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): 特に、`api.type.NodeAndEntity` / `SegmentAndEntity` / `PlayerOwned`
-  がその名前で届くか (`api.type.Proposal.*` も試す)、初期のままの `streetEdge` で足りるか、建物の道路の node を端として
-  エンジンが受け付けるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
+  がその名前で届くか (`api.type.Proposal.*` も試す)、初期のままの `streetEdge` で足りるか、建物の node を、設定に
+  触らずに端としてエンジンが受け付け、そこで新しい道路のレーンをつなぐか (2026-11-23 に書いた。それまで伐採場の外側の端と
+  内側の端は断られた)、guiUpdate で makeProposalData が Overpass Builder の道具と同じように答えるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
   どうなるか (proposal に交差の node は入れていない: エンジンが足すか、断るか、重ねるか)。
 
 ### 長方形の範囲の地面 (`terrain`)

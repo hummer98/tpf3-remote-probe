@@ -7926,7 +7926,10 @@ test("core.roadRequest: from and to (z optional), snap, type, dry run; every bad
 	local r = core.roadRequest({ from = "1,2", to = { 3, 4, 5 } })
 	eq(r.from[1], 1); eq(r.from[3], nil); eq(r.to[3], 5); eq(r.snap, 5, "the default"); eq(r.type, nil); eq(r.dryRun, false)
 	r = core.roadRequest({ from = "1,2", to = "30,4", snap = 0, type = " town_new_small ", dryRun = true })
-	eq(r.snap, 0); eq(r.type, "town_new_small"); eq(r.dryRun, true)
+	eq(r.snap, 0); eq(r.type, "town_new_small"); eq(r.dryRun, true); eq(r.engineCheck, false)
+	eq(core.roadRequest({ from = "1,2", to = "30,4", dryRun = true, engineCheck = true }).engineCheck, true)
+	local no, why = core.roadRequest({ from = "1,2", to = "30,4", engineCheck = true })
+	eq(no, nil); truthy(why:find("engineCheck goes with dryRun", 1, true), why)
 	for _, bad in ipairs({
 		{ {}, "give from" }, { { from = "1,2" }, "give to" }, { { from = "1", to = "2,3" }, "at least x,y" },
 		{ { from = "1,2,3,4", to = "2,3" }, "at most 3" }, { { from = "a,2", to = "2,3" }, "finite" },
@@ -7950,7 +7953,7 @@ test("road: from a free road end (snapped) to a new node on the terrain: the tow
 	eq(a.from.node, 8001, "snapped to the free end")
 	-- in three dimensions: the terrain at x 102 is 1.02, the node at z 2
 	truthy(math.abs(a.from.snapped - math.sqrt(5 + 0.98 ^ 2)) < 1e-9, tostring(a.from.snapped))
-	eq(g.streetSegmentCalls, nil, "the street system is never asked about a node")
+	truthy(g.streetSegmentCalls > 0, "the pieces at the joined node from the street system"); eq(a.from.piecesFrom, "streetSystem")
 	truthy(g.circleCalls > 0, "road pieces found through the octree util")
 	eq(a.from.x, 100); eq(a.from.z, 2, "the node's own position")
 	eq(a.to.node, nil); eq(a.to.zFrom, "terrain"); eq(a.to.z, 2); eq(a.newNodes, 1)
@@ -8261,7 +8264,8 @@ test("road: a piece there before the build is never the new one; built with no n
 		end
 		return apply(cmd, cb)
 	end
-	local a = roadRun(g, 969, '{ from = "0,500", to = "0,600", snap = 0 }')
+	-- (0.3 m from the old ends: within MATCH_M of them, not on them: a new node right on an old one is refused)
+	local a = roadRun(g, 969, '{ from = "0.3,500", to = "0.3,600", snap = 0 }')
 	api.cmd.sendCommand = apply
 	truthy(a.ok, a.error); eq(a.edge, nil, "the old piece 8100 is not taken")
 	truthy(tostring(a.warning):find("no new piece", 1, true), tostring(a.warning))
@@ -8286,7 +8290,11 @@ end)
 test("road --dry-run: the plan, nothing sent; no ids in the result or no callback: the piece found between the ends", function()
 	local g = roadWorld()
 	local a = roadRun(g, 958, '{ from = "102,1", to = "200,0", dryRun = true }')
-	truthy(a.ok, a.error); eq(a.dryRun, true); eq(a.checked, false); eq(a.from.node, 8001); eq(a.template, TOWN_OLD)
+	truthy(a.ok, a.error); eq(a.dryRun, true); eq(a.checked, false); eq(a.buildable, nil); eq(a.from.node, 8001); eq(a.template, TOWN_OLD)
+	eq(a.engineCheck, "not asked (use --engine-check)")
+	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 0, "a dry run alone never asks the engine")
+	a = roadRun(g, 9581, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(g.proposalDataCalls, 1, "asked with engineCheck")
 	eq(#g.buildCmds, 0)
 	g = roadWorld({ noStreetResults = true })
 	a = roadRun(g, 959, '{ from = "102,1", to = "200,0" }')
@@ -8303,6 +8311,394 @@ test("road --dry-run: the plan, nothing sent; no ids in the result or no callbac
 	frames(g, 40, 1)
 	a = final(g, 961)
 	eq(a.ok, false); truthy(tostring(a.error):find("no piece between the ends", 1, true), tostring(a.error))
+	truthy(not g.crashed, g.crashed)
+end)
+
+-- road --dry-run asks the engine (makeProposalData) about the very proposal a build would send
+test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on the proposal a build sends; refused ones; nothing sent", function()
+	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end })
+	local a = roadRun(g, 1010, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(a.cost, 1000, "the engine's cost")
+	eq(a.engineCheck, "makeProposalData (SimpleProposal)", "the proposal alone first (Overpass Builder's form)")
+	eq(a.nodeConfigs, 2, "the set-ups planned, as a build's"); eq(a.newNodes, 1)
+	eq(#g.buildCmds, 0); eq(#g.streetCmds, 0, "nothing recorded as sent"); eq(g.balance, a.balance)
+	-- a collision: not buildable, an error, the collisions; nothing sent
+	a = roadRun(g, 1011, '{ from = "0,1500", to = "0,1600", dryRun = true, engineCheck = true }')
+	eq(a.ok, false); eq(a.dryRun, true); eq(a.checked, true); eq(a.buildable, false); eq(a.collisions[1], 4343)
+	truthy(a.error:find("the engine would refuse it: Collision", 1, true), a.error)
+	truthy(a.error:find("nothing sent", 1, true))
+	-- money
+	g.balance = 10
+	a = roadRun(g, 1012, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true }')
+	eq(a.ok, false); truthy(a.error:find("Not enough money", 1, true), a.error)
+	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 3)
+	-- the form with a Context: taken after the proposal alone raises; the proposal alone is never sent twice
+	g = roadWorld({ proposalDataTwoArgs = true })
+	a = roadRun(g, 1013, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.engineCheck, "makeProposalData (SimpleProposal, Context)"); eq(g.proposalDataCalls, 2)
+	g = roadWorld({ proposalDataOneArg = true })
+	a = roadRun(g, 1016, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.engineCheck, "makeProposalData (SimpleProposal)"); eq(g.proposalDataCalls, 1)
+	-- not to be had: the probe's own answer, and why
+	g = roadWorld({ noSimpleProposalData = true })
+	a = roadRun(g, 1014, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.checked, false); eq(a.buildable, nil)
+	truthy(a.engineCheck:find("not available", 1, true) and a.engineCheck:find("Proposal expected", 1, true), a.engineCheck)
+	truthy(a.why:find("could not be had", 1, true), a.why)
+	g = roadWorld()
+	api.engine.util.proposal = nil
+	a = roadRun(g, 1015, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.checked, false); truthy(a.engineCheck:find("is not there", 1, true), a.engineCheck)
+	eq(#g.buildCmds, 0); truthy(not g.crashed, g.crashed)
+end)
+
+test("road: a new node right on an old node is refused before sending (the engine refuses the whole proposal)", function()
+	local g = roadWorld({ height = function() return 2 end })
+	for i, dry in ipairs({ "false", "true" }) do
+		local a = roadRun(g, 1020 + i, '{ from = "100,0", to = "100,80", snap = 0, dryRun = ' .. dry .. ' }')
+		eq(a.ok, false, dry); truthy(tostring(a.error):find("from: a new node here would be on node 8001", 1, true), tostring(a.error))
+	end
+	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 0)
+	-- 0.3 m off: a node of its own
+	local a = roadRun(g, 1023, '{ from = "100.3,0", to = "100.3,80", snap = 0 }')
+	truthy(a.ok, a.error); eq(a.newNodes, 2)
+	-- the fake refuses one right on another as the engine does (Construction not possible), sent without the check
+	local sp = api.type.SimpleProposal.new()
+	local n = api.type.NodeAndEntity.new()
+	n.entity, n.comp.position = -1, { x = 0, y = 0, z = 2 }
+	local e = api.type.SegmentAndEntity.new()
+	e.entity, e.comp.node0, e.comp.node1 = -2, -1, 8003
+	e.comp.position0, e.comp.position1 = { x = 0, y = 0, z = 2 }, { x = 300, y = 300, z = 0 }
+	e.comp.roadTemplate, e.comp.laneConfigs = TOWN_OLD, g.townLanes()
+	sp.streetProposal.nodesToAdd, sp.streetProposal.edgesToAdd = { n }, { e }
+	local okBuilt, data
+	api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, {}, false, true), function(d, success) okBuilt, data = success, d end)
+	eq(okBuilt, false); eq(data.resultProposalData.errorState.messages[1], "Construction not possible")
+	truthy(not g.crashed, g.crashed)
+end)
+
+-- an industry's road stub as the base's forest lays it (forest.script.lua: a frozen stub, free at its outer end
+-- only, and two free arms street_cross_01 / 02 from that end, x +60 and -70), at 200,330 unturned: the inner end
+-- (212.1, 270) frozen, the mouth (212.1, 259.5) a T of three pieces, the arms' far ends (272.1, 259.5) and
+-- (142.1, 259.5)
+local FOREST = "::/industries/forest/forest.con"
+local function forestWorld(spec)
+	spec = spec or {}
+	spec.cons = { [FOREST] = { cost = 0, shape = { nodes = { { 12.1, -60, 0 }, { 12.1, -70.5, 0 }, { 72.1, -70.5, 0 },
+		{ -57.9, -70.5, 0 } }, edges = { { 2, 1 } }, free = { { 2, 3 }, { 2, 4 } }, frozenNodes = { 1 } } } }
+	spec.roads = spec.roads or { nodes = {}, edges = {} }
+	spec.height = spec.height or function() return 0 end
+	local g = roadWorld(spec)
+	local b = buildRun(g, 1030, string.format('{ res = %q, at = "200,330", noOwner = true }', FOREST))
+	truthy(b.ok, b.error)
+	return g, b
+end
+local function nodeAt(list, kind, x)
+	for _, c in ipairs(list or {}) do
+		if c.kind == kind and (x == nil or math.abs(c.x - x) < 0.01) then return c end
+	end
+end
+
+test("build: an industry's connectable ends: the stub's mouth (3 pieces) and its arms' far ends, never the frozen end", function()
+	local g, b = forestWorld()
+	local d = b.construction
+	eq(#d.ends, 2, "the frozen stub's two ends, as before")
+	eq(#d.connectable, 3, "the mouth and two arm ends")
+	local m = nodeAt(d.connectable, "mouth")
+	truthy(m and math.abs(m.x - 212.1) < 1e-6 and math.abs(m.y - 259.5) < 1e-6, "the mouth at the stub's free end")
+	eq(m.edges, 3, "a T: the stub and both arms"); eq(m.nodeConfig, true)
+	local e1, e2 = nodeAt(d.connectable, "arm", 272.1), nodeAt(d.connectable, "arm", 142.1)
+	truthy(e1 and e2, "both arms' far ends")
+	eq(e1.edges, 1); eq(e1.from, m.node); truthy(g.edges[e1.via], "the arm piece")
+	for _, c in ipairs(d.connectable) do truthy(not g.frozenNode[c.node], "no frozen node listed") end
+	eq(d.connectableWhy, nil)
+	-- no frozenNodes to read: none listed, and why
+	g, b = forestWorld({ noFrozenNodes = true })
+	eq(b.construction.connectable, nil); truthy(b.construction.connectableWhy:find("frozenNodes", 1, true))
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road to an industry: an arm's far end joins; the mouth joins with its set-up left alone; the frozen end is refused", function()
+	local g, b = forestWorld()
+	local con = b.entity
+	local d = b.construction
+	local arm = nodeAt(d.connectable, "arm", 272.1)
+	local mouth = nodeAt(d.connectable, "mouth")
+	-- the arm's far end (not the construction's node): joined as any road end, its set-up remade
+	local a = roadRun(g, 1031, '{ from = "272.1,159.5", to = "272.1,259.5" }')
+	truthy(a.ok, a.error); eq(a.to.node, arm.node); eq(a.to.laneRules, 2); eq(a.to.nodeConfigKept, nil); eq(a.caution, nil)
+	eq(a.to.piecesFrom, "streetSystem"); eq(#g.nodeConns[arm.node], 2)
+	-- the mouth (the T, 3 pieces, the construction's node): joined, its set-up neither removed nor added
+	local before = #g.buildCmds
+	a = roadRun(g, 1032, '{ from = "212.1,159.5", to = "212.1,259.5" }')
+	truthy(a.ok, a.error); eq(a.to.node, mouth.node); eq(a.to.construction, con); eq(a.to.nodeConfigKept, true)
+	eq(a.to.pieces, 3); eq(a.to.laneRules, nil); truthy(a.caution:find("left as it", 1, true), a.caution)
+	eq(#g.buildCmds, before + 1)
+	local st = getmetatable(getmetatable(g.buildCmds[#g.buildCmds].proposal).store.streetProposal).store
+	eq(#(st.nodeConfigsToRemove or {}), 0, "no set-up taken off")
+	eq(#st.nodeConfigsToAdd, 1); eq(st.nodeConfigsToAdd[1].entity, -1, "only the new node's")
+	eq(g.edges[a.edge].node1, mouth.node)
+	-- dry run to the mouth: the engine's verdict, the same plan
+	a = roadRun(g, 1033, '{ from = "180,200", to = "212.1,259.5", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.to.nodeConfigKept, true)
+	-- the frozen inner end: refused, dry run too, nothing sent or asked
+	local calls, sent = g.proposalDataCalls, #g.buildCmds
+	for i, dry in ipairs({ "false", "true" }) do
+		a = roadRun(g, 1033 + i, '{ from = "300,300", to = "212.1,270", dryRun = ' .. dry .. ' }')
+		eq(a.ok, false, dry)
+		truthy(tostring(a.error):find("^to: node %d+ is a frozen node of construction " .. con), tostring(a.error))
+		truthy(a.error:find("connectable", 1, true) and a.error:find("nothing sent", 1, true), a.error)
+	end
+	eq(g.proposalDataCalls, calls); eq(#g.buildCmds, sent)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road to an industry: arm ends the engine counts the construction's, and no getConstructionEntityForNode", function()
+	-- an arm's far end owned by the construction: joined, set-up left alone
+	local g, b = forestWorld({ armEndsOwned = true })
+	local arm = nodeAt(b.construction.connectable, "arm", 142.1)
+	local a = roadRun(g, 1040, '{ from = "142.1,159.5", to = "142.1,259.5" }')
+	truthy(a.ok, a.error); eq(a.to.node, arm.node); eq(a.to.nodeConfigKept, true); eq(a.to.construction, b.entity)
+	-- no getConstructionEntityForNode: through the pieces (a frozen edge at the node): the mouth is still the
+	-- construction's, the inner end still frozen; an arm end (no frozen edge) is joined as a road end
+	g, b = forestWorld({ noNodeOwner = true })
+	a = roadRun(g, 1041, '{ from = "212.1,159.5", to = "212.1,259.5" }')
+	truthy(a.ok, a.error); eq(a.to.nodeConfigKept, true)
+	a = roadRun(g, 1042, '{ from = "300,300", to = "212.1,270" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("frozen node", 1, true), tostring(a.error))
+	a = roadRun(g, 1043, '{ from = "272.1,159.5", to = "272.1,259.5" }')
+	truthy(a.ok, a.error); eq(a.to.nodeConfigKept, nil); eq(a.to.laneRules, 2)
+	-- frozenNodes not readable: a node whose pieces are all frozen edges counts as frozen
+	g, b = forestWorld({ noFrozenNodes = true })
+	a = roadRun(g, 1044, '{ from = "300,300", to = "212.1,270" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("frozen node", 1, true), tostring(a.error))
+	a = roadRun(g, 1045, '{ from = "212.1,159.5", to = "212.1,259.5" }')
+	truthy(a.ok, a.error); eq(a.to.nodeConfigKept, true)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road: pieces at a node from the street system; without it (or raising) the octree's, as before", function()
+	-- the T at the mouth: the octree's 1 m circle is not asked when the street system answers
+	local g = roadWorld({ height = function() return 0 end })
+	local real = api.engine.system.streetSystem.getNodeStreetSegments
+	api.engine.system.streetSystem.getNodeStreetSegments = nil
+	local a = roadRun(g, 1050, '{ from = "102,1", to = "200,0" }')
+	truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.from.piecesFrom, "octree"); eq(a.from.laneRules, 2)
+	api.engine.system.streetSystem.getNodeStreetSegments = function() error("no street system") end
+	a = roadRun(g, 1051, '{ from = "0,1", to = "0,-100" }')
+	truthy(a.ok, a.error); eq(a.from.node, 8002); eq(a.from.piecesFrom, "octree")
+	api.engine.system.streetSystem.getNodeStreetSegments = real
+	-- a node whose pieces the street system lists but the octree would miss (here: no octree hit within 1 m)
+	g = roadWorld({ height = function() return 0 end })
+	local find = api.engine.util.octree.findEntitiesInCircle
+	api.engine.util.octree.findEntitiesInCircle = function(c, r, kind)
+		if r <= 1 then return {} end
+		return find(c, r, kind)
+	end
+	a = roadRun(g, 1052, '{ from = "102,1", to = "200,0" }')
+	api.engine.util.octree.findEntitiesInCircle = find
+	truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.from.piecesFrom, "streetSystem")
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("the fake: a construction's node set-up taken off or added is an assertion; a piece to a frozen node refused", function()
+	local g, b = forestWorld()
+	local mouth = nodeAt(b.construction.connectable, "mouth")
+	local inner
+	for n in pairs(g.frozenNode) do inner = n end
+	local function sendWith(node, fill)
+		local sp = api.type.SimpleProposal.new()
+		local e = api.type.SegmentAndEntity.new()
+		local p = g.nodes[node]
+		local nn = api.type.NodeAndEntity.new()
+		nn.entity, nn.comp.position = -1, { x = 400, y = 400, z = 0 }
+		e.entity, e.comp.node0, e.comp.node1 = -2, -1, node
+		e.comp.position0, e.comp.position1 = { x = 400, y = 400, z = 0 }, { x = p.x, y = p.y, z = p.z }
+		e.comp.roadTemplate, e.comp.laneConfigs = TOWN_OLD, g.townLanes()
+		sp.streetProposal.nodesToAdd, sp.streetProposal.edgesToAdd = { nn }, { e }
+		if fill then fill(sp) end
+		g.crashed = nil
+		local res
+		local ok = pcall(api.cmd.sendCommand, api.cmd.makeWorldBuildProposalCmd(sp, {}, false, true),
+			function(d, success) res = { d = d, success = success } end)
+		return ok, res
+	end
+	local ok = sendWith(mouth.node, function(sp) sp.streetProposal.nodeConfigsToRemove = { mouth.node } end)
+	eq(ok, false); truthy(tostring(g.crashed):find("is a construction's", 1, true), tostring(g.crashed))
+	local entry = api.type.BaseNodeLaneConnectionAndEntity.new()
+	entry.entity = mouth.node
+	ok = sendWith(mouth.node, function(sp) sp.streetProposal.nodeConfigsToAdd = { entry } end)
+	eq(ok, false); truthy(tostring(g.crashed):find("is a construction's", 1, true), tostring(g.crashed))
+	local res
+	ok, res = sendWith(inner)
+	truthy(ok, g.crashed); eq(res.success, false); eq(res.d.resultProposalData.errorState.messages[1], "Construction not possible")
+	ok, res = sendWith(mouth.node)
+	truthy(ok, g.crashed); eq(res.success, true, "the mouth, its set-up untouched")
+end)
+
+test("road: whether a node is a construction's cannot be read either way: refused, nothing sent (review 2026-11-23)", function()
+	local g = roadWorld({ height = function() return 2 end })
+	local scs = api.engine.system.streetConnectorSystem
+	local fn, fe = scs.getConstructionEntityForNode, scs.getConstructionEntityForEdge
+	scs.getConstructionEntityForNode = function() error("no node owner") end
+	scs.getConstructionEntityForEdge = function() error("no edge owner") end
+	for i, dry in ipairs({ "false", "true" }) do
+		local a = roadRun(g, 1080 + i, '{ from = "102,1", to = "200,0", dryRun = ' .. dry .. ' }')
+		eq(a.ok, false, dry); truthy(tostring(a.error):find("is a construction's could not be read", 1, true), tostring(a.error))
+	end
+	-- the edge way answering is enough (the node way alone raising)
+	scs.getConstructionEntityForEdge = fe
+	local a = roadRun(g, 1083, '{ from = "102,1", to = "200,0" }')
+	scs.getConstructionEntityForNode = fn
+	truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.from.laneRules, 2)
+	eq(#g.buildCmds, 1); eq(g.proposalDataCalls, 0); truthy(not g.crashed, g.crashed)
+end)
+
+test("build: connectable leaves out a construction's track pieces (a station's), lists its road mouth", function()
+	local STATION = "::/station/rail/small.con"
+	local g = roadWorld({ roads = { nodes = {}, edges = {} }, height = function() return 0 end,
+		cons = { [STATION] = { cost = 0, shape = { nodes = { { 0, 0, 0 }, { 50, 0, 0 }, { 0, 10, 0 }, { 0, 30, 0 } },
+			edges = { { 1, 2, track = true }, { 3, 4 } }, frozenNodes = { 3 } } } } })
+	local b = buildRun(g, 1085, string.format('{ res = %q, at = "500,500" }', STATION))
+	truthy(b.ok, b.error)
+	local c = b.construction.connectable
+	eq(#c, 1, "the road's mouth only"); eq(c[1].kind, "mouth"); eq(c[1].y, 530)
+	truthy(not g.crashed, g.crashed)
+end)
+
+-- 2026-11-23 in a game: a town's own road node 4066 (-2339.064, -43.227), the seam of its pieces 1122 and 4256: a dry
+-- run from right on it with --snap 3 took no node (a new one on the terrain), and said nothing of why
+test("road snap: a town road's seam node the octree misses near it is found (pieces looked for beyond snap); a new end says why", function()
+	local function world(gap)
+		return roadWorld({ octreeGap = gap, height = function() return 0 end, roads = {
+			nodes = { [4066] = { x = -2339.064, y = -43.227, z = 0 }, [4001] = { x = -2400, y = -43.227, z = 0 },
+				[4002] = { x = -2280, y = -43.227, z = 0 } },
+			edges = { [1122] = { node0 = 4001, node1 = 4066 }, [4256] = { node0 = 4066, node1 = 4002 } } } })
+	end
+	-- the town's node has its set-up (the network's nodes have one, as a town's would: not read in a game)
+	local g = world(4)
+	local a = roadRun(g, 1090, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3, dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.from.node, 4066, "the seam node"); eq(a.from.snapped, 0); eq(a.from.passedOver, nil)
+	eq(a.from.laneRules, 4, "a junction of three"); eq(a.from.snapNote, nil); eq(a.checked, true)
+	a = roadRun(g, 1091, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3 }')
+	truthy(a.ok, a.error); eq(g.edges[a.edge].node0, 4066)
+	-- beyond snap even with the pieces met (a gap of 20 m: only the wider search meets them): the nearest named
+	g = world(20)
+	a = roadRun(g, 1092, '{ from = "-2335,-43.227", to = "-2348,45", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.node, nil); eq(a.from.zFrom, "terrain")
+	truthy(tostring(a.from.snapNote):find("the nearest, node 4066, is 4.06 m away", 1, true), tostring(a.from.snapNote))
+	-- no road at all near: said so
+	a = roadRun(g, 1095, '{ from = "0,500", to = "0,600", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); truthy(tostring(a.from.snapNote):find("no road piece met within 28 m", 1, true), tostring(a.from.snapNote))
+	-- the same seam right on the point with a gap of 20 m: still found
+	a = roadRun(g, 1096, '{ from = "-2339.064,-43.227", to = "-2348,45", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.node, 4066)
+	-- a node beyond snap: named, with its distance
+	g = world(0)
+	a = roadRun(g, 1093, '{ from = "-2330,-43.227", to = "-2348,45", snap = 3, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.node, nil)
+	truthy(tostring(a.from.snapNote):find("the nearest, node 4066, is 9.06 m away", 1, true), tostring(a.from.snapNote))
+	-- snap 0: no note (never joined)
+	a = roadRun(g, 1094, '{ from = "-2330,-43.227", to = "-2348,45", snap = 0, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.snapNote, nil)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --inspect-node (roadInspect): pieces, construction, set-up, octree; read only; bad ids refused", function()
+	truthy(core.COMMANDS.roadInspect and not core.CHANGES_GAME.roadInspect, "a command that changes nothing")
+	eq(core.roadInspectRequest({ node = 5 }).node, 5)
+	for _, bad in ipairs({ {}, { node = -1 }, { node = 1.5 }, { node = "x" } }) do
+		local ok, err = core.roadInspectRequest(bad)
+		eq(ok, nil); truthy(err:find("node must be", 1, true), err)
+	end
+	local g, b = forestWorld()
+	local mouth = nodeAt(b.construction.connectable, "mouth")
+	send(g, 1060, "roadInspect", string.format("{ node = %d }", mouth.node))
+	frames(g, FIRST + 2)
+	local a = final(g, 1060)
+	truthy(a.ok, a.error); eq(a.node, mouth.node); truthy(math.abs(a.x - 212.1) < 1e-6)
+	eq(#a.streetSegments, 3); eq(a.constructionForNode, b.entity)
+	eq(a.construction.construction, b.entity); eq(a.construction.frozen, false); eq(a.construction.fileName, FOREST)
+	eq(#a.constructionFrozenNodes, 1); eq(#a.constructionFrozenEdges, 1)
+	eq(type(a.nodeConfig), "table"); eq(#a.nodeConfig.laneConnections, 0); eq(a.nodeConfig.trafficLightStates, 0)
+	eq(#a.octree, 3); eq(a.octree[1].radius, 1); eq(a.octree[3].radius, 20)
+	truthy(a.octree[3].count >= 3); truthy(a.octree[3].edges[1].atNode ~= nil)
+	truthy(a.road:find("left as it is", 1, true), a.road)
+	local seg = a.streetSegments[1]
+	truthy(seg.edge and seg.street == true)
+	-- the frozen end; a plain road node; a node without a set-up; no node
+	local inner
+	for n in pairs(g.frozenNode) do inner = n end
+	send(g, 1061, "roadInspect", string.format("{ node = %d }", inner))
+	frames(g, FIRST + 2)
+	a = final(g, 1061)
+	truthy(a.ok, a.error); eq(a.construction.frozen, true); truthy(a.road:find("frozen", 1, true), a.road)
+	g = roadWorld({ roads = { nodes = { [8001] = { x = 100, y = 0, z = 0 }, [8002] = { x = 0, y = 0, z = 0 } },
+		edges = { [8100] = { node0 = 8002, node1 = 8001 } }, noConfig = { [8002] = true },
+		conns = { [8001] = { { segment0 = 8100, lane0 = 1, segment1 = 8100, lane1 = 2, withRoad = true } } } } })
+	send(g, 1062, "roadInspect", "{ node = 8001 }")
+	frames(g, FIRST + 2)
+	a = final(g, 1062)
+	truthy(a.ok, a.error); eq(a.constructionForNode, -1); eq(a.construction, nil)
+	eq(a.nodeConfig.laneConnections[1].lane1, 2); truthy(a.road:find("remade", 1, true), a.road)
+	send(g, 1063, "roadInspect", "{ node = 8002 }")
+	frames(g, FIRST + 2)
+	a = final(g, 1063)
+	eq(a.nodeConfig, false); truthy(a.road:find("no junction set-up", 1, true), a.road)
+	send(g, 1064, "roadInspect", "{ node = 777777 }")
+	frames(g, FIRST + 2)
+	a = final(g, 1064)
+	eq(a.ok, false); truthy(a.error:find("777777 is no entity", 1, true), a.error)
+	eq(#g.buildCmds, 0, "nothing sent")
+	truthy(not g.crashed, g.crashed)
+end)
+
+-- 2026-11-23 in a game: a road's dead end (node 7311, one piece) that a growing town's road joined afterwards was
+-- refused three times ("no road piece was found at node 7311"): the octree's 1 m circle around it met nothing.
+-- The pieces now come from the street system: the node with two pieces is joined as a junction
+test("road: a dead end a town road joined afterwards (the octree missing it within 1 m) is joined through the street system", function()
+	local g = roadWorld({ roads = { nodes = {}, edges = {} }, height = function() return 0 end })
+	local a = roadRun(g, 1070, '{ from = "2417,-70", to = "2417,70" }')
+	truthy(a.ok, a.error)
+	local first, endNode = a.edge, a.nodes[2]
+	eq(g.edges[first].node1, endNode); eq(#g.nodeConns[endNode], 0, "a dead end")
+	-- the town grows a road to that end: a piece of its own (not this command's), its set-up made straight on by the
+	-- engine (as a town's road would be: lane 1 of our piece into the town piece's lane 2 and back)
+	g.nextEntity = g.nextEntity + 1
+	local townNode = g.nextEntity
+	g.nodes[townNode] = { x = 2417, y = 200, z = 0 }
+	g.nodeConfig[townNode] = true
+	g.nextEntity = g.nextEntity + 1
+	local townPiece = g.nextEntity
+	g.edges[townPiece] = { node0 = endNode, node1 = townNode }
+	g.nodeConns[endNode] = { { segment0 = first, lane0 = 1, segment1 = townPiece, lane1 = 2, withRoad = true },
+		{ segment0 = townPiece, lane0 = 1, segment1 = first, lane1 = 2, withRoad = true } }
+	-- the node's shape as in the game: no piece within 1 m of it in the octree
+	local find = api.engine.util.octree.findEntitiesInCircle
+	api.engine.util.octree.findEntitiesInCircle = function(c, r, kind)
+		if r <= 1 then return {} end
+		return find(c, r, kind)
+	end
+	local ok, res = pcall(roadRun, g, 1071, '{ from = "2417,70", to = "2500,90", snap = 20 }')
+	api.engine.util.octree.findEntitiesInCircle = find
+	truthy(ok, res); a = res
+	truthy(a.ok, a.error); eq(a.from.node, endNode); eq(a.from.piecesFrom, "streetSystem")
+	eq(a.from.laneRules, 4, "a junction of three: each arriving road lane to each leaving one of the other two")
+	eq(#g.nodeConns[endNode], 6, "the town's two kept, four added")
+	eq(g.edges[a.edge].node0, endNode)
+	-- the same without the street system: the old way, refused as in the game (nothing sent)
+	local sent = #g.buildCmds
+	local real = api.engine.system.streetSystem.getNodeStreetSegments
+	api.engine.system.streetSystem.getNodeStreetSegments = nil
+	api.engine.util.octree.findEntitiesInCircle = function(c, r, kind)
+		if r <= 1 then return {} end
+		return find(c, r, kind)
+	end
+	a = roadRun(g, 1072, '{ from = "2417,70", to = "2380,120", snap = 20 }')
+	api.engine.util.octree.findEntitiesInCircle = find
+	api.engine.system.streetSystem.getNodeStreetSegments = real
+	eq(a.ok, false); truthy(tostring(a.error):find("no road piece was found at node " .. endNode, 1, true), tostring(a.error))
+	eq(#g.buildCmds, sent)
 	truthy(not g.crashed, g.crashed)
 end)
 
