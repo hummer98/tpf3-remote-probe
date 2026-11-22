@@ -480,6 +480,59 @@ python3 tools/tf3ctl.py terrain --rect 0,0,300,800 --slope-y -10 --base 120 [--v
   replacement works outside the map editor (every use seen is in the editor), what happens to trees and to the
   town mod's land in the rectangle, the read-back values.
 
+### One town (`town`)
+
+```
+python3 tools/tf3ctl.py town --at 1200,-300 --name "Harbourside" --dry-run
+python3 tools/tf3ctl.py town --at 1200,-300 --name "Harbourside" [--size 1.5] [--capacity 300]
+python3 tools/tf3ctl.py town --at=-800,400 --name "Quayside" --needs com:fish,ind:planks [--via auto|update|gui] [--in-game]
+python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
+```
+
+- Puts one town on the map at a point, as the map editor's towns window and import do (`map_editor.tl`
+  `makeTowns`): one `GameMap.Town` (`api.type.Map.Town.new()`: `pos`, `name`, `sizeFactors`, `landUse2CargoNeeds`,
+  `existing = -1`) goes to `api.engine.mapgen.createTowns("remote_probe", { town })`, and the one `TownInfo` it
+  gives back (`toAdd`) is sent as `api.cmd.makeTownCreateCmd({ info })`. Only in the map editor
+  (`api.gui.game.isMapEditor()`); outside it the probe refuses unless `--in-game` is given, for a new test game
+  (every use seen, the base editor and the town mods, is in the editor). It warns other clients as a game-changing
+  command (its dry run too).
+- `--size` is each district's size factor (`sizeFactors = { f, f, f }`, 0.1 .. 2.5, default 1 as the base import;
+  Real World Map Importer uses 0.5 for 500 inhabitants and 1 for 5000). `--capacity N` scales the engine's
+  `initialLandUseCapacities` to an average of N per district (1 .. 1000), its proportions kept, as Advanced Town
+  Placement does (its towns reach about 500); without it the engine's own values for the place are sent.
+- First cargo needs: a town made by a script gets no first demand from the game, and without one it never asks for
+  goods (Real World Map Importer's changelog). By default one category for the shops and one for the industry, the
+  first by name of the economy's lowest tier (tier 0) that has a cargo type; `--needs com:fish,ind:planks` names
+  them (land use `res`, `com` or `ind`, at most 3 each, the economy's category names); `--no-needs` gives none.
+  They go twice: as `landUse2CargoNeeds` (category names with weight 1 per `LandUseType`, as the base import and
+  Advanced Town Placement pass them), and, when the new town's `TOWN` component does not show them a few frames
+  after the create callback, as `api.cmd.makeTownUpdateCargoNeedsCmd(town, { {res ids}, {com ids}, {ind ids} },
+  true)` with the cargo type ids (as Real World Map Importer does), read back once more.
+- Where the place cannot take a town (roads, buildings, water, rough ground), the engine decides: an error that
+  `createTowns` raises comes back as it is; a proposal with no initial capacity (0, 0, 0) is refused, as Advanced
+  Town Placement leaves such places out; a create the engine refuses (the callback) is an error. Towns that
+  `createTowns` lists to remove (`toRemove`; the editor destroys them first) are only counted
+  (`toRemoveIgnored`): this command never destroys a town. `createTowns` seems to take the list it gets as all the
+  map's towns (the base import adds the towns it keeps), so `toRemoveIgnored` may well be the number of towns
+  already there, and the engine's proposal may not leave room for them: put a town well away from the others. A
+  point off the map (`isValidCoordinate`) is refused; one that cannot be checked is a warning.
+- `--dry-run` sends nothing: in the editor or with `--in-game` it asks `createTowns` for the proposal (no command;
+  the answer's `proposal`), elsewhere only the arguments and the needs are checked.
+- Two ways (`via`), as `terrain`: `gui` (and `auto`, the default) runs in the speed control's recipe (its join),
+  `update` in the guiUpdate state, only when given. The needs command is sent from the guiUpdate state: where that
+  state lacks `makeTownUpdateCargoNeedsCmd` the town is still made, without it, and the answer says so
+  (`needsSet`, `warnings`; `functionsUpdate` lists it). A success with no new town found is an error.
+- The answer: `via`, `mapEditor`, `inGame`, `at`, `name`, `size`, `capacity`, `needs` (names per land use),
+  `needIds` (cargo type ids per district), `proposal` (the TownInfo's `name`, `position`,
+  `initialLandUseCapacities`, `scaledCapacities`, `capacityScalingFactor`, `majorStreetAngle`), `sent`, `success`,
+  `entity` (the one town id new since the command, by name when there are several), `townName`, `position` (the
+  middle of its bounding box), `population` (from `getTown2personCapacitiesMap`, as `industry-workers`; it starts
+  low, the buildings come over the next game days), `personCapacities`, `needsRead` (cargo type ids per district,
+  read back), `needsSet`, `needsMet`, `warnings`; on a refusal `error`.
+- **Not checked in game yet** (written 2026-11-22): whether the guiUpdate state or the recipe has these functions,
+  whether it works outside the map editor, whether `landUse2CargoNeeds` takes, the needs command, how the engine
+  answers a place with roads or buildings on it, the population right after.
+
 ### My Mods from the main menu (`modhub`)
 
 ```
@@ -706,6 +759,7 @@ Not checked yet:
 - The gui way's own send of a bought vehicle to its line and the refusal's reason; `lines --problems`;
   `stations --catchment`.
 - `terrain`, `terrain --probe-api` and `newgame --editor`, entirely (see "The ground in a rectangle").
+- `town`, entirely (see "One town").
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `modhub publish`, entirely (see "Uploading one new mod"). `modhub status` and `validate` were checked on
   2026-11-22.

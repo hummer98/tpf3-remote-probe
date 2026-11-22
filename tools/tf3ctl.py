@@ -72,6 +72,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # when a road, construction, town building, industry or town is in it. Answers the grid, the heights,
             # the way (gui, or update when asked), the heights read back
   tf3ctl.py terrain --probe-api              # read only: which terrain functions the probe's two Lua states have
+  tf3ctl.py town --at 1200,-300 --name "Harbourside" [--size 1.5] [--capacity 300] [--needs com:fish,ind:planks]
+            [--in-game] [--dry-run]   # one town (createTowns, as the map editor): the map editor only (--in-game:
+            # a new test game); first needs from the economy's lowest tier unless --needs / --no-needs. Answers the
+            # town's entity, name, position, population, the engine's proposal, the needs read back
   tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
@@ -126,7 +130,7 @@ PICKUP_TIMEOUT_SEC = 30  # the mod polls every 2 s when idle (at most 20 s); lon
 RECENT_SEC = 600  # another owner's game-changing command this recent gets a warning
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
-                "build", "road", "terrain", "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
+                "build", "road", "terrain", "town", "modhubValidate", "modhubPublish"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -1636,6 +1640,56 @@ def terrain_args(ns):
     return args
 
 
+def town_args(ns):
+    """town: --at x,y, --name, and --size, --capacity, --needs / --no-needs, --via, --in-game, --dry-run as given
+    (the mod checks all of it again)."""
+    try:
+        at = [float(x) for x in (ns.at or "").split(",")]
+    except ValueError:
+        raise ToolError("--at must be numbers: x,y (for a negative x write --at=-100,50)")
+    if len(at) != 2 or any(x != x or abs(x) == float("inf") for x in at):
+        raise ToolError("--at must be x,y (finite numbers; for a negative x write --at=-100,50)")
+    name = (ns.name or "").strip()
+    if not name:
+        raise ToolError("give --name (the town's name)")
+    if len(name.encode("utf-8")) > TOWN_NAME_MAX:
+        raise ToolError("--name: at most %d bytes" % TOWN_NAME_MAX)
+    args = {"at": at, "name": name}
+    if ns.size is not None:
+        if ns.size != ns.size or not TOWN_SIZE[0] <= ns.size <= TOWN_SIZE[1]:
+            raise ToolError("--size must be %g-%g (the size factor of each district; 1 as the base import)" % TOWN_SIZE)
+        args["size"] = ns.size
+    if ns.capacity is not None:
+        if not 1 <= ns.capacity <= TOWN_MAX_CAPACITY:
+            raise ToolError("--capacity must be 1-%d" % TOWN_MAX_CAPACITY)
+        args["capacity"] = ns.capacity
+    if ns.no_needs:
+        if ns.needs is not None:
+            raise ToolError("--needs or --no-needs, not both")
+        args["needs"] = "none"
+    elif ns.needs is not None:
+        parts = [x.strip() for x in ns.needs.split(",")]
+        for part in parts:
+            lu, _, cat = part.partition(":")
+            if lu.strip().lower() not in ("res", "com", "ind") or not re.fullmatch(r"\w+", cat.strip()):
+                raise ToolError("--needs: land use:category, comma separated (com:fish,ind:planks); land use res, com "
+                                "or ind")
+        args["needs"] = ",".join(parts)
+    if ns.via:
+        args["via"] = ns.via
+    if ns.in_game:
+        args["inGame"] = True
+    if ns.dry_run:
+        args["dryRun"] = True
+    return args
+
+
+TOWN_NAME_MAX = 64  # the mod's core.TOWN_NAME_MAX
+TOWN_SIZE = (0.1, 2.5)  # core.TOWN_SIZE
+TOWN_MAX_CAPACITY = 1000  # core.TOWN_MAX_CAPACITY
+TOWN_TIMEOUT_SEC = 120  # the mod waits 20 s for the recipe, 60 s for the create callback, 10 s for the needs
+
+
 def water_args(ns):
     """water: --at x,y or --grid x0,y0,x1,y1,step (at most WATER_MAX_POINTS points; the mod checks again)."""
     def numbers(text, n, what):
@@ -2987,6 +3041,26 @@ def make_parser():
     te.add_argument("--in-game", action="store_true", help="also outside the map editor (a new test game): whether "
                     "the replacement works in a game is not known; the editor's seed and material calls are left out")
     te.add_argument("--dry-run", action="store_true", help="the grid and the heights, nothing sent")
+    tw = sub.add_parser("town", help="one town at a point (createTowns and makeTownCreateCmd, as the map editor's "
+                        "towns window); in the map editor only, unless --in-game")
+    tw.add_argument("--at", required=True, metavar="X,Y", help="metres (for a negative x write --at=-100,50)")
+    tw.add_argument("--name", required=True, help="the town's name")
+    tw.add_argument("--size", type=float, help="the size factor of each district (%g-%g, default 1 as the base "
+                    "import; Real World Map Importer: 0.5 for 500 inhabitants, 1 for 5000)" % TOWN_SIZE)
+    tw.add_argument("--capacity", type=int, help="the average initial capacity per district (1-%d): the engine's "
+                    "proposal scaled to it, its proportions kept (as Advanced Town Placement); default the engine's"
+                    % TOWN_MAX_CAPACITY)
+    tn = tw.add_mutually_exclusive_group()
+    tn.add_argument("--needs", metavar="LU:CAT,...", help="first cargo needs, land use (res, com, ind) : the "
+                    "economy's category, e.g. com:fish,ind:planks; default one for the shops and one for the industry "
+                    "from the lowest tier")
+    tn.add_argument("--no-needs", action="store_true", help="no first needs (the game then never adds one)")
+    tw.add_argument("--via", choices=("auto", "update", "gui"), help="where it runs: the speed control's recipe "
+                    "(gui; auto, the default) or the guiUpdate state (update, only when given)")
+    tw.add_argument("--in-game", action="store_true", help="also outside the map editor (a new test game): whether "
+                    "it works in a game is not known")
+    tw.add_argument("--dry-run", action="store_true", help="nothing sent: the needs and, in the editor or with "
+                    "--in-game, the engine's proposal for the place")
     wa = sub.add_parser("water", help="read only: the water level, and at a point or on a grid water or land and the "
                                        "terrain's height (to find a shore for a harbour)")
     wg = wa.add_mutually_exclusive_group(required=True)
@@ -3334,6 +3408,8 @@ def main(argv=None):
                 res = send("terrainApi", {}, timeout=30)
             else:
                 res = send("terrain", terrain_args(ns), timeout=TERRAIN_TIMEOUT_SEC)
+        elif ns.cmd == "town":
+            res = send("town", town_args(ns), timeout=TOWN_TIMEOUT_SEC)
         elif ns.cmd == "tool":
             ev = tool_event(ns)
             if ev:
