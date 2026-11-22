@@ -259,7 +259,10 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
 
 - 端 (`--from`、`--to`): 空いている端の node の id (線路の piece がちょうど 1 本で道路が無い node。`--road` なら道路の
   piece が 1 本で線路が無い node)。または駅グループ、駅、駅の construction (id か、駅グループの名前の一部)。駅は、その
-  ホームの空いている端の集まりとして扱い、互いにいちばん向き合う端の組を使います。
+  ホームの空いている端の集まりとして扱い、互いにいちばん向き合う端の組を使います。車庫の entity id (`depots` が並べるもの)
+  は、その construction の空いている端 (`getConstructionEntityForDepot`。凍結の node は除く) の集まりです。1 つならそれを
+  使い、2 つ以上なら候補を並べて断り (node を1つ指定する)、無ければ断ります (線路がもう本線につながっているかもしれない:
+  `depots` の `joinedEnds`)。
 - 既定値は Track Connector の設定の既定値と同じです: 線路は 2.5 % と半径 300 m、道路は 6 % と 100 m (道路の種類に造れる最大の勾配が
   書いてあれば、それより急な指定はその値に下げる)。橋とトンネルは使える。`--template` の無い道路は、Track Connector の道路ツールと同じく、始点の道路の種類と
   車線をそのまま使います。ただし、その種類が construction の入口の道 (`street/constructions/`。産業、駅、車庫が持つもので、
@@ -407,8 +410,9 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの nod
   (`"octree"`)。産業の T 字では、octree はどれにも当たりませんでした。なければ新しい node です。新しい node が古い node の
   真上 (0.1 m 以内。`--snap 0` のとき) になるときは、エンジンが proposal 全体を断る (Construction Not Possible) ので、
   送る前に断ります。
-- 建物の道路: `build` の答えの `construction.connectable` に、道路をつなげる所を並べます。それぞれ `node`、`x` / `y` /
-  `z`、`edges` (そこにある道路の数)、`nodeConfig` があります。`kind: "mouth"` は凍結の道路の開いた端 (`frozenEdges` の
+- 建物の道路: `build` の答えの `construction.connectable` に、道路 (または線路: `track: true`。線路の車庫など、`connect`
+  用) をつなげる所を並べます。それぞれ `node`、`x` / `y` / `z`、`track`、`edges` (そこにある同じ種類の piece の数)、道路の
+  node なら `nodeConfig` があります。`kind: "mouth"` は凍結の道路の開いた端 (`frozenEdges` の
   node のうち `frozenNodes` に無いもの。産業の道路の口はここで、自由な腕2本と T 字になる)、`kind: "arm"` は口から出る自由な
   道路の先の端 (`from`: 口、`via`: その道路)。`ends` (凍結の道路の端) には腕が出ません。建物の node
   (`streetConnectorSystem.getConstructionEntityForNode` が 0 以上か、そこに建物の凍結の edge がある) には、**交差点の
@@ -1148,6 +1152,11 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   かった)。種類 (road / tram / rail / water / air) は transport modes から決めます。`carrier` はある試験で 49 件すべて
   OTHER だった (本体も transport modes を見る) ので、`carrier` / `carrierRaw` は参考です。メンテナンス用の建物も出ます
   (`maintenancePool`)。
+- 車庫ごとに、その construction の端も返します (`streetConnectorSystem.getConstructionEntityForDepot` から、`frozenEdges`
+  の node。`frozenNodes` は除く): `construction`、`freeEnds` (piece が 1 本だけの node。`connect` の端になる。`node`、`x` /
+  `y` / `z`、`edges`、`track` は線路なら true、道路なら false)、`joinedEnds` (車庫のものでない piece もある node。
+  `trackPieces` / `roadPieces` 付き。線路がもう本線につながっている)。construction が見つからない車庫には、代わりに
+  `endsWhy` が付きます。
 - レシピが最初に保存データを読んだときに残っていた依頼は、前のゲームの残りとして実行しません。GUI スクリプトも
   ロードのたびに空にします。実行済みの依頼と報告はモジュールの変数に持つので、速度ボタンが描き直されても失いません。
   報告は新しい 10 件だけ残します。

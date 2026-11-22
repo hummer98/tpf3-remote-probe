@@ -304,21 +304,35 @@ function M.new(ctx)
 	end
 
 	-- a node as the answers show it: id, position, how many street pieces meet there, whether it has its set-up
-	local function nodeEntry(n, extra)
+	-- the track pieces at a node (streetSystem.getNodeTrackSegments, engine/system.d.tl:315): ids, or nil when it is
+	-- not there or raises. Asked only of a node a construction's track piece names (a node is never asked about
+	-- by an id that may be no node: the lookups assume one)
+	local function trackSegmentsAt(n)
+		local ok, v = pcall(function() return api.engine.system.streetSystem.getNodeTrackSegments(n) end)
+		if not ok or v == nil then return nil end
+		return ids(v)
+	end
+
+	-- a node as the answers show it: id, position, how many pieces of its kind meet there (track: tracks; else
+	-- roads), and for a road node whether it has its set-up (a track node's is not asked about)
+	local function nodeEntry(n, extra, track)
 		local p = nodePos(n) or {}
-		local segs = streetSegmentsAt(n)
-		local cfg = nodeConfigState(n)
-		local out = { node = n, x = p.x, y = p.y, z = p.z, edges = segs and #segs or nil,
-			nodeConfig = cfg == nil and "unread" or cfg }
+		local segs = track and trackSegmentsAt(n) or (not track and streetSegmentsAt(n)) or nil
+		local out = { node = n, x = p.x, y = p.y, z = p.z, edges = segs and #segs or nil, track = track == true }
+		if not track then
+			local cfg = nodeConfigState(n)
+			out.nodeConfig = cfg == nil and "unread" or cfg
+		end
 		for k, v in pairs(extra or {}) do out[k] = v end
 		return out
 	end
 
-	-- where a road can join a construction (road --to there): its open ends ("mouth": a node of a frozen edge
-	-- that is not among frozenNodes; an industry's stub ends there in a T with two free arms, forest.script.lua
-	-- street_cross_01 / 02) and the far ends of the free pieces that leave a mouth ("arm": one piece on, the
-	-- arms' snapNodes end). The ends list (frozen edges only) shows neither the arms nor their far ends. nil and
-	-- why when the construction's frozenNodes or the street system cannot be read.
+	-- where a road or a track can join a construction (road --to, connect --to there): its open ends ("mouth": a
+	-- node of a frozen edge that is not among frozenNodes; an industry's road stub ends there in a T with two free
+	-- arms, forest.script.lua street_cross_01 / 02; a rail depot's track leaves at one) and the far ends of the
+	-- free pieces of the same kind that leave a mouth ("arm": one piece on, the arms' snapNodes end). Each says
+	-- track true (a track node) or false (a road node). The ends list (frozen edges only) shows neither the arms
+	-- nor their far ends. nil and why when the construction's frozenNodes or the street system cannot be read.
 	local function connectableOf(c)
 		local fe = ids(core.field(c, "frozenEdges"))
 		if #fe == 0 then return nil end
@@ -327,29 +341,41 @@ function M.new(ctx)
 		local frozenN, frozenE = setOf(ids(fnRaw)), setOf(fe)
 		local mouths, seen = {}, {}
 		local street = try(function() return api.type.enum.RoadType.STREET end)
+		local trackT = try(function() return api.type.enum.RoadType.TRACK end)
 		for _, edge in ipairs(fe) do
 			local be = comp(edge, "BASE_EDGE")
-			-- (road pieces only: a station's or a depot's track nodes are never asked about)
+			-- (a piece whose kind does not read is left out: neither system is asked about its nodes)
 			local rt = be and core.field(be, "roadType")
-			if street == nil or rt == nil or rt ~= street then be = nil end
-			for _, k in ipairs({ "node0", "node1" }) do
-				local n = tonumber(be and core.field(be, k))
-				if n and not frozenN[n] and not seen[n] then seen[n] = true; mouths[#mouths + 1] = n end
+			local track
+			if rt ~= nil and street ~= nil and rt == street then track = false
+			elseif rt ~= nil and trackT ~= nil and rt == trackT then track = true end
+			if track ~= nil then
+				for _, k in ipairs({ "node0", "node1" }) do
+					local n = tonumber(core.field(be, k))
+					if n and not frozenN[n] and not seen[n] then
+						seen[n] = true
+						mouths[#mouths + 1] = { node = n, track = track }
+					end
+				end
 			end
 		end
 		local out, why = {}, nil
 		for _, m in ipairs(mouths) do
-			out[#out + 1] = nodeEntry(m, { kind = "mouth" })
-			local segs = streetSegmentsAt(m)
-			if segs == nil then why = "streetSystem.getNodeStreetSegments could not be read: no arms" end
+			out[#out + 1] = nodeEntry(m.node, { kind = "mouth" }, m.track)
+			local segs
+			if m.track then segs = trackSegmentsAt(m.node) else segs = streetSegmentsAt(m.node) end
+			if segs == nil then
+				why = (m.track and "streetSystem.getNodeTrackSegments" or "streetSystem.getNodeStreetSegments") ..
+					" could not be read: no arms"
+			end
 			for _, s in ipairs(segs or {}) do
 				if not frozenE[s] then
 					local be = comp(s, "BASE_EDGE")
 					local n0, n1 = tonumber(be and core.field(be, "node0")), tonumber(be and core.field(be, "node1"))
-					local far = n0 == m and n1 or n0
-					if far and far ~= m and not seen[far] then
+					local far = n0 == m.node and n1 or n0
+					if far and far ~= m.node and not seen[far] then
 						seen[far] = true
-						out[#out + 1] = nodeEntry(far, { kind = "arm", from = m, via = s })
+						out[#out + 1] = nodeEntry(far, { kind = "arm", from = m.node, via = s }, m.track)
 					end
 				end
 			end
@@ -359,7 +385,7 @@ function M.new(ctx)
 
 	-- the new construction, read back: its file, name, depots / stations / industries, and the free ends of its own
 	-- roads and tracks (nodes only one of its pieces reaches, with their positions: a connect --from), and where a
-	-- road can join it (connectable: connectableOf)
+	-- road or a track can join it (connectable: connectableOf)
 	local function describe(e)
 		local c = comp(e, "CONSTRUCTION")
 		if not c then return nil end

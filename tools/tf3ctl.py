@@ -3910,8 +3910,9 @@ def make_parser():
     cn = sub.add_parser("connect", help="a track (or road) between two free ends, planned and built by the Track "
                                          "Connector mod (which the save needs); without --build only checked")
     cn.add_argument("--from", dest="from_", required=True, metavar="END",
-                    help="a free end's node id, a station (group) id or a part of a station's name")
-    cn.add_argument("--to", required=True, metavar="END")
+                    help="a free end's node id, a station (group) id or a part of a station's name, or a depot's id "
+                    "(its one free end; two or more are listed and refused)")
+    cn.add_argument("--to", required=True, metavar="END", help="as --from")
     cn.add_argument("--road", action="store_true", help="a road instead of a track (between dead-end roads)")
     cn.add_argument("--template", help="--road: the road type's full resource name (default: as the start road, or a "
                     "country road of the game's year when that is a construction's entrance road or out of its years)")

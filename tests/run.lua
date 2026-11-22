@@ -4561,6 +4561,8 @@ local function connectWorld(tcOpts, gameOpts)
 	for k, v in pairs(tcOpts) do w[k] = v end
 	gameOpts = gameOpts or {}
 	gameOpts.saves = gameOpts.saves or SAVES
+	-- (no depots unless given: the fake game's default depot 301 would share its id with the construction 301 here)
+	gameOpts.depots = gameOpts.depots or {}
 	gameOpts.stationGroups = gameOpts.stationGroups or {
 		[42] = { name = "Harbour", stations = { { id = 421, terminals = 2, carriers = { "RAIL" }, pos = { 1050, 500 } } } },
 		[43] = { name = "Harbour Goods", stations = { { id = 431, terminals = 1, carriers = { "RAIL" }, pos = { 3000, 3000 } } } } }
@@ -4730,7 +4732,7 @@ test("connect ends: node, station group by name, station, construction; junction
 		{ "{ from = 101, to = 301 }", true, "construction" },
 		{ "{ from = 110, to = 103 }", "node 110 is not a free track end (3 track" },
 		{ "{ from = 101, to = 121 }", "node 121 is not a free track end (0 track and 1 road" },
-		{ "{ from = 201, to = 103 }", "201 is no node, station" },
+		{ "{ from = 201, to = 103 }", "201 is no node, depot, station" },
 		{ "{ from = 101, to = 99999 }", "99999 is no node" },
 		{ "{ from = 101, to = 'Nowhere' }", 'no match for "Nowhere"' },
 		{ "{ from = 101, to = 43 }", "has no free platform track end" },
@@ -5011,7 +5013,7 @@ test("connect: ids that are no entity are never looked up (the strict fake ends 
 	local g = connectWorld()
 	for i, id in ipairs({ 99999, 2 ^ 31 - 1, 123456789 }) do
 		local a = connectRun(g, 930 + i, string.format("{ from = 101, to = %d }", id))
-		truthy(a.error:find("is no node, station"), tostring(a.error))
+		truthy(a.error:find("is no node, depot, station"), tostring(a.error))
 	end
 	eq(g.crashed, nil)
 end)
@@ -5443,6 +5445,80 @@ test("build-tool --close while the menu's queue is pending drops the rest", func
 	local ev = watchEvents(g, 30 * 70)
 	eq(#ev, 1, "only the clear"); eq(ev[1].name, "setMenuFilter"); eq(#ev[1].param.enabledItems, 0)
 	fake.guiSave.hummer_remote_probe = nil
+end)
+
+-- rail (and road) depots: their constructions' free ends, in the depots answer and as connect --from / --to.
+-- Depot 351 (construction 360): one track from its frozen inner node 130 to 131 (2050, 0), a free end; depot 352
+-- (361): two tracks out of the frozen node 132, ends 133 and 134; depot 353 (362): its end 136 joined to a line
+-- (213 on to 137), no free end; depot 354 (363): a road depot, its road out to 139. (2026-11-23 in a game: a depot's
+-- free end was the id after it in one save, and in another no id around it was a free end)
+local function depotWorld()
+	return connectWorld({
+		nodes = { [130] = { 2000, 0, 0 }, [131] = { 2050, 0, 0 }, [132] = { 2000, 300, 0 }, [133] = { 2050, 300, 0 },
+			[134] = { 1950, 300, 0 }, [135] = { 2000, 600, 0 }, [136] = { 2050, 600, 0 }, [137] = { 2100, 600, 0 },
+			[138] = { 2000, 900, 0 }, [139] = { 2050, 900, 0 },
+			[100] = { -100, 0, 10 }, [101] = { 0, 0, 10 }, [103] = { 1000, 0, 20 }, [104] = { 1100, 0, 20 },
+			[105] = { 1000, 500, 20 }, [106] = { 1100, 500, 20 }, [107] = { 500, -200, 0 }, [108] = { 500, 200, 0 },
+			[110] = { -300, 0, 10 }, [111] = { -400, 0, 10 }, [112] = { -300, 100, 10 }, [120] = { 0, 900, 5 }, [121] = { 100, 900, 5 } },
+		edges = { [209] = { node0 = 130, node1 = 131 }, [210] = { node0 = 132, node1 = 133 }, [211] = { node0 = 132, node1 = 134 },
+			[212] = { node0 = 135, node1 = 136 }, [213] = { node0 = 136, node1 = 137 },
+			[214] = { node0 = 138, node1 = 139, road = true, template = fakeTc.TOWN },
+			[201] = { node0 = 100, node1 = 101 }, [202] = { node0 = 104, node1 = 103 }, [203] = { node0 = 105, node1 = 106 },
+			[204] = { node0 = 107, node1 = 108, road = true }, [205] = { node0 = 110, node1 = 100 }, [206] = { node0 = 111, node1 = 110 },
+			[207] = { node0 = 112, node1 = 110 }, [208] = { node0 = 120, node1 = 121, road = true, template = fakeTc.TOWN } },
+		constructions = { [301] = { box = { 990, 490, 1110, 510 }, stations = { 421 }, frozenEdges = { 203 } },
+			[360] = { box = { 1990, -10, 2010, 10 }, frozenEdges = { 209 }, depots = { 351 }, frozenNodes = { 130 } },
+			[361] = { box = { 1990, 290, 2010, 310 }, frozenEdges = { 210, 211 }, depots = { 352 }, frozenNodes = { 132 } },
+			[362] = { box = { 1990, 590, 2010, 610 }, frozenEdges = { 212 }, depots = { 353 }, frozenNodes = { 135 } },
+			[363] = { box = { 1990, 890, 2010, 910 }, frozenEdges = { 214 }, depots = { 354 }, frozenNodes = { 138 } } },
+	}, { depots = { [351] = { name = "Rail depot A", modes = { "TRAIN" } }, [352] = { name = "Rail depot B", modes = { "TRAIN" } },
+		[353] = { name = "Rail depot C", modes = { "TRAIN" } }, [354] = { name = "Road depot", modes = { "BUS", "TRUCK" } },
+		[355] = { name = "Lone depot", modes = { "BUS" } } } })
+end
+
+test("depots: each depot's free ends from its construction (0, 1, 2), joined ends, frozen nodes left out; road depots too", function()
+	local g = depotWorld()
+	send(g, 1100, "depots", "{  }")
+	frames(g, FIRST + 2)
+	local a = final(g, 1100)
+	truthy(a.ok, a.error)
+	local by = {}
+	for _, d in ipairs(a.depots) do by[d.id] = d end
+	eq(by[351].construction, 360); eq(#by[351].freeEnds, 1); eq(by[351].freeEnds[1].node, 131)
+	eq(by[351].freeEnds[1].track, true); eq(by[351].freeEnds[1].edges, 1); eq(by[351].freeEnds[1].x, 2050)
+	eq(by[351].joinedEnds, nil)
+	eq(#by[352].freeEnds, 2); eq(by[352].freeEnds[1].node, 133); eq(by[352].freeEnds[2].node, 134)
+	eq(#by[353].freeEnds, 0, "joined to a line"); eq(by[353].joinedEnds[1].node, 136); eq(by[353].joinedEnds[1].trackPieces, 2)
+	eq(#by[354].freeEnds, 1); eq(by[354].freeEnds[1].node, 139); eq(by[354].freeEnds[1].track, false, "a road depot's road end")
+	-- a depot no construction lists: no ends, and why (as the old answer, plus the why)
+	eq(by[355].freeEnds, nil); truthy(by[355].endsWhy:find("could not be found", 1, true), by[355].endsWhy)
+	eq(by[355].name, "Lone depot"); eq(by[355].kind, "road")
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("connect --to a depot: its one free end is the end; two are named and refused; none refused; a road depot by road", function()
+	local g = depotWorld()
+	local a = connectRun(g, 1101, "{ from = 101, to = 351 }")
+	eq(a.ok, true, tostring(a.error)); eq(a.to.kind, "depot"); eq(a.to.entity, 351); eq(a.to.node, 131)
+	eq(a.to.freeEnds, nil, "one end only")
+	a = connectRun(g, 1102, "{ from = 351, to = 103 }")
+	eq(a.ok, true, tostring(a.error)); eq(a.from.node, 131)
+	a = connectRun(g, 1103, "{ from = 101, to = 352 }")
+	eq(a.ok, false); truthy(tostring(a.error):find("has 2 free track ends: node 133 (2050.0, 300.0), node 134 (1950.0, 300.0); give one node", 1, true), tostring(a.error))
+	a = connectRun(g, 1104, "{ from = 101, to = 353 }")
+	eq(a.ok, false); truthy(tostring(a.error):find("has no free track end", 1, true) and a.error:find("joinedEnds", 1, true), tostring(a.error))
+	-- a road depot: by road its end; as a track none
+	a = connectRun(g, 1105, "{ from = 121, to = 354, road = true }")
+	eq(a.ok, true, tostring(a.error)); eq(a.to.node, 139)
+	a = connectRun(g, 1106, "{ from = 101, to = 354 }")
+	eq(a.ok, false); truthy(tostring(a.error):find("no free track end", 1, true), tostring(a.error))
+	-- one no construction lists
+	a = connectRun(g, 1107, "{ from = 101, to = 355 }")
+	eq(a.ok, false); truthy(tostring(a.error):find("could not be found", 1, true), tostring(a.error))
+	-- a node still works as before (the depot's free end given by its id)
+	a = connectRun(g, 1108, "{ from = 101, to = 133 }")
+	eq(a.ok, true, tostring(a.error)); eq(a.to.kind, "node")
+	truthy(not g.crashed, g.crashed)
 end)
 
 ---------------------------------------------------------------------------------------------------------------------
@@ -8554,15 +8630,24 @@ test("road: whether a node is a construction's cannot be read either way: refuse
 	eq(#g.buildCmds, 1); eq(g.proposalDataCalls, 0); truthy(not g.crashed, g.crashed)
 end)
 
-test("build: connectable leaves out a construction's track pieces (a station's), lists its road mouth", function()
-	local STATION = "::/station/rail/small.con"
+test("build: connectable lists track mouths and arms too (track true) beside road ones; frozen nodes never", function()
+	local DEPOT = "::/depots/rail/rail_depot.con"
+	-- a track from the frozen inner node 1 to the mouth 2 (50, 0), a free track arm on to 5 (100, 0); a road from
+	-- the frozen node 3 to its mouth 4 (0, 30); a piece of a kind that does not read is left out
 	local g = roadWorld({ roads = { nodes = {}, edges = {} }, height = function() return 0 end,
-		cons = { [STATION] = { cost = 0, shape = { nodes = { { 0, 0, 0 }, { 50, 0, 0 }, { 0, 10, 0 }, { 0, 30, 0 } },
-			edges = { { 1, 2, track = true }, { 3, 4 } }, frozenNodes = { 3 } } } } })
-	local b = buildRun(g, 1085, string.format('{ res = %q, at = "500,500" }', STATION))
+		cons = { [DEPOT] = { cost = 0, shape = { nodes = { { 0, 0, 0 }, { 50, 0, 0 }, { 0, 10, 0 }, { 0, 30, 0 }, { 100, 0, 0 } },
+			edges = { { 1, 2, track = true }, { 3, 4 } }, free = { { 2, 5, track = true } }, frozenNodes = { 1, 3 } } } } })
+	local b = buildRun(g, 1085, string.format('{ res = %q, at = "500,500" }', DEPOT))
 	truthy(b.ok, b.error)
 	local c = b.construction.connectable
-	eq(#c, 1, "the road's mouth only"); eq(c[1].kind, "mouth"); eq(c[1].y, 530)
+	eq(#c, 3, "the track's mouth and arm, the road's mouth")
+	local byX = {}
+	for _, e in ipairs(c) do byX[e.x .. "," .. e.y] = e; truthy(not g.frozenNode[e.node], "no frozen node") end
+	local tm, ta, rm = byX["550,500"], byX["600,500"], byX["500,530"]
+	truthy(tm and ta and rm, "all three")
+	eq(tm.kind, "mouth"); eq(tm.track, true); eq(tm.edges, 2, "its frozen piece and the arm"); eq(tm.nodeConfig, nil, "no set-up asked of a track node")
+	eq(ta.kind, "arm"); eq(ta.track, true); eq(ta.edges, 1); eq(ta.from, tm.node)
+	eq(rm.kind, "mouth"); eq(rm.track, false); eq(rm.edges, 1); eq(rm.nodeConfig, true)
 	truthy(not g.crashed, g.crashed)
 end)
 

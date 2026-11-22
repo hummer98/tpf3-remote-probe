@@ -1061,7 +1061,7 @@ function M.new(dir, opts)
 					return out
 				end, getLineVehicles = lineVehicleIds } },
 			entityExists = function(e)
-				return g.lines[e] ~= nil or g.fleet[e] ~= nil or groups[e] ~= nil or industries[e] ~= nil
+				return g.lines[e] ~= nil or g.fleet[e] ~= nil or groups[e] ~= nil or industries[e] ~= nil or depots[e] ~= nil
 					or (e == WORKERS_ENTITY and opts.workersScript ~= "none")
 			end,
 			getComponent = function(e, kind)
@@ -1951,6 +1951,17 @@ function M.installBuild(g, spec)
 	local streetSystem = {}
 	for k, f in pairs(oldStreets) do streetSystem[k] = f end
 	api.engine.system.streetSystem = streetSystem
+	-- the track pieces at a node (an edge of roadType TRACK), as getNodeStreetSegments below
+	streetSystem.getNodeTrackSegments = function(n)
+		if not g.nodes[n] and oldStreets.getNodeTrackSegments then return oldStreets.getNodeTrackSegments(n) end
+		if not g.nodes[n] then crash("getNodeTrackSegments: no node " .. tostring(n)) end
+		local out = {}
+		for e, ed in pairs(g.edges) do
+			if (ed.node0 == n or ed.node1 == n) and ed.roadType == "TRACK" then out[#out + 1] = e end
+		end
+		table.sort(out)
+		return out
+	end
 	streetSystem.getNodeStreetSegments = function(n)
 		g.streetSegmentCalls = (g.streetSegmentCalls or 0) + 1
 		if not g.nodes[n] and oldStreets.getNodeStreetSegments then return oldStreets.getNodeStreetSegments(n) end
@@ -2245,7 +2256,7 @@ function M.installBuild(g, spec)
 			for _, ed in ipairs((c.shape or {}).free or {}) do
 				g.nextEntity = g.nextEntity + 1
 				freeIds[#freeIds + 1] = g.nextEntity
-				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]] }
+				g.edges[g.nextEntity] = { node0 = nodeIds[ed[1]], node1 = nodeIds[ed[2]], roadType = ed.track and "TRACK" or nil }
 				if spec.armEndsOwned then
 					for _, k in ipairs({ 1, 2 }) do g.conNode[nodeIds[ed[k]]] = g.conNode[nodeIds[ed[k]]] or e end
 				end

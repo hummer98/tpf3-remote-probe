@@ -269,7 +269,9 @@ Without the mod, `connect` answers with an error saying so, and every other comm
 - Ends (`--from`, `--to`): a free end's node id (a node with exactly one track piece and no road; with `--road`, one
   road piece and no track), or a station group, a station or a station's construction (by id, or a part of a
   station group's name). A station stands for its free platform ends; the pair of ends that face each other best is
-  taken.
+  taken. A depot's entity id (as `depots` lists it) stands for its construction's free ends, its frozen nodes left
+  out (`getConstructionEntityForDepot`): one is the end; two or more are named and refused (give one node); none
+  is refused (its track may be joined to a line already: `depots` lists `joinedEnds`).
 - Defaults are Track Connector's default settings: tracks 2.5 % and 300 m curves, roads 6 % and 100 m (a road type that states a
   steepest grade it may be built at lowers a steeper slope to that); bridges and tunnels on. A road without `--template` gets the start road's own type and lanes,
   as Track Connector's road tool does, unless that type is a construction's own entrance road (`street/constructions/`,
@@ -428,8 +430,9 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road read
   and only when that is not there or raises from the octree within 1 m (`"octree"`): at an industry's T the
   octree met none of them. Otherwise the end is a new node; a new node right on an old one (within 0.1 m: with
   `--snap 0`) is refused before sending, as the engine refuses the whole proposal (Construction Not Possible).
-- A construction's road: the `build` answer's `construction.connectable` lists where a road can join it, each
-  with `node`, `x` / `y` / `z`, `edges` (street pieces there) and `nodeConfig`: `kind: "mouth"`, the open end of
+- A construction's road: the `build` answer's `construction.connectable` lists where a road (or a track:
+  `track: true`, e.g. a rail depot's, for `connect`) can join it, each with `node`, `x` / `y` / `z`, `track`,
+  `edges` (pieces of its kind there) and, for a road node, `nodeConfig`: `kind: "mouth"`, the open end of
   a frozen piece (a node of its `frozenEdges` not among its `frozenNodes`; an industry's road stub ends there in
   a T with two free arms), and `kind: "arm"`, the far end of a free piece leaving a mouth (`from`: the mouth,
   `via`: the piece). `ends` (the frozen pieces' ends) does not show the arms. A node that is the construction's
@@ -1236,6 +1239,11 @@ up after 20 s with "no answer". Relayed means fired, not that a
   read it was found). The kind (road / tram / rail / water / air) comes from the transport modes; `carrier` was
   OTHER for all 49 depots in a test (the base also goes by transport modes), so `carrier` / `carrierRaw` are for
   reference. Maintenance buildings show up too (`maintenancePool`).
+- Each depot also has its construction's ends (`streetConnectorSystem.getConstructionEntityForDepot`, then the
+  nodes of its `frozenEdges`, its `frozenNodes` left out): `construction`, `freeEnds` (nodes only one piece
+  reaches, a `connect` end: `node`, `x` / `y` / `z`, `edges`, `track` true for a track, false for a road) and
+  `joinedEnds` (nodes that also have pieces not of the depot's, with `trackPieces` / `roadPieces`: its track
+  already joined to a line). A depot whose construction cannot be found has `endsWhy` instead.
 - Requests left in the GUI save data when the recipe first reads it are from the previous game and are not run;
   the GUI script also clears them on every load. Done requests and reports are kept in module variables, so a
   redrawn speed control does not lose them. Only the newest 10 reports are kept.
