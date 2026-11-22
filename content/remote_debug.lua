@@ -43,6 +43,8 @@ function M.new(ctx)
 		end)
 		return out
 	end
+	-- passengers are sim persons with destinations: the base's debug panel never sets them, nor does this
+	local function passengerId() return tonumber(try(function() return api.res.cargoTypeRep.getPassengerCargoTypeId() end)) end
 
 	local function stockTypeNames()
 		local SLT = try(function() return api.type.enum.StockListType end)
@@ -103,8 +105,8 @@ function M.new(ctx)
 			-- what it has room for: config.capacities, one per cargo type (id + 1), read only within its length
 			local caps = try(function() return tv.config.capacities end)
 			local n = caps ~= nil and core.size(caps) or 0
-			local ids = {}
-			for id in pairs(names) do ids[#ids + 1] = id end
+			local ids, pax = {}, passengerId()
+			for id in pairs(names) do if id ~= pax then ids[#ids + 1] = id end end
 			table.sort(ids)
 			local cargo = {}
 			for _, id in ipairs(ids) do
@@ -139,6 +141,10 @@ function M.new(ctx)
 	-- whether the request fits the holder (an id or cargo the stock does not have may be the engine's assertion,
 	-- which pcall does not stop): nil when it does, else why
 	local function misfit(h, r)
+		local pax = passengerId()
+		if r.cargo and pax and cargoNames()[pax] == r.cargo then
+			return "passengers cannot be set (sim persons with destinations; the base's debug panel leaves them out)"
+		end
 		if h.kind == "vehicle" then
 			if r.stock ~= -1 then return "a vehicle's load is set with stock -1 (and cargo)" end
 			for _, c in ipairs(h.cargo) do
@@ -161,11 +167,17 @@ function M.new(ctx)
 			return "amount " .. r.amount .. " is more than stock " .. r.stock .. "'s capacity (" .. s.capacity .. ")"
 		end
 		if r.cargo then
-			local takes = {}
+			local takes, others, hit = {}, 0, false
 			for _, c in ipairs(s.cargoTypes) do
-				if c.cargo == r.cargo then return nil end
+				if c.cargo == r.cargo then hit = true else others = others + (c.count or 0) end
 				takes[#takes + 1] = c.cargo
 			end
+			-- a mixed stock holds its cargo types together: the others stay, so they count against the capacity
+			if hit and s.capacity and r.amount + others > s.capacity then
+				return "amount " .. r.amount .. " and the " .. others .. " of other cargo there are more than stock "
+					.. r.stock .. "'s capacity (" .. s.capacity .. ")"
+			end
+			if hit then return nil end
 			return "stock " .. r.stock .. " does not take " .. r.cargo .. " (it takes: "
 				.. (#takes > 0 and table.concat(takes, ", ") or "none listed") .. ")"
 		end

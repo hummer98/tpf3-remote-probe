@@ -543,7 +543,7 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
 ```sh
 python3 tools/tf3ctl.py stock list --entity 51                       # read only
 python3 tools/tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]
-python3 tools/tf3ctl.py stock set --entity 601 --stock -1 --amount 30 --cargo COAL   # a vehicle's load
+python3 tools/tf3ctl.py stock set --entity 601 --stock -1 --amount 30 --cargo <cargo>   # a vehicle's load
 python3 tools/tf3ctl.py steps 500 [--dry-run]
 ```
 
@@ -556,12 +556,14 @@ python3 tools/tf3ctl.py steps 500 [--dry-run]
   name), `capacity`, `count` (`getStockCount`) and `cargoTypes` (per cargo type the stock takes: its name and
   `count`). An industry, town building or warehouse whose own entity has no `STOCK_LIST` is followed to its
   `stockList` entity (`via`). A vehicle has no stock list: `kind` is `vehicle`, with `cargo` per cargo type it has
-  room for (`capacity`, `count`), set with `--stock -1 --cargo NAME`. Ids come from `industry-stocks`, `stations`
+  room for (`capacity`, `count`; passengers left out and refused, as the base panel does), set with
+  `--stock -1 --cargo NAME`. `--cargo` takes the `cargo` field exactly as `stock list` shows it. Ids come from `industry-stocks`, `stations`
   and `vehicles`.
 - `stock set` sends `api.cmd.debug.makeStockSetCargoAmountCmd(stock list entity, stock, amount[, cargo])` (the cargo
   only when given, as the base panel leaves it out for a stock list's stock). Refused before anything is sent: a
   stock id the list does not have, an amount over the stock's capacity (or the vehicle's for that cargo, or
-  100000), a cargo the stock or vehicle does not take, an entity the engine does not have. The answer: `before`,
+  100000; in a mixed stock with the other cargo there counted), passengers, a cargo the stock or vehicle does not
+  take, an entity the engine does not have. The answer: `before`,
   `after` (read a couple of frames after the callback), `success`, `engineResult` (what the callback handed back),
   `stockList` (the entity it went to); `--dry-run` sends nothing and answers `before` and `functionPresent`.
 - `steps N` (1-10000) sends `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)`. The answer: `before` and

@@ -510,7 +510,7 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
 ```sh
 python3 tools/tf3ctl.py stock list --entity 51                       # 読むだけ
 python3 tools/tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]
-python3 tools/tf3ctl.py stock set --entity 601 --stock -1 --amount 30 --cargo COAL   # 車両の積み荷
+python3 tools/tf3ctl.py stock set --entity 601 --stock -1 --amount 30 --cargo <cargo>   # 車両の積み荷
 python3 tools/tf3ctl.py steps 500 [--dry-run]
 ```
 
@@ -523,10 +523,11 @@ python3 tools/tf3ctl.py steps 500 [--dry-run]
   名前)・`capacity`・`count` (`getStockCount`)・`cargoTypes` (その stock が受ける貨物の種類ごとの名前と `count`)。
   entity そのものに `STOCK_LIST` が無い産業・町の建物・倉庫は、その `stockList` の entity をたどります (`via`)。
   車両には在庫の一覧が無いので、`kind` が `vehicle` になり、積める貨物の種類ごとの `cargo` (`capacity`・`count`)
-  が出ます。決めるのは `--stock -1 --cargo NAME`。id は `industry-stocks`・`stations`・`vehicles` で分かります。
+  が出ます (乗客は本体のパネルと同じく外し、断ります)。決めるのは `--stock -1 --cargo NAME`。`--cargo` には
+  `stock list` の `cargo` をそのまま渡します。id は `industry-stocks`・`stations`・`vehicles` で分かります。
 - `stock set` は `api.cmd.debug.makeStockSetCargoAmountCmd(在庫の一覧の entity, stock, amount[, cargo])` を送ります
   (cargo は指定したときだけ。本体のパネルも在庫の一覧の stock には付けない)。送る前に断るもの: 一覧に無い stock の
-  番号、stock の capacity (車両ならその貨物の capacity、ほかは 100000) を超える量、stock や車両が受けない貨物、
+  番号、stock の capacity (車両ならその貨物の capacity、ほかは 100000。混合の stock ではほかの貨物と合わせて) を超える量、乗客、stock や車両が受けない貨物、
   エンジンに無い entity。答え: `before`、`after` (callback の数フレーム後に読む)、`success`、`engineResult` (callback が
   返したもの)、`stockList` (送った先の entity)。`--dry-run` は何も送らず、`before` と `functionPresent` を答えます。
 - `steps N` (1〜10000) は `api.cmd.debug.makeGamePerformSimulationStepsCmd(N)` を送ります。答え: `before` と `after`

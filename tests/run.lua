@@ -8078,7 +8078,8 @@ local function debugGame(spec, opts)
 			{ type = 0, cargoType = -1, cargoTypes = { 1, 2 }, capacity = 50, count = 4 } } },
 		[55] = { name = "Farm", stockList = 56 } }
 	opts.fleet = opts.fleet or { [601] = { vehicles = {}, line = -1, depot = 301, capacities = { 0, 30 },
-		live = { loaded = { [1] = 3 } } } }
+		live = { loaded = { [1] = 3 } } },
+		[602] = { vehicles = {}, line = -1, depot = 301, capacities = { 40, 30 }, live = { loaded = { [0] = 12 } } } }
 	local g = vehicleGame(opts)
 	spec = spec or {}
 	spec.stockLists = spec.stockLists or {
@@ -8086,6 +8087,7 @@ local function debugGame(spec, opts)
 		[56] = { stocks = { { type = 0, cargoType = 2, capacity = 80, count = 5 } } } }
 	spec.owners = spec.owners or { [77] = { kind = "TOWN_BUILDING", stockList = -1 } } -- a building with none
 	fake.installDebug(g, spec)
+	g.debugSpec = spec
 	return g
 end
 local function debugRun(g, id, cmd, argsLua, n)
@@ -8153,6 +8155,18 @@ test("stockSet: what the stock cannot take is refused before anything is sent; d
 		eq(a.ok, false, case[1]); truthy(tostring(a.error):find(case[2], 1, true), tostring(a.error) .. " / " .. case[2])
 	end
 	eq(#g.debugCmds, 0, "nothing sent")
+	-- passengers: left out of a vehicle's list and refused, as the base's debug panel leaves them out
+	local p = debugRun(g, 2236, "stockList", "{ entity = 602 }")
+	truthy(p.ok, p.error); eq(#p.cargo, 1); eq(p.cargo[1].cargo, "COAL")
+	local q = debugRun(g, 2237, "stockSet", '{ entity = 602, stock = -1, amount = 1, cargo = "PASSENGERS" }')
+	eq(q.ok, false); truthy(q.error:find("passengers cannot be set"), q.error)
+	-- a mixed stock: the other cargo there counts against the capacity
+	g.debugSpec.stockLists[411].stocks[1].byCargo = { [2] = 150 }
+	local m = debugRun(g, 2238, "stockSet", '{ entity = 411, stock = 0, amount = 51, cargo = "COAL" }')
+	eq(m.ok, false); truthy(m.error:find("other cargo"), m.error)
+	eq(#g.debugCmds, 0, "nothing sent")
+	local m2 = debugRun(g, 2239, "stockSet", '{ entity = 411, stock = 0, amount = 50, cargo = "COAL", dryRun = true }')
+	truthy(m2.ok, m2.error)
 	local d = debugRun(g, 2240, "stockSet", "{ entity = 51, stock = 0, amount = 100, dryRun = true }")
 	truthy(d.ok, d.error); eq(d.sent, false); eq(d.dryRun, true); eq(d.before, 37); eq(d.functionPresent, true)
 	local s = debugRun(g, 2241, "steps", "{ count = 50, dryRun = true }")

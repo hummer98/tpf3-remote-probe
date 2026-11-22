@@ -3255,8 +3255,8 @@ def make_parser():
     sks.add_argument("--stock", type=int, required=True, help="the stock's id as stock list shows it (0-based); -1: "
                                                               "a vehicle's load (with --cargo)")
     sks.add_argument("--amount", type=int, required=True, help="0-%d, at most the stock's capacity" % STOCK_MAX_AMOUNT)
-    sks.add_argument("--cargo", help="a cargo type's name as stock list shows it (e.g. COAL); a stock list's stock: "
-                                     "optional")
+    sks.add_argument("--cargo", help="a cargo type's name exactly as stock list shows it (its cargo field); a stock "
+                                     "list's stock: optional")
     sks.add_argument("--dry-run", action="store_true", help="check and show the before, send nothing")
     st = sub.add_parser("steps", help="run the simulation N steps on (api.cmd.debug.makeGamePerformSimulationStepsCmd): "
                                       "test saves only, not checked in a game yet")
