@@ -1173,6 +1173,14 @@ for k, fn in pairs(debugCmds.handlers) do handlers[k] = fn end
 local townGrow = (ug_require or require)(MOD .. "::/remote_town_grow.lua").new({ core = core, answer = answer,
 	fail = fail, appTime = appTime, try = try, say = say })
 for k, fn in pairs(townGrow.handlers) do handlers[k] = fn end
+-- company / company init (remote_company.lua): the base's company progression read, and its new-game event sent by
+-- hand to a game newgame started (app.startGame sends none)
+local company = (ug_require or require)(MOD .. "::/remote_company.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = appTime, try = try, say = say, mapEditor = function()
+		local m = mapEditorNow()
+		return m.gui == true or m.modParams == true
+	end })
+for k, fn in pairs(company.handlers) do handlers[k] = fn end
 -- parcels (remote_parcels.lua): read only, the town building parcels on each side of a road piece
 local parcels = (ug_require or require)(MOD .. "::/remote_parcels.lua").new({ core = core, answer = answer, fail = fail,
 	try = try, say = say })
@@ -1406,6 +1414,7 @@ local function init()
 		terrain.reset()
 		town.reset()
 		townGrow.reset()
+		company.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1523,6 +1532,7 @@ local function step()
 	town.step()
 	debugCmds.step()
 	townGrow.step()
+	company.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()

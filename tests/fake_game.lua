@@ -1533,6 +1533,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_core.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_debug.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_town_grow.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_company.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_parcels.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
@@ -1589,6 +1590,7 @@ function M.new(dir, opts)
 			g.gameTime = ((p.startDate.year - 1900) * 365) * DAY_TICKS
 			g.time = g.time + 5
 			g.menu = false
+			if g.onStart then g.onStart(p) end
 			if self then g.boot() else g.script = nil end
 		end
 		if g.pendingLoad then
@@ -2980,6 +2982,64 @@ function M.installTownGrow(g, opts, spec)
 end
 
 -- real-time mode for the Python end-to-end test
+-- The base's company scripts (remote_company.lua): company.gs and company_progression.gs as GAME_SCRIPT entities
+-- with a .state, and what the base's handlers do with initNewGameFromMap (game_mechanics/company, read 2026-11-23).
+-- spec.company / spec.growth: their states at the start (nil: {} as after app.startGame, which sends no start
+-- event; false: that script not running). spec.delivers (default true): a sent initNewGameFromMap with src "" and
+-- id "" reaches the scripts: company gets basePopulation = the residential capacities summed (as
+-- computeWorldPopulation) and companyStates = {}, growth an empty companyState; spec.growthPlayer: then also the
+-- player's entry (as company_growth's update makes it). spec.refuse: the callback says no success.
+-- spec.mission: hasStartedAsMission. g.companyEvents: every script event sent with id "".
+-- An event of another id, or a name the base has no start for, changes nothing. A newgame (app.startGame)
+-- empties both states again, as such a game has them.
+M.COMPANY_ENTITY, M.GROWTH_ENTITY = 4501, 4502
+function M.installCompany(g, opts, spec)
+	spec = spec or {}
+	local st = { company = spec.company, growth = spec.growth }
+	if st.company == nil then st.company = {} end
+	if st.growth == nil then st.growth = {} end
+	g.companyState = st
+	g.companyEvents = {}
+	-- a new game started (app.startGame): no start event, so empty states again
+	g.onStart = function() st.company, st.growth = {}, {} end
+	local gss = api.engine.system.gameScriptSystem
+	local getEntity = gss.getEntityForGameScript
+	gss.getEntityForGameScript = function(name)
+		if name == "::/game_mechanics/company/company.gs" then return st.company == false and -1 or M.COMPANY_ENTITY end
+		-- the base's util spells it without the slash (company_progression_util.tl)
+		if name == "::game_mechanics/company/company_progression.gs" then
+			return st.growth == false and -1 or M.GROWTH_ENTITY
+		end
+		return getEntity(name)
+	end
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		if kind == "GAME_SCRIPT" and e == M.COMPANY_ENTITY and st.company then return { state = copy(st.company) } end
+		if kind == "GAME_SCRIPT" and e == M.GROWTH_ENTITY and st.growth then return { state = copy(st.growth) } end
+		return getComponent(e, kind)
+	end
+	api.engine.util.hasStartedAsMission = function() return spec.mission == true end
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		-- (fake_tc.lua makes script events of its own kind, tcEvent)
+		local ev = type(cmd) == "table" and (cmd.kind == "scriptEvent" or cmd.kind == "tcEvent")
+		if not ev or cmd.id ~= "" then return send(cmd, cb) end
+		g.commands[#g.commands + 1] = cmd
+		g.companyEvents[#g.companyEvents + 1] = cmd
+		if spec.refuse then if cb then cb(cmd, false) end return end
+		if cmd.src == "" and cmd.name == "initNewGameFromMap" and spec.delivers ~= false then
+			local pop = 0
+			for _, caps in pairs(opts.townCapacities or {}) do pop = pop + (caps[1] or 0) end
+			if st.company then st.company = { companyStates = {}, basePopulation = pop, version = 3 } end
+			if st.growth then
+				st.growth = { companyState = {} }
+				if spec.growthPlayer then st.growth.companyState[99] = copy(spec.growthPlayer) end
+			end
+		end
+		if cb then cb(cmd, true) end
+	end
+end
+
 if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 	local ffi = require "ffi"
 	ffi.cdef "int usleep(unsigned int usec);"
@@ -3043,6 +3103,9 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			["::/infrastructure/street/town/town_new_medium.street_template"] = { yearFrom = 1940, cost = 20 } } })
 	-- the debug commands (stock set, steps): the industry's stocks, 200 ms of game time a step
 	M.installDebug(g, { stepsPerFrame = 5 })
+	-- the base's company scripts: a save with its state (basePopulation 500); a newgame has none until company init
+	M.installCompany(g, { townCapacities = { [11] = { 140, 20, 30 } } },
+		{ company = { basePopulation = 500, companyStates = {}, version = 3 }, growth = { companyState = {} } })
 	-- parcels: a street 9010 with two parcels on the left (one built on) and one on the right, and a piece 9011 of
 	-- construction 9900 with none, far from the build fake's pieces (y 5000)
 	M.installParcels(g, { nodes = { [9001] = { 0, 5000, 0 }, [9002] = { 100, 5000, 0 }, [9003] = { 200, 5000, 0 } },

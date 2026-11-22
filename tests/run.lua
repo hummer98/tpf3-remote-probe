@@ -9406,5 +9406,125 @@ test("parcels: the engine's userdata, other field names, no map (getParcelData, 
 	for _, gg in ipairs({ u, f, nm, np, sw, odd }) do eq(#gg.commands, 0); truthy(not gg.crashed, gg.crashed) end
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- company / company init (remote_company.lua)
+
+local function companyGame(spec, opts)
+	opts = opts or {}
+	opts.townCapacities = opts.townCapacities or { [801] = { 120, 30, 10 }, [802] = { 80, 0, 5 } }
+	local g = vehicleGame(opts)
+	fake.installCompany(g, opts, spec)
+	return g
+end
+local function companyRun(g, id, cmd, argsLua, n)
+	send(g, id, cmd, argsLua)
+	frames(g, n or FIRST + 20)
+	return final(g, id)
+end
+
+test("core.worldPopulation / companyDiagnosis / companyInitRefusal: sums, states and refusals", function()
+	eq(core.worldPopulation({ [1] = { 10, 5, 0 }, [2] = { 3 } }), 13)
+	eq(core.worldPopulation({}), 0)
+	eq(core.worldPopulation(nil), nil)
+	local base = { mapEditor = false, mission = false, company = { running = true, initialized = false },
+		growth = { running = true, initialized = false } }
+	truthy(core.companyDiagnosis(base):find("initNewGameFromMap"))
+	eq(core.companyInitRefusal(base), nil)
+	base.company.initialized = true
+	truthy(core.companyDiagnosis(base):find("no companyState yet"))
+	base.growth.initialized = true
+	truthy(core.companyDiagnosis(base):find("as after the base's new%-game page"))
+	truthy(core.companyInitRefusal({ mapEditor = true, company = {} }):find("map editor"))
+	truthy(core.companyInitRefusal({ mission = true, company = {} }):find("mission"))
+	truthy(core.companyInitRefusal({ company = { running = false, script = "x" } }):find("not running"))
+	eq(core.companyRankButton(nil), "achievements"); eq(core.companyRankButton({ experience = 0 }), "achievements")
+	eq(core.companyRankButton({ experience = 1 }), "rank")
+	eq(core.COMMANDS.company, true); eq(core.COMMANDS.companyInit, true)
+	eq(core.CHANGES_GAME.company, nil); eq(core.CHANGES_GAME.companyInit, true)
+	eq(core.MENU_COMMANDS.company, nil); eq(core.MENU_COMMANDS.companyInit, nil)
+end)
+
+test("company: a game newgame started has no basePopulation; read only, nothing sent", function()
+	local g = companyGame()
+	local a = companyRun(g, 2501, "company")
+	truthy(a.ok, a.error); eq(a.company.running, true); eq(a.company.initialized, false)
+	eq(a.company.basePopulation, nil); eq(a.growth.initialized, false); eq(a.growth.player, nil)
+	eq(a.worldPopulation, 200); eq(a.player, 99); eq(a.mapEditor, false)
+	truthy(a.diagnosis:find("company init sends it"), a.diagnosis); eq(a.rankButton, "achievements")
+	eq(#g.companyEvents, 0)
+	-- a game with its state, as after the base's page: the player's level and multiplier come back
+	local h = companyGame({ company = { basePopulation = 500, companyStates = { [99] = {} }, version = 3 },
+		growth = { companyState = { [99] = { level = 2, potentialLevel = 3, experience = 900, ticketPriceMultiplier = 1.1 } } } })
+	local b = companyRun(h, 2502, "company")
+	truthy(b.ok, b.error); eq(b.company.basePopulation, 500); eq(b.company.companies, 1); eq(b.growth.player.level, 2)
+	eq(b.growth.player.ticketPriceMultiplier, 1.1); truthy(b.diagnosis:find("have their state")); eq(b.rankButton, "rank")
+	-- the scripts not running (nil entities): said, not an error
+	local n = companyGame({ company = false, growth = false })
+	local c = companyRun(n, 2503, "company")
+	truthy(c.ok, c.error); eq(c.company.running, false); eq(c.growth.running, false); truthy(c.diagnosis:find("not running"))
+	for _, gg in ipairs({ g, h, n }) do truthy(not gg.crashed, gg.crashed) end
+end)
+
+test("company init: sends initNewGameFromMap with src and id empty, answers once basePopulation is there", function()
+	local g = companyGame({ growthPlayer = { level = 1, potentialLevel = 1, experience = 200 } })
+	local a = companyRun(g, 2511, "companyInit")
+	truthy(a.ok, a.error); eq(a.sent, true); eq(#g.companyEvents, 1)
+	local e = g.companyEvents[1]
+	eq(e.src, ""); eq(e.id, ""); eq(e.name, "initNewGameFromMap"); eq(type(e.param), "table")
+	eq(a.before.company.initialized, false); eq(a.after.company.initialized, true)
+	eq(a.after.company.basePopulation, 200, "the residential capacities, as computeWorldPopulation")
+	eq(a.after.growth.player.level, 1); eq(a.growthNote, nil)
+	truthy(a.note:find("test saves only"))
+	-- again: the state is there, nothing sent
+	local b = companyRun(g, 2512, "companyInit")
+	truthy(b.ok, b.error); eq(b.sent, false); eq(b.alreadyInitialized, true); eq(#g.companyEvents, 1)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("company init: dry run, map editor, mission, no script, refused, not delivered", function()
+	local d = companyGame()
+	local a = companyRun(d, 2521, "companyInit", "{ dryRun = true }")
+	truthy(a.ok, a.error); eq(a.sent, false); eq(a.dryRun, true); eq(#d.companyEvents, 0)
+	local ed = companyGame(nil, { mapEditor = true })
+	local b = companyRun(ed, 2522, "companyInit")
+	eq(b.ok, false); truthy(b.error:find("map editor"), b.error); eq(#ed.companyEvents, 0)
+	local mi = companyGame({ mission = true })
+	local c = companyRun(mi, 2523, "companyInit")
+	eq(c.ok, false); truthy(c.error:find("mission"), c.error); eq(#mi.companyEvents, 0)
+	local ns = companyGame({ company = false })
+	local n = companyRun(ns, 2524, "companyInit")
+	eq(n.ok, false); truthy(n.error:find("not running"), n.error); eq(#ns.companyEvents, 0)
+	local rf = companyGame({ refuse = true })
+	local r = companyRun(rf, 2525, "companyInit")
+	eq(r.ok, false); eq(r.sent, true); truthy(r.error:find("refused"), r.error)
+	-- sent, but the state never comes (the event reaches no script): a timeout that says so
+	local nd = companyGame({ delivers = false })
+	send(nd, 2526, "companyInit")
+	frames(nd, FIRST + 20)
+	eq(final(nd, 2526), nil, "still waiting")
+	frames(nd, 400, 0.1)
+	local t = final(nd, 2526)
+	eq(t.ok, false); eq(t.sent, true); truthy(t.error:find("did not reach it"), t.error)
+	eq(t.after.company.initialized, false)
+	-- delivered, but company_growth has not run its update yet: ok, with the note
+	local gp = companyGame()
+	local p = companyRun(gp, 2527, "companyInit")
+	truthy(p.ok, p.error); eq(p.after.growth.initialized, true); eq(p.after.growth.player, nil); truthy(p.growthNote)
+	for _, gg in ipairs({ d, ed, mi, ns, rf, nd, gp }) do truthy(not gg.crashed, gg.crashed) end
+end)
+
+test("company init after a newgame: the new game has no state; init gives it its basePopulation", function()
+	local g = companyGame({ company = { basePopulation = 500, companyStates = {} }, growth = { companyState = {} } })
+	local a = companyRun(g, 2531, "company")
+	eq(a.company.basePopulation, 500, "the save had its state")
+	send(g, 2532, "newgame", '{ size = "tiny", unsafe = true }')
+	frames(g, FIRST + 10)
+	local b = companyRun(g, 2533, "company")
+	truthy(b.ok, b.error); eq(b.company.initialized, false, "a game app.startGame started: none")
+	local c = companyRun(g, 2534, "companyInit")
+	truthy(c.ok, c.error); eq(c.sent, true); eq(c.after.company.basePopulation, 200)
+	truthy(not g.crashed, g.crashed)
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it

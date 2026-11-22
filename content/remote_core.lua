@@ -19,7 +19,8 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
 	modhubValidate = true, modhubPublish = true, water = true, road = true, terrain = true, terrainApi = true,
-	town = true, stockList = true, stockSet = true, steps = true, townDevelop = true, townSize = true, parcels = true }
+	town = true, stockList = true, stockSet = true, steps = true, townDevelop = true, townSize = true, parcels = true,
+	company = true, companyInit = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -35,7 +36,9 @@ M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame =
 	-- the debug commands (remote_debug.lua): test saves only; their dry runs too, as build's (stockList only reads)
 	stockSet = true, steps = true,
 	-- town develop / town size (remote_town_grow.lua): test saves only; their dry runs too, as build's
-	townDevelop = true, townSize = true }
+	townDevelop = true, townSize = true,
+	-- company init (remote_company.lua): test saves only, the base's new-game event sent by hand (company only reads)
+	companyInit = true }
 -- what works in the main menu (startup.lua): no world and no GUI of a game there, so nothing that reads or
 -- shows one. newgame is safe only there (inside a save app.startGame hits the base's StartGame assertion).
 M.MENU_COMMANDS = { status = true, saves = true, info = true, load = true, newgame = true, poll = true, quit = true,
@@ -3087,6 +3090,52 @@ function M.faceSummary(faces)
 	if n == 0 then return nil end
 	local function r2(v) return math.floor(v * 100 + 0.5) / 100 end
 	return { x = r2(sx / n), y = r2(sy / n), z = r2(sz / n), area = r2(area), faces = nf, points = n }
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- company / company init (remote_company.lua)
+
+-- the world's population as the base's company_util.computeWorldPopulation counts it: the residential capacity
+-- (the first of each town's person capacities) summed over the towns. nil when the map could not be read
+function M.worldPopulation(capsMap)
+	if capsMap == nil then return nil end
+	local total = 0
+	local ok = pcall(function()
+		for _, caps in pairs(capsMap) do total = total + (tonumber(M.at(caps, 1)) or 0) end
+	end)
+	return ok and total or nil
+end
+
+-- what a company read says, in one line
+function M.companyDiagnosis(s)
+	if s.mapEditor then return "the map editor: the base's company scripts do nothing here" end
+	if s.mission then return "a mission: company progression is the mission's" end
+	if not s.company.running then return "the base's company script is not running" end
+	if not s.company.initialized then
+		return "company.gs has no basePopulation: the game did not get the base's initNewGameFromMap (a game "
+			.. "started with app.startGame, as newgame before company init). No company level, no perks, no ticket "
+			.. "price multiplier; company_growth errors at each ticket price (companyState nil). company init sends it"
+	end
+	if not s.growth.initialized then
+		return "basePopulation is set; company_growth has no companyState yet (it makes it in its update: run the "
+			.. "game a moment)"
+	end
+	return "the company scripts have their state, as after the base's new-game page"
+end
+
+-- what the base's company button at the bottom left shows (game_bar.tl CompanyButton, read 2026-11-23): the rank
+-- when company_growth's entry for the player has experience above 0, else the word "Achievements"
+function M.companyRankButton(player)
+	if type(player) == "table" and (tonumber(player.experience) or 0) > 0 then return "rank" end
+	return "achievements"
+end
+
+-- why company init must not send (nil: it may)
+function M.companyInitRefusal(s)
+	if s.mapEditor then return "not in the map editor: the base's company scripts do nothing there" end
+	if s.mission then return "not in a mission: its start event is the mission's own (initMission)" end
+	if not s.company.running then return "the base's company script (" .. tostring(s.company.script) .. ") is not running" end
+	return nil
 end
 
 return M

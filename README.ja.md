@@ -105,6 +105,32 @@ python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-indust
 初期値。`status` は `mapEditor` を答えます (`gui`: `api.gui.game.isMapEditor()`、`modParams`: 本体の `isMapEditor`)。
 **ゲーム内では未確認** (2026-11-22 に書いたもの): この形でエディタが開くか、エディタの中で probe が答えるか。
 
+`newgame` (と `launch` / `restart --new`) は `app.startGame` で始めます。型の説明では「試験用の新しいゲーム」です。
+これはスクリプトに `initNewGameFromMap` を送りません。本体の新しいゲームの画面から始めたゲーム (プレビューの部品が
+作った地図を `app.startGame2` に渡す) が受ける出来事です。これが無いと本体の会社の成長が始まりません (会社のランク・
+特典・運賃の倍率が無く、左下の会社のボタンがランクの代わりに「実績」と出て、`company_growth.script` が運賃のたびに
+エラーを出す)。そこで新しいゲーム (マップエディタでないもの) のあと、ツールが `company init` (下) を送り、その答えを
+`companyInit` に入れます。`--no-company-init` で送りません。`company init` が失敗しても警告だけで、ゲームは始まった
+ままです。`app.startGame2` を使わないのは、渡す地図をメニューの地図のプレビューの部品しか作れないためです (地形の
+生成器で地図を作る Lua の関数はありません)。
+
+```
+python3 tools/tf3ctl.py company                       # 読むだけ: 本体の会社の成長の状態と、足りないもの
+python3 tools/tf3ctl.py company init [--dry-run]      # 試験用のセーブだけ: 本体の initNewGameFromMap を手で送る
+```
+
+- `company` は `::/game_mechanics/company/company.gs` の状態 (`basePopulation`・`version`・`companies`) と
+  `company_progression.gs` の状態 (プレイヤーの `level`・`potentialLevel`・`experience`・`ticketPriceMultiplier`)、
+  本体の数え方の世界の人口、`rankButton` (`rank` か `achievements`: 会社のボタンに出るもの。経験が 0 より多い
+  記録があるときだけランク)、1 行の `diagnosis` を答えます。
+- `company init` は、`company.gs` に `basePopulation` が無いときに
+  `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` を送り、それが入ったら答えます (`before`・
+  `after`、最長 15 秒)。入っていれば何も送りません (`alreadyInitialized`)。マップエディタとミッションでは断ります。
+  本体ではこの出来事で町の評価の控え・補助金・通知も初めからになり、ほかの MOD のスクリプトも受けることがあるので、
+  試験用のセーブだけで使います (`newgame` で始めたゲームと、そこから作ったセーブ)。
+- **ゲーム内では未確認** (2026-11-23 に書いたもの): 送った出来事がスクリプトに届くか (スクリプトは出来事の名前で
+  受け取りを登録し、本体のどれもこの名前を登録していない)、止めているときにも処理されるか。
+
 `--param mod:key=index` の index は、その MOD の `mod.json` にある設定の `values` の 1 始まりの番号です (MOD
 プリセットと同じ形)。本体の設定は `:key=index`。この MOD は常に有効のまま残ります (外すと誰も答えなくなるため)。
 
@@ -903,6 +929,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - gui で買った車両を MOD が自分で路線に送ることと、断られたときの理由。`lines --problems`。`stations --catchment`。
 - `terrain`・`terrain --probe-api`・`newgame --editor` は全部 (「長方形の範囲の地面」を参照)。
 - `town` は全部 (「町を1つ」を参照)。
+- `company` と `company init` は全部 (「セーブと新しいゲーム」の会社の成長)。
 - `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
 - `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。

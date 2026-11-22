@@ -107,6 +107,32 @@ their default settings. `status` answers `mapEditor` (`gui`: `api.gui.game.isMap
 `isMapEditor`). **Not checked in game yet** (written 2026-11-22): whether the editor opens this way, and whether
 the probe answers inside it.
 
+`newgame` (and `launch` / `restart --new`) start with `app.startGame`, which the type calls "a new test game". It
+sends the scripts no `initNewGameFromMap`, the event a game started from the base's new-game page gets
+(`app.startGame2` with a map its preview widget generated): without it the base's company progression never starts
+(no company rank, no perks, no ticket price multiplier; the bottom-left company button shows "Achievements" instead
+of the rank, and `company_growth.script` logs an error at every ticket price). So after a new game (not the map
+editor) the tool sends `company init` (below) and keeps its answer as `companyInit`; `--no-company-init` leaves it
+out. A failed `company init` is a warning: the game is started either way. `app.startGame2` is not used because the
+map it takes is made only by the menu's map preview widget (no Lua call runs a terrain generator into a map).
+
+```
+python3 tools/tf3ctl.py company                       # read only: the base's company progression and what is missing
+python3 tools/tf3ctl.py company init [--dry-run]      # test saves only: send the base's initNewGameFromMap by hand
+```
+
+- `company` reads the state of `::/game_mechanics/company/company.gs` (`basePopulation`, `version`, `companies`)
+  and of `company_progression.gs` (the player's `level`, `potentialLevel`, `experience`, `ticketPriceMultiplier`),
+  the world population as the base counts it, `rankButton` (`rank` or `achievements`: what the company button
+  shows; the rank only for an entry with experience above 0) and a one-line `diagnosis`.
+- `company init` sends `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` when `company.gs` has
+  no `basePopulation`, and answers once it has one (`before` / `after`), at most 15 s. Already set: nothing is sent
+  (`alreadyInitialized`). Refused in the map editor and in a mission. In the base this event also resets the
+  towns' cached ratings, the subventions and the notifications, and other mods' scripts may listen to it: test
+  saves only (a game `newgame` started and saves made from one).
+- **Not checked in game yet** (written 2026-11-23): whether a sent event reaches the scripts at all (they subscribe
+  to event names, and none of the base's subscribes to this one), and whether the game runs it while paused.
+
 `--param mod:key=index` takes the 1-based index into that setting's `values` in the mod's `mod.json` (as mod
 presets store them); base game settings are `:key=index`. This mod always stays enabled: without it nobody would
 answer.
@@ -975,6 +1001,7 @@ Not checked yet:
   `stations --catchment`.
 - `terrain`, `terrain --probe-api` and `newgame --editor`, entirely (see "The ground in a rectangle").
 - `town`, entirely (see "One town").
+- `company` and `company init`, entirely (see the new game's company progression under "Saves and new games").
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `parcels`, entirely (read only, see "Town building parcels along a road").
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.

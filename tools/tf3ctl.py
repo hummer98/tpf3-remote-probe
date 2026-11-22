@@ -44,6 +44,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py lines --problems [--line 23]    # + each stop's path problems, platform modes, the line's mode union
   tf3ctl.py industry-workers [--entity 51]  # industries: capacity, sims headed there, last visitors (boost), town
   tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # stocks, rules, construction params
+  tf3ctl.py company                         # read only: the base's company progression (basePopulation, level,
+            # ticket price multiplier) and what is missing
+  tf3ctl.py company init [--dry-run]        # test saves only: the base's new-game event (initNewGameFromMap) sent
+            # by hand to a game app.startGame started without it; newgame sends it itself (--no-company-init: not)
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
             # building parcels left and right of a road piece (count, built on, centre, area), whether the piece is in
             # a construction; a rect: each street piece with an end or its middle in it, and totals
@@ -155,7 +159,7 @@ RECENT_SEC = 600  # another owner's game-changing command this recent gets a war
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
-                "stockSet", "steps", "townDevelop", "townSize"}  # window: what the player sees  # poll: only the mod's file reads
+                "stockSet", "steps", "townDevelop", "townSize", "companyInit"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -865,8 +869,27 @@ WAIT_FOR_START_SLOW = ("most likely the loading screen is waiting at the Start G
                        "which only a person can press; the mod takes no commands, not even quit, until then")
 
 
-def replace_game(cmd, args, answer_only, timeout):
-    """load / newgame: the mod acks, the next frame ends its game, and the new game's mod writes a new hello."""
+COMPANY_INIT_TIMEOUT_SEC = 45  # the mod waits 15 s for company.gs's state
+
+
+def company_init_after_newgame():
+    """After a newgame (app.startGame, which sends the base's initNewGameFromMap to no script): company init, so
+    the company level, perks and ticket price multiplier work as after the base's new-game page. Its answer is
+    kept in the newgame's; a failure is a warning, the game is started either way."""
+    try:
+        res = send("companyInit", {}, timeout=COMPANY_INIT_TIMEOUT_SEC)
+    except ToolError as e:
+        res = {"ok": False, "error": str(e)}
+    if not (isinstance(res, dict) and res.get("ok")):
+        why = res.get("error") if isinstance(res, dict) else res
+        print("warning: the new game started, but company init failed (%s): the base's company progression may "
+              "not work (tf3ctl company)" % why, file=sys.stderr)
+    return res
+
+
+def replace_game(cmd, args, answer_only, timeout, company_init=True):
+    """load / newgame: the mod acks, the next frame ends its game, and the new game's mod writes a new hello.
+    A newgame (not the map editor) then gets company init unless company_init is False."""
     folder = exchange_dir()
     before = current_stamp(folder)
     if answer_only:
@@ -883,6 +906,8 @@ def replace_game(cmd, args, answer_only, timeout):
         res = after if after.get("ok") is False else {"ok": True, "plan": ack, "hello": after}
         if held and res.get("ok"):  # a failed loadGame never reached the button
             res = dict(res, note=WAIT_FOR_START_DONE)
+        if cmd == "newgame" and res.get("ok") and company_init and not args.get("editor"):
+            res["companyInit"] = company_init_after_newgame()
         return res
     finally:
         if ack.get("id") is not None:
@@ -919,6 +944,8 @@ def newgame_args(ns):
     return args
 
 
+NO_COMPANY_INIT_HELP = ("leave out company init after the start (the base's initNewGameFromMap, which app.startGame "
+                        "does not send): the game then has no company level, perks or ticket price multiplier")
 TUTORIAL_PARAM = "guideSystemConfig.tutorial"
 TUTORIAL_OFF = 1
 
@@ -1564,7 +1591,8 @@ def cmd_start(ns, restart):
         print("error: " + out["error"], file=sys.stderr)
         return out
     if plan:
-        res = replace_game(plan[0], plan[1], False, ns.timeout)
+        res = replace_game(plan[0], plan[1], False, ns.timeout,
+                           company_init=not getattr(ns, "no_company_init", False))
         out[plan[0]] = res
         out["ok"] = bool(res.get("ok"))
         if res.get("note"):
@@ -3547,6 +3575,7 @@ def make_parser():
     ng.add_argument("--unsafe", action="store_true", help="start it although it crashes the game from inside a save")
     ng.add_argument("--editor", action="store_true", help="the map editor instead of a game (isMapEditor); its mods: "
                     "the official ones (ug_*) and the probe, not the running game's")
+    ng.add_argument("--no-company-init", action="store_true", help=NO_COMPANY_INIT_HELP)
     fr = sub.add_parser("frame", help="the game's picture with UI, from Steam's background recording")
     fr.add_argument("--out", required=True, help="image to write (.png or .jpg)")
     fr.add_argument("--crop", help="WxH+X+Y in the recording's pixels, e.g. 1150x170+2690+1450 for the speed row")
@@ -3710,6 +3739,7 @@ def make_parser():
         st.add_argument("--no-industries", action="store_true")
         st.add_argument("--tutorial", action="store_true", help="with --new: start with the base tutorial (off by default)")
         st.add_argument("--editor", action="store_true", help="with --new: the map editor (the official mods and the probe)")
+        st.add_argument("--no-company-init", action="store_true", help="with --new: " + NO_COMPANY_INIT_HELP)
         st.add_argument("--timeout", type=float, default=900, help="for the load or new game")
         st.add_argument("--launch-timeout", type=float, default=LAUNCH_TIMEOUT_SEC)
         st.add_argument("--lang", metavar="CODE", help="start in this language (de, en, ja, ...): profile.lua is "
@@ -3820,6 +3850,14 @@ def make_parser():
     ist.add_argument("--entity", type=int, help="one industry's id (entities --kind industry); none: all")
     ist.add_argument("--grep", help="a part of the name, any case")
     ist.add_argument("--all-params", action="store_true", help="every param of the construction too")
+    co = sub.add_parser("company", help="read only: the base's company progression (company.gs basePopulation, the "
+                        "company's level and ticket price multiplier) and what is missing; company init: test saves "
+                        "only")
+    cos = co.add_subparsers(dest="company_action", required=False, metavar="{init}")
+    ci = cos.add_parser("init", help="test saves only: send the base's new-game event initNewGameFromMap (as the "
+                        "engine does after the base's new-game page) to a game whose company.gs has no basePopulation; "
+                        "it also resets the towns' cached ratings, the subventions and the notifications")
+    ci.add_argument("--dry-run", dest="company_dry_run", action="store_true", help="the states, nothing sent")
     pa = sub.add_parser("parcels", help="read only: the town building parcels on the left and right of a road "
                                         "piece (count, built on, centre, area), from the engine's parcel system; "
                                         "not checked in a game yet")
@@ -4008,7 +4046,8 @@ def main(argv=None):
                 raise ToolError("newgame crashes the game when started from inside a save (StartGame asserts that "
                                 "no game is running): use restart --new. --list and --dry-run still work; --unsafe "
                                 "sends it anyway.")
-            res = replace_game("newgame", newgame_args(ns), ns.dry_run or ns.list, ns.timeout)
+            res = replace_game("newgame", newgame_args(ns), ns.dry_run or ns.list, ns.timeout,
+                               company_init=not ns.no_company_init)
         elif ns.cmd == "screenshot":
             res = cmd_screenshot(ns)
         elif ns.cmd == "entities":
@@ -4114,6 +4153,12 @@ def main(argv=None):
             res = send("industryWorkers", industry_workers_args(ns))
         elif ns.cmd == "industry-stocks":
             res = send("industryStocks", industry_stocks_args(ns))
+        elif ns.cmd == "company":
+            if ns.company_action == "init":
+                res = send("companyInit", {"dryRun": True} if ns.company_dry_run else {},
+                           timeout=COMPANY_INIT_TIMEOUT_SEC)
+            else:
+                res = send("company")
         elif ns.cmd == "parcels":
             res = send("parcels", parcels_args(ns))
         elif ns.cmd == "persons":
