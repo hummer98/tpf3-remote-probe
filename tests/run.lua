@@ -8994,5 +8994,176 @@ test("town develop / size: a missing function, the engine's refusal, a raise and
 	for _, gg in ipairs({ ms, r, all, mr, sr, ct, n }) do truthy(not gg.crashed, gg.crashed) end
 end)
 
+---------------------------------------------------------------------------------------------------------------------
+-- parcels (remote_parcels.lua): read only, the town building parcels on each side of a road piece
+
+test("core.parcelsRequest: an edge or a rect, list, and what is refused; read only, in a game", function()
+	local r = core.parcelsRequest({ edge = 10 })
+	eq(r.edge, 10); eq(r.list, true, "an edge lists its parcels by default"); eq(r.rect, nil)
+	eq(core.parcelsRequest({ edge = "12", list = false }).list, false)
+	local q = core.parcelsRequest({ rect = "100,50,-20,-10" })
+	eq(q.rect.x0, -20); eq(q.rect.x1, 100); eq(q.rect.y0, -10); eq(q.rect.y1, 50, "either corner order")
+	eq(q.list, false, "a rect lists none by default")
+	eq(core.parcelsRequest({ rect = { 0, 0, 1, 1 }, list = true }).list, true)
+	local M = core.PARCELS_RECT_MAX
+	truthy(core.parcelsRequest({ rect = string.format("0,0,%d,%d", M, M) }), "the limit itself")
+	for _, bad in ipairs({ { {}, "give edge" }, { { edge = 1, rect = "0,0,1,1" }, "give edge" },
+		{ { edge = -1 }, "edge must be" }, { { edge = 1.5 }, "edge must be" }, { { edge = "x" }, "edge must be" },
+		{ { edge = 2 ^ 31 }, "edge must be" }, { { edge = 1, list = "yes" }, "list must be" },
+		{ { rect = "0,0,1" }, "x0,y0,x1,y1" }, { { rect = "0,0,1,1,1" }, "at most 4" }, { { rect = "a,0,1,1" }, "finite" },
+		{ { rect = string.format("0,0,%d,1", M + 1) }, "a side" }, { { rect = "0,0,1,1e6" }, "within" },
+		{ { rect = 5 }, "commas" } }) do
+		local ok, err = core.parcelsRequest(bad[1])
+		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / wanted " .. bad[2])
+	end
+	truthy(select(2, core.parcelsRequest(nil)):find("give edge"))
+	eq(core.COMMANDS.parcels, true); eq(core.CHANGES_GAME.parcels, nil); eq(core.MENU_COMMANDS.parcels, nil)
+end)
+
+test("core.parcelSides and faceSummary: field spellings, empty data, area and centre from the faces", function()
+	local l, r, f = core.parcelSides({ leftEntities = { 1, 2 }, rightParcels = { 3 } })
+	eq(#l, 2); eq(#r, 1); eq(r[1], 3); eq(table.concat(f, ","), "leftEntities,rightParcels")
+	l, r, f = core.parcelSides({ leftParcels = { 4 }, rightEntities = {} })
+	eq(#l, 1); eq(#r, 0); eq(table.concat(f, ","), "leftParcels,rightEntities", "the other spellings")
+	l, r, f = core.parcelSides(nil)
+	eq(#l, 0); eq(#r, 0); eq(#f, 0)
+	l, r, f = core.parcelSides({ other = { 1 } })
+	eq(#l + #r, 0); eq(#f, 0, "nothing known: nothing counted")
+	local s = core.faceSummary({ { points = { { x = 0, y = 0, z = 1 }, { x = 10, y = 0, z = 1 }, { x = 10, y = 20, z = 1 },
+		{ x = 0, y = 20, z = 1 } } } })
+	eq(s.area, 200); eq(s.x, 5); eq(s.y, 10); eq(s.z, 1); eq(s.faces, 1); eq(s.points, 4)
+	local two = core.faceSummary({ { points = { { x = 0, y = 0 }, { x = 2, y = 0 }, { x = 2, y = 2 } } },
+		{ points = { { x = 0, y = 0 }, { x = 0, y = 2 }, { x = 2, y = 2 } } } })
+	eq(two.area, 4, "two triangles, either winding"); eq(two.faces, 2)
+	eq(core.faceSummary({}), nil); eq(core.faceSummary(nil), nil)
+	eq(core.faceSummary({ { points = { { x = 0 / 0, y = 1 } } } }), nil, "no finite point")
+	truthy(core.inRect({ x = 0, y = 0 }, { x0 = 0, y0 = 0, x1 = 1, y1 = 1 }), "the edge of the rect is in it")
+	eq(core.inRect(nil, { x0 = 0, y0 = 0, x1 = 1, y1 = 1 }), false)
+end)
+
+-- a town street 10 (0,0)-(100,0) with parcels 101, 102 on the left (102 built on) and 103 on the right; 11
+-- (100,0)-(200,0) a piece of construction 900 with no parcels; 12 (200,0)-(300,0) a track; 13 far away (y 500)
+-- with parcel 104 on the right
+local function square(x, y, w, d) return { { { x, y, 0 }, { x + w, y, 0 }, { x + w, y + d, 0 }, { x, y + d, 0 } } } end
+local function parcelGame(spec)
+	spec = spec or {}
+	spec.nodes = spec.nodes or { [1] = { 0, 0, 0 }, [2] = { 100, 0, 0 }, [3] = { 200, 0, 0 }, [4] = { 300, 0, 0 },
+		[5] = { 0, 500, 0 }, [6] = { 100, 500, 0 } }
+	spec.edges = spec.edges or { [10] = { node0 = 1, node1 = 2 }, [11] = { node0 = 2, node1 = 3, construction = 900 },
+		[12] = { node0 = 3, node1 = 4, street = false }, [13] = { node0 = 5, node1 = 6 } }
+	spec.parcels = spec.parcels or {
+		[101] = { edge = 10, left = true, faces = square(0, 5, 10, 20), curveParam = 0.05, offset = 5 },
+		[102] = { edge = 10, left = true, faces = square(10, 5, 10, 30), building = 7001 },
+		[103] = { edge = 10, left = false, faces = square(0, -25, 10, 20) },
+		[104] = { edge = 13, left = false, faces = square(0, 480, 10, 20) } }
+	local g = newGame({ saves = SAVES })
+	fake.installParcels(g, spec)
+	frames(g, 1) -- booted: its hello names the command file
+	return g
+end
+local function parcelRun(g, id, argsLua)
+	send(g, id, "parcels", argsLua)
+	frames(g, FIRST + 10)
+	return final(g, id)
+end
+
+test("parcels --edge: a town street's left and right parcels, their buildings, centres and areas; nothing sent", function()
+	local g = parcelGame()
+	local guiBefore = core.json(fake.guiSave)
+	local a = parcelRun(g, 2401, "{ edge = 10 }")
+	eq(core.json(fake.guiSave), guiBefore, "no GUI save data written")
+	truthy(a.ok, a.error); eq(a.source, "getSegment2ParcelData"); eq(a.parcelComponent, true); eq(a.buildingMap, true)
+	truthy(a.note:find("not checked in a game"), a.note)
+	eq(#a.edges, 1)
+	local e = a.edges[1]
+	eq(e.edge, 10); eq(e.street, true); eq(e.inConstruction, false); eq(e.construction, nil); eq(e.inParcelMap, true)
+	eq(e.node0, 1); eq(e.node1, 2); eq(e.length, 100); eq(e.from.x, 0); eq(e.to.x, 100)
+	eq(table.concat(e.fields, ","), "leftEntities,rightParcels")
+	eq(e.left.count, 2); eq(e.right.count, 1); eq(e.left.built, 1); eq(e.right.built, 0)
+	eq(e.left.area, 500); eq(e.right.area, 200); eq(e.sideMismatch, 0)
+	eq(#e.left.parcels, 2); eq(e.left.parcels[1].id, 101); eq(e.left.parcels[1].building, nil)
+	eq(e.left.parcels[1].x, 5); eq(e.left.parcels[1].y, 15); eq(e.left.parcels[1].area, 200)
+	eq(e.left.parcels[1].left, true); eq(e.left.parcels[1].streetSegment, 10); eq(e.left.parcels[1].curveParam, 0.05)
+	eq(e.left.parcels[2].building, 7001)
+	eq(e.right.parcels[1].id, 103); eq(e.right.parcels[1].left, false); eq(e.right.parcels[1].y, -15)
+	-- read only: no command went to the engine, and the map was asked once per command
+	eq(#g.commands, 0, "nothing sent"); eq(g.parcelCalls.segmentMap, 1); eq(g.parcelCalls.parcelData, 0)
+	local b = parcelRun(g, 2402, "{ edge = 10, list = false }")
+	truthy(b.ok, b.error); eq(b.edges[1].left.count, 2); eq(b.edges[1].left.parcels, nil, "counts only")
+	eq(#g.commands, 0); truthy(not g.crashed, g.crashed)
+end)
+
+test("parcels --edge: a construction's piece (0 and 0), a track, an unknown id, a node, bad arguments", function()
+	local g = parcelGame()
+	local a = parcelRun(g, 2411, "{ edge = 11 }")
+	truthy(a.ok, a.error)
+	local e = a.edges[1]
+	eq(e.inConstruction, true); eq(e.construction, 900); eq(e.inParcelMap, false, "not in the map: no parcels")
+	eq(e.left.count, 0); eq(e.right.count, 0); eq(#e.left.parcels, 0); eq(#e.fields, 0); eq(e.sideMismatch, nil)
+	local t = parcelRun(g, 2412, "{ edge = 12 }")
+	truthy(t.ok, t.error); eq(t.edges[1].street, false); eq(t.edges[1].left.count, 0)
+	local x = parcelRun(g, 2413, "{ edge = 99999 }")
+	eq(x.ok, false); truthy(x.error:find("no such entity"), x.error)
+	local n = parcelRun(g, 2414, "{ edge = 1 }")
+	eq(n.ok, false); truthy(n.error:find("no road piece"), n.error)
+	local bad = parcelRun(g, 2415, '{ edge = "x" }')
+	eq(bad.ok, false); truthy(bad.error:find("edge must be"), bad.error)
+	local none = parcelRun(g, 2416, "{  }")
+	eq(none.ok, false); truthy(none.error:find("give edge"), none.error)
+	eq(#g.commands, 0); truthy(not g.crashed, g.crashed)
+end)
+
+test("parcels --rect: the streets with an end or the middle in it, per edge, with totals; tracks left out", function()
+	local g = parcelGame()
+	local a = parcelRun(g, 2421, '{ rect = "-10,-10,350,10" }')
+	truthy(a.ok, a.error); eq(a.rect.x0, -10); eq(a.truncated, false)
+	eq(#a.edges, 2); eq(a.edges[1].edge, 10); eq(a.edges[2].edge, 11, "sorted; the track 12 and the far 13 out")
+	eq(a.edges[1].left.parcels, nil, "counts only unless list")
+	eq(a.totals.edges, 2); eq(a.totals.streets, 2); eq(a.totals.withParcels, 1); eq(a.totals.left, 2)
+	eq(a.totals.right, 1); eq(a.totals.built, 1); eq(a.totals.inConstruction, 1)
+	eq(g.parcelCalls.segmentMap, 1, "one map for all the pieces")
+	local b = parcelRun(g, 2422, '{ rect = "-10,490,50,510", list = true }')
+	truthy(b.ok, b.error); eq(#b.edges, 1); eq(b.edges[1].edge, 13, "the middle (50, 500) is in it")
+	eq(b.edges[1].right.parcels[1].id, 104)
+	local c = parcelRun(g, 2423, '{ rect = "1000,1000,1100,1100" }')
+	truthy(c.ok, c.error); eq(#c.edges, 0); eq(c.totals.edges, 0)
+	local d = parcelRun(g, 2424, '{ rect = "0,0,5000,1" }')
+	eq(d.ok, false); truthy(d.error:find("a side"), d.error)
+	eq(#g.commands, 0); truthy(not g.crashed, g.crashed)
+end)
+
+test("parcels: the engine's userdata, other field names, no map (getParcelData, streets only), no PARCEL type", function()
+	local u = parcelGame({ userdata = true })
+	local a = parcelRun(u, 2431, "{ edge = 10 }")
+	truthy(a.ok, a.error); eq(a.edges[1].left.count, 2); eq(a.edges[1].right.count, 1); eq(a.edges[1].left.area, 500)
+	eq(a.edges[1].left.parcels[2].building, 7001)
+	local f = parcelGame({ fields = { left = "leftParcels", right = "rightEntities" } })
+	local b = parcelRun(f, 2432, "{ edge = 10 }")
+	truthy(b.ok, b.error); eq(b.edges[1].left.count, 2); eq(table.concat(b.edges[1].fields, ","), "leftParcels,rightEntities")
+	local nm = parcelGame({ noMap = true })
+	local c = parcelRun(nm, 2433, "{ edge = 10 }")
+	truthy(c.ok, c.error); eq(c.source, "getParcelData"); eq(c.edges[1].left.count, 2); eq(c.edges[1].inParcelMap, nil)
+	local t = parcelRun(nm, 2434, "{ edge = 12 }") -- a track: getParcelData is not asked (an assertion in this fake)
+	truthy(t.ok, t.error); truthy(t.edges[1].parcelError:find("not a street"), t.edges[1].parcelError)
+	eq(nm.parcelCalls.parcelData, 1, "asked for the street only")
+	local np = parcelGame({ noParcelType = true, noBuildingMap = true })
+	local d = parcelRun(np, 2435, "{ edge = 10 }")
+	truthy(d.ok, d.error); eq(d.parcelComponent, false); eq(d.buildingMap, false); eq(d.edges[1].left.count, 2)
+	eq(d.edges[1].left.area, nil); eq(d.edges[1].left.built, nil); eq(d.edges[1].left.parcels[1].x, nil)
+	eq(d.edges[1].left.parcels[1].id, 101)
+	-- ParcelData with names this does not know: its keys come back, and the rect counts the piece as unread
+	local odd = parcelGame({ fields = { left = "lp", right = "rp" } })
+	local o = parcelRun(odd, 2437, "{ edge = 10 }")
+	truthy(o.ok, o.error); eq(o.edges[1].left.count, 0); eq(o.edges[1].inParcelMap, true)
+	eq(table.concat(o.edges[1].unreadParcelData, ","), "lp,rp")
+	local or_ = parcelRun(odd, 2438, '{ rect = "-10,-10,350,10" }')
+	truthy(or_.ok, or_.error); eq(or_.totals.unreadParcelData, 1)
+	eq(a.edges[1].unreadParcelData, nil, "known names: nothing extra")
+	local sw = parcelGame({ swapSide = { [103] = true } })
+	local e = parcelRun(sw, 2436, "{ edge = 10 }")
+	truthy(e.ok, e.error); eq(e.edges[1].left.count, 3); eq(e.edges[1].sideMismatch, 1, "the flag disagrees with the list")
+	for _, gg in ipairs({ u, f, nm, np, sw, odd }) do eq(#gg.commands, 0); truthy(not gg.crashed, gg.crashed) end
+end)
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it
