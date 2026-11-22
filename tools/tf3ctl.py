@@ -44,6 +44,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py lines --problems [--line 23]    # + each stop's path problems, platform modes, the line's mode union
   tf3ctl.py industry-workers [--entity 51]  # industries: capacity, sims headed there, last visitors (boost), town
   tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # stocks, rules, construction params
+  tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
+            # building parcels left and right of a road piece (count, built on, centre, area), whether the piece is in
+            # a construction; a rect: each street piece with an end or its middle in it, and totals
   tf3ctl.py persons --vehicle 601 [--limit 50] [--every 5 --count 120]   # who is aboard: happiness, expected
             # arrival vs the game time; the engine's unhappy counts for the vehicle, its line and stops (read only).
             # --every: one compact JSON line per sample (JSON Lines), until --count or Ctrl-C; --line 21: a line's
@@ -2889,6 +2892,34 @@ def industry_stocks_args(ns):
     return args
 
 
+PARCELS_RECT_MAX = 2000  # the mod's core.PARCELS_RECT_MAX (m, a side)
+
+
+def parcels_args(ns):
+    """parcels: --edge ID or --rect x0,y0,x1,y1 (at most PARCELS_RECT_MAX m a side; the mod checks again)."""
+    if (ns.edge is None) == (ns.rect is None):
+        raise ToolError("give --edge ID or --rect x0,y0,x1,y1")
+    if ns.edge is not None:
+        if ns.edge < 0:
+            raise ToolError("--edge must be a road piece's entity id (0 or more)")
+        args = {"edge": ns.edge}
+        if ns.list is False:
+            args["list"] = False
+        return args
+    try:
+        v = [float(x) for x in ns.rect.split(",")]
+    except ValueError:
+        raise ToolError("--rect must be numbers: x0,y0,x1,y1")
+    if len(v) != 4 or any(x != x or abs(x) == float("inf") for x in v):
+        raise ToolError("--rect must be x0,y0,x1,y1 (finite numbers)")
+    if abs(v[2] - v[0]) > PARCELS_RECT_MAX or abs(v[3] - v[1]) > PARCELS_RECT_MAX:
+        raise ToolError("--rect: at most %d m a side" % PARCELS_RECT_MAX)
+    args = {"rect": v}
+    if ns.list:
+        args["list"] = True
+    return args
+
+
 def stations_args(ns):
     catchment = getattr(ns, "catchment", None)
     if catchment is not None:
@@ -3629,6 +3660,17 @@ def make_parser():
     ist.add_argument("--entity", type=int, help="one industry's id (entities --kind industry); none: all")
     ist.add_argument("--grep", help="a part of the name, any case")
     ist.add_argument("--all-params", action="store_true", help="every param of the construction too")
+    pa = sub.add_parser("parcels", help="read only: the town building parcels on the left and right of a road "
+                                        "piece (count, built on, centre, area), from the engine's parcel system; "
+                                        "not checked in a game yet")
+    pg = pa.add_mutually_exclusive_group(required=True)
+    pg.add_argument("--edge", type=int, help="one road piece's entity id (parcels --rect lists the pieces in a box)")
+    pg.add_argument("--rect", metavar="X0,Y0,X1,Y1", help="the street pieces with an end or their middle in this box, "
+                    "at most %d m a side (for a negative x write --rect=-100,0,100,50)" % PARCELS_RECT_MAX)
+    pl = pa.add_mutually_exclusive_group()
+    pl.add_argument("--list", dest="list", action="store_true", default=None,
+                    help="each parcel too (the default for --edge; --rect gives counts only)")
+    pl.add_argument("--no-list", dest="list", action="store_false", help="counts only")
     ps = sub.add_parser("persons", help="sim persons (read only) aboard a vehicle or on a line: happiness, expected "
                                         "arrival and the game time, line and stops; the engine's unhappy counts")
     pw = ps.add_mutually_exclusive_group(required=True)
@@ -3908,6 +3950,8 @@ def main(argv=None):
             res = send("industryWorkers", industry_workers_args(ns))
         elif ns.cmd == "industry-stocks":
             res = send("industryStocks", industry_stocks_args(ns))
+        elif ns.cmd == "parcels":
+            res = send("parcels", parcels_args(ns))
         elif ns.cmd == "persons":
             if ns.every is not None:
                 return persons_every(ns)  # prints its own lines

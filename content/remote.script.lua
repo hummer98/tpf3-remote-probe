@@ -1173,6 +1173,10 @@ for k, fn in pairs(debugCmds.handlers) do handlers[k] = fn end
 local townGrow = (ug_require or require)(MOD .. "::/remote_town_grow.lua").new({ core = core, answer = answer,
 	fail = fail, appTime = appTime, try = try, say = say })
 for k, fn in pairs(townGrow.handlers) do handlers[k] = fn end
+-- parcels (remote_parcels.lua): read only, the town building parcels on each side of a road piece
+local parcels = (ug_require or require)(MOD .. "::/remote_parcels.lua").new({ core = core, answer = answer, fail = fail,
+	try = try, say = say })
+for k, fn in pairs(parcels.handlers) do handlers[k] = fn end
 -- My Mods (remote_modhub.lua): the staging area, validate and the one upload, in the main menu only
 modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say })

@@ -19,7 +19,7 @@ M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = tru
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
 	modhubValidate = true, modhubPublish = true, water = true, road = true, terrain = true, terrainApi = true,
-	town = true, stockList = true, stockSet = true, steps = true, townDevelop = true, townSize = true }
+	town = true, stockList = true, stockSet = true, steps = true, townDevelop = true, townSize = true, parcels = true }
 -- poll only changes how often the mod reads files, not the game: no "who used the game" entry for it
 M.CHANGES_GAME = { speed = true, run = true, load = true, save = true, newgame = true, window = true, quit = true,
 	event = true, tool = true, buy = true, duplicate = true, replace = true, sell = true, money = true,
@@ -2977,6 +2977,96 @@ function M.townCountDelta(before, after)
 		d[k] = (after[k] or 0) - (before[k] or 0)
 	end
 	return d
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- parcels (read only, remote_parcels.lua): the town building parcels on each side of a road piece (edge)
+
+M.PARCELS_RECT_MAX = 2000 -- m, a rect's longest side
+M.PARCELS_MAX_EDGES = 400 -- edges answered for a rect; more are counted, not listed (truncated)
+-- ParcelData's two lists: type.d.tl names them leftEntities and rightParcels (the engine's binding has two names of
+-- 12 letters, as those are); the other spellings are read too, in case the documentation is off
+M.PARCEL_LEFT_FIELDS = { "leftEntities", "leftParcels" }
+M.PARCEL_RIGHT_FIELDS = { "rightParcels", "rightEntities" }
+
+-- edge (one road piece's entity) or rect ("x0,y0,x1,y1" or a list, metres; either order), list (parcels one by one:
+-- on for an edge, off for a rect unless asked). -> { edge, list } / { rect = { x0, y0, x1, y1 }, list }, or nil, why
+function M.parcelsRequest(args)
+	args = type(args) == "table" and args or {}
+	if (args.edge == nil) == (args.rect == nil) then return nil, "give edge (a road piece's id) or rect (x0,y0,x1,y1)" end
+	local list, lerr = flagArg(args, "list")
+	if list == nil then return nil, lerr end
+	if args.edge ~= nil then
+		local e = wholeNumber(args.edge)
+		if e == nil or e < 0 or e > M.MAX_ENTITY_ID then return nil, "edge must be a road piece's entity id (0 or more)" end
+		return { edge = e, list = args.list == nil or list }
+	end
+	local r, err = M.numberList(args.rect, 4)
+	if not r then return nil, "rect: " .. err end
+	if #r ~= 4 then return nil, "rect needs x0,y0,x1,y1" end
+	local L = M.BUILD_LIMITS.xy
+	for i = 1, 4 do if math.abs(r[i]) > L then return nil, "rect: x and y must be within " .. L end end
+	local x0, x1 = math.min(r[1], r[3]), math.max(r[1], r[3])
+	local y0, y1 = math.min(r[2], r[4]), math.max(r[2], r[4])
+	if x1 - x0 > M.PARCELS_RECT_MAX or y1 - y0 > M.PARCELS_RECT_MAX then
+		return nil, "rect: at most " .. M.PARCELS_RECT_MAX .. " m a side"
+	end
+	return { rect = { x0 = x0, y0 = y0, x1 = x1, y1 = y1 }, list = list }
+end
+
+-- whether point p ({ x, y }) is in the rect (edges included)
+function M.inRect(p, r)
+	return p ~= nil and p.x ~= nil and p.y ~= nil and p.x >= r.x0 and p.x <= r.x1 and p.y >= r.y0 and p.y <= r.y1
+end
+
+-- a ParcelData (a table or the engine's record) -> left ids, right ids (lists of numbers), the field names read.
+-- The first spelling there wins for each side; nil data gives two empty lists.
+function M.parcelSides(pd)
+	local fields = {}
+	local function side(names)
+		for _, k in ipairs(names) do
+			local v = pd ~= nil and M.field(pd, k) or nil
+			if v ~= nil then
+				fields[#fields + 1] = k
+				local out = {}
+				for _, x in ipairs(M.toList(v)) do
+					local n = tonumber(x)
+					if n then out[#out + 1] = n end
+				end
+				return out
+			end
+		end
+		return {}
+	end
+	local left = side(M.PARCEL_LEFT_FIELDS)
+	local right = side(M.PARCEL_RIGHT_FIELDS)
+	return left, right, fields
+end
+
+-- a parcel's faces (Parcel.faces: each with points, Vec3f) -> { x, y, z (the mean of all points), area (m², the
+-- faces' areas seen from above, summed: shoelace), faces, points }, or nil when no point reads
+function M.faceSummary(faces)
+	local sx, sy, sz, n, area, nf = 0, 0, 0, 0, 0, 0
+	for _, f in ipairs(M.toList(faces)) do
+		local pts = {}
+		for _, p in ipairs(M.toList(M.field(f, "points"))) do
+			local x, y, z = tonumber(M.field(p, "x")), tonumber(M.field(p, "y")), tonumber(M.field(p, "z"))
+			if finite(x) and finite(y) then
+				pts[#pts + 1] = { x, y }
+				sx, sy, sz, n = sx + x, sy + y, sz + (finite(z) and z or 0), n + 1
+			end
+		end
+		if #pts > 0 then nf = nf + 1 end
+		local a = 0
+		for i = 1, #pts do
+			local p, q = pts[i], pts[i % #pts + 1]
+			a = a + p[1] * q[2] - q[1] * p[2]
+		end
+		area = area + math.abs(a) / 2
+	end
+	if n == 0 then return nil end
+	local function r2(v) return math.floor(v * 100 + 0.5) / 100 end
+	return { x = r2(sx / n), y = r2(sy / n), z = r2(sz / n), area = r2(area), faces = nf, points = n }
 end
 
 return M

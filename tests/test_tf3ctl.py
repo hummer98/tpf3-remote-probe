@@ -1004,6 +1004,26 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("build-tool", "--menu", "rail", "--template", "1")
         self.assertEqual(code, 1, "template needs res: refused by the mod")
 
+    def test_9xy_parcels(self):
+        code, res = self.ctl("parcels", "--edge", "9010")
+        self.assertEqual(code, 0, res)
+        e = res["edges"][0]
+        self.assertEqual((e["left"]["count"], e["right"]["count"], e["left"]["built"], e["inConstruction"]),
+                         (2, 1, 1, False))
+        self.assertEqual(e["left"]["parcels"][0]["area"], 200)
+        code, res = self.ctl("parcels", "--edge", "9011", "--no-list")
+        self.assertEqual(code, 0, res)
+        e = res["edges"][0]
+        self.assertEqual((e["left"]["count"], e["right"]["count"], e["construction"]), (0, 0, 9900))
+        self.assertNotIn("parcels", e["left"])
+        code, res = self.ctl("parcels", "--rect=-10,4990,250,5010")
+        self.assertEqual(code, 0, res)
+        self.assertEqual([x["edge"] for x in res["edges"]], [9010, 9011])
+        self.assertEqual((res["totals"]["left"], res["totals"]["right"]), (2, 1))
+        code, res = self.ctl("parcels", "--edge", "424242")
+        self.assertEqual(code, 1, res)
+        self.assertIn("no such entity", res["error"])
+
     def test_9xz_debug_stock_and_steps(self):
         code, res = self.ctl("stock", "list", "--entity", "51")
         self.assertEqual(code, 0, res)
@@ -1364,6 +1384,37 @@ class QuitLaunchTest(unittest.TestCase):
             code = tf3ctl.main(["rename", "Petworth", "--entity", "48118"])
         self.assertEqual(code, 0)
         self.assertEqual(sent, [("rename", {"entity": 48118, "name": "Petworth"})])
+
+    def test_parcels_args_and_main(self):
+        def ns(**kw):
+            base = dict(edge=None, rect=None, list=None)
+            base.update(kw)
+            return tf3ctl.argparse.Namespace(**base)
+        self.assertEqual(tf3ctl.parcels_args(ns(edge=10)), {"edge": 10})
+        self.assertEqual(tf3ctl.parcels_args(ns(edge=10, list=False)), {"edge": 10, "list": False})
+        self.assertEqual(tf3ctl.parcels_args(ns(rect="-10,0,100,50.5")), {"rect": [-10.0, 0.0, 100.0, 50.5]})
+        self.assertEqual(tf3ctl.parcels_args(ns(rect="0,0,1,1", list=True)), {"rect": [0.0, 0.0, 1.0, 1.0], "list": True})
+        m = tf3ctl.PARCELS_RECT_MAX
+        self.assertEqual(tf3ctl.parcels_args(ns(rect="0,0,%d,%d" % (m, m)))["rect"][2], m)
+        for bad in (dict(), dict(edge=1, rect="0,0,1,1"), dict(edge=-1), dict(rect="0,0,1"), dict(rect="a,0,1,1"),
+                    dict(rect="0,0,1,nan"), dict(rect="0,0,%d,1" % (m + 1)), dict(rect="0,0,1,1,1")):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.parcels_args(ns(**bad))
+        self.assertNotIn("parcels", tf3ctl.CHANGES_GAME)
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["parcels", "--edge", "12"]), 0)
+            self.assertEqual(tf3ctl.main(["parcels", "--rect=-5,-5,5,5", "--list"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["parcels", "--rect", "0,0,9999,1"]), 2, "refused before sending")
+            with self.assertRaises(SystemExit):
+                tf3ctl.main(["parcels"])
+        self.assertEqual(sent, [("parcels", {"edge": 12}), ("parcels", {"rect": [-5.0, -5.0, 5.0, 5.0], "list": True})])
 
     def test_stock_and_steps_args_and_main(self):
         def ns(**kw):

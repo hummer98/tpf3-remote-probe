@@ -1532,6 +1532,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_core.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_debug.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_town_grow.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_parcels.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
 		-- (MODHUB_PUBLISHED_IDS), taken out of that table in this game's own copy of remote_core.lua
@@ -2637,6 +2638,139 @@ function M.installDebug(g, spec)
 	end
 end
 
+-- The engine's side of parcels (remote_parcels.lua): road pieces, their nodes, parcels and the buildings on them.
+-- spec.nodes = { [node] = { x, y, z } }; spec.edges = { [edge] = { node0, node1, street (default true),
+-- construction (default -1) } }; spec.parcels = { [parcel] = { edge, left (boolean), faces = { { { x, y, z }, ... } },
+-- curveParam, offset, building } }: each parcel goes into its edge's ParcelData, on the side its left says
+-- (spec.swapSide = { [parcel] = true }: listed on the other side than its flag, to see the mismatch count).
+-- spec.fields = { left = "leftEntities", right = "rightParcels" }: the ParcelData's field names (as type.d.tl);
+-- spec.noMap: getSegment2ParcelData is not there (getParcelData is); spec.noParcelType: no ComponentType.PARCEL;
+-- spec.noBuildingMap; spec.userdata: the map, the ParcelData and its lists as userdata, as the engine's.
+-- Only edges with a parcel are in the map (a piece in a construction may have none). Asking getParcelData for a
+-- piece that is no street, getConstructionEntityForEdge for something that is no piece, or getComponent for a
+-- piece / node / parcel id the engine does not have, is the engine's assertion (g.crashed).
+-- g.parcelCalls: { segmentMap, parcelData, buildingMap, circle } counts.
+function M.installParcels(g, spec)
+	spec = spec or {}
+	local nodes, edges, parcels = spec.nodes or {}, spec.edges or {}, spec.parcels or {}
+	local fields = spec.fields or { left = "leftEntities", right = "rightParcels" }
+	g.parcelCalls = { segmentMap = 0, parcelData = 0, buildingMap = 0, circle = 0 }
+	local function crash(msg) g.crashed = msg; error(msg) end
+	local function asUserdata(t)
+		local u = newproxy(true)
+		getmetatable(u).__index = function(_, k) return t[k] end
+		getmetatable(u).__len = function() return #t end
+		return u
+	end
+	local function wrap(t) if spec.userdata then return asUserdata(t) end return t end
+	local CT = api.type.ComponentType
+	CT.BASE_EDGE, CT.BASE_NODE, CT.BASE_EDGE_STREET = "BASE_EDGE", "BASE_NODE", "BASE_EDGE_STREET"
+	if not spec.noParcelType then CT.PARCEL = "PARCEL" end
+	-- the parcel data per edge, in id order
+	local function dataOf(e)
+		local l, r = {}, {}
+		local ids = {}
+		for p in pairs(parcels) do ids[#ids + 1] = p end
+		table.sort(ids)
+		for _, p in ipairs(ids) do
+			local pc = parcels[p]
+			if pc.edge == e then
+				local left = pc.left == true
+				if (spec.swapSide or {})[p] then left = not left end
+				table.insert(left and l or r, p)
+			end
+		end
+		if #l + #r == 0 then return nil end
+		return wrap({ [fields.left] = wrap(l), [fields.right] = wrap(r) })
+	end
+	local sys = api.engine.system
+	sys.parcelSystem = {
+		getParcelData = function(e)
+			g.parcelCalls.parcelData = g.parcelCalls.parcelData + 1
+			local ed = edges[e]
+			if not ed or ed.street == false then crash("ASSERT: getParcelData for " .. tostring(e) .. ", no street") end
+			return dataOf(e) or wrap({ [fields.left] = wrap({}), [fields.right] = wrap({}) })
+		end,
+	}
+	if not spec.noMap then
+		sys.parcelSystem.getSegment2ParcelData = function()
+			g.parcelCalls.segmentMap = g.parcelCalls.segmentMap + 1
+			local m = {}
+			for e in pairs(edges) do m[e] = dataOf(e) end
+			return wrap(m)
+		end
+	end
+	sys.townBuildingSystem = sys.townBuildingSystem or {}
+	if not spec.noBuildingMap then
+		sys.townBuildingSystem.getParcel2BuildingMap = function()
+			g.parcelCalls.buildingMap = g.parcelCalls.buildingMap + 1
+			local m = {}
+			for p, pc in pairs(parcels) do if pc.building then m[p] = pc.building end end
+			return wrap(m)
+		end
+	end
+	sys.streetConnectorSystem = sys.streetConnectorSystem or {}
+	local conFor = sys.streetConnectorSystem.getConstructionEntityForEdge
+	sys.streetConnectorSystem.getConstructionEntityForEdge = function(e)
+		if edges[e] then return edges[e].construction or -1 end
+		if conFor then return conFor(e) end
+		crash("ASSERT: getConstructionEntityForEdge for " .. tostring(e) .. ", no edge")
+	end
+	local exists, getComponent = api.engine.entityExists, api.engine.getComponent
+	api.engine.entityExists = function(e)
+		return nodes[e] ~= nil or edges[e] ~= nil or parcels[e] ~= nil or exists(e)
+	end
+	api.engine.getComponent = function(e, kind)
+		if kind == "BASE_NODE" and nodes[e] then
+			local n = nodes[e]
+			return { position = { x = n[1], y = n[2], z = n[3] } }
+		end
+		if kind == "BASE_EDGE" and edges[e] then return { node0 = edges[e].node0, node1 = edges[e].node1, type = 0 } end
+		if kind == "BASE_EDGE_STREET" and edges[e] then
+			if edges[e].street == false then return nil end
+			return { precedenceNode0 = 0, precedenceNode1 = 0 }
+		end
+		if kind == "PARCEL" and parcels[e] then
+			local pc = parcels[e]
+			local faces = {}
+			for i, f in ipairs(pc.faces or {}) do
+				local pts = {}
+				for j, p in ipairs(f) do pts[j] = { x = p[1], y = p[2], z = p[3] } end
+				faces[i] = { points = wrap(pts), collision = {} }
+			end
+			return { streetSegment = pc.edge, left = pc.left == true, curveParam = pc.curveParam or 0,
+				offset = pc.offset or 0, faces = wrap(faces) }
+		end
+		if nodes[e] or edges[e] or parcels[e] then return nil end
+		-- (what an earlier install has, e.g. the build fake's pieces, which its entityExists does not list, is its own)
+		local v = getComponent(e, kind)
+		if v == nil and (kind == "BASE_EDGE" or kind == "BASE_NODE" or kind == "PARCEL" or kind == "BASE_EDGE_STREET")
+			and not exists(e) then
+			crash("ASSERT: getComponent " .. tostring(kind) .. " of a missing entity " .. tostring(e))
+		end
+		return v
+	end
+	-- the octree: the pieces with an end in the circle, or found by what was installed before
+	api.engine.util = api.engine.util or {}
+	local oldOctree = api.engine.util.octree
+	api.engine.util.octree = { findEntitiesInCircle = function(c, r, kind)
+		g.parcelCalls.circle = g.parcelCalls.circle + 1
+		local out = {}
+		if oldOctree and oldOctree.findEntitiesInCircle then
+			for _, e in ipairs(oldOctree.findEntitiesInCircle(c, r, kind) or {}) do out[#out + 1] = e end
+		end
+		if kind ~= "BASE_EDGE" then return out end
+		for e, ed in pairs(edges) do
+			for _, n in ipairs({ ed.node0, ed.node1 }) do
+				local p = nodes[n]
+				if p and math.sqrt((p[1] - c.x) ^ 2 + (p[2] - c.y) ^ 2) <= r then out[#out + 1] = e break end
+			end
+		end
+		return out
+	end }
+	api.type.Vec2f = api.type.Vec2f or { new = function(x, y) return { x = x, y = y } end }
+end
+
 -- The engine's side of town develop / town size (remote_town_grow.lua): makeTownDevelopAtCmd and
 -- makeTownUpdateSizeCmd, towns with a TOWN component and town buildings with a bounding box. g's opts.townBuildings
 -- (stations --catchment's shape, plus pos = { x, y }) is where new buildings go.
@@ -2813,6 +2947,12 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			["::/infrastructure/street/town/town_new_medium.street_template"] = { yearFrom = 1940, cost = 20 } } })
 	-- the debug commands (stock set, steps): the industry's stocks, 200 ms of game time a step
 	M.installDebug(g, { stepsPerFrame = 5 })
+	-- parcels: a street 9010 with two parcels on the left (one built on) and one on the right, and a piece 9011 of
+	-- construction 9900 with none, far from the build fake's pieces (y 5000)
+	M.installParcels(g, { nodes = { [9001] = { 0, 5000, 0 }, [9002] = { 100, 5000, 0 }, [9003] = { 200, 5000, 0 } },
+		edges = { [9010] = { node0 = 9001, node1 = 9002 }, [9011] = { node0 = 9002, node1 = 9003, construction = 9900 } },
+		parcels = { [9101] = { edge = 9010, left = true, faces = { { { 0, 5005, 0 }, { 10, 5005, 0 }, { 10, 5025, 0 }, { 0, 5025, 0 } } } },
+			[9102] = { edge = 9010, left = true, building = 9201 }, [9103] = { edge = 9010, left = false } } })
 	local start = os.clock()
 	local wall = 0
 	local speedControl

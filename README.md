@@ -623,6 +623,36 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   **Not checked in game yet**: the waiting answer itself, `stock set`, whether a station holds a stock list of its
   own.
 
+### Town building parcels along a road (`parcels`, read only)
+
+```
+python3 tools/tf3ctl.py parcels --edge 9010 [--no-list]          # one road piece: its parcels on each side
+python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # every street piece in a box (at most 2000 m a side)
+```
+
+- Reads only (no warning to others, nothing sent). Towns put their buildings on parcels, which the engine keeps
+  per road piece (edge), on its left and right. `parcels` asks the parcel system for them:
+  `api.engine.system.parcelSystem.getSegment2ParcelData()` once (piece -> `ParcelData`, the two lists of parcel
+  entities). A piece the map does not have has no parcels: `inParcelMap` false, 0 and 0. Only when that map cannot
+  be read is `getParcelData(edge)` asked, and then only for a street piece (`source` says which).
+- Per piece: `street` (it has `BASE_EDGE_STREET`), `node0` / `node1`, `from` / `to` and `length` (m, seen from
+  above), `inConstruction` and `construction` (`streetConnectorSystem.getConstructionEntityForEdge`), `fields`
+  (the `ParcelData` field names that were there: the tealdef has `leftEntities` and `rightParcels`; `leftParcels`
+  and `rightEntities` are read too), and `left` / `right`: `count`, `built` (parcels with a town building, from
+  `townBuildingSystem.getParcel2BuildingMap`), `area` (m²) and, unless `--no-list`, `parcels`: each one's `id`,
+  `building`, `left`, `streetSegment`, `curveParam`, `offset`, and `x` / `y` / `z` (the mean of its faces' points)
+  and `area` (its faces seen from above). Those come from the parcel's `PARCEL` component, read only when
+  `api.type.ComponentType.PARCEL` is there (`parcelComponent`); `sideMismatch` counts parcels whose own `left`
+  disagrees with the list they are in (0 when the field names are right).
+- `--rect x0,y0,x1,y1`: the street pieces the octree finds round the box with an end or their middle in it (a
+  piece that only crosses the box is left out; tracks are left out), sorted, counts only unless `--list`, at most
+  400 listed (`truncated`), and `totals` (`edges`, `withParcels`, `left`, `right`, `built`, `inConstruction`).
+  It also gives the edge ids for `--edge`.
+- An id that is no entity, or no road piece, is refused; every engine call is in pcall and asked only about
+  entities the engine says exist.
+- **Not checked in game yet** (written 2026-11-23): whether the map and the `PARCEL` component read in the GUI
+  script, the field names, and the values.
+
 ### My Mods from the main menu (`modhub`)
 
 ```
@@ -886,6 +916,7 @@ Not checked yet:
 - `terrain`, `terrain --probe-api` and `newgame --editor`, entirely (see "The ground in a rectangle").
 - `town`, entirely (see "One town").
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
+- `parcels`, entirely (read only, see "Town building parcels along a road").
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `modhub publish` of an update (see "Uploading a mod"). `modhub status`, `validate` and a first upload were
   checked on 2026-11-22.

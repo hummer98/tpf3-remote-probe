@@ -585,6 +585,34 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   (`steps 1` / `10` で 200 / 2000、update count 1 / 10)。1000 歩は、早い callback のあと約 15 秒かけて進みました。
   **ゲーム内では未確認**: 待つようにした答えそのもの、`stock set`、駅が自分の在庫の一覧を持つか。
 
+### 道路の脇の町の建物の区画 (`parcels`、読むだけ)
+
+```sh
+python3 tools/tf3ctl.py parcels --edge 9010 [--no-list]          # 道路の1区間: 左右それぞれの区画
+python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # 範囲の中の道路の区間を全部 (1辺 2000 m まで)
+```
+
+- 読むだけです (ほかのクライアントに警告は出ず、何も送りません)。町の建物は区画 (parcel) に建ち、エンジンは区画を
+  道路の区間 (edge) ごとに左右に分けて持っています。`parcels` はそれを区画のシステムに聞きます:
+  `api.engine.system.parcelSystem.getSegment2ParcelData()` を1回 (区間 -> `ParcelData`、区画の entity の左右の一覧)。
+  この表に無い区間には区画がありません: `inParcelMap` が false、左右とも 0。表が読めないときだけ
+  `getParcelData(edge)` を、道路 (street) の区間についてだけ聞きます (`source` にどちらかが出ます)。
+- 区間ごとに: `street` (`BASE_EDGE_STREET` がある)、`node0` / `node1`、`from` / `to` と `length` (m、上から見た長さ)、
+  `inConstruction` と `construction` (`streetConnectorSystem.getConstructionEntityForEdge`)、`fields` (読めた
+  `ParcelData` の欄の名前。tealdef では `leftEntities` と `rightParcels`。`leftParcels`・`rightEntities` も読みます)、
+  そして `left` / `right`: `count`、`built` (町の建物が建っている区画の数、
+  `townBuildingSystem.getParcel2BuildingMap` から)、`area` (m²)、`--no-list` でなければ `parcels`: 区画ごとの `id`・
+  `building`・`left`・`streetSegment`・`curveParam`・`offset` と、`x` / `y` / `z` (面の点の平均) と `area` (面を上から
+  見た面積)。これらは区画の `PARCEL` コンポーネントから読み、`api.type.ComponentType.PARCEL` があるときだけです
+  (`parcelComponent`)。`sideMismatch` は、区画自身の `left` が入っている一覧と食い違う数です (欄の名前が正しければ 0)。
+- `--rect x0,y0,x1,y1`: octree で範囲の周りから見つけた道路の区間のうち、端か真ん中が範囲に入るもの (範囲を横切る
+  だけの区間と線路は入りません)。番号順、`--list` が無ければ数だけ、一覧は 400 区間まで (`truncated`)、`totals`
+  (`edges`・`withParcels`・`left`・`right`・`built`・`inConstruction`)。`--edge` に渡す番号もここで分かります。
+- entity でない番号、道路の区間でない番号は断ります。エンジンの呼び出しはすべて pcall の中で、エンジンが「ある」と
+  言った entity についてだけ聞きます。
+- **ゲーム内では未確認** (2026-11-23 に書いた): 表と `PARCEL` コンポーネントが GUI のスクリプトで読めるか、欄の名前、
+  値。
+
 ### メインメニューからのマイMOD (`modhub`)
 
 ```
@@ -828,6 +856,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - `terrain`・`terrain --probe-api`・`newgame --editor` は全部 (「長方形の範囲の地面」を参照)。
 - `town` は全部 (「町を1つ」を参照)。
 - `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
+- `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 - `modhub publish` の更新 (「MOD を上げる」を参照)。`modhub status`・`validate`・最初のアップロードは 2026-11-22 に
   確認済み。
