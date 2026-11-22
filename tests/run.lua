@@ -7707,7 +7707,7 @@ test("road: from a free road end (snapped) to a new node on the terrain: the tow
 	local sent = g.streetCmds[1]
 	eq(sent.type, 0); eq(sent.comp.typeIndex, -1); eq(sent.comp.type, 0); eq(sent.comp.roadType, 0)
 	eq(sent.comp.tangent0.x, 100); eq(sent.comp.tangent1.x, 100); eq(sent.comp.tangent0.z, 0)
-	eq(#sent.comp.laneConfigs, 2); eq(sent.comp.roadStyle, TOWN_OLD .. ".style")
+	eq(#sent.comp.laneConfigs, 4); eq(sent.comp.roadStyle, TOWN_OLD .. ".style")
 	eq(sent.entity, -2, "new entities counted down: the node -1, the piece -2"); eq(sent.comp.node1, -1)
 	local cmd = g.buildCmds[1]
 	eq(cmd.ignoreErrors, false); eq(cmd.context.gatherBuildings, false)
@@ -7796,46 +7796,99 @@ test("road snap: a node without a junction set-up (BaseNodeConfig) is never join
 	truthy(not g.crashed, g.crashed)
 end)
 
-test("road snap: the game's sequence (a trunk in pieces, then a branch to one of its ends) never reaches the engine's assertion", function()
-	-- a construction's road end 8001 (with a set-up) and the trunk from it in two pieces: the second piece cannot
-	-- join the first one's new end, and a branch to that end is refused before anything is sent
+test("road: new nodes get a junction set-up; a trunk in pieces and a branch to its middle node go through (2026-11-23)", function()
+	-- the game's crash: a trunk laid in pieces, then a branch to one of its inner nodes. Now each new node gets a
+	-- set-up, each joined node its old one plus the new piece's connections (straight on, or a junction's)
 	local g = roadWorld({ roads = { nodes = { [8001] = { x = 0, y = 0, z = 0 }, [8002] = { x = -50, y = 0, z = 0 } },
 		edges = { [8100] = { node0 = 8002, node1 = 8001 } } }, height = function() return 0 end })
 	local a = roadRun(g, 975, '{ from = "0,0", to = "300,0" }')
-	truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.newNodes, 1)
-	local trunkEnd = a.nodes[1]
-	eq(g.nodeConfig[trunkEnd], false, "a node this command made has no set-up (as the fake supposes of the game)")
-	eq(a.newNodeConfigs[1].node, trunkEnd); eq(a.newNodeConfigs[1].nodeConfig, false, "read back into the answer")
+	truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.newNodes, 1); eq(a.caution, nil)
+	local e1, m = a.edge, a.nodes[1]
+	eq(a.newNodeConfigs[1].node, m); eq(a.newNodeConfigs[1].nodeConfig, true, "read back into the answer")
+	eq(#g.nodeConns[m], 0, "a dead end: no connections")
+	-- 8001 (8100 + the new piece): straight on, both ways, sidewalks counted (lanes 1 and 2 of 4)
+	local cs = g.nodeConns[8001]
+	eq(#cs, 2, "one road lane each way")
+	local function has(list, s0, l0, s1, l1)
+		for _, c in ipairs(list) do
+			if c.segment0 == s0 and c.lane0 == l0 and c.segment1 == s1 and c.lane1 == l1 and c.withRoad then return true end
+		end
+		return false
+	end
+	-- at 8001: 8100 ends there (node1: lane k is 4 - k), e1 starts there (node0: lane k is k - 1). Arriving on 8100:
+	-- its forward road lane (k 3, number 1) -> e1's forward lane (k 3, number 2 = 4 - 1 - 1)
+	truthy(has(cs, 8100, 1, e1, 2), "8100 straight on into the new piece")
+	truthy(has(cs, e1, 1, 8100, 2), "and back")
+	local sent = g.buildCmds[1].proposal
+	-- the second piece joins the first one's end (it was refused while new nodes had no set-up)
 	a = roadRun(g, 976, '{ from = "300,0", to = "600,0" }')
-	eq(a.ok, false); truthy(tostring(a.error):find(tostring(trunkEnd), 1, true), tostring(a.error))
+	truthy(a.ok, a.error); eq(a.from.node, m); eq(a.from.laneRules, 2); eq(a.caution, nil)
+	local e2 = a.edge
+	eq(#g.nodeConns[m], 2); truthy(has(g.nodeConns[m], e1, 1, e2, 2), "straight on at the trunk's inner node")
+	-- a branch to that inner node: a junction (each arriving road lane to each leaving one of the other pieces)
 	a = roadRun(g, 977, '{ from = "300,0", to = "300,-200" }')
-	eq(a.ok, false); eq(#g.buildCmds, 1, "only the first piece was sent")
+	truthy(a.ok, a.error); eq(a.from.node, m); eq(a.from.laneRules, 4)
+	local e3 = a.edge
+	eq(#g.nodeConns[m], 6, "the two straight-on ones kept, four to and from the branch")
+	truthy(has(g.nodeConns[m], e1, 1, e3, 2) and has(g.nodeConns[m], e3, 1, e2, 2) and has(g.nodeConns[m], e3, 1, e1, 2))
+	-- and a fourth piece to the same node (a junction of four)
+	a = roadRun(g, 978, '{ from = "300,0", to = "300,200" }')
+	truthy(a.ok, a.error); eq(a.from.laneRules, 6)
+	eq(#g.buildCmds, 4); truthy(not g.crashed, g.crashed)
+	-- an old node without a set-up (a road built before) is still refused
+	g = roadWorld({ roads = { nodes = { [8001] = { x = 0, y = 0, z = 0 }, [8002] = { x = -50, y = 0, z = 0 },
+		[8003] = { x = 50, y = 0, z = 0 } }, edges = { [8100] = { node0 = 8002, node1 = 8001 }, [8101] = { node0 = 8001, node1 = 8003 } },
+		noConfig = { [8001] = true } }, height = function() return 0 end })
+	a = roadRun(g, 979, '{ from = "0,0", to = "0,-200" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("no junction set-up", 1, true), tostring(a.error)); eq(#g.buildCmds, 0)
 	truthy(not g.crashed, g.crashed)
-	-- (the fake's assertion itself: a third piece sent to such a node with two pieces dies, as the game did)
-	g.edges[9900] = { node0 = trunkEnd, node1 = 8002 }
-	local sp = api.type.SimpleProposal.new()
-	local e = api.type.SegmentAndEntity.new()
-	e.entity = -1
-	e.comp.node0, e.comp.node1 = trunkEnd, 8001
-	e.comp.position0, e.comp.position1 = { x = 300, y = 0, z = 0 }, { x = 0, y = 0, z = 0 }
-	e.comp.roadTemplate = TOWN_OLD
-	sp.streetProposal.edgesToAdd = { e }
-	local ok = pcall(api.cmd.sendCommand, api.cmd.makeWorldBuildProposalCmd(sp, {}, false, true), function() end)
-	eq(ok, false); truthy(tostring(g.crashed):find("BaseNodeConfig", 1, true), tostring(g.crashed))
 end)
 
-test("road snap: whether a node has a junction set-up cannot be read: joined, with a caution in the answer", function()
+test("road: the fake's set-up checks (a lane out of range, a piece not at the node, a config added twice) die", function()
+	local g = roadWorld({ height = function() return 0 end })
+	local function sendWith(fill)
+		local sp = api.type.SimpleProposal.new()
+		local e = api.type.SegmentAndEntity.new()
+		e.entity = -1
+		e.comp.node0, e.comp.node1 = 8001, 8003
+		e.comp.position0, e.comp.position1 = { x = 100, y = 0, z = 2 }, { x = 300, y = 300, z = 0 }
+		e.comp.roadTemplate, e.comp.laneConfigs = TOWN_OLD, g.townLanes()
+		sp.streetProposal.edgesToAdd = { e }
+		fill(sp)
+		g.crashed = nil
+		return pcall(api.cmd.sendCommand, api.cmd.makeWorldBuildProposalCmd(sp, {}, false, true), function() end)
+	end
+	local function entry(node, conns)
+		local c = api.type.BaseNodeLaneConnectionAndEntity.new()
+		c.entity, c.comp.laneConnections = node, conns
+		return c
+	end
+	for _, case in ipairs({
+		{ function(sp) sp.streetProposal.nodeConfigsToAdd = { entry(8001, {}) } end, "keeps its set-up" },
+		{ function(sp) sp.streetProposal.nodeConfigsToRemove = { 8001 }
+			sp.streetProposal.nodeConfigsToAdd = { entry(8001, { { segment0 = -1, lane0 = 4, segment1 = 8100, lane1 = 0 } }) } end, "lane 4" },
+		{ function(sp) sp.streetProposal.nodeConfigsToRemove = { 8001 }
+			sp.streetProposal.nodeConfigsToAdd = { entry(8001, { { segment0 = 9999, lane0 = 0, segment1 = 8100, lane1 = 0 } }) } end, "is not there" },
+	}) do
+		local ok = sendWith(case[1])
+		eq(ok, false, case[2]); truthy(tostring(g.crashed):find(case[2], 1, true), tostring(g.crashed))
+	end
+end)
+
+test("road snap: whether a node has a junction set-up cannot be read: refused, dry run too, nothing sent", function()
 	for _, spec in ipairs({ { nodeConfigRaises = true }, { noNodeConfigType = true } }) do
 		spec.height = function() return 2 end
 		local g = roadWorld(spec)
-		local a = roadRun(g, 978, '{ from = "102,1", to = "200,0" }')
-		truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.from.nodeConfig, "unread")
-		truthy(tostring(a.caution):find("from: whether node 8001 has its junction set-up", 1, true), tostring(a.caution))
-		eq(a.to.node, nil)
+		for i, dry in ipairs({ "false", "true" }) do
+			local a = roadRun(g, 980 + i, '{ from = "102,1", to = "200,0", dryRun = ' .. dry .. ' }')
+			eq(a.ok, false, dry)
+			truthy(tostring(a.error):find("from: whether road node 8001 (2.2 m away) has its junction set-up", 1, true), tostring(a.error))
+		end
+		eq(#g.buildCmds, 0)
 	end
-	-- read as there: no caution
+	-- read as there: joined, no caution
 	local g = roadWorld()
-	local a = roadRun(g, 979, '{ from = "102,1", to = "200,0" }')
+	local a = roadRun(g, 983, '{ from = "102,1", to = "200,0" }')
 	truthy(a.ok, a.error); eq(a.from.nodeConfig, true); eq(a.caution, nil); truthy(g.nodeConfigReads > 0)
 end)
 

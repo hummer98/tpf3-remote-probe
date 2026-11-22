@@ -397,12 +397,16 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   (`roadType` が STREET。種類が読めないものは除く) の `node0` / `node1` を使います。node そのものは探さず、線路の node
   についても聞きません。
   建物の自分の道路の空いた端 (港の入口の道路: `build` の答えの `construction.ends`) もこの node です。なければ新しい node です。
-- 交差点の設定 (`BaseNodeConfig`) の無い node にはつなぎません。`--snap` の中で次に近い node を使い (答えの `passedOver` に
-  外した node)、無ければ何も送らずに断ります。スクリプトが建てた道路 (この命令の道路もおそらく。答えの `newNodeConfigs` で
-  読み返します) の端はこの node になり、すでに2本つながったその node へ道路をつないだ直後にゲームが落ちました
-  (2026-11-23: `Engine.h:322 GetComponentDataIndex`、BaseNodeConfig)。このため、この命令の
-  道路どうしを端でつなぐことはできません。建物の道路かプレイヤーの道路の node につないでください。設定がそもそも読めない
-  ときは、つないだうえで答えに `caution` を付けます (その端は `nodeConfig: "unread"`)。
+- 交差点の設定 (`BaseNodeConfig`。`nodeConfigsToAdd` / `nodeConfigsToRemove` で送る): 新しい node にはそれぞれ設定を付け
+  (行き止まり: レーンのつながり無し)、つないだ node は元の設定に新しい道路の分を足します。その node が2本になるなら
+  レーンごとにまっすぐ、3本以上なら、入ってくる道路 (トラム) のレーンをほかの道路の出ていく道路 (トラム) のレーン全部へ。
+  レーンの番号は、道路の `laneConfigs` 全部 (歩道も) を node から外へ数えます。これで、この命令の道路どうしを続けたり、
+  枝を出したりできます。答えの `newNodeConfigs` は新しい node の設定の読み返し、`nodeConfigs` は送った設定の数、端の
+  `laneRules` はそこで足したつながりの数です。設定を作れなかったときは `caution` を付けます。
+- 設定の無い node (設定を付けずにスクリプトが建てた道路。2026-11-23 より前のこの命令の道路も) にはつなぎません。`--snap`
+  の中で次に近い node を使い (`passedOver` に外した node)、無ければ何も送らずに断ります。2本つながったその node へ道路を
+  つないだ直後にゲームが落ちました (2026-11-23: `Engine.h:322 GetComponentDataIndex`、BaseNodeConfig)。設定があるかどうか
+  読めないときも、dry-run を含めて断ります。
 - `--type` は street template の resName か、バニラの道路のファイル名 (`town_new_small`、`country_old_medium`。バニラの
   town・country・highway の下で探す)。線路の種類と、ゲームの年に作れないものは断ります。指定が無ければ、その年の
   バニラの中くらいの町の道路 (1940 年までは old、それから new)。道路には template の `laneConfigs` と `streetStyle`、
