@@ -3031,7 +3031,10 @@ function M.installCompany(g, opts, spec)
 		if cmd.src == "" and cmd.name == "initNewGameFromMap" and spec.delivers ~= false then
 			local pop = 0
 			for _, caps in pairs(opts.townCapacities or {}) do pop = pop + (caps[1] or 0) end
-			if st.company then st.company = { companyStates = {}, basePopulation = pop, version = 3 } end
+			if st.company then
+				st.company = { companyStates = {}, basePopulation = pop, version = 3 }
+				g.speedup = 1 -- company.script sends makeGameSetSpeedCmd(1) on this event
+			end
 			if st.growth then
 				st.growth = { companyState = {} }
 				if spec.growthPlayer then st.growth.companyState[99] = copy(spec.growthPlayer) end

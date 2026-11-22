@@ -50,7 +50,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # test saves only: the map editor's Auto-detect connections / Generate (streets to all industries)
   tf3ctl.py company                         # read only: the base's company progression (basePopulation, level,
             # ticket price multiplier) and what is missing
-  tf3ctl.py company init [--dry-run]        # test saves only: the base's new-game event (initNewGameFromMap) sent
+  tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's new-game event (initNewGameFromMap) sent
             # by hand to a game app.startGame started without it; newgame sends it itself (--no-company-init: not)
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
             # building parcels left and right of a road piece (count, built on, centre, area), whether the piece is in
@@ -3928,6 +3928,8 @@ def make_parser():
                         "engine does after the base's new-game page) to a game whose company.gs has no basePopulation; "
                         "it also resets the towns' cached ratings, the subventions and the notifications")
     ci.add_argument("--dry-run", dest="company_dry_run", action="store_true", help="the states, nothing sent")
+    ci.add_argument("--force", dest="company_force", action="store_true", help="send again after a send that timed "
+                    "out (its event may still run, and a second one resets the progression again)")
     pa = sub.add_parser("parcels", help="read only: the town building parcels on the left and right of a road "
                                         "piece (count, built on, centre, area), from the engine's parcel system; "
                                         "not checked in a game yet")
@@ -4228,8 +4230,10 @@ def main(argv=None):
             res = send("industryStocks", industry_stocks_args(ns))
         elif ns.cmd == "company":
             if ns.company_action == "init":
-                res = send("companyInit", {"dryRun": True} if ns.company_dry_run else {},
-                           timeout=COMPANY_INIT_TIMEOUT_SEC)
+                cargs = {"dryRun": True} if ns.company_dry_run else {}
+                if ns.company_force:
+                    cargs["force"] = True
+                res = send("companyInit", cargs, timeout=COMPANY_INIT_TIMEOUT_SEC)
             else:
                 res = send("company")
         elif ns.cmd == "parcels":

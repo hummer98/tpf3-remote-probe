@@ -3119,6 +3119,10 @@ function M.companyDiagnosis(s)
 			.. "started with app.startGame, as newgame before company init). No company level, no perks, no ticket "
 			.. "price multiplier; company_growth errors at each ticket price (companyState nil). company init sends it"
 	end
+	if s.company.basePopulation == 0 then
+		return "basePopulation is 0 (no town population when the game started): the base's company_growth does "
+			.. "nothing then (no rank ever), as in the base"
+	end
 	if not s.growth.initialized then
 		return "basePopulation is set; company_growth has no companyState yet (it makes it in its update: run the "
 			.. "game a moment)"

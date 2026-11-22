@@ -111,12 +111,12 @@ python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-indust
 特典・運賃の倍率が無く、左下の会社のボタンがランクの代わりに「実績」と出て、`company_growth.script` が運賃のたびに
 エラーを出す)。そこで新しいゲーム (マップエディタでないもの) のあと、ツールが `company init` (下) を送り、その答えを
 `companyInit` に入れます。`--no-company-init` で送りません。`company init` が失敗しても警告だけで、ゲームは始まった
-ままです。`app.startGame2` を使わないのは、渡す地図をメニューの地図のプレビューの部品しか作れないためです (地形の
-生成器で地図を作る Lua の関数はありません)。
+ままです。`app.startGame2` を使わないのは、生成した地図はメニューの地図のプレビューの部品しか作れず (地形の生成器で
+地図を作る Lua の関数はありません)、Lua で作れる平らな地図では generator と生成される町・産業が失われるためです。
 
 ```
 python3 tools/tf3ctl.py company                       # 読むだけ: 本体の会社の成長の状態と、足りないもの
-python3 tools/tf3ctl.py company init [--dry-run]      # 試験用のセーブだけ: 本体の initNewGameFromMap を手で送る
+python3 tools/tf3ctl.py company init [--dry-run] [--force]   # 試験用のセーブだけ: 本体の initNewGameFromMap を手で送る
 ```
 
 - `company` は `::/game_mechanics/company/company.gs` の状態 (`basePopulation`・`version`・`companies`) と
@@ -126,8 +126,11 @@ python3 tools/tf3ctl.py company init [--dry-run]      # 試験用のセーブだ
 - `company init` は、`company.gs` に `basePopulation` が無いときに
   `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` を送り、それが入ったら答えます (`before`・
   `after`、最長 15 秒)。入っていれば何も送りません (`alreadyInitialized`)。マップエディタとミッションでは断ります。
-  本体ではこの出来事で町の評価の控え・補助金・通知も初めからになり、ほかの MOD のスクリプトも受けることがあるので、
-  試験用のセーブだけで使います (`newgame` で始めたゲームと、そこから作ったセーブ)。
+  本体ではこの出来事で町の評価の控え・補助金・通知も初めからになり、ゲームの速度が 1 になり (本体の新しいゲームの
+  始まりと同じ)、ようこその印も立ちます。ほかの MOD のスクリプトも受けることがあるので、試験用のセーブだけで使います
+  (`newgame` で始めたゲームと、そこから作ったセーブ)。待ちきれずに終わった送信のあとは、`--force` なしの次の送信を
+  断ります (その出来事があとで動くことがあり、二度目で会社の成長がまた初めからになるため)。町の人口の無い地図では
+  `basePopulation` が 0 になり、本体はランクを出しません (本体と同じ)。
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): 送った出来事がスクリプトに届くか (スクリプトは出来事の名前で
   受け取りを登録し、本体のどれもこの名前を登録していない)、止めているときにも処理されるか。
 

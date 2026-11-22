@@ -9,8 +9,10 @@
 -- new-game page starts a game with app.startGame2 and a map its preview widget generated; the probe's newgame uses
 -- app.startGame ("a new test game", app.d.tl), which sends no initNewGameFromMap: no company level, no perks, no
 -- ticket price multiplier, and towns.script, subventions.script and notifications.script miss their start too.
--- startGame2 is not open to the probe: the map it takes is made by the menu's MapPreviewComp widget (a builtin
--- the GUI mounts; no Lua call runs a terrain generator into a GameMap), and the menu probe has no GUI tree.
+-- startGame2 takes a GameMap: a generated one comes only from the menu's MapPreviewComp widget (a builtin the GUI
+-- mounts; no Lua call runs a terrain generator into a GameMap), and the menu probe has no GUI tree. A flat one can
+-- be made in Lua (Map.new / app.makeEmptyMap, as the base's map editor start), but then the generator and the
+-- generated towns and industries of newgame's arguments are lost.
 --
 -- company: read only, both scripts' states (GAME_SCRIPT .state, as company_util.externalGetCompaniesState reads
 -- it) for the player's company.
@@ -22,7 +24,10 @@
 -- What the event does in the base (game_mechanics, read 2026-11-23): company.script resets its companies' state
 -- (permits used, prospections) and takes the world population as basePopulation; company_growth.script empties
 -- its companyState; towns.script sets each town's cached ratings to 1; subventions.script and notifications.script
--- start their states again. Other mods' scripts may listen to it too.
+-- start their states again, and company.script sets the game speed to 1 (makeGameSetSpeedCmd, as a new game of
+-- the base's starts); the GUI's context_helper.script sets showWelcome. Other mods' scripts may listen to it too.
+-- A send that timed out is remembered: one queued while the game did not run the command would run later, and a
+-- second send would then reset the progression again, so another send needs force.
 local M = {}
 
 M.COMPANY_SCRIPT = "::/game_mechanics/company/company.gs"
@@ -32,12 +37,14 @@ M.EVENT = "initNewGameFromMap"
 M.WAIT_SEC = 15
 
 local NOTE = "test saves only: the base's initNewGameFromMap sent by hand also resets the towns' cached ratings, "
-	.. "the subventions and the notifications (other mods' scripts may listen to it too)"
+	.. "the subventions and the notifications, sets the game speed to 1 (company.script, as a base new game) and "
+	.. "the welcome flag (context_helper); other mods' scripts may listen to it too"
 
 -- ctx: core, answer(id, payload, tag), fail(id, msg), appTime(), try(fn), say(msg, level), mapEditor() -> boolean
 function M.new(ctx)
 	local core, answer, fail, appTime, try, say = ctx.core, ctx.answer, ctx.fail, ctx.appTime, ctx.try, ctx.say
 	local job = nil
+	local timedOut = nil -- the id of a send that timed out (its event may still run)
 
 	local function scriptState(names)
 		if type(names) == "string" then names = { names } end
@@ -84,6 +91,9 @@ function M.new(ctx)
 		out.rankButton = core.companyRankButton(out.growth.player)
 		out.worldPopulation = core.worldPopulation(try(function()
 			return api.engine.system.townBuildingSystem.getTown2personCapacitiesMap() end))
+		local sp = try(function()
+			return api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_SPEED) end)
+		out.speedup = sp and tonumber(try(function() return sp.speedup end)) or nil
 		out.diagnosis = core.companyDiagnosis(out)
 		return out
 	end
@@ -117,6 +127,11 @@ function M.new(ctx)
 		if out.dryRun then
 			out.sent = false
 			return answer(c.id, out)
+		end
+		if timedOut and c.args.force ~= true then
+			return fail(c.id, "the send of command " .. timedOut .. " timed out, and its event may still run (a "
+				.. "command queued while the game did not run it): a second one would reset the progression again. "
+				.. "Run the game a moment and look (company); force = true sends again")
 		end
 		local okM, cmd = pcall(function() return api.cmd.makeScriptingSendEventCmd("", "", M.EVENT, {}) end)
 		if not okM or cmd == nil then return fail(c.id, "making the command failed: " .. tostring(cmd)) end
@@ -161,8 +176,12 @@ function M.new(ctx)
 				return finish(j, false, "the engine refused the script event (its callback said no success)")
 			end
 			local now = read()
-			if now.company.initialized then return finish(j, true) end
+			if now.company.initialized then
+				timedOut = nil
+				return finish(j, true)
+			end
 			if appTime() > j.deadline then
+				timedOut = j.id
 				finish(j, false, "sent, but company.gs still has no basePopulation after " .. M.WAIT_SEC .. " s: "
 					.. "the event did not reach it (a sent event may reach only the scripts subscribed to its name), "
 					.. "or the game did not run the command (paused?)")
@@ -174,7 +193,7 @@ function M.new(ctx)
 		end
 	end
 
-	function T.reset() job = nil end
+	function T.reset() job, timedOut = nil, nil end
 
 	T.handlers = { company = T.show, companyInit = T.init }
 	return T

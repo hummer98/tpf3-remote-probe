@@ -113,12 +113,13 @@ sends the scripts no `initNewGameFromMap`, the event a game started from the bas
 (no company rank, no perks, no ticket price multiplier; the bottom-left company button shows "Achievements" instead
 of the rank, and `company_growth.script` logs an error at every ticket price). So after a new game (not the map
 editor) the tool sends `company init` (below) and keeps its answer as `companyInit`; `--no-company-init` leaves it
-out. A failed `company init` is a warning: the game is started either way. `app.startGame2` is not used because the
-map it takes is made only by the menu's map preview widget (no Lua call runs a terrain generator into a map).
+out. A failed `company init` is a warning: the game is started either way. `app.startGame2` is not used: a generated
+map for it comes only from the menu's map preview widget (no Lua call runs a terrain generator into a map), and a
+flat map made in Lua would lose the generator and the generated towns and industries.
 
 ```
 python3 tools/tf3ctl.py company                       # read only: the base's company progression and what is missing
-python3 tools/tf3ctl.py company init [--dry-run]      # test saves only: send the base's initNewGameFromMap by hand
+python3 tools/tf3ctl.py company init [--dry-run] [--force]   # test saves only: send the base's initNewGameFromMap by hand
 ```
 
 - `company` reads the state of `::/game_mechanics/company/company.gs` (`basePopulation`, `version`, `companies`)
@@ -128,8 +129,11 @@ python3 tools/tf3ctl.py company init [--dry-run]      # test saves only: send th
 - `company init` sends `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` when `company.gs` has
   no `basePopulation`, and answers once it has one (`before` / `after`), at most 15 s. Already set: nothing is sent
   (`alreadyInitialized`). Refused in the map editor and in a mission. In the base this event also resets the
-  towns' cached ratings, the subventions and the notifications, and other mods' scripts may listen to it: test
-  saves only (a game `newgame` started and saves made from one).
+  towns' cached ratings, the subventions and the notifications, sets the game speed to 1 (as a base new game starts) and the welcome flag,
+  and other mods' scripts may listen to it: test saves only (a game `newgame` started and saves made from one).
+  After a send that timed out, another is refused unless `--force`: its event may still run later, and a second
+  one would reset the progression again. A map with no town population gets `basePopulation` 0, and the base
+  then never gives a rank (as in the base).
 - **Not checked in game yet** (written 2026-11-23): whether a sent event reaches the scripts at all (they subscribe
   to event names, and none of the base's subscribes to this one), and whether the game runs it while paused.
 

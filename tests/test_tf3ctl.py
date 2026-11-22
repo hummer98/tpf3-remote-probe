@@ -1943,6 +1943,7 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertIsNone(ns.company_action)
         ns = p.parse_args(["company", "init", "--dry-run"])
         self.assertEqual((ns.company_action, ns.company_dry_run), ("init", True))
+        self.assertTrue(p.parse_args(["company", "init", "--force"]).company_force)
         self.assertTrue(p.parse_args(["newgame", "--no-company-init"]).no_company_init)
         self.assertTrue(p.parse_args(["restart", "--new", "--no-company-init"]).no_company_init)
         self.assertFalse(p.parse_args(["launch", "--new"]).no_company_init)

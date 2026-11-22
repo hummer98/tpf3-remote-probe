@@ -9434,6 +9434,8 @@ test("core.worldPopulation / companyDiagnosis / companyInitRefusal: sums, states
 	truthy(core.companyDiagnosis(base):find("no companyState yet"))
 	base.growth.initialized = true
 	truthy(core.companyDiagnosis(base):find("as after the base's new%-game page"))
+	base.company.basePopulation = 0
+	truthy(core.companyDiagnosis(base):find("basePopulation is 0"))
 	truthy(core.companyInitRefusal({ mapEditor = true, company = {} }):find("map editor"))
 	truthy(core.companyInitRefusal({ mission = true, company = {} }):find("mission"))
 	truthy(core.companyInitRefusal({ company = { running = false, script = "x" } }):find("not running"))
@@ -9474,7 +9476,8 @@ test("company init: sends initNewGameFromMap with src and id empty, answers once
 	eq(a.before.company.initialized, false); eq(a.after.company.initialized, true)
 	eq(a.after.company.basePopulation, 200, "the residential capacities, as computeWorldPopulation")
 	eq(a.after.growth.player.level, 1); eq(a.growthNote, nil)
-	truthy(a.note:find("test saves only"))
+	truthy(a.note:find("test saves only")); truthy(a.note:find("speed to 1"))
+	eq(a.after.speedup, 1, "company.script sets speed 1, as a base new game")
 	-- again: the state is there, nothing sent
 	local b = companyRun(g, 2512, "companyInit")
 	truthy(b.ok, b.error); eq(b.sent, false); eq(b.alreadyInitialized, true); eq(#g.companyEvents, 1)
@@ -9506,6 +9509,14 @@ test("company init: dry run, map editor, mission, no script, refused, not delive
 	local t = final(nd, 2526)
 	eq(t.ok, false); eq(t.sent, true); truthy(t.error:find("did not reach it"), t.error)
 	eq(t.after.company.initialized, false)
+	-- the timed-out event may still run: another send is refused unless forced
+	local t2 = companyRun(nd, 2528, "companyInit")
+	eq(t2.ok, false); truthy(t2.error:find("timed out"), t2.error); eq(#nd.companyEvents, 1)
+	send(nd, 2529, "companyInit", "{ force = true }")
+	frames(nd, FIRST + 20)
+	eq(#nd.companyEvents, 2, "forced: sent again")
+	local dr = companyRun(nd, 2530, "companyInit", "{ dryRun = true }", FIRST + 400)
+	eq(#nd.companyEvents, 2)
 	-- delivered, but company_growth has not run its update yet: ok, with the note
 	local gp = companyGame()
 	local p = companyRun(gp, 2527, "companyInit")
