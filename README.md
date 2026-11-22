@@ -815,7 +815,9 @@ python3 tools/tf3ctl.py persons --destination 51          # those with the indus
   by name, reads too); when it reads as no targets at all, `targetsRead` is false, `found` is null (not "no
   target") and `raw` describes what came (type, `#`, first keys, a few levels down); `reach --town` says so in
   `targetsWhy` and gives no `notTarget`. `read` says how it was read (`targets` or `top`, then `index`, `pairs`,
-  and `flat` for entries without a list round them); `targetLists[].read` how each list was; one that would not read
+  `index1` / `index0` for a `targets` pair that only reads by number, and `flat` for entries without a list round
+  them; `targets` is read by name, else as a getter, else from the metatable, and `raw.probe` / `raw.fieldProbe`
+  say what each read gave: a type, nil, or the error); `targetLists[].read` how each list was; one that would not read
   makes a missing entity's `found` null too. A construction stands for its industries, town buildings and stations, a
   town building also for its PersonCapacity entity (`candidates`). With the building's town (or the closest town
   of an industry's construction) come `townProblems` (`api.engine.util.town.getTownProblems`: `problem` and the
