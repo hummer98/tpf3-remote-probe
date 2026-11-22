@@ -31,6 +31,7 @@ M.TOWN_BUILDINGS_MAX = 5000 -- town buildings read by reach --town (more: counte
 M.PATH_NODES_MAX = 32 -- nodes of each end handed to the path search
 M.RADIUS_DEFAULT = 40 -- m: the circle the nodes of a point (or of a place without its own) are taken from
 M.RADIUS_MAX = 500
+M.SLOW_MS = 100 -- a path search this long (one frame of the GUI) is logged
 M.PIECES_LISTED = 50 -- the transport network entities of a path listed (pieces counts them all)
 M.MODES = { walk = { "PERSON" }, drive = { "CAR" } }
 M.PROBLEM_NAMES = { "Disconnected", "Overlength" }
@@ -81,6 +82,7 @@ function M.args(args, maxId)
 	if #forms == 0 then return nil, "give one of: api, problems, target, town, from and to" end
 	if #forms > 1 then return nil, "one form at a time (" .. table.concat(forms, ", ") .. ")" end
 	local out = { form = forms[1] }
+	if args.limit ~= nil and out.form ~= "town" then return nil, "limit goes with town" end
 	if out.form == "target" or out.form == "town" then
 		local e, err = entityArg(args[out.form], out.form, maxId)
 		if not e then return nil, err end
@@ -424,6 +426,14 @@ function M.new(ctx)
 			for _, p in ipairs(index and entriesFor(index, c) or {}) do targets[#targets + 1] = p end
 		end
 		set.targets = targets
+		-- the building's own doors: PersonCapacity personNodes (walking) / vehicleNodes (driving), engine.d.tl; a
+		-- home is no target, so for one this is the only node of its own
+		for _, c in ipairs(d.candidates) do
+			local pc = comp(c, "PERSON_CAPACITY")
+			for _, n in ipairs(core.toList(pc and core.field(pc, mode == "walk" and "personNodes" or "vehicleNodes"))) do
+				addNode(set, n, "personCapacity")
+			end
+		end
 		for _, p in ipairs(targets) do edgeNodes(set, mode == "walk" and p.edgeWalk or p.edgeDrive, "target") end
 		for _, c in ipairs(d.candidates) do
 			if comp(c, "STATION") ~= nil then terminalNodes(set, c, mode) end
@@ -467,9 +477,17 @@ function M.new(ctx)
 		local t0 = ctx.appTime and ctx.appTime()
 		local ok, path = pcall(fn, from.list, to.list, modes)
 		if t0 then res.ms = math.floor((ctx.appTime() - t0) * 1000 + 0.5) end
+		if res.ms and res.ms >= M.SLOW_MS and ctx.say then
+			ctx.say(string.format("reach: a %s path search took %d ms (%d -> %d nodes)", mode, res.ms, #from.list, #to.list), 1)
+		end
 		if not ok then res.why = "findPathNodeToNode: " .. tostring(path); return res end
 		local list = core.toList(path)
 		res.found, res.edges = #list > 0, #list
+		if not res.found then
+			-- not yet told apart in a game from a search that never finds this kind of path (another mod's notes:
+			-- nothing between two terminal nodes of one station); a pair known to connect is the check
+			res.unverified = true
+		end
 		local seen, pieces = {}, {}
 		for _, step in ipairs(list) do
 			local edge = core.at(step, 1)
@@ -546,9 +564,10 @@ function M.new(ctx)
 		end
 		-- the town's problems: the building's own town, else the closest town of an industry's construction
 		local town = d.town
-		if (town == nil or town < 0) and comp(e, "INDUSTRY") ~= nil then
+		if (town == nil or town < 0) and (comp(e, "INDUSTRY") ~= nil or comp(e, "CONSTRUCTION") ~= nil) then
 			town = tonumber(try(function()
-				local con = api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(e)
+				local con = comp(e, "CONSTRUCTION") ~= nil and e
+					or api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(e)
 				return con and con >= 0 and api.engine.system.streetConnectorSystem.getConstructionClosestTown(con) or nil
 			end))
 		end
@@ -567,7 +586,9 @@ function M.new(ctx)
 		local index, err = readTargets()
 		if not index then return fail(c.id, err) end
 		local map = try(function() return api.engine.system.townBuildingSystem.getTown2BuildingMap() end)
-		local list = map ~= nil and ids(try(function() return map[t] end)) or {}
+		-- by pairs, as the other readers of this map do (a missing key of an engine map is not known to be safe)
+		local list = {}
+		pcall(function() for k, v in pairs(map) do if tonumber(k) == t then list = ids(v) end end end)
 		local res = { ok = true, note = M.NOTE, town = t, name = nameOf(t), buildings = #list,
 			targetLists = core.array(index.lists), targetsTotal = index.total, read = index.how }
 		if map == nil then res.buildingsError = "townBuildingSystem.getTown2BuildingMap gave nothing" end

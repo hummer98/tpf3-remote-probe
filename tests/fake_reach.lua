@@ -20,6 +20,7 @@
 -- spec.persons = { [p] = { home, destinations, walkDrive = { n, n }, lines = { n, n } } }: getSimPersonsForDestination
 --   gives those with the entity among their destinations (the entity must hold a PERSON_CAPACITY: else the engine's
 --   assertion, g.crashed);
+-- spec.buildings[b].personNodes = { "tn:i" }: its PERSON_CAPACITY's personNodes; spec.pathError: the search raises;
 -- spec.userdata: the engine's answers as userdata. Asking getComponent for an entity the engine does not have, or
 -- reading an engine vector past its end, is the engine's assertion (g.crashed).
 -- g.reachCalls = { targets, problems, path, circle, forDestination } counts; g.pathModes: the modes of each search.
@@ -82,7 +83,11 @@ function M.install(g, spec)
 			return b and wrap({ town = b.town or -1, personCapacity = b.pc or e, stockList = -1 }) or nil
 		end
 		if kind == "PERSON_CAPACITY" then
-			if b and b.kind and not b.pc then return wrap({ type = LU[b.kind], capacity = b.capacity or 0 }) end
+			if b and b.kind and not b.pc then
+				local pn = {}
+				for j, x in ipairs(b.personNodes or {}) do pn[j] = node(x) end
+				return wrap({ type = LU[b.kind], capacity = b.capacity or 0, personNodes = wrap(pn), vehicleNodes = wrap({}) })
+			end
 			local ob = pcOwner[e] and buildings[pcOwner[e]]
 			if ob and ob.kind then return wrap({ type = LU[ob.kind], capacity = ob.capacity or 0 }) end
 			if industries[e] and industries[e].capacity then return wrap({ type = LU.INDUSTRIAL, capacity = industries[e].capacity }) end
@@ -158,6 +163,7 @@ function M.install(g, spec)
 		g.reachCalls.path = g.reachCalls.path + 1
 		local m = modes[1]
 		g.pathModes[#g.pathModes + 1] = m
+		if spec.pathError then error("path boom") end
 		local graph = (spec.graph or {})[m == TM.PERSON and "walk" or (m == TM.CAR and "drive") or "?"] or {}
 		local goal, queue, seen = {}, {}, {}
 		for i = 1, #to do goal[key(to[i])] = true end

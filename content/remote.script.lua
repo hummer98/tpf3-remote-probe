@@ -1183,7 +1183,7 @@ modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = cor
 for k, fn in pairs(modhub.handlers) do handlers[k] = fn end
 -- reach (remote_reach.lua): read only, whether a place can be got to (the engine's targets, town problems, a path)
 local reach = (ug_require or require)(MOD .. "::/remote_reach.lua").new({ core = core, answer = answer, fail = fail,
-	try = try, appTime = appTime, posOf = function(e) return lines.posOf(e) end })
+	try = try, appTime = appTime, say = say, posOf = function(e) return lines.posOf(e) end })
 handlers.reach = reach.handle
 
 -- args: entity (one industry; none: all). Read only. Per industry: its capacity (PERSON_CAPACITY), the sims that

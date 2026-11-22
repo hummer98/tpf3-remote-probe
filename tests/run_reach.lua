@@ -29,6 +29,7 @@ return function(t)
 			local ok, err = R.args(b[1])
 			truthy(ok == nil and err and err:find(b[2], 1, true), tostring(err) .. " (wanted " .. b[2] .. ")")
 		end
+		truthy(select(2, R.args({ target = 1, limit = 3 })):find("limit goes with town"))
 		eq(core.COMMANDS.reach, true); eq(core.CHANGES_GAME.reach, nil); eq(core.MENU_COMMANDS.reach, nil)
 	end)
 
@@ -119,6 +120,7 @@ return function(t)
 		local b = run(g, "reach", "{ target = 5100 }")
 		truthy(b.ok, b.error); eq(b.found, true); eq(b.entries[1].entity, 51, "the construction's industry")
 		truthy(table.concat(b.kinds, ","):find("construction"))
+		eq(b.town, 11, "a construction's closest town"); eq(b.townProblems[1].problem, "Disconnected")
 		local h = run(g, "reach", "{ target = 1102 }")
 		truthy(h.ok, h.error); eq(h.found, false, "a home is no target"); truthy(h.why:find("not among"), h.why)
 		eq(h.candidates[2], 1192, "its PersonCapacity entity was looked for too"); eq(h.town, 11)
@@ -209,6 +211,25 @@ return function(t)
 		local ta = run(te, "reach", "{ town = 11 }", true)
 		eq(ta.ok, false); truthy(ta.error:find("targets boom"), ta.error)
 		for _, gg in ipairs({ o, l, nt, te }) do truthy(not gg.crashed, gg.crashed) end
+	end)
+
+	test("reach --from --to: a home's own doors, a place found by its position, the node cap, a search that fails", function()
+		local circle = { { 0, 0, node = "701:0" }, { 300, 300, node = "703:0" } }
+		for i = 1, 40 do circle[#circle + 1] = { 1000 + i, 1000, node = "704:" .. i } end
+		local g = reachGame({ circle = circle, positions = { [52] = { 300, 300 } },
+			buildings = { [1101] = { town = 11, kind = "RESIDENTIAL", capacity = 10, personNodes = { "701:1" } } },
+			graph = { walk = { ["701:1"] = { "703:0" } }, drive = {} } })
+		local a = run(g, "reach", '{ from = 1101, to = 52, mode = "walk" }', true)
+		truthy(a.ok, a.error); local w = a.paths.walk
+		eq(w.fromFrom.personCapacity, 1, "the home's personNodes, not a circle"); eq(w.toFrom.circle, 1, "52 by its position")
+		eq(a.to.position.x, 300); eq(w.found, true); eq(w.unverified, nil)
+		local b = run(g, "reach", '{ from = "1020,1000", to = 52, mode = "walk", radius = 100 }')
+		truthy(b.ok, b.error); eq(b.paths.walk.fromNodes, R.PATH_NODES_MAX); eq(b.from.truncated, true); eq(b.from.circle.found, 40)
+		eq(b.paths.walk.found, false); eq(b.paths.walk.unverified, true, "a miss is marked until checked in a game")
+		local e = reachGame({ pathError = true })
+		local c = run(e, "reach", '{ from = 4100, to = 51, mode = "drive" }', true)
+		truthy(c.ok, c.error); eq(c.paths.drive.found, nil); truthy(c.paths.drive.why:find("path boom"), c.paths.drive.why)
+		for _, gg in ipairs({ g, e }) do truthy(not gg.crashed, gg.crashed) end
 	end)
 
 	test("reach in the main menu: refused, needs a game", function()

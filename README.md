@@ -701,12 +701,15 @@ python3 tools/tf3ctl.py persons --destination 51          # those with the indus
   `--limit` listed, those out of reach first; `notTarget` counts the non-residential buildings that are no target;
   `problems` as above.
 - `--from A --to B`: whether there is a path, by `api.engine.util.pathfinding.findPathNodeToNode` with
-  `TransportMode.PERSON` (`walk`) and `CAR` (`drive`), one search per mode. An end is an entity or a point: a
-  target's `edgeWalk` / `edgeDrive` nodes, a station's terminals (`personNodes` walking, `vehicleNodeId` driving),
+  `TransportMode.PERSON` (`walk`) and `CAR` (`drive`), one search per mode. An end is an entity or a point: the
+  building's own `PERSON_CAPACITY` `personNodes` (walking) / `vehicleNodes` (driving), a target's `edgeWalk` /
+  `edgeDrive` nodes, a station's terminals (`personNodes` walking, `vehicleNodeId` driving),
   else the network nodes within `--radius` m (default 40, at most 500) of its position or the point
   (`findTransportNetworkNodesInCircle`); at most 32 nodes an end. Per mode in `paths`: `found` (null when an end
   has no nodes: `why`), `edges`, `pieces` (network entities on the path; the first 50 in `pieceIds`), `ms`, and
-  where the nodes came from (`fromFrom` / `toFrom`). The engine gives no cost. There is no line path search to
+  where the nodes came from (`fromFrom` / `toFrom`); a miss has `unverified: true` until a game shows the search
+  finds such paths at all (first try two places known to connect); a search of 100 ms or more is logged. The
+  engine gives no cost. There is no line path search to
   call: `lines` gives the target's `isReachableLines` only (`--mode lines` does no search).
 - `persons --town T` lists the people whose home is one of the town's residential buildings
   (`getSimPersonsForDestination` of each); `persons --destination E` those with E as a destination (E must have

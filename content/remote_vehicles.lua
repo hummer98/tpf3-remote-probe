@@ -1036,7 +1036,13 @@ function M.new(ctx)
 		-- how many destinations of each land use the person reaches walking or driving, and by lines (engine.d.tl
 		-- SimPerson; which land use each place is, the tealdef does not say: core.reachSummary)
 		local rw, rl = core.field(sp, "landUse2ReachableWalkDrive"), core.field(sp, "landUse2ReachableLines")
-		if rw ~= nil or rl ~= nil then p.reachable = { walkDrive = numbers(rw), lines = numbers(rl) } end
+		-- by place (a number that does not read stays a hole, not a shift into the next land use's place)
+		local function byPlace(v)
+			local out = {}
+			for i = 1, core.size(v) do out[i] = tonumber(core.at(v, i)) or -1 end
+			return core.array(out)
+		end
+		if rw ~= nil or rl ~= nil then p.reachable = { walkDrive = byPlace(rw), lines = byPlace(rl) } end
 		local good = try(function() return api.engine.util.cargo.isGoodQuality(e) end)
 		if type(good) == "boolean" then p.good = good end
 		local spav = personComp(e, "SIM_PERSON_AT_VEHICLE")
@@ -1120,7 +1126,10 @@ function M.new(ctx)
 		local LU = try(function() return api.type.enum.LandUseType end)
 		local RES = LU and core.field(LU, "RESIDENTIAL")
 		local seen, out = {}, {}
-		for _, b in ipairs(core.toList(map ~= nil and try(function() return map[a.town] end) or nil)) do
+		-- by pairs, as the other readers of this map do (a missing key of an engine map is not known to be safe)
+		local mine
+		pcall(function() for k, v in pairs(map) do if tonumber(k) == a.town then mine = v end end end)
+		for _, b in ipairs(core.toList(mine)) do
 			b = tonumber(b)
 			local tb = b and existsE(b) and try(function() return api.engine.getComponent(b, CT().TOWN_BUILDING) end)
 			local pcE = tb and tonumber(core.field(tb, "personCapacity"))

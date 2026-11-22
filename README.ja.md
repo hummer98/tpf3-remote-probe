@@ -653,11 +653,14 @@ python3 tools/tf3ctl.py persons --destination 51          # その産業を行�
   働き口の行き先を数え (`counts`: `walk`・`drive`・`lines`・`none`)、`--limit` 件を届かないものから並べます。
   `notTarget` は住宅でないのに行き先でない建物の数。`problems` は上と同じ。
 - `--from A --to B`: 道があるか。`api.engine.util.pathfinding.findPathNodeToNode` に `TransportMode.PERSON` (`walk`)
-  と `CAR` (`drive`) を渡し、mode ごとに1回探します。端は entity か点: 行き先なら `edgeWalk` / `edgeDrive` の node、
+  と `CAR` (`drive`) を渡し、mode ごとに1回探します。端は entity か点: 建物そのものの `PERSON_CAPACITY` の
+  `personNodes` (歩き) / `vehicleNodes` (車)、行き先なら `edgeWalk` / `edgeDrive` の node、
   駅なら terminal (歩きは `personNodes`、車は `vehicleNodeId`)、ほかは位置または点から `--radius` m (初期設定 40、
   500 まで) の中の網の node (`findTransportNetworkNodesInCircle`)。端ごとに 32 node まで。`paths` の mode ごとに:
   `found` (端に node が無いときは null で `why`)、`edges`、`pieces` (経路の網の entity の数、最初の 50 が
-  `pieceIds`)、`ms`、node をどこから取ったか (`fromFrom` / `toFrom`)。費用はエンジンが返しません。路線の経路探しは
+  `pieceIds`)、`ms`、node をどこから取ったか (`fromFrom` / `toFrom`)。見つからなかったときは、この探し方でそもそも
+  道が見つかるとゲームで分かるまで `unverified: true` が付きます (まず、つながっていると分かっている2点で試す)。
+  100 ms 以上かかった探索はログに出ます。費用はエンジンが返しません。路線の経路探しは
   呼べる口が無いので、`lines` は行き先の `isReachableLines` だけです (`--mode lines` は探しません)。
 - `persons --town T` は、町の住宅を家にしている人 (建物ごとの `getSimPersonsForDestination`)、`persons
   --destination E` は E を行き先に持つ人 (E に `PERSON_CAPACITY` が要る) を並べます。`persons` の各人に
