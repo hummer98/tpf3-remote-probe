@@ -593,6 +593,7 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
 python3 tools/tf3ctl.py modhub status [--folder my_mod_1] [--wait 30]   # read only
 python3 tools/tf3ctl.py modhub validate my_mod_1 [--timeout 300] [--messages 50]
 python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." --first-upload [--dry-run] [--timeout 900]
+python3 tools/tf3ctl.py modhub publish my_mod_1 --public yes|no --changelog "..." [--previous-revision N] [--dry-run]   # update
 python3 tools/tf3ctl.py modhub publish-clear --yes
 ```
 
@@ -633,26 +634,39 @@ along with `publish`, `abortPublish` and `PublishSettings` appearing only in the
   Ready with no valid `modhubId`. Other staging mods may stay in Sync for minutes; `status` without `--folder` waits
   for all of them.
 
-#### Uploading one new mod (`modhub publish`)
+#### Uploading a mod (`modhub publish`)
 
-`publish FOLDER` uploads a staging mod to mod.io as the page's Upload button does, for a **first upload only**: a
-new mod page, never an update of a mod already on mod.io. A new mod page or a public mod cannot be undone from the
-game, so every one of these must hold, or nothing is sent:
+`publish FOLDER` uploads a staging mod to mod.io as the page's Upload / Update button does: either a **first
+upload** (a new mod page, with `--first-upload`) or an **update** of the mod.io page the folder was uploaded to
+before (without `--first-upload`). The page uses the same call for both (`ModPublishHelper.publish`) and only names
+the button "Update" when mod.io holds the mod; this tool never guesses which one is meant. A new mod page or a
+public mod cannot be undone from the game, so every one of these must hold, or nothing is sent:
 
 - The folder is in both lists of folders publish takes: `MODHUB_PUBLISH_FOLDERS` in `tools/tf3ctl.py` and in
   `content/remote_core.lua` (separate from validate's list). Edit both for your own mod.
-- `--first-upload`, `--public yes|no` (no default) and a `--changelog` are given.
-- The tool itself sees no `_metadata/mod.io_fileid.txt` in the staging folder (the game writes it after an upload,
-  and it is what makes the next upload update the same mod.io page), and a `_metadata/0.png` that is a PNG of at
-  least 512x288 and at most 8 MB (mod.io's limits; the page refuses without it, "No valid cover image found").
+- `--public yes|no` (no default) and a non-empty `--changelog` are given.
+- `_metadata/mod.io_fileid.txt` in the staging folder (the game writes it after the first upload, with the mod.io
+  id; it is what makes the next upload update the same page): with `--first-upload` it must **not** be there (else
+  a second page would be made); without `--first-upload` it **must** be there and hold one id (else the update
+  would make a new page). The two mix-ups are refused before anything is sent.
+- A `_metadata/0.png` that is a PNG of at least 512x288 and at most 8 MB (mod.io's limits; the page refuses without
+  it, "No valid cover image found").
 - `_metadata/modinfo.json` is there and its fields fit, counted in characters (not bytes): `name` (the mod.io name)
   at most 50 and `summary` at most 250 (mod.io's limits; mod.io refuses a longer name only after the upload began,
   "code 13009"), `description` and `--changelog` at most 50000 (this tool's guard: mod.io writes no limit for them).
   name, summary and description are not empty; `tags`, if given, is a list of strings. `--dry-run` answers each
   length with its limit (`local.metadata`).
 - No publish mark (below) is there.
-- In the game: the mod is Ready, its `modhubId` is not valid and mod.io holds no details for it (new); mod.io is
-  initialized, allows uploads and is neither busy nor uploading; someone is logged in (otherwise the answer names
+- An update only: `mod.json`'s `revision` is a whole number above the last one uploaded to that mod.io page. The last
+  one is the highest `revision` that `publish_history.jsonl` (below) records for that folder and mod.io id (uploads
+  mod.io took: success, partial errors, a late fileid). When the history has none (an upload from before the history
+  kept the revision), give `--previous-revision N`, the revision now on mod.io; it is refused for a first upload,
+  and when the history has a revision it must agree with it.
+- In the game, a first upload: the mod is Ready, its `modhubId` is not valid and mod.io holds no details for it
+  (new). An update: the mod is Ready, its `modhubId` is the id of the fileid file, mod.io holds details of that mod
+  (without them the page warns the mod got deleted on mod.io and would make a new one: refused), and `--public no`
+  is refused for a mod public on mod.io (the page's "Set Public" box is disabled then; a hidden one may stay hidden
+  or turn public). Both: mod.io is initialized, allows uploads and is neither busy nor uploading; someone is logged in (otherwise the answer names
   `requiredUserAction: "login"` and stops: the page would show its login window); the local cover is set.
 - A fresh validation (run first, as the page does before it enables the button) has no critical issue and neither
   `levelPc` nor `levelConsole` at Error or Critical: there the page asks a person to "Proceed Anyway", which this
@@ -660,21 +674,29 @@ game, so every one of these must hold, or nothing is sent:
 - One upload per launch of the game.
 
 `--dry-run` goes through all of the above, including the validation, and answers the settings it would send; it
-never calls `publish`. Without `--dry-run` the tool runs the same dry run first (a refusal there leaves nothing
+never calls `publish`. For an update the answer also has `update`: the mod.io id (`modioId`), the name that goes up
+(`name`, from modinfo.json) and the name, visibility and version mod.io shows now (`modioTitle`, `modioVisible`,
+`modioVersion`), the new and the last revision (`revision`, `previousRevision`, `previousFrom`: the history or
+`--previous-revision`) and the changelog. Without `--dry-run` the tool runs the same dry run first (a refusal there leaves nothing
 behind), then writes a **publish mark**, `$XDG_STATE_HOME/tf3ctl/publish_pending.json` (`~/.local/state/tf3ctl/`
-without it; folder, owner, time, visibility), and only then sends the upload. While a mark is there, every publish
+without it; folder, owner, time, visibility, first upload or update, mod.io id, revision), and only then sends the
+upload. While a mark is there, every publish
 is refused. The mark goes only (1) when the upload succeeded without partial errors and the fileid file appeared
-(within 60 s) holding the mod.io id the game answered, or (2) by `modhub publish-clear --yes`, which a person runs
+(within 60 s) holding the mod.io id the game answered (for an update the file is there from before, so this only
+compares the game's answer with its id; an update the game answers with another mod.io id is not a success, and
+the mark stays), or (2) by `modhub publish-clear --yes`, which a person runs
 after looking at the account's mods on mod.io (refused while the running game says the upload is still
 Publishing). Any other end (a failure, partial errors, a refusal after the mark, a timeout, a lost game) leaves it.
 Every upload sent also adds one line to `publish_history.jsonl` next to the mark (time, owner, folder, visibility,
-outcome, mod.io id, fileid), success or not. While a mark is there, or while the mod refuses a quit because the
+first upload or update, revision, outcome, mod.io id, fileid), success or not; the next update compares its
+revision with it. While a mark is there, or while the mod refuses a quit because the
 upload is Publishing, `quit --kill` and `restart` do not kill the game, not even with `--force`. **Do not load a
 save or quit the game by hand from the menu while an upload runs.**
 
 The settings are built as the page builds them for a mod of the My Mods tab (`mod_manager_react_util.tl`): a new
-`PublishSettings` with `setPublic` from `--public` (the page's "Set Public" box, false by default for a new mod),
-`updateMetadata = true` (the page's default; its box is disabled for a new mod), `changeLog` from `--changelog`,
+`PublishSettings` with `setPublic` from `--public` (the page's "Set Public" box, false by default for a new mod and
+mod.io's visibility for an update), `updateMetadata = true` (the page's default; its box is disabled for a new mod;
+for an update it means modinfo.json's name, summary and description go up again), `changeLog` from `--changelog`,
 `isSavegame = false` and `issuesConfirmed = false` (no "Proceed Anyway" was asked). The answer has them all.
 
 After `publish` the command answers its progress every 15 s and waits for HasResult up to `--timeout` (default 900
@@ -686,9 +708,10 @@ one in progress, and what would be left on mod.io is unknown): the answer says t
 stays, and `quit`, `load` and `newgame` are refused while the mod is still Publishing, so the game can finish it.
 `modhub status` then shows the result and `publishedThisLaunch`.
 
-- **Not checked in game.** Nothing has been uploaded this way yet. In particular: whether the game writes
-  `mod.io_fileid.txt` at the result or only at the page's Ok (`abortPublish`), what `modhubId` reads afterwards,
-  whether `setPublic = false` makes a hidden mod on mod.io, and how long an upload takes.
+- **Checked in game:** a first upload (2026-11-22): mod.io took the mod, and the fileid file held its id.
+- **Not checked in game:** an update; whether the game writes `mod.io_fileid.txt` at the result or only at the
+  page's Ok (`abortPublish`); whether `setPublic = false` makes a hidden mod on mod.io; what mod.io's `version`
+  holds after an upload (it is only shown, never compared).
 
 ### Several clients at once
 
@@ -818,8 +841,8 @@ Not checked yet:
 - `town`, entirely (see "One town").
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
-- `modhub publish`, entirely (see "Uploading one new mod"). `modhub status` and `validate` were checked on
-  2026-11-22.
+- `modhub publish` of an update (see "Uploading a mod"). `modhub status`, `validate` and a first upload were
+  checked on 2026-11-22.
 
 ## Tests
 

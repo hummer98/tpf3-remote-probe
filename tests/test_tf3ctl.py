@@ -3007,13 +3007,13 @@ MODINFO = {"name": "Force Unload / 積み下ろし強制", "summary": "Turns it 
            "tags": ["Script Mod"]}
 
 
-def make_staging(root, name=FU, cover=(1920, 1080), fileid=None, modinfo=MODINFO):
-    """A staging mod as stage.py leaves it: mod.json, _metadata/modinfo.json and _metadata/0.png (only the PNG
-    header matters here)."""
+def make_staging(root, name=FU, cover=(1920, 1080), fileid=None, modinfo=MODINFO, revision=None):
+    """A staging mod as stage.py leaves it: mod.json (with revision, if given), _metadata/modinfo.json and
+    _metadata/0.png (only the PNG header matters here)."""
     meta = os.path.join(root, "staging_area", name, "_metadata")
     os.makedirs(meta, exist_ok=True)
     with open(os.path.join(root, "staging_area", name, "mod.json"), "w") as f:
-        f.write("{}")
+        f.write("{}" if revision is None else json.dumps({"modId": "x", "revision": revision}))
     if modinfo is not None:
         with open(os.path.join(meta, "modinfo.json"), "w", encoding="utf-8") as f:
             json.dump(modinfo, f, ensure_ascii=False)
@@ -3375,6 +3375,202 @@ class ModhubPublishTest(unittest.TestCase):
         self.assertIsNotNone(tf3ctl.read_pending())
 
 
+class ModhubPublishUpdateTest(unittest.TestCase):
+    """modhub publish of an update (no --first-upload): the fileid's mod.io page, mod.json's revision above the last
+    one uploaded, the two never taken for each other. ModhubPublishTest's fake send, set-up and helpers, without
+    its tests."""
+
+    MODIO = "6543965"
+    UPDATE = ("--public", "yes", "--changelog", "Wording.")
+    FULL = ModhubPublishTest.FULL
+    tearDown = ModhubPublishTest.tearDown
+    history = ModhubPublishTest.history
+    run_publish = ModhubPublishTest.run_publish
+    refused = ModhubPublishTest.refused
+
+    def setUp(self):
+        ModhubPublishTest.setUp(self)
+        self.meta = make_staging(self.root, fileid=self.MODIO, revision=10003)
+
+    def revision(self, rev):
+        make_staging(self.root, fileid=self.MODIO, revision=rev)
+
+    def add_history(self, **rec):
+        tf3ctl.append_history(dict({"v": 1, "folder": FU, "outcome": "success", "modId": self.MODIO,
+                                    "fileid": self.MODIO}, **rec))
+
+    def dry(self, *extra):
+        return {"ok": True, "dryRun": True, "wouldPublish": True, "mode": "update", "modioId": self.MODIO,
+                "checks": {"modio": {"title": "Auto Force Unload", "visible": True, "version": "10001",
+                                     "modId": self.MODIO}}}
+
+    def test_a_fileid_with_first_upload_and_an_update_without_a_fileid_are_both_refused(self):
+        self.refused("--first-upload makes only a new mod", *(self.UPDATE + ("--first-upload",)))
+        self.refused("--first-upload makes only a new mod", *(self.UPDATE + ("--first-upload", "--dry-run")))
+        os.remove(os.path.join(self.meta, "mod.io_fileid.txt"))
+        self.refused("never uploaded, so there is no mod.io page to update", *(self.UPDATE + ("--previous-revision", "1")))
+        self.refused("never uploaded", *(self.UPDATE + ("--dry-run", "--previous-revision", "1")))
+        self.assertEqual(self.history(), [])
+
+    def test_a_fileid_that_is_not_one_id_is_refused(self):
+        for bad in ("", "abc", "6543965 7000001", "-5"):
+            with open(os.path.join(self.meta, "mod.io_fileid.txt"), "w") as f:
+                f.write(bad)
+            self.refused("does not hold one mod.io id", *(self.UPDATE + ("--previous-revision", "10001")))
+
+    def test_the_revision_must_be_known_and_above_the_last_upload(self):
+        self.refused("records no revision uploaded to mod.io mod 6543965", *(self.UPDATE + ("--dry-run",)))
+        self.add_history()  # the first upload, from before the history kept the revision: still not known
+        self.refused("give --previous-revision N", *self.UPDATE)
+        self.refused("is not above 10003", *(self.UPDATE + ("--previous-revision", "10003")))
+        self.refused("is not above 10004", *(self.UPDATE + ("--previous-revision", "10004", "--dry-run")))
+        # the history knows it: that one counts, and --previous-revision may not say otherwise
+        self.add_history(revision=10001)
+        self.add_history(revision=10003, folder="another_1")  # another folder's
+        self.add_history(revision=10005, modId="7000001")  # another mod.io page's
+        self.add_history(revision=10009, modId=None, outcome="failed")  # mod.io did not take it
+        self.refused("--previous-revision 10002, but publish_history.jsonl says revision 10001",
+                     *(self.UPDATE + ("--previous-revision", "10002")))
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--dry-run",)))
+        self.assertEqual(res["update"]["previousRevision"], 10001)
+        self.assertEqual(res["update"]["previousFrom"], "publish_history.jsonl")
+        self.add_history(revision=10003)
+        self.sent = []
+        self.refused("revision 10003 is not above 10003", *self.UPDATE)
+        self.revision(10002)
+        self.refused("revision 10002 is not above 10003", *self.UPDATE)
+        # no revision in mod.json at all
+        with open(os.path.join(self.root, "staging_area", FU, "mod.json"), "w") as f:
+            f.write("{}")
+        self.refused("mod.json has no whole-number revision", *(self.UPDATE + ("--previous-revision", "1")))
+
+    def test_the_changelog_is_required_and_previous_revision_is_for_an_update_only(self):
+        self.refused("--changelog", "--public", "yes", "--previous-revision", "10001")
+        self.refused("--changelog", "--public", "yes", "--changelog", "  \t ", "--previous-revision", "10001")
+        os.remove(os.path.join(self.meta, "mod.io_fileid.txt"))
+        self.refused("--previous-revision is only for an update", *(self.FULL + ("--previous-revision", "1")))
+
+    def test_dry_run_sends_one_update_dry_run_answers_what_changes_and_writes_nothing(self):
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--dry-run", "--previous-revision", "10001")))
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(self.sent), 1)
+        cmd, args, _ = self.sent[0]
+        self.assertEqual(cmd, "modhubPublish")
+        self.assertEqual(args, {"folder": FU, "public": True, "update": True, "modioId": self.MODIO,
+                                "changelog": "Wording.", "dryRun": True})
+        self.assertNotIn("firstUpload", args)
+        self.assertEqual(res["update"], {
+            "modioId": self.MODIO, "name": MODINFO["name"], "modioTitle": "Auto Force Unload", "modioVisible": True,
+            "modioVersion": "10001", "revision": 10003, "previousRevision": 10001, "previousFrom": "--previous-revision",
+            "changelog": "Wording."})
+        self.assertEqual(res["local"]["mode"], "update")
+        self.assertEqual(res["local"]["fileid"], self.MODIO)
+        self.assertIsNone(tf3ctl.read_pending())
+        self.assertEqual(self.history(), [])
+        # the mod reads it as it was meant
+        self.assertEqual(mod_reads(tf3ctl.command_text(9, "modhubPublish", args))["args"], args)
+
+    def updated(self, modid=None):
+        def answer():
+            return {"ok": True, "publishCalled": True, "modId": modid or self.MODIO, "mode": "update",
+                    "result": {"success": True}}
+        return answer
+
+    def test_an_update_marks_records_the_revision_and_the_next_one_must_be_higher(self):
+        self.answers = [self.dry(), self.updated()]
+        res = self.run_publish(*(self.UPDATE + ("--previous-revision", "10001")))
+        self.assertTrue(res["ok"], res)
+        self.assertEqual([a.get("dryRun") for _, a, _ in self.sent], [True, False])
+        self.assertTrue(all(a.get("update") is True and a.get("modioId") == self.MODIO for _, a, _ in self.sent))
+        mark = self.mark_at_send[1]
+        self.assertEqual((mark["update"], mark["firstUpload"], mark["modioId"], mark["revision"]),
+                         (True, False, self.MODIO, 10003))
+        self.assertTrue(res["pendingCleared"])
+        self.assertEqual(res["fileid"], self.MODIO)
+        self.assertIsNone(tf3ctl.read_pending())
+        h = self.history()[-1]
+        self.assertEqual((h["outcome"], h["mode"], h["modioId"], h["modId"], h["revision"]),
+                         ("success", "update", self.MODIO, self.MODIO, 10003))
+        self.assertEqual(res["update"]["revision"], 10003)
+        # the same revision again: refused by the history, whatever --previous-revision says
+        self.sent = []
+        self.refused("is not above 10003", *self.UPDATE)
+        self.refused("says revision 10003", *(self.UPDATE + ("--previous-revision", "10001")))
+        self.revision(10004)
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--dry-run",)))
+        self.assertEqual((res["update"]["revision"], res["update"]["previousRevision"]), (10004, 10003))
+
+    def test_an_update_answered_with_another_mod_io_id_keeps_the_mark(self):
+        self.answers = [self.dry(), self.updated("7000077")]
+        res = self.run_publish(*(self.UPDATE + ("--previous-revision", "10001")))
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["pendingKept"])
+        self.assertIn("came back as mod.io mod 7000077", res["error"])
+        self.assertIsNotNone(tf3ctl.read_pending())
+        self.assertEqual(self.history()[-1]["outcome"], "success, other mod.io id")
+
+    def test_a_fileid_changed_during_the_dry_run_stops_it(self):
+        def dry_then_change():
+            with open(os.path.join(self.meta, "mod.io_fileid.txt"), "w") as f:
+                f.write("7000001")
+            return self.dry()
+        self.answers = [dry_then_change]
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            self.run_publish(*(self.UPDATE + ("--previous-revision", "10001")))
+        self.assertIn("changed meanwhile", str(cm.exception))
+        self.assertEqual(len(self.sent), 1, "only the dry run")
+        self.assertIsNone(tf3ctl.read_pending())
+
+    def test_previous_revision_is_one_or_more(self):
+        for bad in ("0", "-3"):
+            self.refused("whole number of 1 or more", *(self.UPDATE + ("--previous-revision", bad)))
+
+    def test_only_uploads_mod_io_took_count_as_the_last_revision(self):
+        self.add_history(revision=10001)
+        self.add_history(revision=10003, outcome="partial")
+        self.add_history(revision=10004, outcome="failed")  # with a mod.io id written by some other version
+        self.add_history(revision=10005, outcome="no answer")
+        self.revision(10004)
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--dry-run",)))
+        self.assertEqual(res["update"]["previousRevision"], 10003)
+        self.add_history(revision=10004, outcome="success, fileid missing")
+        self.sent = []
+        self.refused("is not above 10004", *self.UPDATE)
+
+    def test_a_first_upload_records_its_revision_for_the_next_update(self):
+        os.remove(os.path.join(self.meta, "mod.io_fileid.txt"))
+        self.revision(10001)
+        os.remove(os.path.join(self.meta, "mod.io_fileid.txt"))
+
+        def first():
+            with open(os.path.join(self.meta, "mod.io_fileid.txt"), "w") as f:
+                f.write(self.MODIO)
+            return {"ok": True, "publishCalled": True, "modId": self.MODIO, "result": {"success": True}}
+        self.answers = [{"ok": True, "dryRun": True}, first]
+        res = self.run_publish(*self.FULL)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual((self.mark_at_send[1]["firstUpload"], self.mark_at_send[1]["revision"]), (True, 10001))
+        h = self.history()[-1]
+        self.assertEqual((h["mode"], h["revision"], h["modId"]), ("firstUpload", 10001, self.MODIO))
+        # the update after it needs no --previous-revision
+        self.revision(10002)
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--dry-run",)))
+        self.assertEqual((res["update"]["previousRevision"], res["update"]["previousFrom"]), (10001, "publish_history.jsonl"))
+
+    def test_a_refused_update_dry_run_leaves_no_mark(self):
+        self.answers = [{"ok": False, "error": "mod.io holds no details of mod 6543965", "publishCalled": False}]
+        res = self.run_publish(*(self.UPDATE + ("--previous-revision", "10001")))
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["preflight"])
+        self.assertEqual(len(self.sent), 1)
+        self.assertIsNone(tf3ctl.read_pending())
+
+
 class ModhubPublishEndToEndTest(unittest.TestCase):
     """modhub publish through real files, against the fake game in its main menu: the dry run, the upload, the
     fileid the fake game writes, and the refusal of a second one."""
@@ -3435,6 +3631,60 @@ class ModhubPublishEndToEndTest(unittest.TestCase):
         with open(tf3ctl.history_path(), encoding="utf-8") as f:
             self.assertEqual(json.loads(f.readlines()[-1])["outcome"], "success")
         # the fileid is there now: the tool refuses on its own (exit 2), before the mod sees anything
+        code, res = self.ctl(*full)
+        self.assertEqual(code, 2)
+
+
+class ModhubPublishUpdateEndToEndTest(unittest.TestCase):
+    """An update through real files, against the fake game in its main menu with the mod on mod.io: the tool's
+    update and modioId reach the mod, which answers mode update; the history keeps the revision, and the same
+    revision a second time is refused by the tool."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp()
+        cls.dir = os.path.join(cls.root, "recordings")
+        cls.meta = make_staging(cls.root, fileid="6543965", revision=10003)
+        cls.game = subprocess.Popen(["luajit", os.path.join(ROOT, "tests", "fake_game.lua"), cls.root, "60", "menu",
+                                     "modhub-update"], stderr=subprocess.PIPE, text=True)
+        deadline = time.time() + 10
+        while not glob.glob(os.path.join(cls.dir, "remote_probe__cmd_*.lua")):
+            if time.time() > deadline:
+                raise RuntimeError("the fake game did not start")
+            time.sleep(0.05)
+        os.environ["TF3_REMOTE_DIR"] = cls.dir
+        os.environ["TF3_ASSUME_RUNNING"] = "1"
+        for path in (tf3ctl.pending_path(), tf3ctl.history_path()):
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+    tearDownClass = ModhubPublishEndToEndTest.tearDownClass
+    ctl = ModhubPublishEndToEndTest.ctl
+
+    def test_update_dry_run_then_the_update_then_the_same_revision_is_refused(self):
+        full = ("modhub", "publish", FU, "--public", "yes", "--changelog", "Wording.", "--timeout", "60")
+        # without the previous revision (nothing in the history), and with --first-upload: refused by the tool
+        code, res = self.ctl(*(full + ("--dry-run",)))
+        self.assertEqual(code, 2)
+        code, res = self.ctl(*(full + ("--dry-run", "--first-upload")))
+        self.assertEqual(code, 2)
+        code, res = self.ctl(*(full + ("--dry-run", "--previous-revision", "10001")))
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["mode"], res["modioId"], res["wouldPublish"], res["publishCalled"]),
+                         ("update", "6543965", True, False))
+        self.assertEqual(res["checks"]["modhubIdValue"], "6543965")
+        self.assertEqual((res["update"]["modioTitle"], res["update"]["modioVersion"], res["update"]["revision"],
+                          res["update"]["previousRevision"]), ("Auto Force Unload", "10001", 10003, 10001))
+        self.assertIsNone(tf3ctl.read_pending())
+        code, res = self.ctl(*(full + ("--previous-revision", "10001")))
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["publishCalled"])
+        self.assertEqual((res["modId"], res["fileid"]), ("6543965", "6543965"))
+        self.assertTrue(res["pendingCleared"])
+        with open(tf3ctl.history_path(), encoding="utf-8") as f:
+            h = json.loads(f.readlines()[-1])
+        self.assertEqual((h["outcome"], h["mode"], h["revision"], h["modId"]), ("success", "update", 10003, "6543965"))
+        # the same revision again: the tool refuses it from the history (exit 2), before the mod sees anything
         code, res = self.ctl(*full)
         self.assertEqual(code, 2)
 
