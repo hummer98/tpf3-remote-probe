@@ -7192,14 +7192,41 @@ test("core.isCallable: a function, a table or userdata with __call; a plain tabl
 	eq(core.isCallable(function() end), true); eq(core.isCallable(callable), true); eq(core.isCallable(u), true)
 	eq(core.isCallable({}), false, "a plain table"); eq(core.isCallable(setmetatable({}, {})), false, "a metatable with no __call")
 	eq(core.isCallable(5), false); eq(core.isCallable(nil), false); eq(core.isCallable("f"), false)
-	-- terrainFunctions: a callable table is there (type "table", callable true), a plain table is missing
+	-- terrainFunctions: a callable table is there (type "table", callable true), a plain table is there too (not
+	-- callable, but not missing: missing means nil), only nil is missing
 	local root = { api = { engine = { terrain = { makeMapFromGame = callable, getBoundingBox = {} } } } }
 	local f, c, missing = core.terrainFunctions(root)
 	eq(f["api.engine.terrain.makeMapFromGame"], "table"); eq(c["api.engine.terrain.makeMapFromGame"], true)
-	eq(c["api.engine.terrain.getBoundingBox"], false); eq(missing[1], "api.engine.terrain.getBoundingBox")
+	eq(c["api.engine.terrain.getBoundingBox"], false); eq(f["api.engine.terrain.getBoundingBox"], "table")
 	local hit = false
-	for _, p in ipairs(missing) do if p == "api.engine.terrain.makeMapFromGame" then hit = true end end
-	eq(hit, false, "a callable table is not missing")
+	for _, p in ipairs(missing) do if p == "api.engine.terrain.makeMapFromGame" or p == "api.engine.terrain.getBoundingBox" then hit = true end end
+	eq(hit, false, "a table, callable or not, is not missing")
+end)
+
+test("core.terrainFunctions: a table whose metatable cannot be read is there; only nil is missing", function()
+	-- the engine's api entries: getmetatable gives a non-table (a __metatable field), so isCallable is false
+	local opaque = setmetatable({}, { __call = function() end, __metatable = "locked" })
+	eq(core.isCallable(opaque), false, "unreadable metatable")
+	local root = { api = { engine = { terrain = { makeMapFromGame = opaque, getBoundingBox = opaque } }, cmd = {} } }
+	local f, c, missing = core.terrainFunctions(root)
+	eq(f["api.engine.terrain.makeMapFromGame"], "table"); eq(c["api.engine.terrain.makeMapFromGame"], false)
+	local listed = {}
+	for _, p in ipairs(missing) do listed[p] = true end
+	eq(listed["api.engine.terrain.makeMapFromGame"], nil, "a table is not missing")
+	eq(listed["api.engine.terrain.getBoundingBox"], nil, "a table is not missing")
+	eq(listed["api.cmd.makeWorldReplaceTerrainCmd"], true, "nil is missing")
+	-- getmetatable itself returning nil (not a table) is the same: there, not missing
+	local realGetmetatable = getmetatable
+	local ok, err = pcall(function()
+		getmetatable = function() return nil end
+		local f2, c2, m2 = core.terrainFunctions({ api = { engine = { terrain = { makeMapFromGame = {}, getBoundingBox = {} } }, cmd = {} } })
+		eq(f2["api.engine.terrain.makeMapFromGame"], "table"); eq(c2["api.engine.terrain.makeMapFromGame"], false)
+		local l2 = {}
+		for _, p in ipairs(m2) do l2[p] = true end
+		eq(l2["api.engine.terrain.makeMapFromGame"], nil, "getmetatable nil: a table is not missing")
+	end)
+	getmetatable = realGetmetatable
+	if not ok then error(err, 0) end
 end)
 
 test("terrain flat: the rect's points at the height, the rest as it was; one replacement, no towns in it; read back", function()
@@ -7303,6 +7330,27 @@ test("terrain with callable api entries (tables with __call): the update way and
 	eq(c.callable.gui["api.engine.terrain.makeMapFromGame"], true); eq(c.callable.update["api.engine.terrain.makeMapFromGame"], false)
 	eq(c.callable.gui["api.type.Map.new"], true); eq(c.needs[1], "api.engine.terrain.makeMapFromGame")
 	eq(#r.terrainCmds, 1, "nothing called by the probe")
+end)
+
+test("terrain with opaque api entries (metatable unreadable): the update way and the recipe's way both send", function()
+	local g = terrainGame({ opaqueApi = true })
+	local a = terrainRun(g, 1070, '{ rect = "-100,-100,100,100", flat = 35, via = "update" }')
+	truthy(a.ok, a.error)
+	eq(a.via, "update"); eq(a.sent, true); eq(a.success, true); eq(a.readBackOk, true)
+	eq(#g.terrainCmds, 1); eq(hAt(g, 0, 0), 35)
+	eq(a.functionsUpdate["api.engine.terrain.makeMapFromGame"], "table")
+	eq(a.callableUpdate["api.engine.terrain.makeMapFromGame"], false, "isCallable cannot read it")
+	truthy(not g.crashed, g.crashed)
+	local r = terrainGame({ opaqueApi = true, reactOnly = true })
+	local b = terrainRun(r, 1071, '{ rect = "-100,-100,100,100", flat = 40 }')
+	truthy(b.ok, b.error)
+	eq(b.via, "gui"); eq(b.sent, true); eq(b.success, true); eq(b.readBackOk, true)
+	eq(#r.terrainCmds, 1); eq(hAt(r, 0, 0), 40)
+	eq(b.functionsGui["api.engine.terrain.makeMapFromGame"], "table")
+	eq(b.functionsUpdate["api.engine.terrain.makeMapFromGame"], "nil", "nil in the guiUpdate state")
+	local c = terrainRun(r, 1072, '{ rect = "-100,-100,100,100", flat = 45, via = "update" }')
+	eq(c.ok, false); truthy(c.error:find("missing in the guiUpdate state: api.engine.terrain.makeMapFromGame"), c.error)
+	truthy(not r.crashed, r.crashed)
 end)
 
 test("terrain --dry-run: the numbers, nothing sent, nothing changed", function()

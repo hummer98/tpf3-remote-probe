@@ -2068,12 +2068,15 @@ end
 -- table assigned counts), a map that lists towns is an assertion in ReplaceTerrain, so is a heightmap of the wrong
 -- size. g.heights: the engine's heights; g.terrainCmds: each replacement sent; g.seedTexts, g.materialReloads.
 -- spec.callableApi: the api entries the replacement uses are callable tables (a __call, type() says "table"), as the
--- engine's api entries are: each one calls the function it wraps.
+-- engine's api entries are: each one calls the function it wraps. spec.opaqueApi (with it): the metatable cannot be
+-- read from outside (getmetatable gives a string, as a __metatable field does), so isCallable is false for them.
 function M.installTerrain(g, spec)
 	spec = spec or {}
 	local function callableIf(f)
-		if not spec.callableApi then return f end
-		return setmetatable({}, { __call = function(_, ...) return f(...) end })
+		if not spec.callableApi and not spec.opaqueApi then return f end
+		local mt = { __call = function(_, ...) return f(...) end }
+		if spec.opaqueApi then mt.__metatable = "locked" end
+		return setmetatable({}, mt)
 	end
 	local tx, ty = (spec.tiles or {})[1] or 2, (spec.tiles or {})[2] or 2
 	local step = 4

@@ -1115,7 +1115,8 @@ function M.isCallable(v)
 end
 
 -- { [path] = type } and { [path] = callable } for the needs and the looks; third value: the needs missing (a list,
--- empty when all are there). Missing means not callable: a type() of "table" for an api entry is not a miss.
+-- empty when all are there). Missing means nil: the engine's api entries are callable tables whose metatable cannot
+-- be read from outside (isCallable is false for them), so a callable check here would wrongly report them missing.
 function M.terrainFunctions(root)
 	local out, callable, missing = {}, {}, {}
 	for _, list in ipairs({ M.TERRAIN_NEEDS, M.TERRAIN_LOOKS }) do
@@ -1125,7 +1126,7 @@ function M.terrainFunctions(root)
 		end
 	end
 	for _, p in ipairs(M.TERRAIN_NEEDS) do
-		if not callable[p] then missing[#missing + 1] = p end
+		if out[p] == "nil" then missing[#missing + 1] = p end
 	end
 	return out, callable, missing
 end
