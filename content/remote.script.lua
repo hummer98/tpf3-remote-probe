@@ -1455,7 +1455,11 @@ local function poll()
 	answer(c.id, { ok = true, got = c.cmd }, "got")
 	say("receipt for command " .. c.id, 3)
 	local owner = core.owner(c.args)
-	say("command " .. c.id .. ": " .. c.cmd .. (owner and (" from " .. owner) or ""), 2)
+	local other = core.otherOwnerOk(c.args)
+	-- a command sent to a game another owner started is logged even at log level 1: whoever reads the log later
+	-- must see it
+	say("command " .. c.id .. ": " .. c.cmd .. (owner and (" from " .. owner) or "")
+		.. (other and (" (--other-owner-ok: the game of " .. other .. ")") or ""), other and 1 or 2)
 	if G.menu and not core.MENU_COMMANDS[c.cmd] then
 		return fail(c.id, c.cmd .. " needs a running game; in the main menu: load, newgame, saves, info, status, quit, modhub")
 	end
