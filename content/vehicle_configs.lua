@@ -136,8 +136,8 @@ function M.fitAutoLoad(config)
 end
 
 -- { modelId, purchaseTime, reversed } per part, in order: a record, so a part without one of them cannot shift the
--- rest. reversed only on a part turned round (a multiple unit's end car): the answers of a single model keep their
--- shape
+-- rest. reversed only on a part turned round (any such part: a multiple unit's end car, a locomotive the other way
+-- round in a duplicated train): the answers of parts all forward keep their shape
 function M.partsOf(list)
 	local out = {}
 	for _, p in ipairs(toList(list)) do

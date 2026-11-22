@@ -1105,8 +1105,10 @@ up after 20 s with "no answer". Relayed means fired, not that a
   name, or a unique part of it). The whole file is checked before anything is sent: no cars, a car the game has no
   model for, or one that is no vehicle model, is an error. Via gui only (`--via cmd` is refused), and `replace` takes
   no multiple unit. The answer adds `multipleUnit` (`id`, `fileName`, `name`, `parts` with each car's `modelId`, `name`,
-  `forward`); `storeParts` and `storePriceTotal` cover every car, and `sentParts` marks a turned-round car with
-  `reversed: true`. A train of single models put together by hand (a locomotive and its coaches) is not offered.
+  `forward`); `storeParts` and `storePriceTotal` cover every car; `sentParts` and `vehicles[].parts` mark any
+  turned-round part with `reversed: true` (for any vehicle, not only a multiple unit), and each vehicle bought this
+  way carries the engine's `vehicleGroups` and `muFileNames`. A file name (the folder left out) that equals the
+  query wins over names that only contain it. A train of single models put together by hand (a locomotive and its coaches) is not offered.
   Not checked in game yet.
 - `buy` needs `--depot` (the store only picks a depot when opened from one); count 1-20; with `--line` the first
   stop is stop 0. `duplicate` copies the config with parts at `purchaseTime` 0 and maintenance 1, as the base

@@ -1028,8 +1028,9 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
   `api.res.multipleUnitRep` の名前 (全体、または一意な一部) と突き合わせます。送る前にファイル全体を調べ、車両が無い・
   ゲームに無いモデル・車両でないモデルがあればエラーです。gui だけで (`--via cmd` は断ります)、`replace` は編成を
   受けません。返事には `multipleUnit` (`id`・`fileName`・`name`・車両ごとの `modelId`・`name`・`forward` の `parts`)
-  が付き、`storeParts` と `storePriceTotal` は全車両の分、`sentParts` は向きを逆にした車両に `reversed: true` を
-  付けます。単独のモデルを手で並べた列車 (機関車と客車) は作れません。ゲーム内では未確認です。
+  が付き、`storeParts` と `storePriceTotal` は全車両の分、`sentParts` と `vehicles[].parts` は向きが逆の部品に
+  `reversed: true` を付けます (編成に限らず、どの車両でも)。編成で買った車両には、エンジンが持つ `vehicleGroups` と
+  `muFileNames` も付きます。フォルダを除いたファイル名が問い合わせと等しいものは、名前に含むだけのものより優先します。単独のモデルを手で並べた列車 (機関車と客車) は作れません。ゲーム内では未確認です。
 - `buy` は `--depot` が必須です (店は車庫から開いたときだけ車庫を決める)。台数は 1-20。`--line` の先頭の停車駅は
   0 番。`duplicate` は本体の複製と同じく config を写し、部品を purchaseTime 0・maintenanceState 1 にします。車庫と
   路線の既定は `findBestLineAndDepotForVehicle`。
