@@ -1805,7 +1805,7 @@ function M.installBuild(g, spec)
 	end
 
 	-- roads (the road command): spec.streets = { [resName] = { roadType = "STREET" / "TRACK", yearFrom, yearTo, cost
-	-- (per metre), style, noLanes, modesUnread } } (streetTemplateRep); spec.year (api.engine.util.getYear); spec.roads = {
+	-- (per metre), style, noLanes, modesUnread, perSide (2: two road lanes each way) } } (streetTemplateRep); spec.year (api.engine.util.getYear); spec.roads = {
 	-- nodes = { [id] = { x, y, z } }, edges = { [id] = { node0, node1 } } }: a road network already there;
 	-- spec.noStreetResults: the callback names no entity of a built road. A street proposal whose piece names a
 	-- node that neither exists nor is added, or a template the rep does not know, is an assertion; a piece without
@@ -1823,11 +1823,13 @@ function M.installBuild(g, spec)
 	-- network's pieces have them too, unless they name their own)
 	-- (the game's TransportMode enum: the base fake's, else these)
 	api.type.enum.TransportMode = api.type.enum.TransportMode or { PERSON = 0, CARGO = 1, CAR = 2, BUS = 3, TRUCK = 4, TRAM = 5, ELECTRIC_TRAM = 6 }
-	local function townLanes(unread)
+	local function townLanes(unread, perSide)
 		local TM = api.type.enum.TransportMode
 		local function road(fwd) return { speed = 14, width = 3, forward = fwd, transportModes = { [TM.CAR] = true, [TM.BUS] = true, [TM.TRUCK] = true } } end
 		local function walk(fwd) return { speed = 1.5, width = 2, forward = fwd, transportModes = { [TM.PERSON] = true } } end
 		local lanes = { walk(true), road(false), road(true), walk(false) }
+		-- (perSide 2: two road lanes each way)
+		if perSide == 2 then lanes = { walk(true), road(false), road(false), road(true), road(true), walk(false) } end
 		-- (unread: modes that are no map, so that they cannot be read)
 		if unread then for _, l in ipairs(lanes) do l.transportModes = "?" end end
 		return lanes
@@ -1857,7 +1859,7 @@ function M.installBuild(g, spec)
 			local RT = api.type.enum.RoadType
 			return { roadType = RT and RT[s.roadType or "STREET"] or nil, streetStyle = s.style or (name .. ".style"),
 				availability = { yearFrom = s.yearFrom or 0, yearTo = s.yearTo or 0 }, cost = s.cost or 10,
-				laneConfigs = s.noLanes and {} or townLanes(s.modesUnread) }
+				laneConfigs = s.noLanes and {} or townLanes(s.modesUnread, s.perSide) }
 		end,
 	}
 	api.engine.util.getYear = function() return spec.year end

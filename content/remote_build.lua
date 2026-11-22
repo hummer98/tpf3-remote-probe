@@ -729,7 +729,8 @@ function M.new(ctx)
 	-- looking from node0 to node1, so at node0 lane k (1-based) is k - 1 and at node1 it is #lanes - k. A node where
 	-- two pieces meet runs each lane straight on (n to #lanes - 1 - n, as the game's own road nodes do: Track
 	-- Connector's and Smart Lanes' notes); a junction joins every arriving road (tram) lane to every leaving road
-	-- (tram) lane of the other pieces; a dead end has no connections. api.type.LaneConnection.new is not in the
+	-- (tram) lane of the other pieces; a dead end has no connections. Every connection is withRoad, a tram's too
+	-- (Track Connector's notes: the game's own rules read so, and tram-only ones left trams unjoined). api.type.LaneConnection.new is not in the
 	-- tealdef but there (Smart Lanes' notes); without it, plain tables.
 
 	-- a piece's lanes as plain values: { forward, road, tram } (nil when they cannot be read)
@@ -779,7 +780,7 @@ function M.new(ctx)
 							local both = (l.road and l2.road) or (l.tram and l2.tram)
 							if both and not arrives(to, l2) and (not straight or number(to, kk) == #to.lanes - 1 - n) then
 								out[#out + 1] = laneConnection(from.entity, n, to.entity, number(to, kk),
-									l.road and l2.road, l.tram and l2.tram)
+									true, l.tram and l2.tram)
 							end
 						end
 					end
@@ -830,8 +831,8 @@ function M.new(ctx)
 		if rules == nil then return nil, "the lanes of the pieces at node " .. node .. " could not be read" end
 		local ok, old = pcall(function() return api.engine.getComponent(node, CT().BASE_NODE_CONFIG) end)
 		if not ok or old == nil then return nil, "the junction set-up of node " .. node .. " could not be read" end
-		local nStates = 0
-		pcall(function() nStates = #core.toList(old.trafficLightConfig.states) end)
+		local okL, nStates = pcall(function() return #core.toList(old.trafficLightConfig.states) end)
+		if not okL then return nil, "whether node " .. node .. " has traffic lights could not be read" end
 		if nStates > 0 then
 			return nil, "node " .. node .. " has traffic lights (their states name lanes, and would not be remade here)"
 		end

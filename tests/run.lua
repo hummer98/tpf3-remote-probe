@@ -7903,6 +7903,30 @@ test("road: set-ups at every way round (ends facing, drawn to an old end); refus
 	truthy(not g.crashed, g.crashed)
 end)
 
+test("road: two lanes each way: straight on is lane for lane (4 connections), a junction every lane to every lane", function()
+	local WIDE = "::/infrastructure/street/country/country_new_large.street_template"
+	local g = roadWorld({ streets = { [WIDE] = { cost = 10, perSide = 2 } }, roads = { nodes = {}, edges = {} },
+		height = function() return 0 end })
+	local a = roadRun(g, 1001, string.format('{ from = "0,0", to = "300,0", type = %q }', WIDE))
+	truthy(a.ok, a.error)
+	local m, e1 = a.nodes[2], a.edge
+	a = roadRun(g, 1002, string.format('{ from = "300,0", to = "600,0", type = %q }', WIDE))
+	truthy(a.ok, a.error); eq(a.from.node, m); eq(a.from.laneRules, 4, "lane for lane: 2 each way (all to all would be 8)")
+	local e2 = a.edge
+	-- at m (e1's node1: lane k is 6 - k; e2's node0: k - 1): e1's forward lanes k 4, 5 (numbers 2, 1) into e2's
+	-- k 4, 5 (numbers 3, 4 = 6 - 1 - 2, 6 - 1 - 1)
+	local function has(s0, l0, s1, l1)
+		for _, c in ipairs(g.nodeConns[m]) do
+			if c.segment0 == s0 and c.lane0 == l0 and c.segment1 == s1 and c.lane1 == l1 and c.withRoad then return true end
+		end
+		return false
+	end
+	truthy(has(e1, 2, e2, 3) and has(e1, 1, e2, 4) and not has(e1, 2, e2, 4), "each lane into its own")
+	a = roadRun(g, 1003, string.format('{ from = "300,0", to = "300,-200", type = %q }', WIDE))
+	truthy(a.ok, a.error); eq(a.from.laneRules, 16, "2 in x 2 out, to and from each of the two pieces")
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("road: the fake's set-up checks (a lane out of range, a piece not at the node, a config added twice) die", function()
 	local g = roadWorld({ height = function() return 0 end })
 	local function sendWith(fill)
@@ -7995,10 +8019,11 @@ test("road: refused by the engine (collision, money): nothing built, the message
 	a = roadRun(g, 956, '{ from = "0,500", to = "0,600" }')
 	eq(a.ok, false); truthy(a.error:find("Not enough money"), a.error)
 	eq(#g.streetCmds, 2); eq(g.edges[5001], nil)
-	-- a template without lanes is refused by the engine (as the fake's: the probe sends what the rep has)
+	-- a template without lanes is refused before sending (its lanes do not read: no set-ups could be made)
 	g = roadWorld({ streets = { [TOWN_OLD] = { yearTo = 1940, noLanes = true } } })
+	local sentBefore = #g.streetCmds
 	a = roadRun(g, 957, '{ from = "0,500", to = "0,600" }')
-	eq(a.ok, false); truthy(a.error:find("lane", 1, true), a.error)
+	eq(a.ok, false); truthy(a.error:find("its lanes could not be read", 1, true), a.error); eq(#g.streetCmds, sentBefore)
 end)
 
 test("road --dry-run: the plan, nothing sent; no ids in the result or no callback: the piece found between the ends", function()

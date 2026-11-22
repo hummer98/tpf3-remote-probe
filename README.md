@@ -425,8 +425,9 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   are numbered over all of a piece's `laneConfigs`, sidewalks too, from the node outwards. So pieces of this
   command can be chained and branched. The answer's `newNodeConfigs` reads the new nodes' set-ups back,
   `nodeConfigs` counts those sent, an end's `laneRules` the connections added there. Refused before anything is
-  sent (dry run too): a joined node with traffic lights, one whose own connections number lanes otherwise, and
-  lanes or a set-up that cannot be read or made.
+  sent: a joined node with traffic lights, one whose own connections number lanes otherwise, and lanes or a
+  set-up that cannot be read (all of these by the dry run too), or a set-up record that cannot be made (only a
+  build finds that).
 - A node without a set-up (a road a script built without them, as this command did before 2026-11-23) is never
   joined: the next nearest node within `--snap` is (`passedOver` names the ones left out), and with none the
   command is refused before anything is sent. The game died right after a piece was joined to such a node that
