@@ -1685,6 +1685,7 @@ function M.installBuild(g, spec)
 	local names = {}
 	local CT = api.type.ComponentType
 	CT.BASE_NODE, CT.BASE_EDGE, CT.CONSTRUCTION = "BASE_NODE", "BASE_EDGE", "CONSTRUCTION"
+	CT.BASE_NODE_CONFIG = not spec.noNodeConfigType and "BASE_NODE_CONFIG" or nil
 	CT.STATION, CT.TERRAIN = CT.STATION or "STATION", CT.TERRAIN or "TERRAIN"
 	g.buildStations = {}
 	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
@@ -1722,7 +1723,8 @@ function M.installBuild(g, spec)
 	api.type.SimpleProposal = { new = function()
 		-- streetProposal: a record of its own, reached through the proposal (its lists assigned whole, as above)
 		return record({ constructionsToAdd = {}, constructionsToRemove = {}, old2new = {},
-			streetProposal = record({ nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {} }) })
+			streetProposal = record({ nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
+				nodeConfigsToAdd = {}, nodeConfigsToRemove = {} }) })
 	end, ConstructionEntity = { new = function()
 		return record({ fileName = "", params = {}, transf = {}, name = "", playerEntity = -1, autoFillSlots = false })
 	end } }
@@ -1804,12 +1806,40 @@ function M.installBuild(g, spec)
 	end
 
 	-- roads (the road command): spec.streets = { [resName] = { roadType = "STREET" / "TRACK", yearFrom, yearTo, cost
-	-- (per metre), style, noLanes } } (streetTemplateRep); spec.year (api.engine.util.getYear); spec.roads = {
+	-- (per metre), style, noLanes, modesUnread, perSide (2: two road lanes each way) } } (streetTemplateRep); spec.year (api.engine.util.getYear); spec.roads = {
 	-- nodes = { [id] = { x, y, z } }, edges = { [id] = { node0, node1 } } }: a road network already there;
 	-- spec.noStreetResults: the callback names no entity of a built road. A street proposal whose piece names a
 	-- node that neither exists nor is added, or a template the rep does not know, is an assertion; a piece without
 	-- lanes is refused. g.streetCmds: every piece sent, as plain values.
+	-- Junction set-ups (BASE_NODE_CONFIG): the network's nodes have one, but those in spec.roads.noConfig; a node a
+	-- street proposal adds has one only when its nodeConfigsToAdd names it (a script's road has none, as in the
+	-- game); a construction's own nodes have one (the engine adds them: "Added node config" in its proposal's log).
+	-- A piece joined to a node without one that already has two pieces is an assertion (2026-11-23 in the game:
+	-- Engine.h:322 GetComponentDataIndex, BaseNodeConfig; the two-piece condition is a guess from that one crash,
+	-- and the game died in the simulation after applying, the fake dies on sending, refused or not; that a
+	-- script's nodes have none is from Track Connector's notes, not read in a game). spec.nodeConfigRaises: reading one raises;
+	-- spec.noNodeConfigType: no BASE_NODE_CONFIG component type.
 	local streets = spec.streets or {}
+	-- a town road's lanes, left to right from node0 to node1: a sidewalk, a road lane each way, a sidewalk (the
+	-- network's pieces have them too, unless they name their own)
+	-- (the game's TransportMode enum: the base fake's, else these)
+	api.type.enum.TransportMode = api.type.enum.TransportMode or { PERSON = 0, CARGO = 1, CAR = 2, BUS = 3, TRUCK = 4, TRAM = 5, ELECTRIC_TRAM = 6 }
+	local function townLanes(unread, perSide)
+		local TM = api.type.enum.TransportMode
+		local function road(fwd) return { speed = 14, width = 3, forward = fwd, transportModes = { [TM.CAR] = true, [TM.BUS] = true, [TM.TRUCK] = true } } end
+		local function walk(fwd) return { speed = 1.5, width = 2, forward = fwd, transportModes = { [TM.PERSON] = true } } end
+		local lanes = { walk(true), road(false), road(true), walk(false) }
+		-- (perSide 2: two road lanes each way)
+		if perSide == 2 then lanes = { walk(true), road(false), road(false), road(true), road(true), walk(false) } end
+		-- (unread: modes that are no map, so that they cannot be read)
+		if unread then for _, l in ipairs(lanes) do l.transportModes = "?" end end
+		return lanes
+	end
+	g.townLanes = townLanes
+	api.type.LaneConnection = { new = function() return { segment0 = -1, lane0 = 0, segment1 = -1, lane1 = 0, withRoad = false, withTram = false } end }
+	api.type.BaseNodeLaneConnectionAndEntity = { new = function()
+		return { entity = 0, comp = { laneConnections = {}, crosswalks = {}, doubleSlipSwitch = false } }
+	end }
 	local streetNames = {}
 	for name in pairs(streets) do streetNames[#streetNames + 1] = name end
 	table.sort(streetNames)
@@ -1830,13 +1860,19 @@ function M.installBuild(g, spec)
 			local RT = api.type.enum.RoadType
 			return { roadType = RT and RT[s.roadType or "STREET"] or nil, streetStyle = s.style or (name .. ".style"),
 				availability = { yearFrom = s.yearFrom or 0, yearTo = s.yearTo or 0 }, cost = s.cost or 10,
-				laneConfigs = s.noLanes and {} or { { speed = 14, width = 3 }, { speed = 14, width = 3 } } }
+				laneConfigs = s.noLanes and {} or townLanes(s.modesUnread, s.perSide) }
 		end,
 	}
 	api.engine.util.getYear = function() return spec.year end
 	g.streetCmds = {}
 	for id, n in pairs((spec.roads or {}).nodes or {}) do g.nodes[id] = copy(n) end
 	for id, e in pairs((spec.roads or {}).edges or {}) do g.edges[id] = copy(e) end
+	g.nodeConfig, g.nodeConns = {}, {}
+	for id in pairs(g.nodes) do g.nodeConfig[id] = not ((spec.roads or {}).noConfig or {})[id] end
+	-- spec.roads.conns = { [node] = { connections } }: a set-up's own connections; spec.roads.lights = { [node] =
+	-- true }: a set-up with traffic light states
+	for id, cs in pairs((spec.roads or {}).conns or {}) do g.nodeConns[id] = copy(cs) end
+	local lights = (spec.roads or {}).lights or {}
 	-- (over a street system installed before, Track Connector's fake: its nodes and lookups are kept)
 	local oldStreets = api.engine.system.streetSystem or {}
 	local streetSystem = {}
@@ -1863,10 +1899,44 @@ function M.installBuild(g, spec)
 		local street = getmetatable(st.streetProposal).store
 		local newNodes = {}
 		for _, n in ipairs(street.nodesToAdd or {}) do newNodes[n.entity] = n.comp.position end
+		-- junction set-ups (as the engine might assert; the checks are a guess): a set-up removed must be there; one
+		-- added to a node that keeps one, twice, or to no node, dies; a connection must name a piece at that node and
+		-- a lane it has
+		local removing, adding = {}, {}
+		for _, n in ipairs(street.nodeConfigsToRemove or {}) do
+			if not (g.nodes[n] and g.nodeConfig[n]) then crash("nodeConfigsToRemove: node " .. tostring(n) .. " has no set-up") end
+			removing[n] = true
+		end
+		local newEdges = {}
+		for _, e in ipairs(street.edgesToAdd or {}) do newEdges[e.entity] = e.comp end
+		for _, nc in ipairs(street.nodeConfigsToAdd or {}) do
+			local n = nc.entity
+			if not (newNodes[n] or g.nodes[n]) then crash("nodeConfigsToAdd: no node " .. tostring(n)) end
+			if adding[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " twice") end
+			if g.nodes[n] and g.nodeConfig[n] and not removing[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " keeps its set-up") end
+			adding[n] = true
+			for _, lc in ipairs((nc.comp or {}).laneConnections or {}) do
+				for _, sl in ipairs({ { lc.segment0, lc.lane0 }, { lc.segment1, lc.lane1 } }) do
+					local seg = newEdges[sl[1]] or g.edges[sl[1]]
+					if not seg or not (seg.node0 == n or seg.node1 == n) then
+						crash("lane connection at node " .. tostring(n) .. ": piece " .. tostring(sl[1]) .. " is not there")
+					end
+					local lanes = seg.laneConfigs or townLanes()
+					if type(sl[2]) ~= "number" or sl[2] < 0 or sl[2] >= #lanes then
+						crash("lane connection at node " .. tostring(n) .. ": lane " .. tostring(sl[2]) .. " of piece " .. tostring(sl[1]))
+					end
+				end
+			end
+		end
 		for _, e in ipairs(street.edgesToAdd or {}) do
 			local c = e.comp
 			for _, k in ipairs({ "node0", "node1" }) do
 				if not (g.nodes[c[k]] or newNodes[c[k]]) then crash("street proposal: no node " .. tostring(c[k])) end
+				if g.nodes[c[k]] and not g.nodeConfig[c[k]] then
+					local n = 0
+					for _, ed in pairs(g.edges) do if ed.node0 == c[k] or ed.node1 == c[k] then n = n + 1 end end
+					if n >= 2 then crash("GetComponentDataIndex: node " .. tostring(c[k]) .. " has no BaseNodeConfig") end
+				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
 			g.streetCmds[#g.streetCmds + 1] = copy(e)
@@ -1991,14 +2061,28 @@ function M.installBuild(g, spec)
 			g.nextEntity = g.nextEntity + 1
 			idOf[n.entity] = g.nextEntity
 			g.nodes[g.nextEntity] = copy(n.comp.position)
+			g.nodeConfig[g.nextEntity] = false
 			if not spec.noStreetResults then results[#results + 1] = { g.nextEntity, 1 } end
 		end
 		for _, e in ipairs(street.edgesToAdd or {}) do
 			g.nextEntity = g.nextEntity + 1
+			idOf[e.entity] = g.nextEntity
 			local c = e.comp
 			g.edges[g.nextEntity] = { node0 = idOf[c.node0] or c.node0, node1 = idOf[c.node1] or c.node1,
-				roadTemplate = c.roadTemplate, roadType = c.roadType == 1 and "TRACK" or "STREET", player = e.playerOwned and e.playerOwned.player }
+				roadTemplate = c.roadTemplate, roadType = c.roadType == 1 and "TRACK" or "STREET", player = e.playerOwned and e.playerOwned.player,
+				laneConfigs = copy(c.laneConfigs) }
 			if not spec.noStreetResults then results[#results + 1] = { g.nextEntity, 1 } end
+		end
+		-- the set-ups, their pieces' new ids in place (g.nodeConns: plain connections)
+		for _, n in ipairs(street.nodeConfigsToRemove or {}) do g.nodeConfig[n], g.nodeConns[n] = false, nil end
+		for _, nc in ipairs(street.nodeConfigsToAdd or {}) do
+			local n = idOf[nc.entity] or nc.entity
+			local conns = {}
+			for _, lc in ipairs((nc.comp or {}).laneConnections or {}) do
+				conns[#conns + 1] = { segment0 = idOf[lc.segment0] or lc.segment0, lane0 = lc.lane0,
+					segment1 = idOf[lc.segment1] or lc.segment1, lane1 = lc.lane1, withRoad = lc.withRoad, withTram = lc.withTram }
+			end
+			g.nodeConfig[n], g.nodeConns[n] = true, conns
 		end
 		for _, ce in ipairs(adds) do
 			local c, t = cons[ce.fileName], ce.transf
@@ -2010,6 +2094,7 @@ function M.installBuild(g, spec)
 				g.nextEntity = g.nextEntity + 1
 				nodeIds[i] = g.nextEntity
 				g.nodes[g.nextEntity] = { x = t[13] + cs * n[1] - sn * n[2], y = t[14] + sn * n[1] + cs * n[2], z = t[15] + (n[3] or 0) }
+				g.nodeConfig[g.nextEntity] = true
 			end
 			for _, ed in ipairs((c.shape or {}).edges or {}) do
 				g.nextEntity = g.nextEntity + 1
@@ -2071,10 +2156,20 @@ function M.installBuild(g, spec)
 		if kind == "BASE_EDGE" and g.edges[e] then
 			-- roadType as the engine's enum (a construction's own pieces: roads); spec.edgeRoadTypeUnread: none
 			local be = copy(g.edges[e])
+			be.laneConfigs = be.laneConfigs or townLanes()
 			be.roadType = (not spec.edgeRoadTypeUnread) and api.type.enum.RoadType[g.edges[e].roadType or "STREET"] or nil
 			return be
 		end
 		if kind == "BASE_NODE" and g.nodes[e] then return { position = copy(g.nodes[e]) } end
+		if kind == "BASE_NODE_CONFIG" and g.nodes[e] then
+			g.nodeConfigReads = (g.nodeConfigReads or 0) + 1
+			if spec.nodeConfigRaises then error("getComponent: BASE_NODE_CONFIG") end
+			if g.nodeConfig[e] then
+				return { laneConnections = copy(g.nodeConns[e] or {}), crosswalks = {}, doubleSlipSwitch = false,
+					trafficLightConfig = { states = lights[e] and { { duration = 30 } } or {}, trafficLightType = 0 } }
+			end
+			return nil
+		end
 		return getComponent(e, kind)
 	end
 	local getName = api.engine.util.getEntityName

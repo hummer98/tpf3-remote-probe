@@ -3564,7 +3564,8 @@ def make_parser():
                     "country_old_medium; looked for under the base's town, country and highway roads); default the "
                     "base medium town road of the game's year")
     rd.add_argument("--snap", type=float, help="an end within this many metres of a node with road pieces joins that "
-                    "node (default 5, 0: never)")
+                    "node (default 5, 0: never); never a node without a junction set-up (BaseNodeConfig; this "
+                    "command gives its new nodes one): the next one, else refused")
     rd.add_argument("--dry-run", action="store_true", help="no build: the template, the ends (snapped or on the "
                     "terrain) and the length, checked here only")
     te = sub.add_parser("terrain", help="replace a rectangle's ground: flat at a height, or a uniform slope along x "

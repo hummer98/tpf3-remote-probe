@@ -632,11 +632,29 @@ function M.new(ctx)
 		return out
 	end
 
+	-- whether a road node carries its junction set-up (BaseNodeConfig: its lane connections, engine.d.tl): true or
+	-- false, nil when that cannot be told (no BASE_NODE_CONFIG component type, or the engine raises). A node a
+	-- script's street proposal made without nodeConfigsToAdd probably has none (Track Connector's tc_proposal says
+	-- so of roads a script built). On 2026-11-23 the game died right after a road snapped to an earlier road's node
+	-- (Engine.h:322 GetComponentDataIndex, a node without BaseNodeConfig), when this command sent no set-ups;
+	-- joins to such ends with one piece had gone through before. Since then this command gives its new nodes one
+	-- (nodeConfigsToAdd, below) and reads it back (the answer's newNodeConfigs).
+	local function nodeConfigState(n)
+		local ct = try(function() return CT().BASE_NODE_CONFIG end)
+		if ct == nil then return nil end
+		local ok, v = pcall(function() return api.engine.getComponent(n, ct) end)
+		if not ok then return nil end
+		return v ~= nil
+	end
+
 	-- the nearest end of a road piece within r metres of x, y, z (in three dimensions: a node of a bridge or a
-	-- raised road above the point is not taken; no z: on the map's plane), or nil. Only the street pieces' own
-	-- nodes are looked at, so no track node is asked about.
+	-- raised road above the point is not taken; no z: on the map's plane) that may be joined, or nil. Only the
+	-- street pieces' own nodes are looked at, so no track node is asked about. A node without a junction set-up
+	-- (nodeConfigState false) is never taken: the next nearest is; the second value lists the ones passed over
+	-- (nearest first), so that a caller can refuse rather than put a new node beside one of them. A node whose
+	-- set-up cannot be read stops the search (third value): the game would die before any caution was read.
 	local function streetNodeNear(x, y, z, r)
-		local best, bestD, pieces = nil, nil, {}
+		local dist, pieces = {}, {}
 		for _, e in ipairs(streetEdgesNear(x, y, r)) do
 			local be = comp(e, "BASE_EDGE")
 			for _, k in ipairs({ "node0", "node1" }) do
@@ -645,21 +663,52 @@ function M.new(ctx)
 				if p then
 					pieces[n] = (pieces[n] or 0) + 1
 					local d = math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2 + (z and (p.z - z) ^ 2 or 0))
-					if d <= r and (bestD == nil or d < bestD or (d == bestD and n < best)) then best, bestD = n, d end
+					if d <= r then dist[n] = d end
 				end
 			end
 		end
-		if not best then return nil end
-		local p = nodePos(best)
-		return { node = best, x = p.x, y = p.y, z = p.z, snapped = bestD, pieces = pieces[best] }
+		local order = {}
+		for n in pairs(dist) do order[#order + 1] = n end
+		table.sort(order, function(a, b) if dist[a] ~= dist[b] then return dist[a] < dist[b] end return a < b end)
+		local passed = {}
+		for _, n in ipairs(order) do
+			local cfg = nodeConfigState(n)
+			if cfg == nil then return nil, passed, { node = n, snapped = dist[n] } end
+			if cfg == false then
+				passed[#passed + 1] = { node = n, snapped = dist[n], pieces = pieces[n] }
+			else
+				local p = nodePos(n)
+				local hit = { node = n, x = p.x, y = p.y, z = p.z, snapped = dist[n], pieces = pieces[n], nodeConfig = true }
+				if #passed > 0 then hit.passedOver = passed end
+				return hit, passed
+			end
+		end
+		return nil, passed
 	end
 
-	-- one end: a road node near it (snap), else a new node at the point (z given, or the terrain's)
+	-- one end: a road node near it (snap), else a new node at the point (z given, or the terrain's). Refused when
+	-- the only road nodes within snap have no junction set-up: joining one can kill the game, and a new node
+	-- there would sit on it; refused too when whether a node has one cannot be read.
 	local function roadEnd(pt, snap)
 		local z, zFrom = pt[3], "given"
 		if z == nil then z, zFrom = heightAt(pt[1], pt[2]), "terrain" end
-		local hit = snap > 0 and streetNodeNear(pt[1], pt[2], z, snap) or nil
+		local hit, passed, unread = nil, {}, nil
+		if snap > 0 then hit, passed, unread = streetNodeNear(pt[1], pt[2], z, snap) end
+		if unread then
+			return nil, string.format("whether road node %d (%.1f m away) has its junction set-up (BaseNodeConfig) " ..
+				"could not be read; joining a node without one killed the game: nothing sent", unread.node, unread.snapped)
+		end
 		if hit then return hit end
+		if #passed > 0 then
+			local names = {}
+			for _, q in ipairs(passed) do
+				names[#names + 1] = string.format("%d (%.1f m, %d piece%s)", q.node, q.snapped, q.pieces, q.pieces == 1 and "" or "s")
+			end
+			return nil, "the road node(s) within snap have no junction set-up (BaseNodeConfig): " .. table.concat(names, ", ") ..
+				". A road a script built without set-ups (this command's before 2026-11-23) ends in such nodes; " ..
+				"joining one killed the game (Engine.h GetComponentDataIndex), and a new node there would sit by it: " ..
+				"nothing sent. Join another node, or put this end well away from that node"
+		end
 		if z == nil then return nil, "the terrain's height could not be read: give z" end
 		return { x = pt[1], y = pt[2], z = z, zFrom = zFrom }
 	end
@@ -670,6 +719,145 @@ function M.new(ctx)
 		local t = try(function() return api.type[name] end) or try(function() return api.type.Proposal[name] end)
 		if t == nil then error("api.type has no " .. name, 0) end
 		return t.new()
+	end
+
+	---------------------------------------------------------------------------------------------------------------
+	-- junction set-ups for the road's ends (SimpleStreetProposal.nodeConfigsToAdd / nodeConfigsToRemove). Written
+	-- here from the documented records, not copied: LaneConnection (type.d.tl) joins lane0 of segment0 to lane1 of
+	-- segment1, each lane numbered from 0, left to right looking from the node out along its piece, over every
+	-- lane of laneConfigs (sidewalks too: Smart Lanes' notes, read in a game); laneConfigs run left to right
+	-- looking from node0 to node1, so at node0 lane k (1-based) is k - 1 and at node1 it is #lanes - k. A node where
+	-- two pieces meet runs each lane straight on (n to #lanes - 1 - n, as the game's own road nodes do: Track
+	-- Connector's and Smart Lanes' notes); a junction joins every arriving road (tram) lane to every leaving road
+	-- (tram) lane of the other pieces; a dead end has no connections. Every connection is withRoad, a tram's too
+	-- (Track Connector's notes: the game's own rules read so, and tram-only ones left trams unjoined). api.type.LaneConnection.new is not in the
+	-- tealdef but there (Smart Lanes' notes); without it, plain tables.
+
+	-- a piece's lanes as plain values: { forward, road, tram } (nil when they cannot be read)
+	local function lanesOf(laneConfigs)
+		local TM = try(function() return api.type.enum.TransportMode end)
+		if TM == nil then return nil end
+		local out = {}
+		local ok = pcall(function()
+			for _, lc in ipairs(core.toList(laneConfigs)) do
+				local set = {}
+				local m = lc.transportModes
+				if m ~= nil then for k, v in pairs(m) do if v == true or v == 1 then set[k] = true end end end
+				out[#out + 1] = { forward = lc.forward == true,
+					road = set[TM.CAR] == true or set[TM.BUS] == true or set[TM.TRUCK] == true,
+					tram = set[TM.TRAM] == true or set[TM.ELECTRIC_TRAM] == true }
+			end
+		end)
+		if not ok or #out == 0 then return nil end
+		return out
+	end
+
+	-- one lane connection (the engine's record, else a plain table)
+	local function laneConnection(s0, l0, s1, l1, road, tram)
+		local LC = try(function() return api.type.LaneConnection end)
+		local lc = (LC ~= nil and try(function() return LC.new() end)) or {}
+		lc.segment0, lc.lane0, lc.segment1, lc.lane1 = s0, l0, s1, l1
+		lc.withRoad, lc.withTram = road == true, tram == true
+		return lc
+	end
+
+	-- the connections a new piece adds at a node: piece = { entity, node0, node1, lanes } (lanes: lanesOf), others:
+	-- the node's other pieces the same way. nil when a lane list is missing.
+	local function newLaneRules(node, piece, others)
+		local function number(p, k) if p.node0 == node then return k - 1 end return #p.lanes - k end
+		local function arrives(p, l) return (l.forward and p.node1 == node) or (not l.forward and p.node0 == node) end
+		if piece.lanes == nil then return nil end
+		for _, o in ipairs(others) do if o.lanes == nil then return nil end end
+		local out = {}
+		local straight = #others == 1 and #others[1].lanes == #piece.lanes
+		for _, o in ipairs(others) do
+			for _, pair in ipairs({ { piece, o }, { o, piece } }) do
+				local from, to = pair[1], pair[2]
+				for k, l in ipairs(from.lanes) do
+					if (l.road or l.tram) and arrives(from, l) then
+						local n = number(from, k)
+						for kk, l2 in ipairs(to.lanes) do
+							local both = (l.road and l2.road) or (l.tram and l2.tram)
+							if both and not arrives(to, l2) and (not straight or number(to, kk) == #to.lanes - 1 - n) then
+								out[#out + 1] = laneConnection(from.entity, n, to.entity, number(to, kk),
+									true, l.tram and l2.tram)
+							end
+						end
+					end
+				end
+			end
+		end
+		return out
+	end
+
+	-- the other road pieces at an existing node, as newLaneRules takes them (found through the octree, as the snap
+	-- finds nodes: the street system is not asked about a node)
+	local function piecesAt(node, p)
+		local out = {}
+		for _, e in ipairs(streetEdgesNear(p.x, p.y, 1)) do
+			local be = comp(e, "BASE_EDGE")
+			local n0, n1 = tonumber(core.field(be, "node0")), tonumber(core.field(be, "node1"))
+			if n0 == node or n1 == node then
+				out[#out + 1] = { entity = e, node0 = n0, node1 = n1, lanes = lanesOf(core.field(be, "laneConfigs")) }
+			end
+		end
+		return out
+	end
+
+	-- a set-up entry for a node: its old set-up (an existing node) or a new one, with these connections
+	local function configEntry(entity, old, conns)
+		local entry = newRecord("BaseNodeLaneConnectionAndEntity")
+		entry.entity = entity
+		if old ~= nil then
+			entry.comp = old
+		elseif entry.comp == nil then
+			entry.comp = try(function() return api.type.BaseNodeConfig.new() end) or {}
+		end
+		entry.comp.laneConnections = conns
+		if old == nil then pcall(function() entry.comp.crosswalks = {} end) end
+		return entry
+	end
+
+	-- what a new piece adds at an existing node: { rules, old } (old: its set-up as read), or nil and why. Refused
+	-- (nothing is sent) when the lanes or the set-up do not read, when the node has traffic lights (their states
+	-- name lanes; they would not be remade here), or when the node's own connections do not number lanes the way
+	-- the rules here do (a vehicle lane counted over all laneConfigs: a number that points at no vehicle lane, or
+	-- past the last lane, says the engine counts otherwise, and a wrong number could kill the game)
+	local function planJoin(endp, piece)
+		local node = endp.node
+		local others = piecesAt(node, endp)
+		if #others == 0 then return nil, "no road piece was found at node " .. node end
+		local rules = newLaneRules(node, piece, others)
+		if rules == nil then return nil, "the lanes of the pieces at node " .. node .. " could not be read" end
+		local ok, old = pcall(function() return api.engine.getComponent(node, CT().BASE_NODE_CONFIG) end)
+		if not ok or old == nil then return nil, "the junction set-up of node " .. node .. " could not be read" end
+		local okL, nStates = pcall(function() return #core.toList(old.trafficLightConfig.states) end)
+		if not okL then return nil, "whether node " .. node .. " has traffic lights could not be read" end
+		if nStates > 0 then
+			return nil, "node " .. node .. " has traffic lights (their states name lanes, and would not be remade here)"
+		end
+		local byId = {}
+		for _, o in ipairs(others) do byId[o.entity] = o end
+		local bad
+		local okC = pcall(function()
+			for _, lc in ipairs(core.toList(old.laneConnections)) do
+				for _, sl in ipairs({ { lc.segment0, lc.lane0 }, { lc.segment1, lc.lane1 } }) do
+					local o = byId[tonumber(sl[1])]
+					local idx = tonumber(sl[2])
+					if o and idx then
+						local k = o.node0 == node and idx + 1 or #o.lanes - idx
+						local l = o.lanes[k]
+						if not (l and (l.road or l.tram)) then bad = string.format("piece %d lane %d", o.entity, idx) end
+					end
+				end
+			end
+		end)
+		if not okC then return nil, "the connections of node " .. node .. " could not be read" end
+		if bad then
+			return nil, "the connections of node " .. node .. " number lanes otherwise than this command (" .. bad ..
+				" is no vehicle lane when all lanes are counted)"
+		end
+		return { rules = rules, old = old }
 	end
 
 	-- the road pieces near either end and the middle, by id: taken before sending, so a piece found afterwards
@@ -724,6 +912,22 @@ function M.new(ctx)
 			return fail(c.id, "api.type.enum.BaseEdgeType.NORMAL or RoadType.STREET could not be read: nothing sent")
 		end
 		local out = { from = a, to = b, template = tpl.name, length = length, year = year, snap = r.snap, note = NOTE_ROAD }
+		-- the ids the proposal will give (endNode below: the new nodes from -1 in the order from, to; then the piece)
+		local n0 = a.node or -1
+		local n1 = b.node or (a.node and -1 or -2)
+		local pieceId = -((a.node and 0 or 1) + (b.node and 0 or 1) + 1)
+		local piece = { entity = pieceId, node0 = n0, node1 = n1, lanes = lanesOf(tpl.lanes) }
+		if piece.lanes == nil then return fail(c.id, tpl.name .. ": its lanes could not be read: nothing sent") end
+		-- each joined node: its connections planned now, so that a dry run refuses what a build would
+		local plans = {}
+		for _, q in ipairs({ { "from", a }, { "to", b } }) do
+			if q[2].node then
+				local plan, perr = planJoin(q[2], piece)
+				if not plan then return fail(c.id, q[1] .. ": " .. perr .. ": nothing sent") end
+				plans[q[1]] = plan
+				q[2].laneRules = #plan.rules
+			end
+		end
 		if r.dryRun then
 			out.ok, out.dryRun, out.checked = true, true, false
 			out.why = "checked here: the template, the ends (a road node within snap, or the terrain's height) and the " ..
@@ -741,7 +945,8 @@ function M.new(ctx)
 			nextId = nextId - 1
 			return n.entity
 		end
-		local n0, n1 = endNode(a), endNode(b)
+		local en0, en1 = endNode(a), endNode(b)
+		if en0 ~= n0 or en1 ~= n1 or nextId ~= pieceId then return fail(c.id, "the ids planned are not the ones given: nothing sent") end
 		local e = newRecord("SegmentAndEntity")
 		e.entity = nextId
 		e.type = 0 -- 0 street, 1 track
@@ -763,10 +968,38 @@ function M.new(ctx)
 			po.player = player()
 			e.playerOwned = po
 		end)
+		-- junction set-ups: each new node its own (a dead end), each joined node its old one plus the new piece's
+		-- connections (straight on where it makes two pieces, a junction's where more). One that cannot be made
+		-- refuses the command: nothing is sent (a node left without one, or without the new piece, is what killed
+		-- the game or keeps vehicles off the piece)
+		local cfgAdd, cfgRemove = {}, {}
+		for _, q in ipairs({ { "from", a, n0 }, { "to", b, n1 } }) do
+			local key, endp, id = q[1], q[2], q[3]
+			local ok, err = pcall(function()
+				if not endp.node then
+					cfgAdd[#cfgAdd + 1] = configEntry(id, nil, {})
+					return
+				end
+				local plan = plans[key]
+				-- (the old connections anew: those read from the engine are not to be written, Smart Lanes' notes)
+				local conns = {}
+				for _, lc in ipairs(core.toList(plan.old.laneConnections)) do
+					conns[#conns + 1] = laneConnection(lc.segment0, lc.lane0, lc.segment1, lc.lane1, lc.withRoad, lc.withTram)
+				end
+				for _, lc in ipairs(plan.rules) do conns[#conns + 1] = lc end
+				cfgAdd[#cfgAdd + 1] = configEntry(endp.node, plan.old, conns)
+				cfgRemove[#cfgRemove + 1] = endp.node
+			end)
+			if not ok then
+				return fail(c.id, string.format("%s: the junction set-up could not be made (%s): nothing sent", key, tostring(err)))
+			end
+		end
 		-- whole lists, never an element written into the engine's list (see place)
 		sp.streetProposal.nodesToAdd = nodes
 		sp.streetProposal.edgesToAdd = { e }
-		out.newNodes = #nodes
+		if #cfgAdd > 0 then sp.streetProposal.nodeConfigsToAdd = cfgAdd end
+		if #cfgRemove > 0 then sp.streetProposal.nodeConfigsToRemove = cfgRemove end
+		out.newNodes, out.nodeConfigs = #nodes, #cfgAdd
 		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
 			piecesBefore = piecesAround(a, b) }
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(), false, true), function(data, success, entities)
@@ -797,6 +1030,16 @@ function M.new(ctx)
 			end
 		end
 		out.edges, out.nodes = core.array(edges), core.array(nodes)
+		-- whether the new nodes got their junction set-up (true / false / "unread"): read back, so that a game
+		-- shows the set-ups sent were taken
+		if #nodes > 0 then
+			local cfg = {}
+			for _, n in ipairs(nodes) do
+				local s = nodeConfigState(n)
+				cfg[#cfg + 1] = { node = n, nodeConfig = s == nil and "unread" or s }
+			end
+			out.newNodeConfigs = core.array(cfg)
+		end
 		out.edge = edges[1]
 		if res.success and edges[1] then
 			local be = comp(edges[1], "BASE_EDGE")

@@ -419,6 +419,21 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   `node0` / `node1` taken: nodes are not looked up by themselves, and no track node is asked about.
   A free end of a construction's own road (a harbour's entrance road: `construction.ends` in the `build` answer)
   is such a node. Otherwise the end is a new node.
+- Junction set-ups (`BaseNodeConfig`, sent as `nodeConfigsToAdd` / `nodeConfigsToRemove`): each new node gets
+  one (a dead end: no lane connections), and a joined node keeps its own connections and gets the new piece's:
+  between the new piece and each other piece there, straight on lane for lane where the node then has two
+  pieces of the same lane count, else every arriving road (tram) lane to every leaving road (tram) lane. Lanes
+  are numbered over all of a piece's `laneConfigs`, sidewalks too, from the node outwards. So pieces of this
+  command can be chained and branched. The answer's `newNodeConfigs` reads the new nodes' set-ups back,
+  `nodeConfigs` counts those sent, an end's `laneRules` the connections added there. Refused before anything is
+  sent: a joined node with traffic lights, one whose own connections number lanes otherwise, and lanes or a
+  set-up that cannot be read (all of these by the dry run too), or a set-up record that cannot be made (only a
+  build finds that).
+- A node without a set-up (a road a script built without them, as this command did before 2026-11-23) is never
+  joined: the next nearest node within `--snap` is (`passedOver` names the ones left out), and with none the
+  command is refused before anything is sent. The game died right after a piece was joined to such a node that
+  had two pieces (2026-11-23: `Engine.h:322 GetComponentDataIndex`, BaseNodeConfig). When whether a node has one
+  cannot be read, the command is refused too (dry run included).
 - `--type` is a street template's resName, or a base road's file name (`town_new_small`, `country_old_medium`)
   looked for under the base's town, country and highway roads; a track type, or one not to be had in the game's
   year, is refused. The default is the base medium town road of the year (old until 1940, new from then). The
