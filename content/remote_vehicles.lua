@@ -106,6 +106,26 @@ function M.new(ctx)
 		return hit.id
 	end
 
+	-- the multiple units (.mu.lua, api.res.multipleUnitRep), by id and file name, for a model argument that ends
+	-- in .mu.lua: the store lists them as rows of their own, apart from the models
+	local function findMu(query)
+		local all = try(function() return api.res.multipleUnitRep.getAll() end)
+		if not all then error("api.res.multipleUnitRep.getAll failed", 0) end
+		local list = {}
+		local ok = pcall(function()
+			for id in pairs(all) do
+				local name = try(function() return api.res.multipleUnitRep.getName(id) end)
+				if type(name) == "string" then list[#list + 1] = { id = id, name = name } end
+			end
+		end)
+		if not ok then error("could not walk api.res.multipleUnitRep.getAll()", 0) end
+		local hit, err = core.matchModel(list, query, "multiple unit")
+		if not hit then error(err, 0) end
+		local mu, why = vc.muParts(hit.id)
+		if not mu then error(why, 0) end
+		return mu
+	end
+
 	local function newConfig(modelId) return vc.newConfig(req, modelId) end
 	local partsOf = vc.partsOf
 	local function configParts(config) return partsOf(core.field(config, "vehicles")) end
@@ -319,6 +339,12 @@ function M.new(ctx)
 			spent = core.spent(job.balanceBefore, after), gameTimeBefore = job.gameTimeBefore, gameTimeAfter = timeAfter,
 			count = job.expected, sentParts = job.sentParts, vehicles = core.array({}), notes = core.array({}) }
 		prices(job, out)
+		if job.mu then
+			-- the multiple unit bought: its parts as its file lists them (forward false: turned round)
+			local parts = {}
+			for i, p in ipairs(job.mu.parts) do parts[i] = { modelId = p.modelId, name = p.name, forward = p.forward } end
+			out.multipleUnit = { id = job.mu.id, fileName = job.mu.fileName, name = job.mu.name, parts = core.array(parts) }
+		end
 		if job.gameTimeBefore and timeAfter and timeAfter ~= job.gameTimeBefore then out.warning = MOVED_WARNING end
 		if job.via == "cmd" and job.kind ~= "sell" and job.kind ~= "money" then out.notes[#out.notes + 1] = CMD_NOTE end
 		if job.via == "gui" then
@@ -422,7 +448,7 @@ function M.new(ctx)
 				return done(job)
 			end
 			submit(job, { kind = sourceEntity and "duplicate" or "buy", modelId = job.modelId, count = job.expected,
-				depot = depot, line = line, vehicle = sourceEntity })
+				depot = depot, line = line, vehicle = sourceEntity, mu = job.mu and job.mu.id or nil })
 		else
 			vc.fitAutoLoad(config)
 			job.sentParts = configParts(config)
@@ -445,10 +471,22 @@ function M.new(ctx)
 		end
 	end
 
-	-- args: model, depot, line, count, via
+	-- args: model, depot, line, count, via. A model ending in .mu.lua is a multiple unit: the whole train its file
+	-- lists, as the store's multiple-unit row buys it (gui only, core.vehicleArgs)
 	function handlers.buy(c)
 		local a, err = core.vehicleArgs("buy", c.args)
 		if not a then return fail(c.id, err) end
+		if a.mu then
+			local mu = findMu(a.model)
+			local modelIds = {}
+			for i, p in ipairs(mu.parts) do modelIds[i] = p.modelId end
+			local job = newJob(c, "buy", a, modelIds)
+			job.depot, job.mu = a.depot, mu
+			start(job, function() buyNew(job, nil, a.depot, a.line, nil) end)
+			say(string.format("buy %d: %s (%d parts) x%d at depot %d via %s", c.id, mu.fileName, #mu.parts, a.count,
+				a.depot, a.via), 2)
+			return
+		end
 		local modelId = findModel(a.model)
 		local config = a.via == "cmd" and newConfig(modelId) or nil
 		local job = newJob(c, "buy", a, { modelId })
