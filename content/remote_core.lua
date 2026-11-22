@@ -2535,6 +2535,7 @@ M.MODHUB_PUBLISH_FOLDERS = {
 -- the folders already on mod.io, each held to its mod.io page: a first upload of one is refused, and an update only
 -- goes to that id. Without this, a lost or remade _metadata/mod.io_fileid.txt would make such a folder look new to
 -- both tf3ctl.py and the game, and a first upload would make a second page. The same table is in tf3ctl.py.
+-- After a first upload, add the folder and its new id to both.
 M.MODHUB_PUBLISHED_IDS = {
 	hummer_force_unload_default_1 = "6543965",
 	hummer_cursor_altitude_tooltip_1 = "6523060",

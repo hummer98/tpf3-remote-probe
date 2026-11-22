@@ -87,8 +87,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
   tf3ctl.py modhub status [--folder F] | modhub validate F   # My Mods in the main menu (read; re-validate)
-  tf3ctl.py modhub publish F --public yes --changelog "..." --first-upload [--dry-run]   # one new mod to mod.io
-            # (one allowed folder; no fileid yet; a mark in $XDG_STATE_HOME/tf3ctl/ until the fileid appears)
+  tf3ctl.py modhub publish F --public yes --changelog "..." --first-upload [--version X.Y.Z] [--dry-run]   # one new mod to mod.io
+            # (an allowed folder not on mod.io; no fileid yet; a mark in $XDG_STATE_HOME/tf3ctl/ until the fileid appears)
   tf3ctl.py modhub publish F --public yes --changelog "..." [--version X.Y.Z] [--dry-run]   # update the mod.io page of its fileid
             # (the fileid there; mod.json's revision above the last one uploaded, from publish_history.jsonl or,
             # when that has none, --previous-revision N)
@@ -2114,7 +2114,8 @@ MODHUB_PUBLISH_FOLDERS = ("hummer_force_unload_default_1", "hummer_cursor_altitu
                           "hummer_construction_altitude_tooltip_1", "hummer_industry_pollution_display_1")
 # the folders already on mod.io, each held to its page (the same table as the mod's MODHUB_PUBLISHED_IDS): a first
 # upload of one is refused and an update goes only to that id, also when _metadata/mod.io_fileid.txt went missing
-# or was remade (then both this tool and the game would take the folder for a new mod and make a second page)
+# or was remade (then both this tool and the game would take the folder for a new mod and make a second page).
+# After a first upload, add the folder and its new id here and in the mod.
 MODHUB_PUBLISHED_IDS = {"hummer_force_unload_default_1": "6543965", "hummer_cursor_altitude_tooltip_1": "6523060",
                         "hummer_construction_altitude_tooltip_1": "6536988",
                         "hummer_industry_pollution_display_1": "6536959"}

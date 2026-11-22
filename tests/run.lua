@@ -5998,7 +5998,9 @@ local function modhubGame(spec, opts)
 	opts = opts or {}
 	local ms = spec or {}
 	if ms.staging == nil then ms.staging = STAGING end
-	-- force unload without a mod.io id in the staging list: the tests' new mod (the mod holds it to its page)
+	-- force unload without a mod.io id in the staging list: the tests' new mod, so the game's copy of the core
+	-- drops it from MODHUB_PUBLISHED_IDS (firstUploadOf). A refusal by that table shows only where a test keeps it:
+	-- give firstUploadOf yourself, or a staging entry with a modhubId
 	for _, e in ipairs(ms.staging) do
 		if e.folder == "hummer_force_unload_default_1" and e.modhubId == nil and ms.firstUploadOf == nil then
 			ms.firstUploadOf = e.folder
