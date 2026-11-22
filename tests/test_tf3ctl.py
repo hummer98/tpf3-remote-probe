@@ -1154,12 +1154,12 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 0, res)
         self.assertNotEqual(res["hello"]["stamp"], before)
         self.assertEqual(res["hello"]["state"]["date"]["year"], 1930)
-        # app.startGame sends the base's initNewGameFromMap to no script: the tool sends it after the start
+        # the start event gave the new game its basePopulation (the fake's town, 140): company init sends nothing
         ci = res["companyInit"]
         self.assertTrue(ci["ok"], ci)
-        self.assertIs(ci["sent"], True)
-        self.assertFalse(ci["before"]["company"]["initialized"])
-        self.assertEqual(ci["after"]["company"]["basePopulation"], 140, "the fake's residential capacity")
+        self.assertIs(ci["sent"], False)
+        self.assertTrue(ci["alreadyInitialized"])
+        self.assertEqual(ci["before"]["company"]["basePopulation"], 140, "the fake's residential capacity")
         code, res = self.ctl("company")
         self.assertEqual(code, 0, res)
         self.assertTrue(res["company"]["initialized"])
@@ -1962,6 +1962,8 @@ class QuitLaunchTest(unittest.TestCase):
         def fake_send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
             sent.append(cmd)
             if cmd == "companyInit":
+                if fail == "nopop":
+                    return {"ok": True, "sent": False, "noPopulation": True}
                 return {"ok": False, "error": "nope"} if fail else {"ok": True, "sent": True}
             return {"ok": True, "id": 7}
 
@@ -1988,6 +1990,10 @@ class QuitLaunchTest(unittest.TestCase):
             self.assertTrue(res["ok"], "the game started either way")
             self.assertFalse(res["companyInit"]["ok"])
             self.assertIn("company init failed (nope)", err.getvalue())
+            fail = "nopop"  # a start with no towns: nothing sent, and a note to place towns first
+            res = tf3ctl.replace_game("newgame", {"towns": False}, False, 30)
+            self.assertTrue(res["ok"] and res["companyInit"]["noPopulation"])
+            self.assertIn("no town population", err.getvalue())
 
     def test_town_connect_args(self):
         p = tf3ctl.make_parser()
@@ -3298,7 +3304,7 @@ class LaunchEndToEndTest(unittest.TestCase):
         self.assertFalse(res["newgame"]["hello"]["menu"], "the new game's own probe")
         self.assertEqual(res["newgame"]["hello"]["state"]["date"]["year"], 1930)
         self.assertTrue(res["newgame"]["companyInit"]["ok"], res["newgame"].get("companyInit"))
-        self.assertIs(res["newgame"]["companyInit"]["sent"], True)
+        self.assertIs(res["newgame"]["companyInit"]["sent"], False, "the start event gave the basePopulation")
         code, res = self.ctl("status")
         self.assertEqual(code, 0, res)
         self.assertFalse(res["menu"])

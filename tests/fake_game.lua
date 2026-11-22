@@ -3180,14 +3180,15 @@ end
 -- real-time mode for the Python end-to-end test
 -- The base's company scripts (remote_company.lua): company.gs and company_progression.gs as GAME_SCRIPT entities
 -- with a .state, and what the base's handlers do with initNewGameFromMap (game_mechanics/company, read 2026-11-23).
--- spec.company / spec.growth: their states at the start (nil: {} as after app.startGame, which sends no start
--- event; false: that script not running). spec.delivers (default true): a sent initNewGameFromMap with src "" and
+-- spec.company / spec.growth: their states at the start (nil: {}; false: that script not running). spec.delivers (default true): a sent initNewGameFromMap with src "" and
 -- id "" reaches the scripts: company gets basePopulation = the residential capacities summed (as
 -- computeWorldPopulation) and companyStates = {}, growth an empty companyState; spec.growthPlayer: then also the
 -- player's entry (as company_growth's update makes it). spec.refuse: the callback says no success.
 -- spec.mission: hasStartedAsMission. g.companyEvents: every script event sent with id "".
--- An event of another id, or a name the base has no start for, changes nothing. A newgame (app.startGame)
--- empties both states again, as such a game has them.
+-- An event of another id, or a name the base has no start for, changes nothing. A newgame (app.startGame) gets the
+-- start event, as measured 2026-11-23: basePopulation = the towns' population then (0 with no towns: set
+-- opts.townCapacities before the start), an empty company_growth state; spec.startWithoutEvent: no event, {}.
+-- The start event's effect is the same function as a sent one's (company, growth from opts.townCapacities now).
 M.COMPANY_ENTITY, M.GROWTH_ENTITY = 4501, 4502
 function M.installCompany(g, opts, spec)
 	spec = spec or {}
@@ -3196,8 +3197,23 @@ function M.installCompany(g, opts, spec)
 	if st.growth == nil then st.growth = {} end
 	g.companyState = st
 	g.companyEvents = {}
-	-- a new game started (app.startGame): no start event, so empty states again
-	g.onStart = function() st.company, st.growth = {}, {} end
+	local function startEvent()
+		local pop = 0
+		for _, caps in pairs(opts.townCapacities or {}) do pop = pop + (caps[1] or 0) end
+		if st.company then
+			st.company = { companyStates = {}, basePopulation = pop, version = 4 }
+			g.speedup = 1 -- company.script sends makeGameSetSpeedCmd(1) on this event
+		end
+		if st.growth then
+			-- the event sets { companyState = {} }; read back empty in a game (growth.initialized stayed false, e2e
+			-- 2026-11-23). spec.growthPlayer: the entry company_growth's update makes again at once
+			st.growth = {}
+			if spec.growthPlayer then st.growth = { companyState = { [99] = copy(spec.growthPlayer) } } end
+		end
+	end
+	g.onStart = function()
+		if spec.startWithoutEvent then st.company, st.growth = {}, {} else startEvent() end
+	end
 	local gss = api.engine.system.gameScriptSystem
 	local getEntity = gss.getEntityForGameScript
 	gss.getEntityForGameScript = function(name)
@@ -3223,18 +3239,7 @@ function M.installCompany(g, opts, spec)
 		g.commands[#g.commands + 1] = cmd
 		g.companyEvents[#g.companyEvents + 1] = cmd
 		if spec.refuse then if cb then cb(cmd, false) end return end
-		if cmd.src == "" and cmd.name == "initNewGameFromMap" and spec.delivers ~= false then
-			local pop = 0
-			for _, caps in pairs(opts.townCapacities or {}) do pop = pop + (caps[1] or 0) end
-			if st.company then
-				st.company = { companyStates = {}, basePopulation = pop, version = 3 }
-				g.speedup = 1 -- company.script sends makeGameSetSpeedCmd(1) on this event
-			end
-			if st.growth then
-				st.growth = { companyState = {} }
-				if spec.growthPlayer then st.growth.companyState[99] = copy(spec.growthPlayer) end
-			end
-		end
+		if cmd.src == "" and cmd.name == "initNewGameFromMap" and spec.delivers ~= false then startEvent() end
 		if cb then cb(cmd, true) end
 	end
 end
@@ -3378,7 +3383,7 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			["::/infrastructure/street/town/town_new_medium.street_template"] = { yearFrom = 1940, cost = 20 } } })
 	-- the debug commands (stock set, steps): the industry's stocks, 200 ms of game time a step
 	M.installDebug(g, { stepsPerFrame = 5 })
-	-- the base's company scripts: a save with its state (basePopulation 500); a newgame has none until company init
+	-- the base's company scripts: a save with its state (basePopulation 500); a newgame gets the start event
 	-- town connections: the two towns in the map's order, not connected; the coal mine is Emsworth's
 	M.installTownConnect(g, {}, { towns = { { entity = 11, name = "Emsworth" }, { entity = 12, name = "Emsworth Bay", x = 2000 } },
 		connections = {}, defaults = { { 0, 1 } }, closest = { [5100] = 11 } })

@@ -10333,7 +10333,31 @@ test("core.worldPopulation / companyDiagnosis / companyInitRefusal: sums, states
 	base.growth.initialized = true
 	truthy(core.companyDiagnosis(base):find("as after the base's new%-game page"))
 	base.company.basePopulation = 0
-	truthy(core.companyDiagnosis(base):find("basePopulation is 0"))
+	truthy(core.companyDiagnosis(base):find("no population"), "0 and no towns")
+	base.worldPopulation = 50
+	truthy(core.companyDiagnosis(base):find("the towns have 50 now"))
+	-- when company init sends
+	local function st(b, w, player) return { company = { basePopulation = b }, worldPopulation = w, growth = { player = player } } end
+	eq(core.companyInitDecision(st(nil, 0)).send, true)
+	eq(core.companyInitDecision(st(0, 120)).send, true)
+	local z = core.companyInitDecision(st(0, 0))
+	eq(z.send, false); eq(z.noPopulation, true)
+	eq(core.companyInitDecision(st(0, nil)).send, false)
+	eq(core.companyInitDecision(st(793, 800)).send, false)
+	eq(core.companyInitDecision(st(793, 800), true).send, true, "force always")
+	eq(core.companyInitDecision(st(0, 0), true).send, true)
+	-- whether a read shows the event ran
+	eq(core.companyInitSeen(st(0, 120), st(120, 120)), true)
+	eq(core.companyInitSeen(st(nil, 0), st(0, 0)), true, "set, though 0")
+	eq(core.companyInitSeen(st(500, 500), st(500, 500)), false)
+	eq(core.companyInitSeen(st(500, 500, { level = 2 }), st(500, 500)), true, "the growth entry emptied")
+	eq(core.companyInitSeen(st(500, 500, { level = 2, experience = 900 }), st(500, 500, { level = 1, experience = 500 })),
+		true, "made again lower")
+	eq(core.companyInitSeen(st(500, 500, { level = 2, experience = 900 }), st(500, 500, { level = 2, experience = 950 })),
+		false, "only grown")
+	local c1 = st(500, 500); c1.company.companies = 1
+	local c0 = st(500, 500); c0.company.companies = 0
+	eq(core.companyInitSeen(c1, c0), true, "companies emptied")
 	truthy(core.companyInitRefusal({ mapEditor = true, company = {} }):find("map editor"))
 	truthy(core.companyInitRefusal({ mission = true, company = {} }):find("mission"))
 	truthy(core.companyInitRefusal({ company = { running = false, script = "x" } }):find("not running"))
@@ -10373,7 +10397,8 @@ test("company init: sends initNewGameFromMap with src and id empty, answers once
 	eq(e.src, ""); eq(e.id, ""); eq(e.name, "initNewGameFromMap"); eq(type(e.param), "table")
 	eq(a.before.company.initialized, false); eq(a.after.company.initialized, true)
 	eq(a.after.company.basePopulation, 200, "the residential capacities, as computeWorldPopulation")
-	eq(a.after.growth.player.level, 1); eq(a.growthNote, nil)
+	eq(a.after.growth.player.level, 1); truthy(a.check:find("look with company"))
+	eq(a.expectedBasePopulation, 200); eq(a.basePopulationMatches, true); truthy(a.reason:find("no basePopulation"))
 	truthy(a.note:find("test saves only")); truthy(a.note:find("speed to 1"))
 	eq(a.after.speedup, 1, "company.script sets speed 1, as a base new game")
 	-- again: the state is there, nothing sent
@@ -10405,7 +10430,7 @@ test("company init: dry run, map editor, mission, no script, refused, not delive
 	eq(final(nd, 2526), nil, "still waiting")
 	frames(nd, 400, 0.1)
 	local t = final(nd, 2526)
-	eq(t.ok, false); eq(t.sent, true); truthy(t.error:find("did not reach it"), t.error)
+	eq(t.ok, false); eq(t.sent, true); truthy(t.error:find("did not reach the scripts"), t.error)
 	eq(t.after.company.initialized, false)
 	-- the timed-out event may still run: another send is refused unless forced
 	local t2 = companyRun(nd, 2528, "companyInit")
@@ -10413,26 +10438,60 @@ test("company init: dry run, map editor, mission, no script, refused, not delive
 	send(nd, 2529, "companyInit", "{ force = true }")
 	frames(nd, FIRST + 20)
 	eq(#nd.companyEvents, 2, "forced: sent again")
+	frames(nd, 400, 0.1) -- the forced one times out too
 	local dr = companyRun(nd, 2530, "companyInit", "{ dryRun = true }", FIRST + 400)
 	eq(#nd.companyEvents, 2)
+	-- after the forced one timed out too, a dry run says what the real send would: refused
+	eq(dr.ok, false); truthy(dr.error:find("timed out"), dr.error)
 	-- delivered, but company_growth has not run its update yet: ok, with the note
 	local gp = companyGame()
 	local p = companyRun(gp, 2527, "companyInit")
-	truthy(p.ok, p.error); eq(p.after.growth.initialized, true); eq(p.after.growth.player, nil); truthy(p.growthNote)
+	truthy(p.ok, p.error); eq(p.after.growth.initialized, false); eq(p.after.growth.player, nil); truthy(p.check)
 	for _, gg in ipairs({ d, ed, mi, ns, rf, nd, gp }) do truthy(not gg.crashed, gg.crashed) end
 end)
 
-test("company init after a newgame: the new game has no state; init gives it its basePopulation", function()
+test("company init after a newgame: towns at the start give a basePopulation, nothing to send", function()
 	local g = companyGame({ company = { basePopulation = 500, companyStates = {} }, growth = { companyState = {} } })
-	local a = companyRun(g, 2531, "company")
-	eq(a.company.basePopulation, 500, "the save had its state")
 	send(g, 2532, "newgame", '{ size = "tiny", unsafe = true }')
 	frames(g, FIRST + 10)
 	local b = companyRun(g, 2533, "company")
-	truthy(b.ok, b.error); eq(b.company.initialized, false, "a game app.startGame started: none")
+	truthy(b.ok, b.error); eq(b.company.basePopulation, 200, "the start event, as measured")
 	local c = companyRun(g, 2534, "companyInit")
-	truthy(c.ok, c.error); eq(c.sent, true); eq(c.after.company.basePopulation, 200)
+	truthy(c.ok, c.error); eq(c.sent, false); eq(c.alreadyInitialized, true); eq(#g.companyEvents, 0)
 	truthy(not g.crashed, g.crashed)
+end)
+
+test("company init: no towns at the start, towns placed later: sent, basePopulation from them", function()
+	local opts = { townCapacities = {} }
+	local g = companyGame({ company = { basePopulation = 500, companyStates = {} }, growth = { companyState = {} } }, opts)
+	send(g, 2541, "newgame", '{ size = "tiny", towns = false, unsafe = true }')
+	frames(g, FIRST + 10)
+	local a = companyRun(g, 2542, "company")
+	eq(a.company.basePopulation, 0); eq(a.worldPopulation, 0); truthy(a.diagnosis:find("no population"), a.diagnosis)
+	-- 0 and no population: nothing sent (the event would give 0 again)
+	local b = companyRun(g, 2543, "companyInit")
+	truthy(b.ok, b.error); eq(b.sent, false); eq(b.noPopulation, true); eq(b.alreadyInitialized, nil)
+	truthy(b.reason:find("no population")); eq(#g.companyEvents, 0)
+	-- towns placed: sent, basePopulation from them
+	opts.townCapacities[801] = { 150, 20, 5 }
+	local c0 = companyRun(g, 2544, "company")
+	truthy(c0.diagnosis:find("the towns have 150 now"), c0.diagnosis)
+	local d = companyRun(g, 2545, "companyInit", "{ dryRun = true }")
+	truthy(d.ok, d.error); eq(d.sent, false); eq(d.wouldSend, true); eq(#g.companyEvents, 0)
+	local c = companyRun(g, 2546, "companyInit")
+	truthy(c.ok, c.error); eq(c.sent, true); eq(#g.companyEvents, 1)
+	eq(c.after.company.basePopulation, 150); eq(c.basePopulationMatches, true); truthy(c.check:find("a few days"))
+	-- force: sent although basePopulation is there and the same; seen by the growth entry made again lower (as
+	-- company_growth's update does at once: experience = the population, level 1)
+	local fg = companyGame({ growthPlayer = { level = 1, potentialLevel = 1, experience = 200 },
+		company = { basePopulation = 200, companyStates = {} },
+		growth = { companyState = { [99] = { level = 2, potentialLevel = 2, experience = 900 } } } })
+	local f = companyRun(fg, 2547, "companyInit", "{ force = true }")
+	truthy(f.ok, f.error); eq(f.sent, true); eq(f.force, true); eq(#fg.companyEvents, 1)
+	eq(f.after.company.basePopulation, 200, "the same population"); eq(f.after.growth.player.level, 1)
+	local f2 = companyRun(fg, 2548, "companyInit")
+	eq(f2.sent, false, "not forced: basePopulation there, nothing sent"); eq(#fg.companyEvents, 1)
+	for _, gg in ipairs({ g, fg }) do truthy(not gg.crashed, gg.crashed) end
 end)
 
 ---------------------------------------------------------------------------------------------------------------------

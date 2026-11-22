@@ -3278,25 +3278,69 @@ function M.worldPopulation(capsMap)
 	return ok and total or nil
 end
 
--- what a company read says, in one line
+-- what a company read says, in one line. Measured 2026-11-23 (e2e of 32bfbc7): a newgame game with generated towns
+-- has its basePopulation (793) and a rank after 10 days without company init; one started with no towns
+-- (--no-towns, or a flat base with towns placed later) has basePopulation 0, and company_growth then never makes
+-- its state (its update returns while basePopulation <= 0), also after towns were placed
 function M.companyDiagnosis(s)
 	if s.mapEditor then return "the map editor: the base's company scripts do nothing here" end
 	if s.mission then return "a mission: company progression is the mission's" end
 	if not s.company.running then return "the base's company script is not running" end
+	local world = tonumber(s.worldPopulation) or 0
 	if not s.company.initialized then
-		return "company.gs has no basePopulation: the game did not get the base's initNewGameFromMap (a game "
-			.. "started with app.startGame, as newgame before company init). No company level, no perks, no ticket "
-			.. "price multiplier; company_growth errors at each ticket price (companyState nil). company init sends it"
+		return "company.gs has no basePopulation: the game's start event (initNewGameFromMap) has not set it (not "
+			.. "seen in a game yet). company init sends it"
 	end
 	if s.company.basePopulation == 0 then
-		return "basePopulation is 0 (no town population when the game started): the base's company_growth does "
-			.. "nothing then (no rank ever), as in the base"
+		if world > 0 then
+			return "basePopulation is 0 (the game started with no town population); the towns have " .. world
+				.. " now. company_growth does nothing while it is 0 (no rank, no ticket price multiplier): company "
+				.. "init sends the start event again, for a basePopulation from today's towns"
+		end
+		return "basePopulation is 0 and the towns have no population: company_growth does nothing (no rank), as in "
+			.. "the base. Place towns, let them grow a little, then company init"
 	end
 	if not s.growth.initialized then
 		return "basePopulation is set; company_growth has no companyState yet (it makes it in its update: run the "
-			.. "game a moment)"
+			.. "game a few days and look again)"
 	end
 	return "the company scripts have their state, as after the base's new-game page"
+end
+
+-- whether company init sends the start event: { send, reason, noPopulation }. force always sends (refusals aside)
+function M.companyInitDecision(s, force)
+	local base, world = s.company.basePopulation, tonumber(s.worldPopulation) or 0
+	if force then return { send = true, reason = "forced" } end
+	if base == nil then return { send = true, reason = "company.gs has no basePopulation" } end
+	if base == 0 and world > 0 then
+		return { send = true, reason = "basePopulation is 0 and the towns have " .. world .. " now" }
+	end
+	if base == 0 then
+		return { send = false, noPopulation = true, reason = "basePopulation is 0 and the towns have no population: "
+			.. "the event would set it to 0 again. Place towns, then company init (force = true sends anyway)" }
+	end
+	return { send = false, reason = "company.gs has its basePopulation (" .. tostring(base) .. "): nothing to do "
+		.. "(force = true sends anyway, which resets the company's progression)" }
+end
+
+-- whether a read after a send shows the event ran: basePopulation set anew (other than before); company.script's
+-- companies emptied; company_growth's entry for the player gone, or made again lower (its update makes it again
+-- at once from basePopulation: experience = the population, level 1). A forced send on a map whose population and
+-- company did not change may show none of these. From nil the base's legacy update (company_legacy_util, version
+-- below 2) also sets basePopulation without any event, so that case cannot tell them apart
+function M.companyInitSeen(before, now)
+	local b, n = before.company.basePopulation, now.company.basePopulation
+	if n ~= nil and n ~= b then return true end
+	if (before.company.companies or 0) > 0 and now.company.companies == 0 then return true end
+	local bp, np = before.growth.player, now.growth.player
+	if bp and not np then return true end
+	if bp and np then
+		for _, k in ipairs({ "level", "potentialLevel", "experience" }) do
+			local x, y = tonumber(bp[k]), tonumber(np[k])
+			if x and y and y < x then return true end
+		end
+	end
+	return false
 end
 
 -- what the base's company button at the bottom left shows (game_bar.tl CompanyButton, read 2026-11-23): the rank

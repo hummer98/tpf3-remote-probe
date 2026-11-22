@@ -105,32 +105,38 @@ python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-indust
 初期値。`status` は `mapEditor` を答えます (`gui`: `api.gui.game.isMapEditor()`、`modParams`: 本体の `isMapEditor`)。
 **ゲーム内では未確認** (2026-11-22 に書いたもの): この形でエディタが開くか、エディタの中で probe が答えるか。
 
-`newgame` (と `launch` / `restart --new`) は `app.startGame` で始めます。型の説明では「試験用の新しいゲーム」です。
-これはスクリプトに `initNewGameFromMap` を送りません。本体の新しいゲームの画面から始めたゲーム (プレビューの部品が
-作った地図を `app.startGame2` に渡す) が受ける出来事です。これが無いと本体の会社の成長が始まりません (会社のランク・
-特典・運賃の倍率が無く、左下の会社のボタンがランクの代わりに「実績」と出て、`company_growth.script` が運賃のたびに
-エラーを出す)。そこで新しいゲーム (マップエディタでないもの) のあと、ツールが `company init` (下) を送り、その答えを
-`companyInit` に入れます。`--no-company-init` で送りません。`company init` が失敗しても警告だけで、ゲームは始まった
-ままです。`app.startGame2` を使わないのは、生成した地図はメニューの地図のプレビューの部品しか作れず (地形の生成器で
-地図を作る Lua の関数はありません)、Lua で作れる平らな地図では generator と生成される町・産業が失われるためです。
+本体の会社の成長 (会社のランク・特典・運賃の倍率) は、ゲームが始まったときの町の人口から始まります。始まりの出来事
+`initNewGameFromMap` で本体の会社のスクリプトがそれを `basePopulation` に入れ、company_growth はそれが 0 の間は何も
+しません。町の人口が無い始まり (`--no-towns`、平らな土台に後から町を置いたもの) では `basePopulation` が 0 のままで、
+ランクが無く (左下の会社のボタンが「実績」と出る)、運賃の倍率も無く、`company_growth.script` が運賃のたびにエラーを
+出します (companyState が nil のとき)。後から町を置いても変わりません。2026-11-23 の計測: 町を生成した `newgame` のゲームでは何も送らずに
+`basePopulation` 793、10 日でランクが出た。`--no-towns` では 0 で、町を置いて 20 日たってもランクは出なかった。新しい
+ゲーム (マップエディタでないもの) のあと、ツールが `company init` (下) を送り、その答えを `companyInit` に入れます。始まり
+で `basePopulation` が入っていれば何も送らず、町の人口が無ければそう答えます (`noPopulation`: 町を置いてから
+`company init`)。`--no-company-init` で送りません。失敗しても警告だけで、ゲームは始まったままです。
 
 ```
 python3 tools/tf3ctl.py company                       # 読むだけ: 本体の会社の成長の状態と、足りないもの
-python3 tools/tf3ctl.py company init [--dry-run] [--force]   # 試験用のセーブだけ: 本体の initNewGameFromMap を手で送る
+python3 tools/tf3ctl.py company init [--dry-run] [--force]   # 試験用のセーブだけ: 始まりの出来事をもう一度送る
 ```
 
 - `company` は `::/game_mechanics/company/company.gs` の状態 (`basePopulation`・`version`・`companies`) と
-  `company_progression.gs` の状態 (プレイヤーの `level`・`potentialLevel`・`experience`・`ticketPriceMultiplier`)、
-  本体の数え方の世界の人口、`rankButton` (`rank` か `achievements`: 会社のボタンに出るもの。経験が 0 より多い
-  記録があるときだけランク)、1 行の `diagnosis` を答えます。
-- `company init` は、`company.gs` に `basePopulation` が無いときに
-  `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` を送り、それが入ったら答えます (`before`・
-  `after`、最長 15 秒)。入っていれば何も送りません (`alreadyInitialized`)。マップエディタとミッションでは断ります。
-  本体ではこの出来事で町の評価の控え・補助金・通知も初めからになり、ゲームの速度が 1 になり (本体の新しいゲームの
-  始まりと同じ)、ようこその印も立ちます。ほかの MOD のスクリプトも受けることがあるので、試験用のセーブだけで使います
-  (`newgame` で始めたゲームと、そこから作ったセーブ)。待ちきれずに終わった送信のあとは、`--force` なしの次の送信を
-  断ります (その出来事があとで動くことがあり、二度目で会社の成長がまた初めからになるため)。町の人口の無い地図では
-  `basePopulation` が 0 になり、本体はランクを出しません (本体と同じ)。
+  `company_progression.gs` の状態 (`growth.initialized`、プレイヤーの `level`・`potentialLevel`・`experience`・
+  `ticketPriceMultiplier`)、本体の数え方の今の町の人口 (`worldPopulation`)、`rankButton` (`rank` か `achievements`:
+  会社のボタンに出るもの。経験が 0 より多い記録があるときだけランク)、1 行の `diagnosis` を答えます。
+- `company init` は、`company.gs` に `basePopulation` が無いとき、または 0 で今の町に人口があるときに
+  `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` を送ります。`--force` はいつでも送ります。
+  それ以外は送らずに理由を答えます (`reason`。`alreadyInitialized`、両方 0 なら `noPopulation`)。送ったあとは、出来事が
+  動いたと分かる読み (`basePopulation` が新しく入る、または company_growth のプレイヤーの記録が空になる) を最長 15 秒
+  待ち、`before`・`after`、`expectedBasePopulation` (町の人口)、`basePopulationMatches` (差が 10 % 以内) を答えます。
+  会社のレベルは company_growth が自分の update で作るので、数日進めてから `company` で見ます (`growth.initialized` が
+  true、`growth.player.level`、`rankButton` が `rank`)。答えの `check` にもそう出ます (`basePopulationMatches` は、
+  出来事が今の町を数えたことしか示しません)。置いたばかりの町では `basePopulation` が小さく決まり、ランクが早く
+  上がります。マップエディタとミッションでは断ります。
+- 本体ではこの出来事で会社の成長と町の評価の控え・補助金・通知も初めからになり、ゲームの速度が 1 になり (本体の新しい
+  ゲームの始まりと同じ)、ようこその印も立ちます。ほかの MOD のスクリプトも受けることがあるので、試験用のセーブだけで
+  使います。待ちきれずに終わった送信のあとは、`--force` なしの次の送信を断ります (その出来事があとで動くことがあり、
+  二度目で会社の成長がまた初めからになるため)。
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): 送った出来事がスクリプトに届くか (スクリプトは出来事の名前で
   受け取りを登録し、本体のどれもこの名前を登録していない)、止めているときにも処理されるか。
 
