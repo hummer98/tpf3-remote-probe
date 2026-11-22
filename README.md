@@ -1102,12 +1102,14 @@ up after 20 s with "no answer". Relayed means fired, not that a
   `tgv.mu.lua`) buys that multiple unit, as the store's multiple-unit row does: every car its file lists, in order,
   each turned round where the file says `forward = false`, its model found by `api.res.modelRep.find`, sent as one
   vehicle with `vehicleGroups = { n }` and `muFileNames = { <the file's name> }` (`vehicle_configs.muParts` /
-  `newMuConfig`, after `vehicle_store_window.tl`). The name is matched against the names `api.res.multipleUnitRep.getAll()`
-  gives (its values; `getName` only where a value is no name; `getAll(true)` when `getAll()` is empty): the whole
-  name, then without case, folder and `.mu.lua` / `.mu` (`shinkansen_0s.mu` works too), then a unique part of that.
-  A miss says how many units there are, those whose names hold a piece of the query, and the first 5.
-  `models --mu [FILTER]` (read only) lists them: `id`, `fileName`, `name` (shown), `cars`, `buyAs` (what `--model`
-  takes). The whole file is checked before anything is sent: no cars, a car the game has no
+  `newMuConfig`, after `vehicle_store_window.tl`). The name is matched against both names of each unit `api.res.multipleUnitRep.getAll()`
+  lists (its value, and `getName(id)`): the whole name, then without case, folder and `.mu.lua` / `.mu`
+  (`shinkansen_0s.mu` works too), then a unique part of that. `muFileNames` gets `getName`'s, as the store sends it;
+  a unit without one is refused. When `getAll()` is empty, `getAll(true)` is counted in the error and listed by
+  `models --mu` (`invisible: true`), never bought from (the store does not offer those). A miss says how many units
+  there are, those whose names hold a piece of the query, and the first 5. `models --mu [FILTER]` (read only)
+  lists them: `id`, `fileName`, `getName`, `value` (getAll's), `name` (shown), `cars`, `buyAs` (what `--model`
+  takes: the whole name when two units share a file name); FILTER matches a name or the shown name. The whole file is checked before anything is sent: no cars, a car the game has no
   model for, or one that is no vehicle model, is an error. Via gui only (`--via cmd` is refused), and `replace` takes
   no multiple unit. The answer adds `multipleUnit` (`id`, `fileName`, `name`, `parts` with each car's `modelId`, `name`,
   `forward`); `storeParts` and `storePriceTotal` cover every car; `sentParts` and `vehicles[].parts` mark any

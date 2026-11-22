@@ -106,23 +106,27 @@ function M.new(ctx)
 		return hit.id
 	end
 
-	-- the multiple units (.mu.lua, api.res.multipleUnitRep) as { id, name }, and a note on how they were read: the
-	-- names are getAll()'s values (getName only as a fallback), and an empty getAll() is tried again with
-	-- includeInvisible (getAll(true)), which the note says. The store lists them as rows of their own.
+	-- the multiple units (.mu.lua, api.res.multipleUnitRep) as core.muListFrom gives them, and a note on how they
+	-- were read. Only getAll() is what the store lists; when it gives none, getAll(true) (includeInvisible) is read
+	-- for the note and for models --mu (invisible = true), never to buy from: what the engine does with a unit the
+	-- store does not offer is not known.
 	local function muList()
 		local rep = try(function() return api.res.multipleUnitRep end)
 		if not rep then error("api.res.multipleUnitRep is not there", 0) end
 		local getName = function(id) return api.res.multipleUnitRep.getName(id) end
 		local all = try(function() return api.res.multipleUnitRep.getAll() end)
-		local list = core.muListFrom(all, getName)
-		local note
+		local list, walkErr = core.muListFrom(all, getName)
+		local notes, hidden = {}, {}
+		if walkErr then notes[#notes + 1] = walkErr end
 		if #list == 0 then
 			local all2 = try(function() return api.res.multipleUnitRep.getAll(true) end)
-			local list2 = core.muListFrom(all2, getName)
-			note = string.format("getAll() gave %s, getAll(true) %d", all == nil and "nothing (it failed)" or "none", #list2)
-			list = list2
+			local list2, walkErr2 = core.muListFrom(all2, getName)
+			notes[#notes + 1] = string.format("getAll() gave %s, getAll(true) %d (not bought from: the store lists only getAll())",
+				all == nil and "nothing (it failed)" or "none", #list2)
+			if walkErr2 then notes[#notes + 1] = "getAll(true): " .. walkErr2 end
+			hidden = list2
 		end
-		return list, note
+		return list, #notes > 0 and table.concat(notes, "; ") or nil, hidden
 	end
 
 	-- the multiple unit a model argument ending in .mu.lua names (core.matchMu), opened as the store would
@@ -130,7 +134,7 @@ function M.new(ctx)
 		local list, note = muList()
 		local hit, err = core.matchMu(list, query, note)
 		if not hit then error(err, 0) end
-		local mu, why = vc.muParts(hit.id, hit.name)
+		local mu, why = vc.muParts(hit.id)
 		if not mu then error(why, 0) end
 		return mu
 	end
@@ -475,8 +479,7 @@ function M.new(ctx)
 				return done(job)
 			end
 			submit(job, { kind = sourceEntity and "duplicate" or "buy", modelId = job.modelId, count = job.expected,
-				depot = depot, line = line, vehicle = sourceEntity, mu = job.mu and job.mu.id or nil,
-				muName = job.mu and job.mu.fileName or nil })
+				depot = depot, line = line, vehicle = sourceEntity, mu = job.mu and job.mu.id or nil })
 		else
 			vc.fitAutoLoad(config)
 			job.sentParts = configParts(config)
@@ -1019,23 +1022,39 @@ function M.new(ctx)
 	end
 
 	-- models --mu: the multiple units (id, file name, shown name, cars), for the name a buy of one takes
+	-- models --mu: the multiple units (id, getName's and getAll's names, shown name, cars), for the name a buy of
+	-- one takes. FILTER keeps those whose names or shown name hold it.
 	local function multipleUnits(c, a)
-		local list, note = muList()
-		local hits = {}
+		local list, note, hidden = muList()
+		local all, invisible = {}, {}
+		for _, m in ipairs(list) do all[#all + 1] = m end
+		for _, m in ipairs(hidden) do all[#all + 1] = m; invisible[m] = true end
+		-- how many units share a key: buyAs is then the whole name, as the key alone would match them all
+		local keys = {}
+		for _, m in ipairs(list) do local k = core.muKey(m.name); keys[k] = (keys[k] or 0) + 1 end
 		local want = type(a.mu) == "string" and a.mu:lower() or nil
-		for _, m in ipairs(list) do
-			if not want or tostring(m.name):lower():find(want, 1, true) then hits[#hits + 1] = m end
+		local hits = {}
+		for _, m in ipairs(all) do
+			local mu = try(function() return api.res.multipleUnitRep.get(m.id) end)
+			local title = mu and try(function() return mu.name end)
+			title = type(title) == "string" and title or nil
+			local keep = not want
+			for _, n in ipairs(m.names) do keep = keep or tostring(n):lower():find(want, 1, true) ~= nil end
+			keep = keep or (title ~= nil and title:lower():find(want, 1, true) ~= nil)
+			if keep then hits[#hits + 1] = { m = m, mu = mu, title = title } end
 		end
 		local out = {}
 		for i = 1, math.min(#hits, a.limit) do
-			local m = hits[i]
-			local mu = try(function() return api.res.multipleUnitRep.get(m.id) end)
-			local title = mu and try(function() return mu.name end)
-			local cars = mu and core.toList(try(function() return mu.vehicles end)) or nil
-			out[#out + 1] = { id = m.id, fileName = m.name, name = type(title) == "string" and title or nil,
-				cars = cars and #cars or nil, buyAs = core.muKey(m.name) .. core.MU_SUFFIX }
+			local h = hits[i]
+			local m = h.m
+			local cars = h.mu and core.toList(try(function() return h.mu.vehicles end)) or nil
+			local k = core.muKey(m.name)
+			out[#out + 1] = { id = m.id, fileName = m.name, getName = m.getName, value = m.value, name = h.title,
+				cars = cars and #cars or nil, invisible = invisible[m] or nil,
+				buyAs = (not invisible[m]) and ((keys[k] or 0) > 1 and m.name or (k .. core.MU_SUFFIX)) or nil }
 		end
-		answer(c.id, { ok = true, total = #hits, listed = #list, note = note, multipleUnits = core.array(out) })
+		answer(c.id, { ok = true, total = #hits, listed = #list, invisible = #hidden > 0 and #hidden or nil, note = note,
+			multipleUnits = core.array(out) })
 	end
 
 	function handlers.models(c)

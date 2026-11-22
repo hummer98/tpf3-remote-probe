@@ -693,8 +693,7 @@ function M.uiRequest(d)
 end
 
 -- the vehicle requests (gui way) the guiUpdate script hands the speed control: { { id, kind, modelId, count,
--- depot, line, vehicle, mu, muName } } (mu: a multiple unit's id in multipleUnitRep, bought instead of modelId;
--- muName: its name as getAll gave it), plain numbers only; anything else is left out rather than guessed at
+-- depot, line, vehicle, mu } } (mu: a multiple unit's id in multipleUnitRep, bought instead of modelId), plain numbers only; anything else is left out rather than guessed at
 M.VEHICLE_KINDS = { buy = true, duplicate = true, replace = true, sell = true }
 function M.vehicleRequests(list)
 	local out = {}
@@ -702,8 +701,7 @@ function M.vehicleRequests(list)
 	for _, r in ipairs(list) do
 		if type(r) == "table" and tonumber(r.id) and M.VEHICLE_KINDS[r.kind] then
 			out[#out + 1] = { id = tonumber(r.id), kind = r.kind, modelId = tonumber(r.modelId), count = tonumber(r.count),
-				depot = tonumber(r.depot), line = tonumber(r.line), vehicle = tonumber(r.vehicle), mu = tonumber(r.mu),
-				muName = type(r.muName) == "string" and r.muName or nil }
+				depot = tonumber(r.depot), line = tonumber(r.line), vehicle = tonumber(r.vehicle), mu = tonumber(r.mu) }
 		end
 	end
 	return out
@@ -1712,23 +1710,32 @@ function M.muKey(name)
 	return n
 end
 
--- the multiple units from api.res.multipleUnitRep.getAll() ({ [id] = name }): the value as the name, getName(id)
--- only where the value is no name (2026-11-23 in game: a lookup by getName alone matched nothing). Sorted by id.
+-- the multiple units from api.res.multipleUnitRep.getAll() ({ [id] = name }, type.d.tl): { id, value (getAll's
+-- value, when a name), getName (getName(id), when a name), name (getName's, else the value: the store goes by
+-- getName, vehicle_store_window.tl), names (both, to match against) }, sorted by id. A unit with neither is left
+-- out. Second result: why the walk stopped, when pairs could not go through (the list is then what came before).
+-- 2026-11-23 in game a lookup by getName's name alone matched nothing: it is not known which form either has.
 function M.muListFrom(all, getName)
 	local list = {}
 	if all == nil then return list end
-	-- an engine map that pairs cannot walk gives none rather than an error: the caller says how many it got
-	pcall(function()
+	local ok, err = pcall(function()
 		for id, v in pairs(all) do
-			local name = type(v) == "string" and v ~= "" and v or nil
-			if not name and getName then
-				local ok, n = pcall(getName, id)
-				if ok and type(n) == "string" and n ~= "" then name = n end
+			local value = type(v) == "string" and v ~= "" and v or nil
+			local byName
+			if getName then
+				local okN, n = pcall(getName, id)
+				if okN and type(n) == "string" and n ~= "" then byName = n end
 			end
-			if name and tonumber(id) then list[#list + 1] = { id = tonumber(id), name = name } end
+			local names = {}
+			if byName then names[#names + 1] = byName end
+			if value and value ~= byName then names[#names + 1] = value end
+			if #names > 0 and tonumber(id) then
+				list[#list + 1] = { id = tonumber(id), value = value, getName = byName, name = names[1], names = names }
+			end
 		end
 	end)
-	table.sort(list, function(a, b) return a.id < b.id end)
+	table.sort(list, function(x, y) return x.id < y.id end)
+	if not ok then return list, string.format("the walk of getAll() stopped after %d: %s", #list, tostring(err)) end
 	return list
 end
 
@@ -1741,11 +1748,18 @@ function M.matchMu(list, query, notes)
 	local q, k = query:lower(), M.muKey(query)
 	local exact, key, partial = {}, {}, {}
 	for _, m in ipairs(list or {}) do
-		local n = tostring(m.name):lower():gsub("\\", "/")
-		local mk = M.muKey(m.name)
-		if n == q then exact[#exact + 1] = m
-		elseif k ~= "" and mk == k then key[#key + 1] = m
-		elseif k ~= "" and mk:find(k, 1, true) then partial[#partial + 1] = m end
+		-- the best of its names counts (getName's and getAll's value may differ in form)
+		local best = 0
+		for _, name in ipairs(m.names or { m.name }) do
+			local n = tostring(name):lower():gsub("\\", "/")
+			local mk = M.muKey(name)
+			if n == q then best = math.max(best, 3)
+			elseif k ~= "" and mk == k then best = math.max(best, 2)
+			elseif k ~= "" and mk:find(k, 1, true) then best = math.max(best, 1) end
+		end
+		if best == 3 then exact[#exact + 1] = m
+		elseif best == 2 then key[#key + 1] = m
+		elseif best == 1 then partial[#partial + 1] = m end
 	end
 	local hits = #exact > 0 and exact or (#key > 0 and key or partial)
 	if #hits == 1 then return hits[1] end
@@ -1763,9 +1777,11 @@ function M.matchMu(list, query, notes)
 	for piece in k:gmatch("[^_%-%.%s]+") do
 		if #piece >= 3 then
 			for _, m in ipairs(list) do
-				if not seen[m] and tostring(m.name):lower():find(piece, 1, true) then
-					seen[m] = true
-					near[#near + 1] = m
+				for _, name in ipairs(m.names or { m.name }) do
+					if not seen[m] and tostring(name):lower():find(piece, 1, true) then
+						seen[m] = true
+						near[#near + 1] = m
+					end
 				end
 			end
 		end
@@ -1881,6 +1897,7 @@ function M.modelsArgs(args)
 		end
 		out.mu = args.mu
 		if out.carrier then return nil, "carrier does not go with mu (multiple units are trains)" end
+		if out.grep then return nil, "grep does not go with mu (give the filter as mu)" end
 	end
 	if args.limit ~= nil then
 		local n = tonumber(args.limit)

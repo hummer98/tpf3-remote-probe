@@ -2991,6 +2991,8 @@ def models_args(ns):
             raise ToolError("--mu takes a part of the name, or nothing for all")
         if ns.carrier:
             raise ToolError("--carrier does not go with --mu (multiple units are trains)")
+        if ns.grep is not None:
+            raise ToolError("--grep does not go with --mu (give the filter as --mu FILTER)")
         args["mu"] = mu
     return args
 
@@ -3765,8 +3767,8 @@ def make_parser():
     mdl.add_argument("--carrier", type=str.upper, choices=["ROAD", "RAIL", "TRAM", "AIR", "WATER"], help="any case")
     mdl.add_argument("--limit", type=int, default=200, help="details for this many, 1-1000 (total counts them all)")
     mdl.add_argument("--mu", nargs="?", const=True, default=None, metavar="FILTER",
-                     help="the multiple units (.mu.lua) instead: id, file name, shown name, cars, and buyAs (what "
-                          "buy --model takes); FILTER: a part of the file name, any case")
+                     help="the multiple units (.mu.lua) instead: id, getName's and getAll's names, shown name, cars, "
+                          "and buyAs (what buy --model takes); FILTER: a part of a name or the shown name, any case")
     sg = sub.add_parser("stations", help="the company's (and nobody's) station groups: id, stations, platforms, "
                                          "carriers, position; per platform (station:terminal) its tag, position, "
                                          "load flags, cargoTransferSpeeds and carriers")

@@ -1328,7 +1328,6 @@ function M.new(dir, opts)
 			-- mu.invisible: only getAll(true) lists it; opts.muGetAllNoNames: getAll's values are no names (true),
 			-- so only getName tells them; opts.muNoGetName: getName gives nothing
 			getAll = function(includeInvisible)
-				g.muGetAllCalls = (g.muGetAllCalls or 0) + 1
 				local out = {}
 				for id, mu in pairs(multipleUnits) do
 					if includeInvisible == true or not mu.invisible then

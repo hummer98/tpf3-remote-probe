@@ -1934,7 +1934,7 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(tf3ctl.models_args(parse(["models", "--mu", "shinkansen"])), {"limit": 200, "mu": "shinkansen"})
         got = mod_reads(tf3ctl.command_text(10, "models", {"limit": 200, "mu": True}))
         self.assertEqual(got["args"], {"limit": 200, "mu": True})
-        for bad in (["--mu", ""], ["--mu", "--carrier", "rail"]):
+        for bad in (["--mu", ""], ["--mu", "--carrier", "rail"], ["--mu", "--grep", "x"]):
             with self.assertRaises(tf3ctl.ToolError, msg=bad):
                 tf3ctl.models_args(parse(["models"] + bad))
         # read only: no "who changed the game" entry, no warning about another owner
