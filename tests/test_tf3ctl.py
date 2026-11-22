@@ -1470,6 +1470,51 @@ class QuitLaunchTest(unittest.TestCase):
                 tf3ctl.main(["parcels"])
         self.assertEqual(sent, [("parcels", {"edge": 12}), ("parcels", {"rect": [-5.0, -5.0, 5.0, 5.0], "list": True})])
 
+    def test_reach_args_and_main(self):
+        parse = tf3ctl.make_parser().parse_args
+
+        def args(*a):
+            return tf3ctl.reach_args(parse(["reach"] + list(a)))
+        self.assertEqual(args("--api"), {"api": True})
+        self.assertEqual(args("--problems"), {"problems": True})
+        self.assertEqual(args("--target", "51"), {"target": 51})
+        self.assertEqual(args("--town", "11", "--limit", "0"), {"town": 11, "limit": 0})
+        self.assertEqual(args("--from", "41", "--to", "51"), {"from": 41, "to": 51})
+        self.assertEqual(args("--from=-100.5,20", "--to", "51", "--mode", "walk", "--radius", "80"),
+                         {"from": "-100.5,20.0", "to": 51, "mode": "walk", "radius": 80.0})
+        for bad in ([], ["--api", "--problems"], ["--target", "1", "--town", "2"], ["--target", "-1"],
+                    ["--from", "1"], ["--to", "1"], ["--from", "a,b", "--to", "1"], ["--from", "1", "--to", "1,2,3"],
+                    ["--from", "1", "--to", "nan,1"], ["--from", "1", "--to", "2", "--radius", "0"],
+                    ["--from", "1", "--to", "2", "--radius", "501"], ["--target", "1", "--mode", "walk"],
+                    ["--target", "1", "--limit", "3"], ["--town", "1", "--limit", "201"], ["--api", "--radius", "5"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                args(*bad)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse(["reach", "--from", "1", "--to", "2", "--mode", "fly"])
+        self.assertNotIn("reach", tf3ctl.CHANGES_GAME)
+        got = mod_reads(tf3ctl.command_text(9, "reach", {"from": "-1.5,2.0", "to": 51, "mode": "all"}))
+        self.assertEqual(got["args"], {"from": "-1.5,2.0", "to": 51, "mode": "all"})
+        # persons --town / --destination
+        self.assertEqual(tf3ctl.persons_args(parse(["persons", "--town", "11"])), {"town": 11})
+        self.assertEqual(tf3ctl.persons_args(parse(["persons", "--destination", "51", "--limit", "9"])),
+                         {"destination": 51, "limit": 9})
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse(["persons", "--town", "1", "--destination", "2"])
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["reach", "--target", "51"]), 0)
+            self.assertEqual(tf3ctl.main(["reach", "--from", "0,0", "--to", "51", "--mode", "drive"]), 0)
+            self.assertEqual(tf3ctl.main(["persons", "--town", "11"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["reach"]), 2, "refused before sending")
+        self.assertEqual(sent, [("reach", {"target": 51}), ("reach", {"from": "0.0,0.0", "to": 51, "mode": "drive"}),
+                                ("persons", {"town": 11})])
+
     def test_stock_and_steps_args_and_main(self):
         def ns(**kw):
             base = dict(action="set", entity=51, stock=0, amount=100, cargo=None, dry_run=False)

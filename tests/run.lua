@@ -10025,5 +10025,9 @@ test("parcels: the engine's userdata, other field names, no map (getParcelData, 
 	for _, gg in ipairs({ u, f, nm, np, sw, odd }) do eq(#gg.commands, 0); truthy(not gg.crashed, gg.crashed) end
 end)
 
+-- reach and persons --town / --destination (tests/run_reach.lua, its fake tests/fake_reach.lua)
+dofile(root .. "/tests/run_reach.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
+	newGame = newGame, send = send, frames = frames, final = final, FIRST = FIRST, SAVES = SAVES })
+
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it

@@ -708,6 +708,57 @@ python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # every street
 - **Not checked in game yet** (written 2026-11-23): whether the map and the `PARCEL` component read in the GUI
   script, the field names, and the values.
 
+### Whether a place can be got to (`reach`, read only)
+
+```
+python3 tools/tf3ctl.py reach --api                       # which engine functions are there (calls none)
+python3 tools/tf3ctl.py reach --target 51                 # an industry / town building / station / construction
+python3 tools/tf3ctl.py reach --town 11 [--limit 20]      # a town's targets counted, its problems
+python3 tools/tf3ctl.py reach --problems                  # every town's problems (Disconnected, Overlength)
+python3 tools/tf3ctl.py reach --from 4100 --to 51 [--mode walk|drive|lines|all] [--radius 40]
+python3 tools/tf3ctl.py reach --from=-120,880 --to 51 --mode walk   # a point x,y as an end
+python3 tools/tf3ctl.py persons --town 11 [--limit 2000]  # a town's residents, with what they reach
+python3 tools/tf3ctl.py persons --destination 51          # those with the industry as a destination (its workers)
+```
+
+- Reads only (no warning to others, nothing sent). Made to find out why a town's people do not go to a workplace.
+- `--target E`: the engine's destinations, `api.engine.util.pathfinding.getTargetsByLandUse()` (read once per
+  command; every target of the map is in it, only the entries asked about are read in full). The answer has
+  `entries`: one per list the entity is in, with `isReachableWalk`, `isReachableDrive`, `isReachableLines`,
+  `capacity`, `freeCapacity`, `destinationWeight`, `edgeWalk` / `edgeDrive` (`entity`, `index`: the network edge
+  the target is reached by), `landUseKey` (the list's own key) and `landUseGuess`; `counts`; `landUse` (the
+  entity's own `PERSON_CAPACITY` type, to check the guess by); `found` false with `why` when it is no target (a
+  home, an industry without workplaces). A construction stands for its industries, town buildings and stations, a
+  town building also for its PersonCapacity entity (`candidates`). With the building's town (or the closest town
+  of an industry's construction) come `townProblems` (`api.engine.util.town.getTownProblems`: `problem` and the
+  towns it is `with`).
+- `--town T`: its buildings (`townBuildingSystem.getTown2BuildingMap`, at most 5000 read) by kind (`byKind`), the
+  target entries of its shops and workplaces counted (`counts`: `walk`, `drive`, `lines`, `none`) and the first
+  `--limit` listed, those out of reach first; `notTarget` counts the non-residential buildings that are no target;
+  `problems` as above.
+- `--from A --to B`: whether there is a path, by `api.engine.util.pathfinding.findPathNodeToNode` with
+  `TransportMode.PERSON` (`walk`) and `CAR` (`drive`), one search per mode. An end is an entity or a point: the
+  building's own `PERSON_CAPACITY` `personNodes` (walking) / `vehicleNodes` (driving), a target's `edgeWalk` /
+  `edgeDrive` nodes, a station's terminals (`personNodes` walking, `vehicleNodeId` driving),
+  else the network nodes within `--radius` m (default 40, at most 500) of its position or the point
+  (`findTransportNetworkNodesInCircle`); at most 32 nodes an end. Per mode in `paths`: `found` (null when an end
+  has no nodes: `why`), `edges`, `pieces` (network entities on the path; the first 50 in `pieceIds`), `ms`, and
+  where the nodes came from (`fromFrom` / `toFrom`); a miss has `unverified: true` until a game shows the search
+  finds such paths at all (first try two places known to connect); a search of 100 ms or more is logged. The
+  engine gives no cost. There is no line path search to
+  call: `lines` gives the target's `isReachableLines` only (`--mode lines` does no search).
+- `persons --town T` lists the people whose home is one of the town's residential buildings
+  (`getSimPersonsForDestination` of each); `persons --destination E` those with E as a destination (E must have
+  a `PERSON_CAPACITY`). Every person of `persons` now has `reachable` (`walkDrive`, `lines`: the engine's
+  `landUse2ReachableWalkDrive` / `landUse2ReachableLines`, how many destinations of each land use the person
+  reaches), and `summary.reach` counts, per place of those lists, how many listed persons reach at least one
+  (`none`: nothing either way).
+- **Not checked in game yet** (written 2026-11-23): whether `getTargetsByLandUse` and `getTownProblems` are there
+  in the GUI script (`reach --api` tells), the shape of `getTargetsByLandUse`'s answer, which land use each of its
+  lists is (two lists: guessed commercial, industrial) and the same for the two numbers of `reachable`, whether
+  `findPathNodeToNode` finds walking paths between these nodes (another mod's notes say it gave nothing between
+  station terminal nodes), how long a search takes on a large map.
+
 ### My Mods from the main menu (`modhub`)
 
 ```
@@ -1014,6 +1065,7 @@ Not checked yet:
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `parcels`, entirely (read only, see "Town building parcels along a road").
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
+- `reach` and `persons --town` / `--destination`, entirely (read only, see "Whether a place can be got to").
 - `modhub publish` of an update (see "Uploading a mod"). `modhub status`, `validate` and a first upload were
   checked on 2026-11-22.
 

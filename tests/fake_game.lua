@@ -1594,6 +1594,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_debug.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_town_grow.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_parcels.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_reach.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
 		-- (MODHUB_PUBLISHED_IDS), taken out of that table in this game's own copy of remote_core.lua
