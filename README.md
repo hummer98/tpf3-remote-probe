@@ -107,33 +107,40 @@ their default settings. `status` answers `mapEditor` (`gui`: `api.gui.game.isMap
 `isMapEditor`). **Not checked in game yet** (written 2026-11-22): whether the editor opens this way, and whether
 the probe answers inside it.
 
-`newgame` (and `launch` / `restart --new`) start with `app.startGame`, which the type calls "a new test game". It
-sends the scripts no `initNewGameFromMap`, the event a game started from the base's new-game page gets
-(`app.startGame2` with a map its preview widget generated): without it the base's company progression never starts
-(no company rank, no perks, no ticket price multiplier; the bottom-left company button shows "Achievements" instead
-of the rank, and `company_growth.script` logs an error at every ticket price). So after a new game (not the map
-editor) the tool sends `company init` (below) and keeps its answer as `companyInit`; `--no-company-init` leaves it
-out. A failed `company init` is a warning: the game is started either way. `app.startGame2` is not used: a generated
-map for it comes only from the menu's map preview widget (no Lua call runs a terrain generator into a map), and a
-flat map made in Lua would lose the generator and the generated towns and industries.
+The base's company progression (company rank, perks, ticket price multiplier) starts from the world's town
+population when the game starts: on the start event `initNewGameFromMap` the base's company script stores it as
+`basePopulation`, and company_growth does nothing while it is 0. A game started with no town population
+(`--no-towns`, or a flat base with towns placed later) keeps `basePopulation` 0: no rank (the bottom-left company
+button shows "Achievements"), no ticket price multiplier, and `company_growth.script` logs an error at every ticket
+price; towns placed later do not change it. Measured 2026-11-23: a `newgame` game with generated towns had
+`basePopulation` 793 and its rank after 10 days with nothing sent; with `--no-towns` it was 0, and still no rank 20
+days after towns were placed. After a new game (not the map editor) the tool sends `company init` (below) and keeps
+its answer as `companyInit`: it sends nothing when the start gave a `basePopulation`, and with no town population
+it says so (`noPopulation`: place towns, then `company init`). `--no-company-init` leaves it out; a failed one is
+a warning, the game is started either way.
 
 ```
 python3 tools/tf3ctl.py company                       # read only: the base's company progression and what is missing
-python3 tools/tf3ctl.py company init [--dry-run] [--force]   # test saves only: send the base's initNewGameFromMap by hand
+python3 tools/tf3ctl.py company init [--dry-run] [--force]   # test saves only: send the start event again
 ```
 
 - `company` reads the state of `::/game_mechanics/company/company.gs` (`basePopulation`, `version`, `companies`)
-  and of `company_progression.gs` (the player's `level`, `potentialLevel`, `experience`, `ticketPriceMultiplier`),
-  the world population as the base counts it, `rankButton` (`rank` or `achievements`: what the company button
-  shows; the rank only for an entry with experience above 0) and a one-line `diagnosis`.
+  and of `company_progression.gs` (`growth.initialized`; the player's `level`, `potentialLevel`, `experience`,
+  `ticketPriceMultiplier`), the towns' population now as the base counts it (`worldPopulation`), `rankButton`
+  (`rank` or `achievements`: what the company button shows; the rank only for an entry with experience above 0)
+  and a one-line `diagnosis`.
 - `company init` sends `api.cmd.makeScriptingSendEventCmd("", "", "initNewGameFromMap", {})` when `company.gs` has
-  no `basePopulation`, and answers once it has one (`before` / `after`), at most 15 s. Already set: nothing is sent
-  (`alreadyInitialized`). Refused in the map editor and in a mission. In the base this event also resets the
-  towns' cached ratings, the subventions and the notifications, sets the game speed to 1 (as a base new game starts) and the welcome flag,
-  and other mods' scripts may listen to it: test saves only (a game `newgame` started and saves made from one).
-  After a send that timed out, another is refused unless `--force`: its event may still run later, and a second
-  one would reset the progression again. A map with no town population gets `basePopulation` 0, and the base
-  then never gives a rank (as in the base).
+  no `basePopulation`, or has 0 while the towns have population now; `--force` sends in any case. Otherwise it
+  sends nothing and says why (`reason`; `alreadyInitialized`, or `noPopulation` when both are 0). After a send it
+  waits at most 15 s for a read that shows the event ran (`basePopulation` set anew, or company_growth's entry for
+  the player emptied) and answers `before` / `after`, `expectedBasePopulation` (the towns' population) and
+  `basePopulationMatches` (within 10 %). company_growth makes the company's level in its own update: run the game
+  a few days and look with `company` (`growth.initialized` true, `growth.player.level`, `rankButton` `rank`), as
+  `check` in the answer says. Refused in the map editor and in a mission.
+- In the base this event also resets the company's progression and the towns' cached ratings, the subventions and
+  the notifications, sets the game speed to 1 (as a base new game starts) and the welcome flag, and other mods'
+  scripts may listen to it: test saves only. After a send that timed out, another is refused unless `--force`:
+  its event may still run later, and a second one would reset the progression again.
 - **Not checked in game yet** (written 2026-11-23): whether a sent event reaches the scripts at all (they subscribe
   to event names, and none of the base's subscribes to this one), and whether the game runs it while paused.
 

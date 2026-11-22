@@ -52,8 +52,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # test saves only: the map editor's Auto-detect connections / Generate (streets to all industries)
   tf3ctl.py company                         # read only: the base's company progression (basePopulation, level,
             # ticket price multiplier) and what is missing
-  tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's new-game event (initNewGameFromMap) sent
-            # by hand to a game app.startGame started without it; newgame sends it itself (--no-company-init: not)
+  tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's start event (initNewGameFromMap) sent
+            # again when basePopulation is missing or 0 while towns have population (a start with no towns)
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
             # building parcels left and right of a road piece (count, built on, centre, area), whether the piece is in
             # a construction; a rect: each street piece with an end or its middle in it, and totals
@@ -891,9 +891,10 @@ COMPANY_INIT_TIMEOUT_SEC = 45  # the mod waits 15 s for company.gs's state
 
 
 def company_init_after_newgame():
-    """After a newgame (app.startGame, which sends the base's initNewGameFromMap to no script): company init, so
-    the company level, perks and ticket price multiplier work as after the base's new-game page. Its answer is
-    kept in the newgame's; a failure is a warning, the game is started either way."""
+    """After a newgame: company init. A game started with town population has its basePopulation from the start
+    event (measured 2026-11-23) and nothing is sent; one with basePopulation 0 and no town population (--no-towns)
+    gets nothing either, since the event would give 0 again: the note says to place towns, then company init. Its
+    answer is kept in the newgame's; a failure is a warning, the game is started either way."""
     try:
         res = send("companyInit", {}, timeout=COMPANY_INIT_TIMEOUT_SEC)
     except ToolError as e:
@@ -902,6 +903,9 @@ def company_init_after_newgame():
         why = res.get("error") if isinstance(res, dict) else res
         print("warning: the new game started, but company init failed (%s): the base's company progression may "
               "not work (tf3ctl company)" % why, file=sys.stderr)
+    elif res.get("noPopulation"):
+        print("note: the new game has no town population, so the base's company progression (rank, ticket price "
+              "multiplier) stays off: place towns, let them grow a little, then company init", file=sys.stderr)
     return res
 
 
@@ -962,8 +966,8 @@ def newgame_args(ns):
     return args
 
 
-NO_COMPANY_INIT_HELP = ("leave out company init after the start (the base's initNewGameFromMap, which app.startGame "
-                        "does not send): the game then has no company level, perks or ticket price multiplier")
+NO_COMPANY_INIT_HELP = ("leave out company init after the start (it sends the base's initNewGameFromMap again only "
+                        "when basePopulation is missing, or 0 while the towns have population)")
 TUTORIAL_PARAM = "guideSystemConfig.tutorial"
 TUTORIAL_OFF = 1
 
@@ -4054,12 +4058,13 @@ def make_parser():
                         "company's level and ticket price multiplier) and what is missing; company init: test saves "
                         "only")
     cos = co.add_subparsers(dest="company_action", required=False, metavar="{init}")
-    ci = cos.add_parser("init", help="test saves only: send the base's new-game event initNewGameFromMap (as the "
-                        "engine does after the base's new-game page) to a game whose company.gs has no basePopulation; "
+    ci = cos.add_parser("init", help="test saves only: send the base's start event initNewGameFromMap again, when "
+                        "company.gs has no basePopulation, or 0 while the towns have population now (a game started "
+                        "with no towns); "
                         "it also resets the towns' cached ratings, the subventions and the notifications")
     ci.add_argument("--dry-run", dest="company_dry_run", action="store_true", help="the states, nothing sent")
-    ci.add_argument("--force", dest="company_force", action="store_true", help="send again after a send that timed "
-                    "out (its event may still run, and a second one resets the progression again)")
+    ci.add_argument("--force", dest="company_force", action="store_true", help="send in any case (also after a send "
+                    "that timed out, whose event may still run): it resets the company's progression")
     pa = sub.add_parser("parcels", help="read only: the town building parcels on the left and right of a road "
                                         "piece (count, built on, centre, area), from the engine's parcel system; "
                                         "not checked in a game yet")
