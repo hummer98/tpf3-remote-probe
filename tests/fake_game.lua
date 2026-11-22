@@ -3170,12 +3170,14 @@ function M.installCompany(g, opts, spec)
 		local pop = 0
 		for _, caps in pairs(opts.townCapacities or {}) do pop = pop + (caps[1] or 0) end
 		if st.company then
-			st.company = { companyStates = {}, basePopulation = pop, version = 3 }
+			st.company = { companyStates = {}, basePopulation = pop, version = 4 }
 			g.speedup = 1 -- company.script sends makeGameSetSpeedCmd(1) on this event
 		end
 		if st.growth then
-			st.growth = { companyState = {} }
-			if spec.growthPlayer then st.growth.companyState[99] = copy(spec.growthPlayer) end
+			-- the event sets { companyState = {} }; read back empty in a game (growth.initialized stayed false, e2e
+			-- 2026-11-23). spec.growthPlayer: the entry company_growth's update makes again at once
+			st.growth = {}
+			if spec.growthPlayer then st.growth = { companyState = { [99] = copy(spec.growthPlayer) } } end
 		end
 	end
 	g.onStart = function()

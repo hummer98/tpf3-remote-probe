@@ -10192,6 +10192,13 @@ test("core.worldPopulation / companyDiagnosis / companyInitRefusal: sums, states
 	eq(core.companyInitSeen(st(nil, 0), st(0, 0)), true, "set, though 0")
 	eq(core.companyInitSeen(st(500, 500), st(500, 500)), false)
 	eq(core.companyInitSeen(st(500, 500, { level = 2 }), st(500, 500)), true, "the growth entry emptied")
+	eq(core.companyInitSeen(st(500, 500, { level = 2, experience = 900 }), st(500, 500, { level = 1, experience = 500 })),
+		true, "made again lower")
+	eq(core.companyInitSeen(st(500, 500, { level = 2, experience = 900 }), st(500, 500, { level = 2, experience = 950 })),
+		false, "only grown")
+	local c1 = st(500, 500); c1.company.companies = 1
+	local c0 = st(500, 500); c0.company.companies = 0
+	eq(core.companyInitSeen(c1, c0), true, "companies emptied")
 	truthy(core.companyInitRefusal({ mapEditor = true, company = {} }):find("map editor"))
 	truthy(core.companyInitRefusal({ mission = true, company = {} }):find("mission"))
 	truthy(core.companyInitRefusal({ company = { running = false, script = "x" } }):find("not running"))
@@ -10272,12 +10279,15 @@ test("company init: dry run, map editor, mission, no script, refused, not delive
 	send(nd, 2529, "companyInit", "{ force = true }")
 	frames(nd, FIRST + 20)
 	eq(#nd.companyEvents, 2, "forced: sent again")
+	frames(nd, 400, 0.1) -- the forced one times out too
 	local dr = companyRun(nd, 2530, "companyInit", "{ dryRun = true }", FIRST + 400)
 	eq(#nd.companyEvents, 2)
+	-- after the forced one timed out too, a dry run says what the real send would: refused
+	eq(dr.ok, false); truthy(dr.error:find("timed out"), dr.error)
 	-- delivered, but company_growth has not run its update yet: ok, with the note
 	local gp = companyGame()
 	local p = companyRun(gp, 2527, "companyInit")
-	truthy(p.ok, p.error); eq(p.after.growth.initialized, true); eq(p.after.growth.player, nil); truthy(p.check)
+	truthy(p.ok, p.error); eq(p.after.growth.initialized, false); eq(p.after.growth.player, nil); truthy(p.check)
 	for _, gg in ipairs({ d, ed, mi, ns, rf, nd, gp }) do truthy(not gg.crashed, gg.crashed) end
 end)
 
@@ -10311,12 +10321,15 @@ test("company init: no towns at the start, towns placed later: sent, basePopulat
 	truthy(d.ok, d.error); eq(d.sent, false); eq(d.wouldSend, true); eq(#g.companyEvents, 0)
 	local c = companyRun(g, 2546, "companyInit")
 	truthy(c.ok, c.error); eq(c.sent, true); eq(#g.companyEvents, 1)
-	eq(c.after.company.basePopulation, 150); eq(c.basePopulationMatches, true); eq(c.after.growth.initialized, true)
-	-- force: sent although basePopulation is there; seen by the growth entry emptied
-	local fg = companyGame({ company = { basePopulation = 200, companyStates = {} },
+	eq(c.after.company.basePopulation, 150); eq(c.basePopulationMatches, true); truthy(c.check:find("a few days"))
+	-- force: sent although basePopulation is there and the same; seen by the growth entry made again lower (as
+	-- company_growth's update does at once: experience = the population, level 1)
+	local fg = companyGame({ growthPlayer = { level = 1, potentialLevel = 1, experience = 200 },
+		company = { basePopulation = 200, companyStates = {} },
 		growth = { companyState = { [99] = { level = 2, potentialLevel = 2, experience = 900 } } } })
 	local f = companyRun(fg, 2547, "companyInit", "{ force = true }")
-	truthy(f.ok, f.error); eq(f.sent, true); eq(f.force, true); eq(#fg.companyEvents, 1); eq(f.after.growth.player, nil)
+	truthy(f.ok, f.error); eq(f.sent, true); eq(f.force, true); eq(#fg.companyEvents, 1)
+	eq(f.after.company.basePopulation, 200, "the same population"); eq(f.after.growth.player.level, 1)
 	local f2 = companyRun(fg, 2548, "companyInit")
 	eq(f2.sent, false, "not forced: basePopulation there, nothing sent"); eq(#fg.companyEvents, 1)
 	for _, gg in ipairs({ g, fg }) do truthy(not gg.crashed, gg.crashed) end

@@ -5,8 +5,9 @@
 -- initMission) company.script stores the world's population as basePopulation, and company_growth.script makes
 -- its companyState from it in its update, which returns while basePopulation <= 0. So a game that starts with no
 -- town population keeps basePopulation 0: no rank (the company button shows "Achievements"), no perks, no ticket
--- price multiplier, and company_growth errors at each ticket price (companyState nil: stdout 2026-11-22 18:08Z,
--- company_growth.script.tl(161) at each OnCalcTicketPrice).
+-- price multiplier. company_growth errors at each ticket price when its companyState is nil (stdout 2026-11-22
+-- 18:08Z, company_growth.script.tl(161) at each OnCalcTicketPrice, on a map started with no towns; that the empty
+-- companyState the event sets is lost in such a game is a guess: growth.initialized stayed false, e2e 2026-11-23).
 -- Measured 2026-11-23 (e2e of 32bfbc7): newgame (app.startGame) does get the start event: with generated towns
 -- basePopulation 793 and the rank after 10 days with nothing sent; with --no-towns, or on a flat base with towns
 -- placed later, basePopulation 0, and still 0 / no companyState after towns were placed and 20 days run.
@@ -125,14 +126,14 @@ function M.new(ctx)
 			out.noPopulation = d.noPopulation
 			return answer(c.id, out)
 		end
-		if out.dryRun then
-			out.sent, out.wouldSend = false, true
-			return answer(c.id, out)
-		end
 		if timedOut and not force then
 			return fail(c.id, "the send of command " .. timedOut .. " timed out, and its event may still run (a "
 				.. "command queued while the game did not run it): a second one would reset the progression again. "
 				.. "Run the game a moment and look (company); force = true sends again")
+		end
+		if out.dryRun then
+			out.sent, out.wouldSend = false, true
+			return answer(c.id, out)
 		end
 		local okM, cmd = pcall(function() return api.cmd.makeScriptingSendEventCmd("", "", M.EVENT, {}) end)
 		if not okM or cmd == nil then return fail(c.id, "making the command failed: " .. tostring(cmd)) end
@@ -166,9 +167,12 @@ function M.new(ctx)
 		local base, world = out.after.company.basePopulation, out.after.worldPopulation
 		out.expectedBasePopulation = world
 		out.basePopulationMatches = base ~= nil and world ~= nil and math.abs(base - world) <= math.max(1, world * 0.1)
+		-- (right after the send both count the same town capacities, so this only shows the event took today's
+		-- towns; the rank is what decides)
 		out.check = "company_growth makes the company's level in its update from the next simulation steps on: run "
 			.. "the game a few days (speed 4) and look with company: growth.initialized true, growth.player.level, "
-			.. "rankButton rank"
+			.. "rankButton rank. basePopulationMatches only says the event took today's towns; a small "
+			.. "basePopulation (towns just placed) makes the ranks come sooner"
 		answer(j.id, out)
 	end
 

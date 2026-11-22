@@ -112,7 +112,7 @@ population when the game starts: on the start event `initNewGameFromMap` the bas
 `basePopulation`, and company_growth does nothing while it is 0. A game started with no town population
 (`--no-towns`, or a flat base with towns placed later) keeps `basePopulation` 0: no rank (the bottom-left company
 button shows "Achievements"), no ticket price multiplier, and `company_growth.script` logs an error at every ticket
-price; towns placed later do not change it. Measured 2026-11-23: a `newgame` game with generated towns had
+price (when its companyState is nil); towns placed later do not change it. Measured 2026-11-23: a `newgame` game with generated towns had
 `basePopulation` 793 and its rank after 10 days with nothing sent; with `--no-towns` it was 0, and still no rank 20
 days after towns were placed. After a new game (not the map editor) the tool sends `company init` (below) and keeps
 its answer as `companyInit`: it sends nothing when the start gave a `basePopulation`, and with no town population
@@ -136,7 +136,8 @@ python3 tools/tf3ctl.py company init [--dry-run] [--force]   # test saves only: 
   the player emptied) and answers `before` / `after`, `expectedBasePopulation` (the towns' population) and
   `basePopulationMatches` (within 10 %). company_growth makes the company's level in its own update: run the game
   a few days and look with `company` (`growth.initialized` true, `growth.player.level`, `rankButton` `rank`), as
-  `check` in the answer says. Refused in the map editor and in a mission.
+  `check` in the answer says (`basePopulationMatches` only shows the event took today's towns). Towns just placed
+  give a small `basePopulation`, and the ranks then come sooner. Refused in the map editor and in a mission.
 - In the base this event also resets the company's progression and the towns' cached ratings, the subventions and
   the notifications, sets the game speed to 1 (as a base new game starts) and the welcome flag, and other mods'
   scripts may listen to it: test saves only. After a send that timed out, another is refused unless `--force`:

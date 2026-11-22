@@ -3320,13 +3320,23 @@ function M.companyInitDecision(s, force)
 		.. "(force = true sends anyway, which resets the company's progression)" }
 end
 
--- whether a read after a send shows the event ran: basePopulation set anew (other than before), or company_growth's
--- entry for the player gone (the event empties companyState). A forced send on a map whose population did not
--- change shows neither until company_growth runs
+-- whether a read after a send shows the event ran: basePopulation set anew (other than before); company.script's
+-- companies emptied; company_growth's entry for the player gone, or made again lower (its update makes it again
+-- at once from basePopulation: experience = the population, level 1). A forced send on a map whose population and
+-- company did not change may show none of these. From nil the base's legacy update (company_legacy_util, version
+-- below 2) also sets basePopulation without any event, so that case cannot tell them apart
 function M.companyInitSeen(before, now)
 	local b, n = before.company.basePopulation, now.company.basePopulation
 	if n ~= nil and n ~= b then return true end
-	if before.growth.player and not now.growth.player then return true end
+	if (before.company.companies or 0) > 0 and now.company.companies == 0 then return true end
+	local bp, np = before.growth.player, now.growth.player
+	if bp and not np then return true end
+	if bp and np then
+		for _, k in ipairs({ "level", "potentialLevel", "experience" }) do
+			local x, y = tonumber(bp[k]), tonumber(np[k])
+			if x and y and y < x then return true end
+		end
+	end
 	return false
 end
 

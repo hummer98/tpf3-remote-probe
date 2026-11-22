@@ -109,7 +109,7 @@ python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-indust
 `initNewGameFromMap` で本体の会社のスクリプトがそれを `basePopulation` に入れ、company_growth はそれが 0 の間は何も
 しません。町の人口が無い始まり (`--no-towns`、平らな土台に後から町を置いたもの) では `basePopulation` が 0 のままで、
 ランクが無く (左下の会社のボタンが「実績」と出る)、運賃の倍率も無く、`company_growth.script` が運賃のたびにエラーを
-出します。後から町を置いても変わりません。2026-11-23 の計測: 町を生成した `newgame` のゲームでは何も送らずに
+出します (companyState が nil のとき)。後から町を置いても変わりません。2026-11-23 の計測: 町を生成した `newgame` のゲームでは何も送らずに
 `basePopulation` 793、10 日でランクが出た。`--no-towns` では 0 で、町を置いて 20 日たってもランクは出なかった。新しい
 ゲーム (マップエディタでないもの) のあと、ツールが `company init` (下) を送り、その答えを `companyInit` に入れます。始まり
 で `basePopulation` が入っていれば何も送らず、町の人口が無ければそう答えます (`noPopulation`: 町を置いてから
@@ -130,8 +130,9 @@ python3 tools/tf3ctl.py company init [--dry-run] [--force]   # 試験用のセ�
   動いたと分かる読み (`basePopulation` が新しく入る、または company_growth のプレイヤーの記録が空になる) を最長 15 秒
   待ち、`before`・`after`、`expectedBasePopulation` (町の人口)、`basePopulationMatches` (差が 10 % 以内) を答えます。
   会社のレベルは company_growth が自分の update で作るので、数日進めてから `company` で見ます (`growth.initialized` が
-  true、`growth.player.level`、`rankButton` が `rank`)。答えの `check` にもそう出ます。マップエディタとミッションでは
-  断ります。
+  true、`growth.player.level`、`rankButton` が `rank`)。答えの `check` にもそう出ます (`basePopulationMatches` は、
+  出来事が今の町を数えたことしか示しません)。置いたばかりの町では `basePopulation` が小さく決まり、ランクが早く
+  上がります。マップエディタとミッションでは断ります。
 - 本体ではこの出来事で会社の成長と町の評価の控え・補助金・通知も初めからになり、ゲームの速度が 1 になり (本体の新しい
   ゲームの始まりと同じ)、ようこその印も立ちます。ほかの MOD のスクリプトも受けることがあるので、試験用のセーブだけで
   使います。待ちきれずに終わった送信のあとは、`--force` なしの次の送信を断ります (その出来事があとで動くことがあり、
