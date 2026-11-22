@@ -20,6 +20,8 @@
 -- spec.persons = { [p] = { home, destinations, walkDrive = { n, n }, lines = { n, n } } }: getSimPersonsForDestination
 --   gives those with the entity among their destinations (the entity must hold a PERSON_CAPACITY: else the engine's
 --   assertion, g.crashed);
+-- spec.targetsShape also "zeroBased" (Lua tables from 0, lists and entries), "byName" ({ COMMERCIAL = , INDUSTRIAL =
+-- }), "flat" (the entries in one list), "opaque" (a userdata with neither # nor pairs);
 -- spec.buildings[b].personNodes = { "tn:i" }: its PERSON_CAPACITY's personNodes; spec.pathError: the search raises;
 -- spec.userdata: the engine's answers as userdata. Asking getComponent for an entity the engine does not have, or
 -- reading an engine vector past its end, is the engine's assertion (g.crashed).
@@ -156,6 +158,58 @@ function M.install(g, spec)
 				lists[i] = wrap({ entries = wrap(entries), edges = wrap({}) })
 			end
 			if spec.targetsShape == "list" then return wrap(lists) end
+			-- Lua tables from 0, the lists and their entries (as C++ arrays turned into tables may come)
+			local function from0(t) local o = {}; for i, x in ipairs(t) do o[i - 1] = x end; return o end
+			if spec.targetsShape == "zeroBased" then
+				local o = {}
+				for i, l in ipairs(lists) do o[i - 1] = { entries = from0(l.entries), edges = {} } end
+				return { targets = o }
+			end
+			if spec.targetsShape == "byName" then
+				return { COMMERCIAL = lists[1], INDUSTRIAL = lists[2] }
+			end
+			if spec.targetsShape == "flat" then
+				local o = {}
+				for _, l in ipairs(lists) do for _, e in ipairs(l.entries) do o[#o + 1] = e end end
+				return wrap(o)
+			end
+			-- userdata read by pairs only: no __len (pairsOnly) or one that says 0 (lenZero), at each level
+			if spec.targetsShape == "pairsOnly" or spec.targetsShape == "lenZero" then
+				local function po(t)
+					local u = newproxy(true)
+					local m = getmetatable(u)
+					m.__index = function(_, k)
+						if type(k) == "number" then crash("ASSERT: index read of a pairs-only object: " .. k) end
+						return t[k]
+					end
+					m.__pairs = function() return next, t, nil end
+					if spec.targetsShape == "lenZero" then m.__len = function() return 0 end end
+					return u
+				end
+				local o = {}
+				for i, l in ipairs(lists) do
+					local es = {}
+					for j, e in ipairs(l.entries) do es[j] = e end
+					o[i] = po({ entries = po(es), edges = po({}) })
+				end
+				return po({ targets = po(o) })
+			end
+			-- a TargetData that reads by nothing, round an empty vector of entries (shape "emptyInside")
+			if spec.targetsShape == "emptyInside" then
+				local u = newproxy(true)
+				getmetatable(u).__index = function(_, k)
+					if k == "entries" then return asUserdata({}) end
+					error("no field " .. tostring(k))
+				end
+				return { targets = asUserdata({ u, u }) }
+			end
+			if spec.targetsShape == "opaque" then
+				-- an object with neither # nor pairs, whose index raises
+				local u = newproxy(true)
+				getmetatable(u).__index = function(_, k) error("no field " .. tostring(k)) end
+				getmetatable(u).__tostring = function() return "TargetsByLandUse: 0x1" end
+				return u
+			end
 			return { targets = wrap(lists) }
 		end
 	end

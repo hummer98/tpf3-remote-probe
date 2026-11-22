@@ -754,7 +754,12 @@ python3 tools/tf3ctl.py persons --destination 51          # その産業を行�
   1つ: `isReachableWalk`・`isReachableDrive`・`isReachableLines`、`capacity`・`freeCapacity`・`destinationWeight`、
   `edgeWalk` / `edgeDrive` (`entity`・`index`: 行き先へ通じる網の edge)、`landUseKey` (一覧そのもののキー) と
   `landUseGuess`。`counts`。`landUse` (その entity の `PERSON_CAPACITY` の種類。推測の当否はこれで見る)。行き先で
-  ない (家、働き口の無い産業) ときは `found` が false で `why` が付きます。construction はその産業・町の建物・駅を、
+  ない (家、働き口の無い産業) ときは `found` が false で `why` が付きます。答えは番号だけでなく pairs でも読みます
+  (0 から始まる表、名前をキーにした表も読める)。行き先が1つも読めなかったときは `targetsRead` が false、`found` は
+  null (「行き先でない」とは言わない) で、`raw` に来たものの形 (型、`#`、最初のキー、数段下まで) が付きます。
+  `reach --town` では `targetsWhy` にそう書き、`notTarget` は出しません。`read` は読み方 (`targets` か `top`、続いて
+  `index`・`pairs`、一覧に包まれていない entries なら `flat`)、`targetLists[].read` は一覧ごとの読み方です。読めない
+  一覧が1つでもあると、見つからなかった entity の `found` も null にします。construction はその産業・町の建物・駅を、
   町の建物はその PersonCapacity の entity も探します (`candidates`)。建物の町 (産業なら construction に一番近い町)
   が分かれば `townProblems` (`api.engine.util.town.getTownProblems`: `problem` と相手の町 `with`) も付きます。
 - `--town T`: 町の建物 (`townBuildingSystem.getTown2BuildingMap`、5000 まで読む) を種類ごとに (`byKind`)、店と
