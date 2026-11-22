@@ -693,7 +693,8 @@ function M.uiRequest(d)
 end
 
 -- the vehicle requests (gui way) the guiUpdate script hands the speed control: { { id, kind, modelId, count,
--- depot, line, vehicle, mu } } (mu: a multiple unit's id in multipleUnitRep, bought instead of modelId), plain numbers only; anything else is left out rather than guessed at
+-- depot, line, vehicle, mu, muName } } (mu: a multiple unit's id in multipleUnitRep, bought instead of modelId;
+-- muName: its name as getAll gave it), plain numbers only; anything else is left out rather than guessed at
 M.VEHICLE_KINDS = { buy = true, duplicate = true, replace = true, sell = true }
 function M.vehicleRequests(list)
 	local out = {}
@@ -701,7 +702,8 @@ function M.vehicleRequests(list)
 	for _, r in ipairs(list) do
 		if type(r) == "table" and tonumber(r.id) and M.VEHICLE_KINDS[r.kind] then
 			out[#out + 1] = { id = tonumber(r.id), kind = r.kind, modelId = tonumber(r.modelId), count = tonumber(r.count),
-				depot = tonumber(r.depot), line = tonumber(r.line), vehicle = tonumber(r.vehicle), mu = tonumber(r.mu) }
+				depot = tonumber(r.depot), line = tonumber(r.line), vehicle = tonumber(r.vehicle), mu = tonumber(r.mu),
+				muName = type(r.muName) == "string" and r.muName or nil }
 		end
 	end
 	return out
@@ -1692,11 +1694,87 @@ local function entityArg(v)
 	return n
 end
 
--- a model argument that names a multiple unit (a .mu.lua file, as the store's "multiple unit" rows): bought as
--- the train it lists, not as one model
+-- a model argument that names a multiple unit (a .mu.lua file, as the store's "multiple unit" rows; .mu also, as
+-- the game may name them without .lua): bought as the train it lists, not as one model
 M.MU_SUFFIX = ".mu.lua"
 function M.isMuName(q)
-	return type(q) == "string" and #q > #M.MU_SUFFIX and q:lower():sub(-#M.MU_SUFFIX) == M.MU_SUFFIX
+	if type(q) ~= "string" then return false end
+	local l = q:lower()
+	return (#l > #M.MU_SUFFIX and l:sub(-#M.MU_SUFFIX) == M.MU_SUFFIX) or (#l > 3 and l:sub(-3) == ".mu")
+end
+
+-- a multiple unit's name as compared: any case, the folder left out, and .mu.lua or .mu off the end
+-- ("vehicle/train/shinkansen_0s/Shinkansen_0s.MU.lua" -> "shinkansen_0s")
+function M.muKey(name)
+	local n = tostring(name or ""):lower():gsub("\\", "/")
+	n = n:match("([^/]*)$") or n
+	n = n:gsub("%.mu%.lua$", ""):gsub("%.mu$", "")
+	return n
+end
+
+-- the multiple units from api.res.multipleUnitRep.getAll() ({ [id] = name }): the value as the name, getName(id)
+-- only where the value is no name (2026-11-23 in game: a lookup by getName alone matched nothing). Sorted by id.
+function M.muListFrom(all, getName)
+	local list = {}
+	if all == nil then return list end
+	-- an engine map that pairs cannot walk gives none rather than an error: the caller says how many it got
+	pcall(function()
+		for id, v in pairs(all) do
+			local name = type(v) == "string" and v ~= "" and v or nil
+			if not name and getName then
+				local ok, n = pcall(getName, id)
+				if ok and type(n) == "string" and n ~= "" then name = n end
+			end
+			if name and tonumber(id) then list[#list + 1] = { id = tonumber(id), name = name } end
+		end
+	end)
+	table.sort(list, function(a, b) return a.id < b.id end)
+	return list
+end
+
+-- list (muListFrom) against query: the whole name (any case), then the key (muKey: file name without .mu.lua /
+-- .mu), then a unique part of the key. No hit: why, with what was there to match, so the next try can do better:
+-- how many there are (and notes, e.g. that the visible list was empty), the names holding a piece of the query
+-- (its parts between _ - . and spaces, 3 letters or more), and the first 5.
+function M.matchMu(list, query, notes)
+	if type(query) ~= "string" or query == "" then return nil, "give the multiple unit" end
+	local q, k = query:lower(), M.muKey(query)
+	local exact, key, partial = {}, {}, {}
+	for _, m in ipairs(list or {}) do
+		local n = tostring(m.name):lower():gsub("\\", "/")
+		local mk = M.muKey(m.name)
+		if n == q then exact[#exact + 1] = m
+		elseif k ~= "" and mk == k then key[#key + 1] = m
+		elseif k ~= "" and mk:find(k, 1, true) then partial[#partial + 1] = m end
+	end
+	local hits = #exact > 0 and exact or (#key > 0 and key or partial)
+	if #hits == 1 then return hits[1] end
+	local function names(t, n)
+		local out = {}
+		for i = 1, math.min(#t, n) do out[#out + 1] = string.format("%s (%s)", tostring(t[i].name), tostring(t[i].id)) end
+		return table.concat(out, ", ") .. (#t > n and ", ..." or "")
+	end
+	if #hits > 1 then
+		table.sort(hits, function(a, b) return tostring(a.name) < tostring(b.name) end)
+		return nil, string.format("%d multiple units match %q: %s", #hits, query, names(hits, 10))
+	end
+	list = list or {}
+	local near, seen = {}, {}
+	for piece in k:gmatch("[^_%-%.%s]+") do
+		if #piece >= 3 then
+			for _, m in ipairs(list) do
+				if not seen[m] and tostring(m.name):lower():find(piece, 1, true) then
+					seen[m] = true
+					near[#near + 1] = m
+				end
+			end
+		end
+	end
+	local msg = string.format("no multiple unit matches %q (%d multiple units listed%s)", query, #list,
+		(notes and notes ~= "") and ("; " .. notes) or "")
+	if #near > 0 then msg = msg .. "; names with a piece of it: " .. names(near, 10) end
+	if #list > 0 then msg = msg .. "; the first ones: " .. names(list, 5) end
+	return nil, msg
 end
 
 -- cmd: buy, duplicate, replace or sell. Returns { via, count, depot, line, vehicle, model, mu } (model: the query
@@ -1795,6 +1873,14 @@ function M.modelsArgs(args)
 	if args.carrier ~= nil then
 		if type(args.carrier) ~= "string" or args.carrier == "" then return nil, "carrier must be a name (ROAD, RAIL, TRAM, AIR, WATER)" end
 		out.carrier = args.carrier:upper()
+	end
+	-- mu: the multiple units instead (true, or a part of the name to keep)
+	if args.mu ~= nil and args.mu ~= false then
+		if args.mu ~= true and (type(args.mu) ~= "string" or args.mu == "") then
+			return nil, "mu must be true or a part of the name"
+		end
+		out.mu = args.mu
+		if out.carrier then return nil, "carrier does not go with mu (multiple units are trains)" end
 	end
 	if args.limit ~= nil then
 		local n = tonumber(args.limit)

@@ -36,6 +36,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py models [--grep trillium] [--carrier water]   # vehicle models: store price, running costs, speed, capacity
   tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
   tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302      (a multiple unit: the whole train, via gui)
+  tf3ctl.py models --mu [shinkansen]                          (read only: the multiple units and their names)
   tf3ctl.py duplicate --vehicle 601 | replace --vehicle 601 --model bus_1920 | sell --vehicle 601
             # each answers with via, balance before/after, spent, the model's store price, parts' purchaseTime
   tf3ctl.py money --set 10000000 | --add -5000   # the balance, as the sandbox money editor (a journal entry)
@@ -2984,6 +2985,13 @@ def models_args(ns):
         args["grep"] = ns.grep
     if ns.carrier:
         args["carrier"] = ns.carrier
+    mu = getattr(ns, "mu", None)
+    if mu is not None:
+        if mu is not True and not mu:
+            raise ToolError("--mu takes a part of the name, or nothing for all")
+        if ns.carrier:
+            raise ToolError("--carrier does not go with --mu (multiple units are trains)")
+        args["mu"] = mu
     return args
 
 
@@ -3756,6 +3764,9 @@ def make_parser():
     mdl.add_argument("--grep", help="a part of the file name or the shown name, any case (digits: the id too)")
     mdl.add_argument("--carrier", type=str.upper, choices=["ROAD", "RAIL", "TRAM", "AIR", "WATER"], help="any case")
     mdl.add_argument("--limit", type=int, default=200, help="details for this many, 1-1000 (total counts them all)")
+    mdl.add_argument("--mu", nargs="?", const=True, default=None, metavar="FILTER",
+                     help="the multiple units (.mu.lua) instead: id, file name, shown name, cars, and buyAs (what "
+                          "buy --model takes); FILTER: a part of the file name, any case")
     sg = sub.add_parser("stations", help="the company's (and nobody's) station groups: id, stations, platforms, "
                                          "carriers, position; per platform (station:terminal) its tag, position, "
                                          "load flags, cargoTransferSpeeds and carriers")

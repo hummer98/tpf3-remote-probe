@@ -106,27 +106,31 @@ function M.new(ctx)
 		return hit.id
 	end
 
-	-- the multiple units (.mu.lua, api.res.multipleUnitRep), by id and file name, for a model argument that ends
-	-- in .mu.lua: the store lists them as rows of their own, apart from the models
-	local function findMu(query)
+	-- the multiple units (.mu.lua, api.res.multipleUnitRep) as { id, name }, and a note on how they were read: the
+	-- names are getAll()'s values (getName only as a fallback), and an empty getAll() is tried again with
+	-- includeInvisible (getAll(true)), which the note says. The store lists them as rows of their own.
+	local function muList()
+		local rep = try(function() return api.res.multipleUnitRep end)
+		if not rep then error("api.res.multipleUnitRep is not there", 0) end
+		local getName = function(id) return api.res.multipleUnitRep.getName(id) end
 		local all = try(function() return api.res.multipleUnitRep.getAll() end)
-		if not all then error("api.res.multipleUnitRep.getAll failed", 0) end
-		local list = {}
-		local ok = pcall(function()
-			for id in pairs(all) do
-				local name = try(function() return api.res.multipleUnitRep.getName(id) end)
-				if type(name) == "string" then list[#list + 1] = { id = id, name = name } end
-			end
-		end)
-		if not ok then error("could not walk api.res.multipleUnitRep.getAll()", 0) end
-		-- the file name itself (the folder left out) wins over a part of one: tgv.mu.lua is not old_tgv.mu.lua
-		local q, own = query:lower(), {}
-		for _, m in ipairs(list) do
-			if (m.name:lower():match("([^/]+)$") or "") == q then own[#own + 1] = m end
+		local list = core.muListFrom(all, getName)
+		local note
+		if #list == 0 then
+			local all2 = try(function() return api.res.multipleUnitRep.getAll(true) end)
+			local list2 = core.muListFrom(all2, getName)
+			note = string.format("getAll() gave %s, getAll(true) %d", all == nil and "nothing (it failed)" or "none", #list2)
+			list = list2
 		end
-		local hit, err = core.matchModel(#own > 0 and own or list, query, "multiple unit")
+		return list, note
+	end
+
+	-- the multiple unit a model argument ending in .mu.lua names (core.matchMu), opened as the store would
+	local function findMu(query)
+		local list, note = muList()
+		local hit, err = core.matchMu(list, query, note)
 		if not hit then error(err, 0) end
-		local mu, why = vc.muParts(hit.id)
+		local mu, why = vc.muParts(hit.id, hit.name)
 		if not mu then error(why, 0) end
 		return mu
 	end
@@ -471,7 +475,8 @@ function M.new(ctx)
 				return done(job)
 			end
 			submit(job, { kind = sourceEntity and "duplicate" or "buy", modelId = job.modelId, count = job.expected,
-				depot = depot, line = line, vehicle = sourceEntity, mu = job.mu and job.mu.id or nil })
+				depot = depot, line = line, vehicle = sourceEntity, mu = job.mu and job.mu.id or nil,
+				muName = job.mu and job.mu.fileName or nil })
 		else
 			vc.fitAutoLoad(config)
 			job.sentParts = configParts(config)
@@ -1013,9 +1018,30 @@ function M.new(ctx)
 		return list
 	end
 
+	-- models --mu: the multiple units (id, file name, shown name, cars), for the name a buy of one takes
+	local function multipleUnits(c, a)
+		local list, note = muList()
+		local hits = {}
+		local want = type(a.mu) == "string" and a.mu:lower() or nil
+		for _, m in ipairs(list) do
+			if not want or tostring(m.name):lower():find(want, 1, true) then hits[#hits + 1] = m end
+		end
+		local out = {}
+		for i = 1, math.min(#hits, a.limit) do
+			local m = hits[i]
+			local mu = try(function() return api.res.multipleUnitRep.get(m.id) end)
+			local title = mu and try(function() return mu.name end)
+			local cars = mu and core.toList(try(function() return mu.vehicles end)) or nil
+			out[#out + 1] = { id = m.id, fileName = m.name, name = type(title) == "string" and title or nil,
+				cars = cars and #cars or nil, buyAs = core.muKey(m.name) .. core.MU_SUFFIX }
+		end
+		answer(c.id, { ok = true, total = #hits, listed = #list, note = note, multipleUnits = core.array(out) })
+	end
+
 	function handlers.models(c)
 		local a, err = core.modelsArgs(c.args)
 		if not a then return fail(c.id, err) end
+		if a.mu then return multipleUnits(c, a) end
 		local index = vehicleModelIndex()
 		local digits = a.grep and a.grep:match("^%d+$") and tonumber(a.grep)
 		local hits = {}

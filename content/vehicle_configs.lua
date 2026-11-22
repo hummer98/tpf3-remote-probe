@@ -59,14 +59,17 @@ end
 
 -- multiple unit muId (api.res.multipleUnitRep) as the store's cart opens it (vehicle_store_window.tl,
 -- addVehicleToCart): each of mu.vehicles in order, its model by api.res.modelRep.find(name), turned round when
--- forward is false. Returns { id, fileName (multipleUnitRep.getName: what the store puts in muFileNames), name,
+-- forward is false. Returns { id, fileName (the unit's name: what the store puts in muFileNames), name,
 -- parts = { { modelId, forward, name } } } or nil and why. Everything is checked here, before anything is sent:
 -- a part the engine cannot build would be its assertion, not a refusal.
-function M.muParts(muId)
+-- knownName: its name as getAll() gave it, used for muFileNames only when getName gives none: the store puts
+-- getName's in (vehicle_store_window.tl, elemStatic.path), so the engine gets what the store would send.
+function M.muParts(muId, knownName)
 	local okM, mu = pcall(function() return api.res.multipleUnitRep.get(muId) end)
 	if not okM or mu == nil then return nil, "no multiple unit " .. tostring(muId) end
 	local okN, fileName = pcall(function() return api.res.multipleUnitRep.getName(muId) end)
-	if not okN or type(fileName) ~= "string" or fileName == "" then
+	if not okN or type(fileName) ~= "string" or fileName == "" then okN, fileName = true, knownName end
+	if type(fileName) ~= "string" or fileName == "" then
 		return nil, "multiple unit " .. tostring(muId) .. " has no file name"
 	end
 	local out = { id = muId, fileName = fileName, parts = {} }
@@ -246,7 +249,7 @@ function M.performGui(req, r, report)
 	if r.kind == "buy" or r.kind == "duplicate" then
 		local entity = -1 -- the store marks a new vehicle with a negative entity; the clone button with -source-1
 		if r.kind == "buy" and r.mu then
-			local mu, err = M.muParts(r.mu)
+			local mu, err = M.muParts(r.mu, r.muName)
 			if not mu then error(err, 0) end
 			config = M.newMuConfig(req, mu)
 		elseif r.kind == "buy" then

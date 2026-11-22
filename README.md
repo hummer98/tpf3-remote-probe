@@ -226,6 +226,7 @@ python3 tools/tf3ctl.py vehicles --entity 601,602 --state [--since 120000]
 python3 tools/tf3ctl.py vehicles --entity 601 --state --at-terminal --every 2 --count 300   # JSON Lines with gameTime
 python3 tools/tf3ctl.py persons --vehicle 601 [--limit 200] [--every 5 --count 120]   # or --line 21
 python3 tools/tf3ctl.py models [--grep trillium] [--carrier water] [--limit 200]
+python3 tools/tf3ctl.py models --mu [shinkansen]   # read only: the multiple units (.mu.lua) and the names buy takes
 python3 tools/tf3ctl.py buy --model bus_1900 --depot 301 [--line 21] [--count 2] [--via gui|cmd]
 python3 tools/tf3ctl.py buy --model shinkansen_0s.mu.lua --depot 302 [--line 21] [--count 2]   # a multiple unit
 python3 tools/tf3ctl.py duplicate --vehicle 601 [--depot D] [--line L]
@@ -1101,8 +1102,12 @@ up after 20 s with "no answer". Relayed means fired, not that a
   `tgv.mu.lua`) buys that multiple unit, as the store's multiple-unit row does: every car its file lists, in order,
   each turned round where the file says `forward = false`, its model found by `api.res.modelRep.find`, sent as one
   vehicle with `vehicleGroups = { n }` and `muFileNames = { <the file's name> }` (`vehicle_configs.muParts` /
-  `newMuConfig`, after `vehicle_store_window.tl`). The name is matched against `api.res.multipleUnitRep` (the full
-  name, or a unique part of it). The whole file is checked before anything is sent: no cars, a car the game has no
+  `newMuConfig`, after `vehicle_store_window.tl`). The name is matched against the names `api.res.multipleUnitRep.getAll()`
+  gives (its values; `getName` only where a value is no name; `getAll(true)` when `getAll()` is empty): the whole
+  name, then without case, folder and `.mu.lua` / `.mu` (`shinkansen_0s.mu` works too), then a unique part of that.
+  A miss says how many units there are, those whose names hold a piece of the query, and the first 5.
+  `models --mu [FILTER]` (read only) lists them: `id`, `fileName`, `name` (shown), `cars`, `buyAs` (what `--model`
+  takes). The whole file is checked before anything is sent: no cars, a car the game has no
   model for, or one that is no vehicle model, is an error. Via gui only (`--via cmd` is refused), and `replace` takes
   no multiple unit. The answer adds `multipleUnit` (`id`, `fileName`, `name`, `parts` with each car's `modelId`, `name`,
   `forward`); `storeParts` and `storePriceTotal` cover every car; `sentParts` and `vehicles[].parts` mark any

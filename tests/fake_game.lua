@@ -1325,12 +1325,22 @@ function M.new(dir, opts)
 		}, multipleUnitRep = {
 			-- opts.multipleUnits = { [id] = { fileName, name, vehicles = { { name, forward } } } } (a .mu.lua as loaded);
 			-- broken = true: get raises, as for a file that did not load
-			getAll = function()
+			-- mu.invisible: only getAll(true) lists it; opts.muGetAllNoNames: getAll's values are no names (true),
+			-- so only getName tells them; opts.muNoGetName: getName gives nothing
+			getAll = function(includeInvisible)
+				g.muGetAllCalls = (g.muGetAllCalls or 0) + 1
 				local out = {}
-				for id, mu in pairs(multipleUnits) do out[id] = mu.fileName end
+				for id, mu in pairs(multipleUnits) do
+					if includeInvisible == true or not mu.invisible then
+						out[id] = opts.muGetAllNoNames and true or mu.fileName
+					end
+				end
 				return out
 			end,
-			getName = function(id) return multipleUnits[id] and multipleUnits[id].fileName end,
+			getName = function(id)
+				if opts.muNoGetName then return nil end
+				return multipleUnits[id] and multipleUnits[id].fileName
+			end,
 			get = function(id)
 				local mu = multipleUnits[id]
 				if mu and mu.broken then error("multiple unit " .. tostring(id) .. " did not load") end
