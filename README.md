@@ -419,12 +419,14 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
   A free end of a construction's own road (a harbour's entrance road: `construction.ends` in the `build` answer)
   is such a node. Otherwise the end is a new node.
 - Junction set-ups (`BaseNodeConfig`, sent as `nodeConfigsToAdd` / `nodeConfigsToRemove`): each new node gets
-  one (a dead end: no lane connections), and a joined node keeps its own plus the new piece's connections:
-  straight on, lane for lane, where the node then has two pieces, and every arriving road (tram) lane to every
-  leaving road (tram) lane of the other pieces where it has more. Lanes are numbered over all of a piece's
-  `laneConfigs`, sidewalks too, from the node outwards. So pieces of this command can be chained and branched.
-  The answer's `newNodeConfigs` reads the new nodes' set-ups back, `nodeConfigs` counts those sent, an end's
-  `laneRules` the connections added there; a set-up that could not be made gives a `caution`.
+  one (a dead end: no lane connections), and a joined node keeps its own connections and gets the new piece's:
+  between the new piece and each other piece there, straight on lane for lane where the node then has two
+  pieces of the same lane count, else every arriving road (tram) lane to every leaving road (tram) lane. Lanes
+  are numbered over all of a piece's `laneConfigs`, sidewalks too, from the node outwards. So pieces of this
+  command can be chained and branched. The answer's `newNodeConfigs` reads the new nodes' set-ups back,
+  `nodeConfigs` counts those sent, an end's `laneRules` the connections added there. Refused before anything is
+  sent (dry run too): a joined node with traffic lights, one whose own connections number lanes otherwise, and
+  lanes or a set-up that cannot be read or made.
 - A node without a set-up (a road a script built without them, as this command did before 2026-11-23) is never
   joined: the next nearest node within `--snap` is (`passedOver` names the ones left out), and with none the
   command is refused before anything is sent. The game died right after a piece was joined to such a node that
