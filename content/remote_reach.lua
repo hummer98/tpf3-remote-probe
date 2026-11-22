@@ -919,7 +919,8 @@ function M.new(ctx)
 		local to, terr = endNodes({ entity = toEntity }, "walk", nil, M.RADIUS_DEFAULT)
 		if not to then return { why = "to: " .. terr } end
 		local p = searchPath(from, to, "walk")
-		return { found = p.found, why = p.why, ms = p.ms, edges = p.edges, fromNodes = p.fromNodes, toNodes = p.toNodes }
+		return { found = p.found, why = p.why, ms = p.ms, edges = p.edges, fromNodes = p.fromNodes, toNodes = p.toNodes,
+			unverified = p.unverified, sameNode = p.sameNode }
 	end
 
 	function R.handle(c)

@@ -864,7 +864,7 @@ function M.new(ctx)
 			if townNames[t] == nil then townNames[t] = nameOf(t) or false end
 			return townNames[t] or nil
 		end
-		local caught = {} -- the town buildings of the passenger side (the diagnosis)
+		local caught, caughtCargo = {}, {} -- the town buildings of each side (the diagnosis)
 		local function side(cargo)
 			local seen, towns, townList, inds, other = {}, {}, {}, {}, {}
 			local total = 0
@@ -885,7 +885,7 @@ function M.new(ctx)
 							end
 						elseif tb and not seen["b" .. tb] then
 							seen["b" .. tb] = true
-							if not cargo then caught[tb] = true end
+							if cargo then caughtCargo[tb] = true else caught[tb] = true end
 							local t = tonumber(core.field(comp(tb, "TOWN_BUILDING"), "town")) or -1
 							local row = towns[t]
 							if not row then
@@ -921,7 +921,8 @@ function M.new(ctx)
 		local ok, d = pcall(function()
 			return catchmentDiag.new({ core = core, try = try, comp = comp, posOf = posOf, nameOf = nameOf,
 				appTime = appTime, say = say, walk = function() return L.walkBetween end })
-				.diagnose(stations, caught, { radius = opts and opts.radius, paths = opts and opts.paths, target = id })
+				.diagnose(stations, caught, { radius = opts and opts.radius, paths = opts and opts.paths, target = id,
+					caughtCargo = caughtCargo })
 		end)
 		if ok then
 			out.diagnosis, out.radiusSource, out.circles = d.diagnosis, d.radiusSource, d.circles

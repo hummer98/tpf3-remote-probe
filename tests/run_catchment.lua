@@ -14,7 +14,19 @@ return function(t)
 		eq(C.areaOf({ position = { x = 1, y = 2 }, radius = 0 }, core), nil, "no radius")
 		eq(C.areaOf({ radius = 10 }, core), nil, "no position"); eq(C.areaOf(nil, core), nil)
 		eq(C.areaOf({ position = { x = 0 / 0, y = 1 }, radius = 10 }, core), nil, "nan")
-		local cs = C.circles(5, { { x = 0, y = 0, radius = 150 }, { x = 5000, y = 0, radius = 150 } }, { x = 10, y = 0 })
+		local u = newproxy(true)
+		getmetatable(u).__index = function(_, k) if type(k) == "number" then error("ASSERT: read by number") end end
+		eq(C.areaOf({ position = u, radius = 10 }, core), nil, "an engine object is never read by number")
+		-- through a transf: turned a quarter (x' = -y, y' = x) and moved to 1000, 0
+		local tf = { 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 1000, 0, 0, 1 }
+		local x, y = C.transform(tf, 0, 50); eq(x, 950); eq(y, 0)
+		local ct = C.circles(5, { { x = 0, y = 50, radius = 60 } }, { x = 1000, y = 0 }, tf)
+		eq(ct[1].frame, "construction"); eq(ct[1].x, 950); eq(ct[1].readY, 50)
+		ct = C.circles(5, { { x = 990, y = 0, radius = 60 } }, { x = 1000, y = 0 }, tf)
+		eq(ct[1].frame, "world", "as read is nearer the station"); eq(ct[1].x, 990)
+		eq(C.circles(5, { { x = 0, y = 50, radius = 60 } }, nil, tf)[1].frame, "construction", "no position: the base's frame")
+		local cs
+		cs = C.circles(5, { { x = 0, y = 0, radius = 150 }, { x = 5000, y = 0, radius = 150 } }, { x = 10, y = 0 })
 		eq(cs[1].frame, "world"); eq(cs[2].frame, "station", "far from the station: round it")
 		eq(cs[2].x, 10); eq(cs[2].readX, 5000)
 		eq(C.circles(5, { { x = 5000, y = 0, radius = 150 } }, nil)[1].frame, "world", "no position: as read")
@@ -29,9 +41,30 @@ return function(t)
 		eq(C.diagnosis(base), "0 town buildings in the circle (150 m); nearest residential 312 m (162 m outside the circle) in Emsworth")
 		base.inCircle = { total = 12, notCaught = 12, residential = 12, commercial = 0, industrial = 0 }
 		base.walk = { checked = 12, noPath = 12, control = { checked = 0, found = 0 } }
-		eq(C.diagnosis(base), "12 town buildings in the circle (150 m: residential 12), 12 not in the engine's catchment; on foot 12 of 12 checked have no path to the station")
+		eq(C.diagnosis(base), "12 town buildings in the circle (150 m: residential 12), 12 not in the engine's catchment; on foot 12 of 12 checked have no path to the station " ..
+			"(no caught building to try the search on: a missing path is unverified)")
 		base.walk.control = { checked = 2, found = 0 }
 		truthy(C.diagnosis(base):find("not to be trusted", 1, true))
+		base.walk = { checked = 3, noPath = 1, found = 1, unknown = 1, truncated = "the searches took 310 ms",
+			control = { checked = 0, found = 0 } }
+		local line = C.diagnosis(base)
+		truthy(line:find("on foot 1 of 3 checked have no path to the station (1 with a path, 1 could not be searched)", 1, true), line)
+		truthy(line:find("stopped: the searches took 310 ms", 1, true), line)
+		truthy(line:find("a missing path is unverified", 1, true), line)
+		base.walk = { checked = 2, noPath = 0, found = 0, unknown = 2, control = { checked = 0, found = 0 } }
+		line = C.diagnosis(base)
+		truthy(line:find("0 of 2 checked have no path to the station (2 could not be searched)", 1, true), line)
+		truthy(not line:find("unverified", 1, true), "no missing path: nothing to verify")
+		base.inCircle = { total = 2, notCaught = 2, residential = 0, commercial = 0, industrial = 0, unknownKind = 2 }
+		base.walk = nil
+		truthy(C.diagnosis(base):find("(150 m: unknown kind 2)", 1, true), C.diagnosis(base))
+		base.inCircle = { total = 0, notCaught = 0, residential = 0, commercial = 0, industrial = 0 }
+		base.nearest = {}
+		truthy(C.diagnosis(base):find("no building of a known kind", 1, true), C.diagnosis(base))
+		base.inCircle = { total = 1, notCaught = 0, residential = 0, commercial = 1, industrial = 0 }
+		base.cargoOnly = true
+		truthy(C.diagnosis(base):find("all in the engine's cargo catchment", 1, true), C.diagnosis(base))
+		base.cargoOnly = nil
 		base.inCircle.notCaught = 0
 		truthy(C.diagnosis(base):find("all in the engine's catchment", 1, true))
 		eq(C.diagnosis({ buildingsRead = 0, townsTotal = 0 }), "no towns on the map: nothing to catch but industries")
@@ -53,18 +86,23 @@ return function(t)
 				[63] = { name = "Harbour", stations = { { id = 631, passenger = true, pos = { 100, 1000 } } } },
 				[64] = { name = "Bare", stations = { { id = 641, passenger = true, pos = { 0, -2000 } } } },
 				[65] = { name = "Odd", stations = { { id = 651, passenger = true, pos = { 0, 3000 } } } },
+				[66] = { name = "Turned", stations = { { id = 661, passenger = true, pos = { -3000, 0 } } } },
+				[67] = { name = "Goods", stations = { { id = 671, kind = "cargo", pos = { 0, 0 } } } },
 			},
-			catchables = { [611] = { passengers = { 1102 } }, [631] = { passengers = { 1105 } } },
+			catchables = { [611] = { passengers = { 1102 } }, [631] = { passengers = { 1105 } }, [671] = { cargo = { 1103 } } },
 		}
 		local g = vehicleGame(w)
 		local spec = {
-			towns = extra.noTowns and {} or { [11] = "Emsworth" },
+			towns = extra.noTowns and {} or { [11] = "Emsworth", [12] = "Westbourne", [13] = extra.unplacedTown and "Nowhere" or nil },
 			buildings = extra.noTowns and {} or {
 				[1101] = { town = 11, kind = "RESIDENTIAL", capacity = 10, personNodes = { "800:1" } },
 				[1102] = { town = 11, kind = "RESIDENTIAL", capacity = 6, personNodes = { "800:2" } },
 				[1103] = { town = 11, kind = "COMMERCIAL", capacity = 4, personNodes = { "800:3" } },
 				[1104] = { town = 11, kind = "INDUSTRIAL", capacity = 8, personNodes = { "800:4" } },
 				[1105] = { town = 11, kind = "RESIDENTIAL", capacity = 3, personNodes = { "800:5" } },
+				[1106] = { town = 11, kind = "RESIDENTIAL", capacity = 3, personNodes = { "800:6" } },
+				[1201] = { town = 12, kind = "RESIDENTIAL", capacity = 3, personNodes = { "810:1" } },
+				[1301] = extra.unplacedTown and { town = 13, kind = "COMMERCIAL", capacity = 3 } or nil,
 			},
 			stations = {
 				[611] = { terminals = { { personNodes = { "800:9" } } }, catchmentAreas = { { 0, 0, 150 } } },
@@ -72,10 +110,17 @@ return function(t)
 				[631] = { terminals = { { personNodes = { "802:9" } } }, catchmentAreas = { { 0, 1000, 150 }, { 200, 1000, 250 } } },
 				[641] = { terminals = { { personNodes = { "803:9" } } } },
 				[651] = { terminals = { { personNodes = { "804:9" } } }, catchmentAreas = { { 0, 0, 150 } } },
+				-- a side building's 60 m circle, as the base gives it: in the construction's frame
+				[661] = { terminals = { { personNodes = { "805:9" } } }, catchmentAreas = { { 0, 50, 60 } } },
+				[671] = { terminals = { { cargo = true } }, catchmentAreas = { { 0, 0, 150 } } },
 			},
 			positions = { [11] = { 0, 0 }, [1101] = { 60, 0 }, [1102] = { -80, 40 }, [1103] = { 130, 0 }, [1104] = { -400, 0 },
 				[1105] = { 400, 1000 }, [611] = { 0, 0 }, [621] = { 522, 0 }, [631] = { 100, 1000 }, [641] = { 0, -2000 },
-				[651] = { 0, 3000 } },
+				[651] = { 0, 3000 }, [661] = { -3000, 0 }, [671] = { 0, 0 }, [1106] = { -3080, 0 }, [12] = { 6000, 0 },
+				[1201] = { 6000, 0 }, [1301] = { -20, 0 } },
+			-- 661's construction turned a quarter and moved to -3000, 0: its circle's centre is -3050, 0
+			constructions = { [6601] = { stations = { 661 }, transf = { 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, -3000, 0, 0, 1 } } },
+			stationConstruction = { [661] = 6601 },
 			graph = { walk = { ["800:2"] = { "800:9" }, ["800:3"] = { "800:9" } } },
 			userdata = extra.userdata, areaShape = extra.areaShape, pathError = extra.pathError,
 		}
@@ -99,7 +144,8 @@ return function(t)
 		eq(c.radiusSource, C.SOURCE_ENGINE); eq(#c.circles, 1); eq(c.circles[1].radius, 150); eq(c.circles[1].frame, "world")
 		eq(c.circles[1].station, 611)
 		local n = c.near
-		eq(n.buildingsRead, 5); eq(n.townsTotal, 1); eq(n.towns[1].name, "Emsworth")
+		eq(n.buildingsRead, 7); eq(n.townsTotal, 2); eq(n.towns[1].name, "Emsworth"); eq(n.towns[2].name, "Westbourne")
+		eq(n.towns[1].distance, 0); eq(n.towns[2].distance, 6000, "nearest first")
 		eq(n.inCircle.total, 3); eq(n.inCircle.residential, 2); eq(n.inCircle.commercial, 1); eq(n.inCircle.caught, 1)
 		eq(n.inCircle.notCaught, 2)
 		eq(n.notCaught[1].building, 1101, "the deepest in the circle first"); eq(n.notCaught[1].walk, "none")
@@ -108,7 +154,7 @@ return function(t)
 		eq(n.walk.control.checked, 1); eq(n.walk.control.found, 1, "the caught house has its path")
 		eq(n.nearest.residential.outside, -90); eq(n.nearest.industrial.outside, 250); eq(n.nearest.industrial.townName, "Emsworth")
 		eq(c.diagnosis, "3 town buildings in the circle (150 m: residential 2, commercial 1), 2 not in the engine's catchment; " ..
-			"on foot 1 of 2 checked have no path to the station")
+			"on foot 1 of 2 checked have no path to the station (1 with a path)")
 		eq(g.crashed, nil)
 		-- paths 0: no search
 		local before = g.reachCalls.path
@@ -136,7 +182,7 @@ return function(t)
 
 	test("stations --catchment: two circles of a harbour, a station with none (and --radius), one read far off", function()
 		for _, shape in ipairs({ "vec", "list" }) do
-			local g = world({ areaShape = shape, userdata = shape == "list" })
+			local g = world({ areaShape = shape })
 			local a = run(g, "{ catchment = 63 }", true)
 			eq(a.ok, true, tostring(a.error))
 			local c = a.catchment
@@ -189,5 +235,39 @@ return function(t)
 		end)
 		C.BUILDINGS_READ, C.TOWNS_READ = keepB, keepT
 		assert(ok, err)
+	end)
+	test("stations --catchment: a circle in its construction's frame, a cargo station, a town with no position", function()
+		local g = world()
+		-- the side building's circle read as 0,50: through the construction's transf at -3050,0; the house at -3080,0
+		-- is 30 m from it (and 80 m from the station's box centre: out of 60 m were the circle taken round that)
+		local a = run(g, "{ catchment = 66 }", true)
+		eq(a.ok, true, tostring(a.error))
+		local c = a.catchment
+		eq(c.circles[1].frame, "construction"); eq(c.circles[1].x, -3050); eq(c.circles[1].readY, 50)
+		eq(c.near.inCircle.total, 1); eq(c.near.notCaught[1].building, 1106)
+		truthy(c.diagnosis:find("(60 m: residential 1)", 1, true), c.diagnosis)
+		-- a cargo station: held against its cargo catchables, no walking
+		local before = g.reachCalls.path
+		local k = run(g, "{ catchment = 67 }")
+		eq(k.ok, true, tostring(k.error)); eq(k.catchment.near.cargoOnly, true)
+		eq(k.catchment.near.inCircle.caught, 1, "the shop by its stock list"); eq(k.catchment.near.inCircle.notCaught, 2)
+		eq(k.catchment.near.walk.checked, 0); eq(g.reachCalls.path, before)
+		truthy(k.catchment.diagnosis:find("2 not in the engine's cargo catchment; no walking check: a cargo station", 1, true),
+			k.catchment.diagnosis)
+		-- only the nearest town is read when TOWNS_READ is 1; every town when one has no position
+		local keep = C.TOWNS_READ
+		local ok, err = pcall(function()
+			C.TOWNS_READ = 1
+			local one = run(g, "{ catchment = 61, paths = 0 }")
+			eq(#one.catchment.near.towns, 1); eq(one.catchment.near.towns[1].name, "Emsworth")
+			local h = world({ unplacedTown = true })
+			local u = run(h, "{ catchment = 61, paths = 0 }", true)
+			eq(u.catchment.near.townsUnplaced, 1); eq(#u.catchment.near.towns, 3, "all read")
+			eq(u.catchment.near.towns[3].name, "Nowhere", "the town with no position last")
+			eq(u.catchment.near.inCircle.commercial, 2, "its shop at -20,0 counted"); eq(h.crashed, nil)
+		end)
+		C.TOWNS_READ = keep
+		assert(ok, err)
+		eq(g.crashed, nil)
 	end)
 end

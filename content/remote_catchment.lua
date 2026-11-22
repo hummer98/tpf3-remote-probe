@@ -9,8 +9,12 @@
 --     metadata.catchmentPassenger / catchmentCargo.radius at the module's slot (rail main buildings 150 / 175 / 200
 --     m, side buildings 50 / 60 / 70, stairs 100; street station entrances 175; small street stops 160 through the
 --     edge object's catchmentAreaRadius; harbour passenger docks 150 (25x25) and 250 (50x50, 100x50); the harbour's
---     cargo docks have none in the base's files). Whether the engine keeps the position in the world's frame or
---     the construction's is not known: a circle whose centre is far from the station is taken round the station.
+--     cargo docks have none in the base's files). The base gives the position in the construction's frame (the
+--     slot's transf); whether the engine keeps it so or turns it into the world's is not known, so both are tried:
+--     the position as read and through the construction's transf (streetConnectorSystem
+--     .getConstructionEntityForStation, CONSTRUCTION.transf), and the one nearer the station's box centre is taken
+--     (frame "world" or "construction"). Without a transf, a centre further than its radius and FAR_M from the
+--     station is taken round the station (frame "station").
 --   the town buildings (townBuildingSystem.getTown2BuildingMap) of the towns nearest the station (TOWNS_READ, at
 --     most BUILDINGS_READ buildings), each one's BOUNDING_VOLUME centre and PERSON_CAPACITY type (LandUseType).
 --   a walking path from a building's PersonCapacity personNodes to the station's terminals' personNodes
@@ -21,7 +25,7 @@
 -- building within EDGE_M of the rim may go either way.
 local M = {}
 
-M.TOWNS_READ = 4 -- the towns nearest the station whose buildings are read
+M.TOWNS_READ = 4 -- the towns nearest the station whose buildings are read (all, when one has no position)
 M.BUILDINGS_READ = 1500 -- buildings read at most (more: not read, truncated says so)
 M.PATHS_DEFAULT = 20 -- walking searches for buildings in a circle that the engine does not count
 M.PATHS_MAX = 50
@@ -47,18 +51,33 @@ function M.areaOf(a, core)
 	local r = num(core.field(a, "radius"))
 	if p == nil or r == nil or r <= 0 then return nil end
 	local x, y = num(core.field(p, "x")), num(core.field(p, "y"))
-	if x == nil or y == nil then x, y = num(core.at(p, 1)), num(core.at(p, 2)) end
+	-- by number only a plain list: an engine Vec3f read by an index it has not may be the engine's assertion
+	if (x == nil or y == nil) and type(p) == "table" then x, y = num(p[1]), num(p[2]) end
 	if x == nil or y == nil then return nil end
 	return { x = x, y = y, radius = r }
 end
 
--- the circles of one station: its areas, each in the world frame when its centre is near the station's box centre
--- (pos; nil: taken as it is), else round pos (frame "station": the position read is kept as readX / readY)
-function M.circles(station, areas, pos)
+-- a point x, y (z 0) through a transf (16 numbers, by column as Mat4f: 13..15 the translation)
+function M.transform(tf, x, y)
+	return tf[1] * x + tf[5] * y + tf[13], tf[2] * x + tf[6] * y + tf[14]
+end
+
+local function far(x, y, pos) return math.sqrt((x - pos.x) ^ 2 + (y - pos.y) ^ 2) end
+
+-- the circles of one station. tf (the construction's transf, or nil) and pos (the station's box centre, or nil):
+-- with tf, the centre as read (frame "world") or through tf ("construction"), whichever is nearer pos (no pos:
+-- through tf, the base's frame); without tf, as read when near pos, else round pos ("station"). The position as
+-- read is kept as readX / readY whenever another is used.
+function M.circles(station, areas, pos, tf)
 	local out = {}
 	for _, a in ipairs(areas) do
 		local c = { station = station, radius = a.radius, x = a.x, y = a.y, frame = "world" }
-		if pos and math.sqrt((a.x - pos.x) ^ 2 + (a.y - pos.y) ^ 2) > a.radius + M.FAR_M then
+		if tf then
+			local tx, ty = M.transform(tf, a.x, a.y)
+			if pos == nil or far(tx, ty, pos) < far(a.x, a.y, pos) then
+				c.frame, c.readX, c.readY, c.x, c.y = "construction", a.x, a.y, tx, ty
+			end
+		elseif pos and far(a.x, a.y, pos) > a.radius + M.FAR_M then
 			c.frame, c.readX, c.readY, c.x, c.y = "station", a.x, a.y, pos.x, pos.y
 		end
 		out[#out + 1] = c
@@ -108,6 +127,7 @@ function M.diagnosis(d)
 				t[#t + 1] = s
 			end
 		end
+		if #t == 0 then return "no building of a known kind (LandUseType)" end
 		return table.concat(t, ", ")
 	end
 	if d.buildingsRead == 0 then
@@ -125,14 +145,26 @@ function M.diagnosis(d)
 	end
 	local kinds = {}
 	for _, k in ipairs(M.KINDS) do if ic[k] > 0 then kinds[#kinds + 1] = k .. " " .. ic[k] end end
+	if (ic.unknownKind or 0) > 0 then kinds[#kinds + 1] = "unknown kind " .. ic.unknownKind end
 	local s = string.format("%d town buildings in the circle (%s: %s)", ic.total, radius, table.concat(kinds, ", "))
-	if ic.notCaught == 0 then return s .. ", all in the engine's catchment" end
-	s = s .. string.format(", %d not in the engine's catchment", ic.notCaught)
+	local what = d.cargoOnly and "the engine's cargo catchment" or "the engine's catchment"
+	if ic.notCaught == 0 then return s .. ", all in " .. what end
+	s = s .. string.format(", %d not in %s", ic.notCaught, what)
 	local w = d.walk
 	if w and w.checked > 0 then
-		s = s .. string.format("; on foot %d of %d checked have no path to the station", w.noPath, w.checked)
-		if w.control and w.control.checked > 0 and w.control.found == 0 then
-			s = s .. " (but the search found none for the caught ones either: not to be trusted)"
+		local noPath, found, unknown = w.noPath or 0, w.found or 0, w.unknown or 0
+		s = s .. string.format("; on foot %d of %d checked have no path to the station", noPath, w.checked)
+		local more = {}
+		if found > 0 then more[#more + 1] = found .. " with a path" end
+		if unknown > 0 then more[#more + 1] = unknown .. " could not be searched" end
+		if #more > 0 then s = s .. " (" .. table.concat(more, ", ") .. ")" end
+		if w.truncated then s = s .. "; stopped: " .. w.truncated end
+		if noPath > 0 then
+			if not (w.control and w.control.checked > 0) then
+				s = s .. " (no caught building to try the search on: a missing path is unverified)"
+			elseif w.control.found == 0 then
+				s = s .. " (but the search found none for the caught ones either: not to be trusted)"
+			end
 		end
 	elseif w and w.why then
 		s = s .. "; no walking check: " .. w.why
@@ -161,13 +193,50 @@ function M.new(ctx)
 		return nil
 	end
 
+	-- the transf of a station's construction as 16 numbers, or nil (Mat4f reads by 1..16)
+	local function transfOf(st)
+		local con = tonumber(try(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForStation(st) end))
+		if con == nil or con < 0 then return nil end
+		local c = comp(con, "CONSTRUCTION")
+		local t = c and core.field(c, "transf")
+		if t == nil then return nil end
+		local out = {}
+		for i = 1, 16 do
+			out[i] = num(core.field(t, i))
+			if out[i] == nil then return nil end
+		end
+		return out
+	end
+	-- whether a station has a passenger terminal: true, false (every terminal's flags read, none for passengers),
+	-- or nil (not known)
+	local function passengerStation(st)
+		local any, known = false, true
+		for _, t in ipairs(core.toList(core.field(comp(st, "STATION"), "terminals"))) do
+			local l, u = core.field(t, "passengersLoad"), core.field(t, "passengersUnload")
+			if l == true or u == true then return true end
+			if l == nil and u == nil then known = false end
+			any = true
+		end
+		if any and known then return false end
+		return nil
+	end
+
 	-- stations: the station ids; caught: { [building] = true } the engine's passenger catchables as buildings;
 	-- opts: radius (used when the engine gives no circle), paths (walking searches, 0: none), target (the id the
-	-- walking search goes to: the group or the station)
+	-- walking search goes to: the group or the station), caughtCargo (the cargo catchables as buildings: used for
+	-- a station with no passenger terminal)
 	function D.diagnose(stations, caught, opts)
 		opts = opts or {}
 		local t0 = now()
 		local d = { note = M.NOTE, circles = {}, nearest = {}, towns = {} }
+		-- a cargo station: its circle is held against the cargo catchables, and nobody walks to it
+		local anyPassenger, allCargo = false, #stations > 0
+		for _, st in ipairs(stations) do
+			local p = passengerStation(st)
+			if p == true then anyPassenger = true end
+			if p ~= false then allCargo = false end
+		end
+		if allCargo and not anyPassenger then d.cargoOnly = true; caught = opts.caughtCargo or {} end
 		-- the circles
 		local centres = {}
 		for _, st in ipairs(stations) do
@@ -179,8 +248,18 @@ function M.new(ctx)
 				local x = M.areaOf(a, core)
 				if x then areas[#areas + 1] = x end
 			end
-			for _, c in ipairs(M.circles(st, areas, pos)) do d.circles[#d.circles + 1] = c end
+			local tf = #areas > 0 and transfOf(st) or nil
+			for _, c in ipairs(M.circles(st, areas, pos, tf)) do d.circles[#d.circles + 1] = c end
 		end
+		-- no station's box: the group's, else the circles' centres
+		if #centres == 0 and opts.target then
+			local p = posOf(opts.target)
+			if p then centres[1] = p end
+		end
+		if #centres == 0 then
+			for _, c in ipairs(d.circles) do centres[#centres + 1] = { x = c.x, y = c.y } end
+		end
+		if #centres == 0 then d.positionError = "no position for the station (no bounding volume, no circle)" end
 		if #d.circles > 0 then
 			d.radiusSource = M.SOURCE_ENGINE
 		elseif opts.radius and #centres > 0 then
@@ -189,42 +268,58 @@ function M.new(ctx)
 				local p = posOf(st)
 				if p then d.circles[#d.circles + 1] = { station = st, x = p.x, y = p.y, radius = opts.radius, frame = "station" } end
 			end
+			if #d.circles == 0 then
+				-- (the group's position: one circle round it)
+				d.circles[1] = { station = stations[1], x = centres[1].x, y = centres[1].y, radius = opts.radius, frame = "station" }
+			end
 		else
 			d.radiusSource = "none: the engine gave no circle (STATION.catchmentAreas)"
 		end
-		local centre = centres[1]
-		-- the towns, nearest first (a town without a position last), and their buildings
-		local towns = {}
+		-- the distance of a point from the nearest of the stations
+		local function fromStations(p)
+			local best
+			for _, c in ipairs(centres) do
+				local x = far(p.x, p.y, c)
+				if best == nil or x < best then best = x end
+			end
+			return best
+		end
+		-- the towns, nearest first (a town without a position last: then every town is read), and their buildings
+		local towns, unplaced = {}, 0
 		for _, t in ipairs(core.toList(try(function() return api.engine.getEntitiesWithComponent(CT().TOWN) end))) do
 			t = tonumber(t)
 			if t then
 				local p = posOf(t)
-				towns[#towns + 1] = { id = t, d = (p and centre) and math.sqrt((p.x - centre.x) ^ 2 + (p.y - centre.y) ^ 2) or math.huge }
+				local x = p and fromStations(p)
+				if x == nil then unplaced = unplaced + 1 end
+				towns[#towns + 1] = { id = t, d = x or math.huge }
 			end
 		end
 		table.sort(towns, function(a, b) if a.d ~= b.d then return a.d < b.d end return a.id < b.id end)
 		d.townsTotal = #towns
+		if unplaced > 0 then d.townsUnplaced = unplaced end
+		local townsRead = unplaced > 0 and #towns or math.min(#towns, M.TOWNS_READ)
 		local map = #towns > 0 and try(function() return api.engine.system.townBuildingSystem.getTown2BuildingMap() end) or nil
 		if #towns > 0 and map == nil then d.buildingsError = "townBuildingSystem.getTown2BuildingMap gave nothing" end
 		-- the map by pairs, as the other readers of it do (a missing key of an engine map is not known to be safe);
 		-- only the lists of the towns read are kept
 		local want, lists = {}, {}
-		for i = 1, math.min(#towns, M.TOWNS_READ) do want[towns[i].id] = true end
+		for i = 1, townsRead do want[towns[i].id] = true end
 		if map ~= nil then
 			pcall(function()
 				for k, v in pairs(map) do
 					local t = tonumber(k)
-					if t and want[t] then lists[t] = v end
+					if t and want[t] then lists[t] = core.toList(v) end
 				end
 			end)
 		end
 		local read, inside, notCaught, caughtIn = 0, { total = 0, notCaught = 0, unknownKind = 0 }, {}, {}
 		for _, k in ipairs(M.KINDS) do inside[k] = 0 end
 		local names = {}
-		for i = 1, math.min(#towns, M.TOWNS_READ) do
+		for i = 1, townsRead do
 			local t = towns[i].id
 			names[t] = nameOf(t)
-			local list = core.toList(lists[t])
+			local list = lists[t] or {}
 			local row = { town = t, name = names[t], distance = towns[i].d < math.huge and math.floor(towns[i].d + 0.5) or nil,
 				buildings = #list, read = 0 }
 			d.towns[#d.towns + 1] = row
@@ -239,7 +334,7 @@ function M.new(ctx)
 					local pc = comp(b, "PERSON_CAPACITY") or (pcId and pcId >= 0 and comp(pcId, "PERSON_CAPACITY")) or nil
 					local kind = landUse(pc)
 					local outside, circle, dist = M.nearestCircle(p, d.circles)
-					if dist == nil and centre then dist = math.sqrt((p.x - centre.x) ^ 2 + (p.y - centre.y) ^ 2) end
+					if dist == nil then dist = fromStations(p) end
 					if kind and dist then
 						local n = d.nearest[kind]
 						local key = outside or dist
@@ -281,7 +376,9 @@ function M.new(ctx)
 		local paths = opts.paths == nil and M.PATHS_DEFAULT or opts.paths
 		local walk = { checked = 0, found = 0, noPath = 0, unknown = 0, limit = paths, control = { checked = 0, found = 0 } }
 		local fn = ctx.walk and ctx.walk()
-		if paths == 0 then
+		if d.cargoOnly then
+			walk.why = "a cargo station: nobody walks to it"
+		elseif paths == 0 then
 			walk.why = "not asked (paths 0)"
 		elseif #notCaught == 0 then
 			walk.why = "every building in the circle is in the engine's catchment"
@@ -300,6 +397,8 @@ function M.new(ctx)
 				local x = notCaught[i]
 				local r = fn(x.building, target)
 				walk.checked = walk.checked + 1
+				if r.ms and r.ms > (walk.maxMs or -1) then walk.maxMs = r.ms end
+				if r.found == false and r.unverified then walk.unverified = (walk.unverified or 0) + 1 end
 				x.walk = r.found == true and "path" or (r.found == false and "none" or "unknown")
 				x.why = r.why
 				if r.found == true then walk.found = walk.found + 1
