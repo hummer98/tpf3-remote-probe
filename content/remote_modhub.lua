@@ -454,15 +454,17 @@ function M.new(ctx)
 	-- then setPublic = (modhubDetails ~= nil and modhubDetails.modInfo.visible), false for a new mod, which the
 	-- "Set Public" check box changes while the mod is not public on mod.io (1466-1471, 1474, 1591-1596; the box is
 	-- disabled for a public one, so an update of a public mod stays public: publishChecks refuses public = false
-	-- there); updateMetadata = true (1470; the box is disabled for a new mod, 1598-1603; an update keeps the
-	-- default, so modinfo.json's name, summary and description go up again); changeLog from the text field
+	-- there); updateMetadata: the page's default is true (1470; the box is disabled for a new mod, 1598-1603), so
+	-- an update sends modinfo.json's name, summary and description again and they replace the mod.io page's (a
+	-- description written there by other means went back to modinfo.json's, 2026-11-23); here a first upload sends
+	-- true and an update false unless asked (args.updateMetadata, remote_core); changeLog from the text field
 	-- (1605-1609); at the button isSavegame =
 	-- params.disableValidator, nil on My Mods (5734-5743), and issuesConfirmed = false when no "Proceed Anyway"
 	-- was asked (1822-1826, 1868). additionalMetadata ("merged into the upload's metadata", the page sets it only
 	-- for savegames): set only when a version was given, { version = "X.Y.Z" }; whether mod.io's file version
 	-- takes it is a trial.
 	local function plannedSettings(args)
-		return { setPublic = args.public, updateMetadata = true, changeLog = args.changelog, isSavegame = false,
+		return { setPublic = args.public, updateMetadata = args.updateMetadata == true, changeLog = args.changelog, isSavegame = false,
 			issuesConfirmed = false, additionalMetadata = args.version and { version = args.version } or nil }
 	end
 

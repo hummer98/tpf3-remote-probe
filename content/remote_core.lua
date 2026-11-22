@@ -2629,7 +2629,8 @@ end
 -- one of firstUpload = true (a new mod page) or update = true with modioId (the mod.io id tools/tf3ctl.py read from
 -- the staging folder's _metadata/mod.io_fileid.txt: the update goes only to that page), changelog (text, required),
 -- dryRun, timeout (s, the whole command), messages (validator messages listed), version ("X.Y.Z", optional) with
--- revision (mod.json's, which tools/tf3ctl.py reads: Lua has no io; required with version). Both or neither of
+-- revision (mod.json's, which tools/tf3ctl.py reads: Lua has no io; required with version), updateMetadata
+-- (true / false, an update only: false when not given; a first upload is always true). Both or neither of
 -- firstUpload and update is refused: a new page and an update must never be taken for each other.
 function M.modhubPublishArgs(args)
 	args = type(args) == "table" and args or {}
@@ -2648,6 +2649,16 @@ function M.modhubPublishArgs(args)
 	end
 	if not args.firstUpload and not args.update then
 		return nil, "give firstUpload = true (a new mod) or update = true with modioId (a mod already on mod.io)"
+	end
+	-- updateMetadata: whether the page's fields (modinfo.json's name, summary and description) go up again. A first
+	-- upload always sends them (the page's box is disabled for a new mod); an update sends them only when asked:
+	-- they replace what mod.io's page holds, and a description put there by other means is lost.
+	if args.updateMetadata ~= nil and type(args.updateMetadata) ~= "boolean" then
+		return nil, "updateMetadata is true or false"
+	end
+	if args.firstUpload and args.updateMetadata == false then
+		return nil, "updateMetadata = false is only for an update: a first upload sends modinfo.json's name, summary "
+			.. "and description (the page's box is disabled for a new mod)"
 	end
 	local modioId
 	if args.update then
@@ -2693,7 +2704,8 @@ function M.modhubPublishArgs(args)
 		return nil, "revision is only given with version"
 	end
 	return { folder = f, public = args.public, firstUpload = args.firstUpload == true, update = args.update == true,
-		modioId = modioId, changelog = args.changelog, dryRun = args.dryRun == true, timeout = t, messages = n,
+		updateMetadata = args.firstUpload == true or args.updateMetadata == true, modioId = modioId,
+		changelog = args.changelog, dryRun = args.dryRun == true, timeout = t, messages = n,
 		version = version, revision = version and args.revision or nil }
 end
 

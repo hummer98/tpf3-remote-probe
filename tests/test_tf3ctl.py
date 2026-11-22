@@ -3229,7 +3229,11 @@ class ModhubPublishTest(unittest.TestCase):
             self.mark_at_send.append(tf3ctl.read_pending())
             a = self.answers.pop(0)
             if callable(a):
-                return a()
+                a = a()
+            if isinstance(a, dict) and a.get("ok") and "settings" not in a:
+                # the mod answers the settings it builds from the args (remote_modhub plannedSettings); a mod that
+                # answers other ones is tested on its own, with settings in the answer
+                a["settings"] = {"updateMetadata": (args or {}).get("updateMetadata")}
             return a
         tf3ctl.send = fake_send
         # force unload stands for a new mod here: out of the tool's table of folders held to a mod.io page
@@ -3387,7 +3391,7 @@ class ModhubPublishTest(unittest.TestCase):
         cmd, args, timeout = self.sent[0]
         self.assertEqual(cmd, "modhubPublish")
         self.assertEqual(args, {"folder": FU, "public": True, "firstUpload": True, "changelog": "First release.",
-                                "timeout": 120, "dryRun": True})
+                                "updateMetadata": True, "timeout": 120, "dryRun": True})
         self.assertEqual(timeout, 150)
         self.assertEqual(res["local"]["cover"], {"width": 1920, "height": 1080, "bytes": os.path.getsize(
             os.path.join(self.meta, "0.png"))})
@@ -3643,7 +3647,7 @@ class ModhubPublishUpdateTest(unittest.TestCase):
         cmd, args, _ = self.sent[0]
         self.assertEqual(cmd, "modhubPublish")
         self.assertEqual(args, {"folder": FU, "public": True, "update": True, "modioId": self.MODIO,
-                                "changelog": "Wording.", "dryRun": True})
+                                "changelog": "Wording.", "updateMetadata": False, "dryRun": True})
         self.assertNotIn("firstUpload", args)
         self.assertEqual(res["update"], {
             "modioId": self.MODIO, "name": MODINFO["name"], "modioTitle": "Auto Force Unload", "modioVisible": True,
@@ -3655,6 +3659,88 @@ class ModhubPublishUpdateTest(unittest.TestCase):
         self.assertEqual(self.history(), [])
         # the mod reads it as it was meant
         self.assertEqual(mod_reads(tf3ctl.command_text(9, "modhubPublish", args))["args"], args)
+
+    def test_an_update_keeps_the_page_s_fields_unless_update_metadata_is_given(self):
+        # without --update-metadata: the mod is asked for false, the answer says so, and why the name stays
+        self.answers = [self.dry(), self.updated()]
+        res = self.run_publish(*(self.UPDATE + ("--previous-revision", "10001")))
+        self.assertTrue(res["ok"], res)
+        self.assertEqual([a["updateMetadata"] for _, a, _ in self.sent], [False, False])
+        self.assertIs(res["updateMetadata"], False)
+        self.assertNotIn("updateMetadataWarning", res)
+        self.assertIn("name, summary and description stay as they are", res["updateMetadataNote"])
+        self.assertIs(self.mark_at_send[1]["updateMetadata"], False)
+        self.assertIs(self.history()[-1]["updateMetadata"], False)
+        # the dry run names a name that would not go up (modinfo.json's against mod.io's title)
+        self.revision(10004)
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--dry-run",)))
+        self.assertTrue(res["ok"], res)
+        self.assertIs(res["updateMetadata"], False)
+        self.assertIn("is not mod.io's title \"Auto Force Unload\", which stays", res["updateMetadataNote"])
+
+    def test_update_metadata_sends_true_and_warns_in_the_dry_run_and_the_upload(self):
+        self.answers = [self.dry()]
+        res = self.run_publish(*(self.UPDATE + ("--update-metadata", "--dry-run", "--previous-revision", "10001")))
+        self.assertTrue(res["ok"], res)
+        self.assertIs(self.sent[0][1]["updateMetadata"], True)
+        self.assertIs(res["updateMetadata"], True)
+        self.assertEqual(res["updateMetadataWarning"], tf3ctl.UPDATE_METADATA_WARNING)
+        self.assertIn("description are replaced", res["updateMetadataWarning"])
+        self.assertIn("has to be put back", res["updateMetadataWarning"])
+        self.assertNotIn("updateMetadataNote", res)
+        self.assertEqual(self.history(), [])
+        self.sent, self.mark_at_send = [], []
+        self.answers = [self.dry(), self.updated()]
+        res = self.run_publish(*(self.UPDATE + ("--update-metadata", "--previous-revision", "10001")))
+        self.assertTrue(res["ok"], res)
+        self.assertEqual([a["updateMetadata"] for _, a, _ in self.sent], [True, True])
+        self.assertEqual(res["updateMetadataWarning"], tf3ctl.UPDATE_METADATA_WARNING)
+        self.assertIs(self.mark_at_send[1]["updateMetadata"], True)
+        h = self.history()[-1]
+        self.assertEqual((h["mode"], h["updateMetadata"], h["outcome"]), ("update", True, "success"))
+
+    def test_a_mod_that_would_send_another_update_metadata_is_refused_before_the_upload(self):
+        # an older remote_probe always sends true: the dry run before the upload stops it, nothing goes up
+        for answer, says in (({"updateMetadata": True}, "updateMetadata true, not false"),
+                             ({}, "updateMetadata null, not false")):
+            self.sent = []
+            dry = self.dry()
+            dry["settings"] = answer
+            self.answers = [dry]
+            res = self.run_publish(*(self.UPDATE + ("--previous-revision", "10001")))
+            self.assertFalse(res["ok"])
+            self.assertIn(says, res["error"])
+            self.assertTrue(res["preflight"])
+            self.assertEqual(len(self.sent), 1, "only the dry run")
+            self.assertIsNone(tf3ctl.read_pending())
+            self.assertEqual(self.history(), [])
+        dry = self.dry()
+        dry["settings"] = {"updateMetadata": False}
+        self.answers = [dry]
+        self.sent = []
+        res = self.run_publish(*(self.UPDATE + ("--update-metadata", "--dry-run", "--previous-revision", "10001")))
+        self.assertFalse(res["ok"])
+        self.assertIn("updateMetadata false, not true", res["error"])
+
+    def test_a_first_upload_always_sends_update_metadata_and_refuses_the_flag(self):
+        os.remove(os.path.join(self.meta, "mod.io_fileid.txt"))
+        self.refused("--update-metadata is only for an update", *(self.FULL + ("--update-metadata",)))
+        self.refused("--update-metadata is only for an update", *(self.FULL + ("--update-metadata", "--dry-run")))
+
+        def first():
+            with open(os.path.join(self.meta, "mod.io_fileid.txt"), "w") as f:
+                f.write(self.MODIO)
+            return {"ok": True, "publishCalled": True, "modId": self.MODIO, "result": {"success": True}}
+        self.answers = [{"ok": True, "dryRun": True}, first]
+        res = self.run_publish(*self.FULL)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual([a["updateMetadata"] for _, a, _ in self.sent], [True, True])
+        self.assertIs(res["updateMetadata"], True)
+        self.assertNotIn("updateMetadataWarning", res, "no page yet to overwrite")
+        self.assertIn("a first upload sends", res["updateMetadataNote"])
+        self.assertIs(self.mark_at_send[1]["updateMetadata"], True)
+        self.assertEqual((self.history()[-1]["mode"], self.history()[-1]["updateMetadata"]), ("firstUpload", True))
 
     def updated(self, modid=None):
         def answer():
@@ -3792,7 +3878,7 @@ class ModhubPublishUpdateTest(unittest.TestCase):
 
     def dry_with(self, meta):
         answer = self.dry()
-        answer["settings"] = {"setPublic": True, "updateMetadata": True, "changeLog": "Wording.",
+        answer["settings"] = {"setPublic": True, "updateMetadata": False, "changeLog": "Wording.",
                               "additionalMetadata": meta}
         return answer
 
@@ -3971,6 +4057,13 @@ class ModhubPublishUpdateEndToEndTest(unittest.TestCase):
         self.assertEqual((res["mode"], res["modioId"], res["wouldPublish"], res["publishCalled"]),
                          ("update", "6543965", True, False))
         self.assertEqual(res["checks"]["modhubIdValue"], "6543965")
+        self.assertIs(res["settings"]["updateMetadata"], False)
+        self.assertIs(res["updateMetadata"], False)
+        code, res = self.ctl(*(full + ("--dry-run", "--previous-revision", "10001", "--update-metadata")))
+        self.assertEqual(code, 0, res)
+        self.assertIs(res["settings"]["updateMetadata"], True)
+        self.assertIn("updateMetadataWarning", res)
+        code, res = self.ctl(*(full + ("--dry-run", "--previous-revision", "10001")))
         self.assertEqual((res["update"]["modioTitle"], res["update"]["modioVersion"], res["update"]["revision"],
                           res["update"]["previousRevision"]), ("Auto Force Unload", "10001", 10003, 10001))
         self.assertIsNone(tf3ctl.read_pending())
@@ -3989,8 +4082,9 @@ class ModhubPublishUpdateEndToEndTest(unittest.TestCase):
         self.assertTrue(res["pendingCleared"])
         with open(tf3ctl.history_path(), encoding="utf-8") as f:
             h = json.loads(f.readlines()[-1])
-        self.assertEqual((h["outcome"], h["mode"], h["revision"], h["modId"], h["version"]),
-                         ("success", "update", 10003, "6543965", "1.0.3"))
+        self.assertEqual((h["outcome"], h["mode"], h["revision"], h["modId"], h["version"], h["updateMetadata"]),
+                         ("success", "update", 10003, "6543965", "1.0.3", False))
+        self.assertIs(res["settings"]["updateMetadata"], False)
         # the same revision again: the tool refuses it from the history (exit 2), before the mod sees anything
         code, res = self.ctl(*full)
         self.assertEqual(code, 2)

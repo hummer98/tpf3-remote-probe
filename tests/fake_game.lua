@@ -202,8 +202,9 @@ function M.installModhub(g, spec)
 			end,
 		}, "AsyncResult")
 	end
-	-- PublishSettings: its fields can be set, as the engine's; a field it does not have is an error
-	local SETTINGS = { changeLog = "", updateMetadata = false, setPublic = false, isSavegame = false,
+	-- PublishSettings: its fields can be set, as the engine's; a field it does not have is an error. updateMetadata
+	-- starts true (the engine's start value is not documented): an update that sends false must set it
+	local SETTINGS = { changeLog = "", updateMetadata = true, setPublic = false, isSavegame = false,
 		issuesConfirmed = false, additionalMetadata = false }
 	local function publishSettings()
 		g.settingsMade = g.settingsMade + 1
