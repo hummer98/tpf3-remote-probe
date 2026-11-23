@@ -55,6 +55,8 @@ M.MENU_ONLY = { modhubStatus = true, modhubValidate = true, modhubPublish = true
 M.COMMANDS.reach = true
 -- around (remote_around.lua): read only, in a game
 M.COMMANDS.around = true
+-- lanes (remote_lanes.lua): read only, in a game
+M.COMMANDS.edgeLanes = true
 
 ---------------------------------------------------------------------------------------------------------------------
 -- mod settings (mod.json params): each arrives as a 1-based index into these lists
@@ -3786,7 +3788,34 @@ function M.aroundRequest(args)
 			end
 		end
 	end
-	return { x = p[1], y = p[2], radius = r, limit = limit, kinds = kinds }
+	if args.lanes ~= nil and type(args.lanes) ~= "boolean" then return nil, "lanes must be true or false" end
+	return { x = p[1], y = p[2], radius = r, limit = limit, kinds = kinds, lanes = args.lanes == true }
+end
+
+-- lanes (read only, remote_lanes.lua): edges ("a,b" or a list of road / track piece ids, 1-EDGE_LANES_MAX),
+-- network (default true: the transport network's edges too) -> the request, or nil and why
+M.EDGE_LANES_MAX = 20
+function M.edgeLanesRequest(args)
+	args = type(args) == "table" and args or {}
+	local list = args.edges
+	if type(list) == "number" then list = { list } end
+	if type(list) == "string" then
+		local t = {}
+		for part in (list .. ","):gmatch("([^,]*),") do t[#t + 1] = part end
+		list = t
+	end
+	if type(list) ~= "table" or #list == 0 then return nil, "edges: give piece ids separated by commas" end
+	if #list > M.EDGE_LANES_MAX then return nil, "edges: at most " .. M.EDGE_LANES_MAX .. " pieces" end
+	local out = {}
+	for _, x in ipairs(list) do
+		local n = tonumber(type(x) == "string" and x:gsub("^%s+", ""):gsub("%s+$", "") or x)
+		if n == nil or n ~= math.floor(n) or n < 0 or n > 2 ^ 31 then
+			return nil, "edges: " .. tostring(x) .. " is no entity id (a whole number, 0 or more)"
+		end
+		out[#out + 1] = n
+	end
+	if args.network ~= nil and type(args.network) ~= "boolean" then return nil, "network must be true or false" end
+	return { edges = out, network = args.network ~= false }
 end
 
 -- a transf's turn about the vertical (radians) from its first column (m11, m12: cos, sin); nil when not readable

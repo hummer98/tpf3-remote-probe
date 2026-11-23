@@ -488,6 +488,7 @@ python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner  
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # asks the engine (changes the game)
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
+python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lanes (see "A road's lanes")
 ```
 
 - Builds one straight road piece between two points (x,y[,z], metres; no z: the terrain's height), with no click:
@@ -882,6 +883,41 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
   hold is not listed (trees, if their asset groups are not in it).
 - **Not checked in game yet** (written 2026-11-23): which entities the octree has, whether a town building's box
   is on its `TOWN_BUILDING` entity or its construction, the time it takes on a large map.
+- `--lanes`: each `street` and `track` listed also gets `lanes`, as `lanes --edge` answers a piece (without the
+  transport network), for the nearest 100 of them (the rest: `lanesSkipped`); the answer's `lanesRead` and
+  `lanesNote`.
+
+### A road's lanes (`lanes`, read only)
+
+```
+python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
+```
+
+- Reads only (no warning to others, nothing sent). Up to 20 road or track pieces by id (`around --kinds street`,
+  `road --inspect-node` give them); each in the order asked, or an `error` (no such entity, no `BASE_EDGE`); `ok`
+  when at least one was read, `read` / `asked`.
+- Per piece: `edge`, `roadType` (`STREET` / `TRACK`), `edgeType` (`NORMAL` / `BRIDGE` / `TUNNEL`), `streetType`
+  (the street template, `BASE_EDGE`'s roadTemplate), `roadStyle`, `node0` / `node1`, `from` / `to`, `chord`
+  (straight metres between the ends), `distance` (`BASE_EDGE`'s own, as read), `width` (all lanes), `laneCount`,
+  `tramTrackType` (`NO`, `YES`, `ELECTRIC`: from the lanes, `ELECTRIC_TRAM` before `TRAM`), `tramLanes`,
+  `busLanes` (`BUS` without `CAR`) and `hasBusLane`, `roadLanes`, `sidewalks` (lane numbers); `street`: what
+  `BASE_EDGE_STREET` has of `streetType`, `tramTrackType`, `hasBus` (TF2's fields; the TF3 tealdef does not list
+  them).
+- Per lane (`lanes`, `laneConfigs` of `BASE_EDGE`, at most 32): `index` (1 = the leftmost looking from `node0` to
+  `node1`, as type.d.tl says they run), `side` (`left` / `middle` / `right`), `centre`, `left`, `right` (metres
+  from the piece's middle, + to the right), `forward` and `direction` (`node0->node1` or `node1->node0`), `modes`
+  (transport modes by name: `PERSON`, `CARGO`, `CAR`, `BUS`, `TRUCK`, `TRAM`, `ELECTRIC_TRAM`, `TRAIN`, ...),
+  `modeKeys` (the keys as read), `speed` (m/s) and `speedKmh`, `width`, `offset`, `height`.
+- `network` (unless `--no-network`): the piece's `TRANSPORT_NETWORK` edges in the engine's order (at most 64;
+  `networkCount`): `index` (0-based), `modes`, `speedLimit`, `length`, `width`, `geometry`, `offset` (a cubic
+  offset spline's). They are not matched to the lanes here.
+- `centre` is **worked out**: the widths laid side by side left to right, plus the lane's `offset`. The base's
+  templates give offset as a small nudge (town_new_medium_tram_electrified: sidewalks 0.15 / -0.15, the tram
+  lanes -0.5 / 0.5), so + to the right is a guess from those numbers. Without every width, `side` comes from the
+  lane's number alone and there are no metres.
+- **Not checked in game yet** (written 2026-11-23): whether the game's `laneConfigs` keep the template's order
+  and offsets, whether `transportModes`' keys are the enum's values (`modeKeys`: a sidewalk should read
+  `CARGO,PERSON`), what the transport network's edges are per lane.
 
 ### Where a construction fits (`fit`)
 
@@ -1285,6 +1321,7 @@ Not checked yet:
 - `company` and `company init`, entirely (see the new game's company progression under "Saves and new games").
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `parcels`, entirely (read only, see "Town building parcels along a road").
+- `lanes` and `around --lanes`, entirely (read only, see "A road's lanes").
 - `around`, entirely (read only, see "What stands near a point"); `build` / `road` `hits`, `--remove-buildings`,
   `--join-streets` and `joins`; `build --dry-run --engine-check` and `fit`, entirely.
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.

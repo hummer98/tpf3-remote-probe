@@ -56,8 +56,13 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # again when basePopulation is missing or 0 while towns have population (a start with no towns)
   tf3ctl.py fit --res R --at x,y [--radius 100] [--size W,D] [--mouth DX,DY] [--houses N] [--check 3]   # where
             # it fits: around's list searched here, the best few asked of the engine (dry runs); builds nothing
-  tf3ctl.py around --at x,y [--radius 100] [--kinds town_building,street,...|all] [--limit 200]   # read only: what
-            # stands near a point (kind, name, box, distance; constructions' road mouths in their own frame)
+  tf3ctl.py around --at x,y [--radius 100] [--kinds town_building,street,...|all] [--limit 200] [--lanes]   # read
+            # only: what stands near a point (kind, name, box, distance; constructions' road mouths in their own
+            # frame; --lanes: each street's and track's lanes, as lanes --edge)
+  tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]   # read only: a road or track piece's lanes left to right
+            # from node0 (number, side and metres from the middle, direction, transport modes, speed, width), its
+            # street type, bridge / tunnel, tram track (NO / YES / ELECTRIC) and bus lanes; the transport network's
+            # own edges too
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
             # building parcels left and right of a road piece (count, built on, centre, area), whether the piece is in
             # a construction; a rect: each street piece with an end or its middle in it, and totals
@@ -3683,8 +3688,26 @@ AROUND_KINDS = ("street", "track", "node", "town_building", "station", "depot", 
                 "asset", "town", "model", "moving", "other", "map")  # the mod's core.AROUND_KINDS
 
 
+EDGE_LANES_MAX = 20  # the mod's core.EDGE_LANES_MAX
+
+
+def lanes_args(ns):
+    """lanes: --edge ID[,ID...] (1-20 piece ids), --no-network; checked as the mod checks them."""
+    parts = [p.strip() for p in (ns.edge or "").split(",")]
+    try:
+        ids = [int(p) for p in parts]
+    except ValueError:
+        raise ToolError("--edge must be piece ids separated by commas (around --kinds street lists them)")
+    if not ids or len(ids) > EDGE_LANES_MAX or any(i < 0 for i in ids):
+        raise ToolError("--edge: 1-%d piece ids, each 0 or more" % EDGE_LANES_MAX)
+    args = {"edges": ids}
+    if ns.no_network:
+        args["network"] = False
+    return args
+
+
 def around_args(ns):
-    """around: --at x,y, --radius, --kinds a,b (or all), --limit; checked as the mod checks them."""
+    """around: --at x,y, --radius, --kinds a,b (or all), --limit, --lanes; checked as the mod checks them."""
     try:
         at = [float(x) for x in (ns.at or "").split(",")]
     except ValueError:
@@ -3707,6 +3730,8 @@ def around_args(ns):
         if not 1 <= ns.limit <= AROUND_LIMIT_MAX:
             raise ToolError("--limit must be 1-%d" % AROUND_LIMIT_MAX)
         args["limit"] = ns.limit
+    if getattr(ns, "lanes", False):
+        args["lanes"] = True
     return args
 
 
@@ -4630,6 +4655,15 @@ def make_parser():
                     "the size of the map): "
                     + ", ".join(AROUND_KINDS))
     ar.add_argument("--limit", type=int, help="entries listed, nearest first (default 200, at most %d)" % AROUND_LIMIT_MAX)
+    ar.add_argument("--lanes", action="store_true", help="also each street's and track's lanes (the nearest 100), "
+                    "as lanes --edge gives them without the transport network")
+    la = sub.add_parser("lanes", help="read only: road or track pieces' lanes, left to right looking from node0 to "
+                        "node1: number, side and metres from the middle, direction, transport modes (TRAM, "
+                        "ELECTRIC_TRAM, BUS, CAR, PERSON, ...), speed, width; the piece's street type, bridge or "
+                        "tunnel, tram track (NO, YES, ELECTRIC: from the lanes) and bus lanes")
+    la.add_argument("--edge", required=True, metavar="ID[,ID...]", help="piece ids (around --kinds street, "
+                    "road --inspect-node), at most %d" % EDGE_LANES_MAX)
+    la.add_argument("--no-network", action="store_true", help="leave out the transport network's own edges")
     fi = sub.add_parser("fit", help="where a construction fits near a point: around's list searched here (its box, "
                         "turns, a road end for its mouth, town buildings near), the best few asked of the engine "
                         "(build --dry-run --engine-check: counts as changing the game). Builds nothing")
@@ -4971,6 +5005,8 @@ def main(argv=None):
             res = send("parcels", parcels_args(ns))
         elif ns.cmd == "around":
             res = send("around", around_args(ns), timeout=60)
+        elif ns.cmd == "lanes":
+            res = send("edgeLanes", lanes_args(ns))
         elif ns.cmd == "fit":
             res = cmd_fit(ns)
         elif ns.cmd == "persons":

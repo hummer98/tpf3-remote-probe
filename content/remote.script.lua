@@ -1210,8 +1210,14 @@ handlers.road = build.road
 handlers.roadInspect = build.roadInspect -- (read only)
 -- around (remote_around.lua): read only, what stands near a point (kinds, names, boxes; constructions' mouths);
 -- its describe also names what a refused build or road collided with
+-- lanes (remote_lanes.lua): read only, a road or track piece's lanes (modes, side, speed, width) and tram track;
+-- around --lanes adds them to its streets and tracks
+local lanesMod = (ug_require or require)(MOD .. "::/remote_lanes.lua")
+local lanes = lanesMod.new({ core = core, answer = answer, fail = fail, try = try })
+for k, fn in pairs(lanes.handlers) do handlers[k] = fn end
 local around = (ug_require or require)(MOD .. "::/remote_around.lua").new({ core = core, answer = answer, fail = fail,
-	try = try, appTime = fineTime, construction = build.describe })
+	try = try, appTime = fineTime, construction = build.describe,
+	lanes = function(e) return lanes.read(e) end, lanesNote = lanesMod.NOTE })
 for k, fn in pairs(around.handlers) do handlers[k] = fn end
 build.setDescribeHits(around.describe)
 -- terrain (remote_terrain.lua, terrain_work.lua): a rectangle made flat or a slope; terrainApi looks at the functions
