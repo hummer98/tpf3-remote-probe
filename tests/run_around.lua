@@ -389,6 +389,76 @@ return function(t)
 		truthy(not g.crashed, g.crashed)
 	end)
 
+	-- 2026-11-23 (P12, probe-flat-base): road_depot at (0, 3600) over water. The engine check said buildable,
+	-- critical false in both contexts, with infos "陸上に配置" and 6 collisions; the build was refused, its errorState
+	-- critical false with the same infos. infos with critical not set are a refusal (by the field, not the words)
+	test("build / road --dry-run --engine-check: infos only (critical not set) refuse it; without infos as before", function()
+		local WET = function(x, y) return y > 3000 end
+		local g = buildWorld({ landInfos = WET })
+		local d = buildRun(g, 2790, string.format('{ res = %q, at = "0,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.buildable, false); eq(d.verdict, "refused"); eq(d.critical, nil, "the engine's critical kept")
+		eq(d.infosRefusal, true); eq(d.infos[1], "陸上に配置")
+		truthy(d.error:find("would refuse it: 陸上に配置 (errorState.infos, critical not set", 1, true), d.error)
+		eq(d.engineContexts.own.verdict, "refused"); eq(d.engineContexts.build.verdict, "refused")
+		eq(d.engineContexts.build.infosRefusal, true); eq(d.contextsDisagree, nil)
+		truthy(d.footprint, "the box still given (fit takes its box from it)")
+		eq(#g.buildCmds, 0, "nothing sent")
+		-- the build: refused as the engine does, its reason the infos
+		local a = buildRun(g, 2791, string.format('{ res = %q, at = "0,3600" }', RAMP))
+		eq(a.ok, false); truthy(a.error:find("refused it: no message; infos: 陸上に配置", 1, true), a.error)
+		eq(next(g.built), nil)
+		-- on land: no infos, as before (buildable, no infosRefusal)
+		d = buildRun(g, 2792, string.format('{ res = %q, at = "0,100", dryRun = true, engineCheck = true }', RAMP))
+		truthy(d.ok, d.error); eq(d.verdict, "buildable"); eq(d.buildable, true); eq(d.infosRefusal, nil); eq(d.infos, nil)
+		-- infos in the engine's own context only (the Context form raises): refused all the same
+		local g1 = buildWorld({ landInfos = WET, proposalDataOneArg = true })
+		d = buildRun(g1, 2793, string.format('{ res = %q, at = "0,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.verdict, "refused"); eq(d.engineCheck, "makeProposalData (SimpleProposal)"); eq(d.caution, nil)
+		-- a road over water: the same
+		local r = roadWorld({ landInfos = WET })
+		local a2 = roadRun(r, 2794, '{ from = "0,3500", to = "0,3600", dryRun = true, engineCheck = true }')
+		eq(a2.ok, false); eq(a2.verdict, "refused"); eq(a2.infosRefusal, true)
+		truthy(a2.error:find("陸上に配置 (errorState.infos", 1, true), a2.error)
+		a2 = roadRun(r, 2795, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true }')
+		truthy(a2.ok, a2.error); eq(a2.verdict, "buildable"); eq(a2.infosRefusal, nil)
+		truthy(not g.crashed, g.crashed); truthy(not g1.crashed, g1.crashed); truthy(not r.crashed, r.crashed)
+	end)
+
+	-- only one context with infos (the build's refuses, the engine's own does not): the stricter, the infos named
+	-- in contextsNote; a build refused with no message asked again picks the infos refusal
+	test("engine-check: infos in the build's context only; the recheck of a silent refusal takes infos", function()
+		local WET = function(x, y) return y > 3000 end
+		local g = buildWorld({ landInfos = WET, landInfosBuildOnly = true })
+		local d = buildRun(g, 2796, string.format('{ res = %q, at = "0,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.verdict, "refused"); eq(d.contextsDisagree, true)
+		eq(d.engineContexts.own.verdict, "buildable"); eq(d.engineContexts.build.verdict, "refused")
+		truthy(d.contextsNote:find("the build's context: refused (infos: 陸上に配置)", 1, true), d.contextsNote)
+		-- the build's callback silent: asked again, the infos are its reason
+		g = buildWorld({ landInfos = WET, silentCallback = true })
+		local a = buildRun(g, 2797, string.format('{ res = %q, at = "0,3600" }', RAMP))
+		eq(a.ok, false); truthy(a.error:find("refused it: no message; infos: 陸上に配置 (asked again", 1, true), a.error)
+		-- the other way round: infos in the engine's own context only, the build's buildable: the stricter (own)
+		g = buildWorld({ landInfos = WET, landInfosOwnOnly = true })
+		d = buildRun(g, 2798, string.format('{ res = %q, at = "0,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.verdict, "refused"); eq(d.engineCheck, "makeProposalData (SimpleProposal)")
+		eq(d.engineContexts.build.verdict, "buildable"); eq(d.engineContexts.own.infosRefusal, true)
+		-- and the build there goes through (the fake's build is the build's context): no infosRefusal on its answer
+		a = buildRun(g, 2799, string.format('{ res = %q, at = "0,3600" }', RAMP))
+		truthy(a.ok, a.error); eq(a.infosRefusal, nil)
+		-- critical and infos together: a critical refusal, its message the reason, no infosRefusal
+		g = buildWorld({ landInfos = WET, blocked = function(x, y) return y > 3000 and 601 or nil end })
+		d = buildRun(g, 2800, string.format('{ res = %q, at = "0,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.critical, true); eq(d.infosRefusal, nil)
+		truthy(d.error:find("would refuse it: Collision (dry run", 1, true), d.error)
+		-- a road over fields and water: refused for the infos, the fields' warning kept
+		local FIELDS = { 9594 }
+		local r = roadWorld({ landInfos = WET, fields = function(x, y) if y > 3000 then return FIELDS end end })
+		local b = roadRun(r, 2801, '{ from = "0,3500", to = "0,3600", dryRun = true, engineCheck = true, removeFields = true }')
+		eq(b.ok, false); eq(b.verdict, "refused"); eq(b.infosRefusal, true); eq(b.warnings[1], "1 fields will be removed")
+		truthy(b.error:find("陸上に配置 (errorState.infos", 1, true), b.error)
+		truthy(not g.crashed, g.crashed); truthy(not r.crashed, r.crashed)
+	end)
+
 	test("build --dry-run --engine-check: refused in the engine's own context only, the stricter verdict", function()
 		local g = buildWorld({ landOnly = function(x) return x > 2500 end, landOnlyOwnOnly = true })
 		local d = buildRun(g, 2778, string.format('{ res = %q, at = "2600,3600", dryRun = true, engineCheck = true }', RAMP))

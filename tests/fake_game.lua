@@ -1791,7 +1791,12 @@ end
 -- alone. spec.silentCallback: the build's callback carries critical but no messages, warnings or infos (as the
 -- refusal on water came back, the reason only in the log); spec.noErrorState: its ProposalData has no errorState;
 -- spec.infosOnly: its reason is in errorState.infos, messages empty. spec.landOnlyOwnOnly: the other way round, only
--- makeProposalData alone refuses it (the stricter of a dry run's two verdicts).
+-- makeProposalData alone refuses it (the stricter of a dry run's two verdicts). spec.landInfos(x, y) -> true: the
+-- engine's word for it goes in errorState.infos only, critical false, in every context (makeProposalData alone or
+-- with a Context, and the build's callback), and the build is refused all the same (2026-11-23, P12: road_depot at
+-- (0, 3600) over water: the engine check said critical false, infos "陸上に配置", collisions 6; the build was refused,
+-- its errorState critical false with the same infos, the log "ProposalData error: 陸上に配置");
+-- spec.landInfosBuildOnly: not in makeProposalData alone (the engine's own context); spec.landInfosOwnOnly: only there
 -- The octree finds the constructions in g.built by their transf's position.
 -- A construction's shape may have free pieces (shape.free = { { i, j } }: an industry's arms, street_cross_01 / 02,
 -- not among its frozenEdges) and frozen nodes (shape.frozenNodes = { i }: CONSTRUCTION.frozenNodes, the inner end
@@ -2138,6 +2143,13 @@ function M.installBuild(g, spec)
 				table.insert(data.errorState.messages, "Collision")
 				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
 			end
+			-- (spec.landInfos for a street piece too, at its middle)
+			if spec.landInfos and spec.landInfos((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
+				and not (spec.landInfosBuildOnly and ctx and ctx.engineOwn) then
+				data.errorState.infos = data.errorState.infos or {}
+				table.insert(data.errorState.infos, "陸上に配置")
+				data.infosRefuse = true
+			end
 			-- spec.fields(x, y) -> { field entities } in the piece's way: with the Context's gatherFields they are
 			-- removed (a warning: "N fields will be removed", the game's "3 個の畑が取り除かれます"), else a collision
 			-- with each (2026-11-23 in a game: a forest's fields, refused with gatherFields off)
@@ -2187,6 +2199,11 @@ function M.installBuild(g, spec)
 				and not (dry and spec.landOnlyBuildOnly)) then
 				data.errorState.critical = true
 				table.insert(data.errorState.messages, "陸上に配置")
+			end
+			if spec.landInfos and spec.landInfos(ce.transf[13], ce.transf[14]) and not (spec.landInfosBuildOnly and own) and not (spec.landInfosOwnOnly and not own) then
+				data.errorState.infos = data.errorState.infos or {}
+				table.insert(data.errorState.infos, "陸上に配置")
+				data.infosRefuse = true
 			end
 			-- spec.houses(x, y) -> { town building ids } in its way: with the Context's gatherBuildings they go
 			-- (CollisionInfo.buildingEntities, a guess of the engine's), else a collision with each
@@ -2292,6 +2309,8 @@ function M.installBuild(g, spec)
 		-- spec.refuseBuild: every build refused, whatever makeProposalData says (with silentCallback: no reason)
 		if spec.refuseBuild then data.errorState.critical = true end
 		if data.errorState.critical and not cmd.ignoreErrors then return false, data, {} end
+		-- (spec.landInfos: refused with critical false, the reason in infos only)
+		if data.infosRefuse and not cmd.ignoreErrors then return false, data, {} end
 		if data.fieldsGone then g.fieldsRemoved = (g.fieldsRemoved or 0) + data.fieldsGone end
 		-- a construction whose own script fails its check (scriptFails): the engine logs "Error during construction
 		-- update" and still says success, with no errors, no entities, nothing paid and nothing built (2026-11-22, a

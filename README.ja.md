@@ -396,6 +396,14 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   `contextsDisagree: true` と `contextsNote` が付きます。わけ: エンジン自身の context は、build が衝突した畑を取り除く扱いに
   し、build が断られた水の上を建てられると答えました (2026-11-23)。Context の形が GUI のスレッドで build と同じに判定するかは
   **ゲーム内では未確認**です。その形がエラーになるときは、前と同じくエンジン自身の context の判定です (`engineContext`、`caution`)。
+- `--dry-run --engine-check` (`build` と `road`。`fit` の候補の確認も) は、`critical` が立たずに `errorState.infos` だけが
+  あるときも断りとして扱います: `buildable: false`、`verdict: "refused"`、`infosRefusal: true` で、`error` に infos の文と
+  `(errorState.infos, critical not set: ...)` が入ります。`critical` はエンジンが立てていないので付きません。文言ではなく欄で決めます
+  (文言はゲームの言語で変わるため)。2026-11-23 の計測: 水の上に置いた道路の車庫は、2つの context とも `critical false`
+  で、infos に `陸上に配置`、collisions 6 でしたが、本番の build は断られました (その `errorState` も同じ。ログに
+  `ProposalData error: 陸上に配置`)。前の回では `海岸線に配置` も同じでした。建てられるのに infos が付く例はまだ見ていません。
+  もし出たら、建てられる所を断ると答えることになります。`fit` は、確認の答えが buildable でも infos があれば (前の版の
+  MOD の答え)、その場所を採りません。
 - `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は
   `engine/util.d.tl:939` では `Proposal` 用ですが、GUI のスレッドでは `SimpleProposal` を受けます。建物のほうはまだ
   聞いていません)。プローブが確認するのは、名前・送る params・高さと、
@@ -941,7 +949,8 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   `pieces`) と `road` (`road --from=... --to=... --snap 3`。build のあとに打つ。from は出入り口の新しい node につながる。
   道路そのものはエンジンに聞いていない)、`refusedFirst` (エンジンが断った候補と `hits`)。エンジンが警告つきで建てられると言った候補と、町の建物を
   取り除くと言った候補は採りません。その答えはエンジン自身の context でのもので、本番の build は畑も建物も集めない
-  ためです (道路で 2026-11-23 にそうして断られた)。エンジンに聞けなかったときは、断られたとは数えずに止まります
+  ためです (道路で 2026-11-23 にそうして断られた)。`errorState.infos` だけがある候補も断られたと数えます (`build` を参照。
+  そういう build は断られる、2026-11-23)。エンジンに聞けなかったときは、断られたとは数えずに止まります
   (`checked: false`)。空きが無ければ `ok: false`・「no free place」と、`blockers` (いちばん多くの候補を邪魔した物:
   id・種類・名前・位置・数)。空いていても家が足りなかった候補の数は `tooFewHouses` です。試す候補は 200000 個までです
   (それぞれ近くの物とだけ比べます。家 1600 戸の町で 85000 個がおよそ 2 秒)。途中で止まったときは `complete` が false

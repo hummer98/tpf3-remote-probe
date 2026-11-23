@@ -239,6 +239,12 @@ function M.new(ctx)
 			errors = errors,
 			warnings = warnings,
 			infos = infos and #infos > 0 and infos or nil,
+			-- infos with critical not set: taken as a refusal. The engine puts where a construction may stand (on
+			-- land, on the coast) there and refuses the build all the same (2026-11-23, P12: a depot over water,
+			-- the check critical false with infos "陸上に配置" and the build refused, its errorState the same and the
+			-- game's log "ProposalData error: 陸上に配置"). By the field, not its words (they change with the
+			-- game's language); infos that do not refuse a build are not seen yet
+			infosRefusal = critical ~= true and infos ~= nil and #infos > 0 or nil,
 			errorStateRead = read,
 			collisions = #hit > 0 and core.array(hit) or nil,
 			-- the boxes of the constructions the proposal adds (ProposalData.toAddData[i].boundingVolume, type.d.tl):
@@ -269,6 +275,18 @@ function M.new(ctx)
 		if v.warnings and #v.warnings > 0 then return "no message; warnings: " .. table.concat(v.warnings, "; "), true end
 		return "no message (" .. tostring(v.errorStateRead or (v.callbackError and ("reading the callback's data " ..
 			"raised: " .. v.callbackError)) or "nothing read") .. ")", false
+	end
+
+	-- whether a verdict refuses: critical, or infos only (infosRefusal, in verdict above)
+	local function refuses(v)
+		return v ~= nil and (v.critical == true or v.infosRefusal == true)
+	end
+
+	-- the reason a dry run gives for its refusal: reasonOf's, but infos only named as such (critical not set)
+	local function dryReason(v)
+		if v.critical or not v.infosRefusal then return (reasonOf(v)) end
+		return table.concat(v.infos, "; ") .. " (errorState.infos, critical not set: the engine refuses such a " ..
+			"build all the same)"
 	end
 
 	local function setOf(list)
@@ -609,14 +627,15 @@ function M.new(ctx)
 			out.checked, out.engineCheck = true, "makeProposalData (" .. form .. ")"
 			out.engineContext = form == "SimpleProposal" and "the engine's own (the proposal alone)" or "the build's"
 			contextsInto(out, both)
-			if form == "SimpleProposal" and not v.critical and ((v.warnings and #v.warnings > 0) or v.buildingsInWay) then
+			local no = refuses(v)
+			if form == "SimpleProposal" and not no and ((v.warnings and #v.warnings > 0) or v.buildingsInWay) then
 				-- (as road's: the build gathers no fields or buildings, so what a warning lets through here may be a
 				-- collision there)
 				out.caution = "judged in the engine's own context, not the build's (no fields or buildings gathered): " ..
 					"a warning or buildings in the way here may still refuse the build"
 			end
-			out.buildable = not v.critical
-			out.verdict = v.critical and "refused" or ((v.warnings and #v.warnings > 0) and "buildable with warnings" or "buildable")
+			out.buildable = not no
+			out.verdict = no and "refused" or ((v.warnings and #v.warnings > 0) and "buildable with warnings" or "buildable")
 			if v.newBoxes and v.newBoxes[1] then
 				local b = v.newBoxes[1]
 				out.footprint = { x0 = b.x0 - r.x, y0 = b.y0 - r.y, x1 = b.x1 - r.x, y1 = b.y1 - r.y,
@@ -624,9 +643,9 @@ function M.new(ctx)
 					note = "the engine's box at this point and angle, less the point (axis aligned in the world)" }
 			end
 			out.balance = balance()
-			if v.critical then
+			if no then
 				out.ok = false
-				out.error = "the engine would refuse it: " .. reasonOf(v) .. " (dry run: nothing sent)"
+				out.error = "the engine would refuse it: " .. dryReason(v) .. " (dry run: nothing sent)"
 				if out.collisions and describeHits then
 					local okH, hits = pcall(describeHits, out.collisions, r.x, r.y)
 					if okH then out.hits = hits else out.hitsError = tostring(hits) end
@@ -770,6 +789,9 @@ function M.new(ctx)
 	local function finish(job)
 		local out, res = job.out, job.result
 		for k, v in pairs(res.verdict) do out[k] = v end
+		-- (infosRefusal is a dry run's mark: a build is judged by its success, and one that stood with infos is
+		-- no refusal)
+		if res.success then out.infosRefusal = nil end
 		out.balanceBefore, out.balanceAfter = job.before, balance()
 		if out.balanceBefore and out.balanceAfter then out.spent = out.balanceBefore - out.balanceAfter end
 		if job.kind == "road" then
@@ -846,7 +868,7 @@ function M.new(ctx)
 					-- (a refusal only: the build's context's first; the engine's own only when that one alone
 					-- refused, and named so)
 					local b, o = both and both.build, both and both.own
-					local pick = (b and b.critical and b) or (o and o.critical and o) or nil
+					local pick = (refuses(b) and b) or (refuses(o) and o) or nil
 					local again, gave
 					if pick then again, gave = reasonOf(pick) end
 					if gave then
@@ -1388,8 +1410,8 @@ function M.new(ctx)
 	local function summary(v, raised)
 		if not v then return { raised = raised } end
 		local warned = v.warnings ~= nil and #v.warnings > 0
-		return { verdict = v.critical and "refused" or (warned and "buildable with warnings" or "buildable"),
-			critical = v.critical, errors = v.errors, warnings = v.warnings, infos = v.infos,
+		return { verdict = refuses(v) and "refused" or (warned and "buildable with warnings" or "buildable"),
+			critical = v.critical, errors = v.errors, warnings = v.warnings, infos = v.infos, infosRefusal = v.infosRefusal,
 			collisions = v.collisions and #v.collisions or nil, cost = v.cost, errorStateRead = v.errorStateRead }
 	end
 	function engineCheck(sp, fields, buildings, streets)
@@ -1408,7 +1430,7 @@ function M.new(ctx)
 		local both = { own = summary(own, ownRaised), build = summary(mine, mineRaised) }
 		-- (refused in either: the stricter is the verdict, so a dry run never says buildable where one context
 		-- refuses; contextsDisagree says so)
-		if mine and not (own and own.critical and not mine.critical) then return mine, "SimpleProposal, Context", both end
+		if mine and not (refuses(own) and not refuses(mine)) then return mine, "SimpleProposal, Context", both end
 		return own, "SimpleProposal", both
 	end
 
@@ -1416,6 +1438,12 @@ function M.new(ctx)
 	-- buildable in the other, or warnings in one only), contextsDisagree and a note of which the build follows
 	function contextsInto(out, both)
 		if not both then return end
+		-- (a context's words: its messages, else its infos when they refuse it, named so)
+		local function why(s)
+			if s.errors and #s.errors > 0 then return " (" .. table.concat(s.errors, "; ") .. ")" end
+			if s.infosRefusal and s.infos then return " (infos: " .. table.concat(s.infos, "; ") .. ")" end
+			return ""
+		end
 		out.engineContexts = { own = both.own, build = both.build }
 		local a, b = both.own, both.build
 		if a.verdict and b.verdict and a.verdict ~= b.verdict then
@@ -1423,8 +1451,7 @@ function M.new(ctx)
 			out.contextsNote = string.format("the engine's own context (the proposal alone): %s%s; the build's " ..
 				"context: %s%s. The verdict here is the stricter of the two; the build is judged in the build's context, but which " ..
 				"of the two the engine really applies on the GUI thread is not checked in a game yet",
-				a.verdict, a.errors and #a.errors > 0 and (" (" .. table.concat(a.errors, "; ") .. ")") or "",
-				b.verdict, b.errors and #b.errors > 0 and (" (" .. table.concat(b.errors, "; ") .. ")") or "")
+				a.verdict, why(a), b.verdict, why(b))
 		end
 	end
 
@@ -1641,9 +1668,10 @@ function M.new(ctx)
 			for k, val in pairs(v) do out[k] = val end
 			out.checked, out.engineCheck = true, "makeProposalData (" .. form .. ")"
 			contextsInto(out, both)
-			out.buildable = not v.critical
+			local no = refuses(v)
+			out.buildable = not no
 			local warned = v.warnings ~= nil and #v.warnings > 0
-			out.verdict = v.critical and "refused" or (warned and "buildable with warnings" or "buildable")
+			out.verdict = no and "refused" or (warned and "buildable with warnings" or "buildable")
 			-- the proposal alone is judged in the engine's own context, not the build's: that one gathers fields
 			-- (its warning "fields will be removed") where the build, without --remove-fields, does not and collides
 			if form == "SimpleProposal" then
@@ -1668,9 +1696,9 @@ function M.new(ctx)
 				out.engineContext = "the build's"
 			end
 			out.balance = balance()
-			if v.critical then
+			if no then
 				out.ok = false
-				out.error = "the engine would refuse it: " .. reasonOf(v) .. " (dry run: nothing sent)"
+				out.error = "the engine would refuse it: " .. dryReason(v) .. " (dry run: nothing sent)"
 				if out.collisions and describeHits then
 					local okH, hits = pcall(describeHits, out.collisions, (a.x + b.x) / 2, (a.y + b.y) / 2)
 					if okH then out.hits = hits else out.hitsError = tostring(hits) end
