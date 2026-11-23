@@ -1075,6 +1075,18 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("build-tool", "--menu", "rail", "--template", "1")
         self.assertEqual(code, 1, "template needs res: refused by the mod")
 
+    def test_9xz_around(self):
+        code, res = self.ctl("around", "--at", "0,7000", "--radius", "120")
+        self.assertEqual(code, 0, res)
+        ids = {e["id"]: e for e in res["entities"]}
+        self.assertEqual(ids[9601]["kind"], "town_building")
+        self.assertEqual(ids[9601]["townName"], "Fakeham")
+        self.assertEqual(ids[9601]["box"]["x1"], 25)
+        self.assertEqual(ids[9604]["kind"], "field")
+        self.assertIn("ms", res)
+        code, res = self.ctl("around", "--at", "0,7000", "--kinds", "field")
+        self.assertEqual([e["id"] for e in res["entities"]], [9604])
+
     def test_9xy_parcels(self):
         code, res = self.ctl("parcels", "--edge", "9010")
         self.assertEqual(code, 0, res)
@@ -1519,6 +1531,52 @@ class QuitLaunchTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 tf3ctl.main(["parcels"])
         self.assertEqual(sent, [("parcels", {"edge": 12}), ("parcels", {"rect": [-5.0, -5.0, 5.0, 5.0], "list": True})])
+
+    def test_around_args_and_main(self):
+        parse = tf3ctl.make_parser().parse_args
+
+        def args(*a):
+            return tf3ctl.around_args(parse(["around"] + list(a)))
+        self.assertEqual(args("--at=-10,20.5"), {"at": [-10.0, 20.5]})
+        self.assertEqual(args("--at", "1,2", "--radius", "50", "--kinds", " station, field ", "--limit", "5"),
+                         {"at": [1.0, 2.0], "radius": 50.0, "kinds": "station,field", "limit": 5})
+        self.assertEqual(args("--at", "1,2", "--kinds", "all")["kinds"], "all")
+        for bad in (["--at", "1"], ["--at", "a,b"], ["--at", "1,2,3"], ["--at", "nan,1"], ["--at", "1,2", "--radius", "0"],
+                    ["--at", "1,2", "--radius", str(tf3ctl.AROUND_RADIUS_MAX + 1)], ["--at", "1,2", "--kinds", "house"],
+                    ["--at", "1,2", "--kinds", ","], ["--at", "1,2", "--limit", "0"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                args(*bad)
+        self.assertNotIn("around", tf3ctl.CHANGES_GAME)
+        self.assertFalse(tf3ctl.changes_game("around", {"at": [0, 0]}))
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["around", "--at=-5,5", "--radius", "30"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["around", "--at", "0,0", "--kinds", "nope"]), 2, "refused before sending")
+        self.assertEqual(sent, [("around", {"at": [-5.0, 5.0], "radius": 30.0})])
+
+    def test_build_and_road_remove_buildings_join_streets_args(self):
+        p = tf3ctl.make_parser()
+        b = tf3ctl.build_args(p.parse_args(["build", "--res", "x.con", "--at", "1,2", "--remove-buildings",
+                                            "--join-streets"]))
+        self.assertEqual((b["removeBuildings"], b["joinStreets"]), (True, True))
+        self.assertNotIn("joinStreets", tf3ctl.build_args(p.parse_args(["build", "--res", "x.con", "--at", "1,2"])))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.build_args(p.parse_args(["build", "--remove", "5", "--join-streets"]))
+        for flag in ("--remove-buildings", "--join-streets"):
+            with self.assertRaises(tf3ctl.ToolError, msg=flag):
+                tf3ctl.build_args(p.parse_args(["build", "--res", "x.con", "--at", "1,2", "--dry-run", flag]))
+        r = tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--remove-buildings"]))
+        self.assertEqual(r["removeBuildings"], True)
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--remove-buildings"]))
+        self.assertTrue(tf3ctl.changes_game("build", b))
+        self.assertTrue(tf3ctl.changes_game("road", r))
 
     def test_reach_args_and_main(self):
         parse = tf3ctl.make_parser().parse_args

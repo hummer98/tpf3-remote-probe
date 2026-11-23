@@ -2141,6 +2141,19 @@ function M.installBuild(g, spec)
 				table.insert(data.errorState.messages, "Collision")
 				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
 			end
+			-- spec.houses(x, y) -> { town building ids } in its way: with the Context's gatherBuildings they go
+			-- (CollisionInfo.buildingEntities, a guess of the engine's), else a collision with each
+			local hs = spec.houses and spec.houses(ce.transf[13], ce.transf[14])
+			if hs and #hs > 0 then
+				if ctx and ctx.gatherBuildings then
+					data.collisionInfo.buildingEntities = data.collisionInfo.buildingEntities or {}
+					for _, h in ipairs(hs) do table.insert(data.collisionInfo.buildingEntities, h) end
+				else
+					data.errorState.critical = true
+					table.insert(data.errorState.messages, "Collision")
+					for _, h in ipairs(hs) do table.insert(data.collisionInfo.collisionEntities, { entity = h }) end
+				end
+			end
 		end
 		for _, e in ipairs(removes) do
 			if not g.built[e] then crash("no construction " .. tostring(e) .. " to remove") end
@@ -2291,11 +2304,26 @@ function M.installBuild(g, spec)
 			local e = g.nextEntity
 			local nodeIds, edgeIds = {}, {}
 			local cs, sn = t[1], t[2]
+			-- (a guess of the engine's, for build --join-streets: with the Context's cleanupStreetGraph a node of the
+			-- construction that is not frozen and lies on an old road node, within 0.01 m, becomes that node)
+			local frozenIdx = {}
+			for _, i in ipairs((c.shape or {}).frozenNodes or {}) do frozenIdx[i] = true end
 			for i, n in ipairs((c.shape or {}).nodes or {}) do
-				g.nextEntity = g.nextEntity + 1
-				nodeIds[i] = g.nextEntity
-				g.nodes[g.nextEntity] = { x = t[13] + cs * n[1] - sn * n[2], y = t[14] + sn * n[1] + cs * n[2], z = t[15] + (n[3] or 0) }
-				g.nodeConfig[g.nextEntity] = true
+				local q = { x = t[13] + cs * n[1] - sn * n[2], y = t[14] + sn * n[1] + cs * n[2], z = t[15] + (n[3] or 0) }
+				local old
+				if cmd.context and cmd.context.cleanupStreetGraph and not frozenIdx[i] then
+					for id, o in pairs(g.nodes) do
+						if not g.conNode[id] and (o.x - q.x) ^ 2 + (o.y - q.y) ^ 2 + (o.z - q.z) ^ 2 <= 0.0001 then old = id end
+					end
+				end
+				if old then
+					nodeIds[i] = old
+				else
+					g.nextEntity = g.nextEntity + 1
+					nodeIds[i] = g.nextEntity
+					g.nodes[g.nextEntity] = q
+					g.nodeConfig[g.nextEntity] = true
+				end
 			end
 			for _, ed in ipairs((c.shape or {}).edges or {}) do
 				g.nextEntity = g.nextEntity + 1
@@ -2997,6 +3025,81 @@ function M.installDebug(g, spec)
 	end
 end
 
+-- What stands on the map for around (remote_around.lua) and for naming a build's collisions: spec.things =
+-- { [id] = { box = { x0, y0, z0, x1, y1, z1 }, name = "...", comps = { KIND = { fields } } } }. The octree's
+-- findIntersectingEntities gives each thing whose box meets the box asked, with its bounding volume (as the engine's
+-- callback, engine/system.d.tl); spec.notInOctree = { [id] = true }: not given (trees, if their asset groups are not
+-- in it). BOUNDING_VOLUME reads the box too. Over what was installed before (the build's fake): its things are still
+-- found. g.aroundCalls counts the octree walks. spec.octreeRaises: the walk raises.
+function M.installAround(g, spec)
+	spec = spec or {}
+	local things = spec.things or {}
+	g.aroundCalls = 0
+	local CT = api.type.ComponentType
+	-- (these types are added to the whole fake game, also the e2e one tools/tf3ctl.py's tests run against: a module
+	-- that takes a path by whether a type is there goes the path the game's own types give)
+	for _, k in ipairs({ "BASE_EDGE", "BASE_NODE", "BASE_EDGE_STREET", "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY",
+		"SUBCONSTRUCTION", "FIELD", "TOWN", "ASSET_GROUP", "TRANSPORT_VEHICLE", "SIM_PERSON", "ANIMAL",
+		"MODEL_INSTANCE_LIST", "BOUNDING_VOLUME" }) do CT[k] = CT[k] or k end
+	api.type.enum = api.type.enum or {}
+	api.type.enum.RoadType = api.type.enum.RoadType or { STREET = 0, TRACK = 1 }
+	api.type.Box3 = api.type.Box3 or { new = function(lo, hi) return { min = lo, max = hi } end }
+	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
+	local function bvOf(t)
+		local b = t.box
+		return { bbox = { min = { x = b[1], y = b[2], z = b[3] }, max = { x = b[4], y = b[5], z = b[6] } } }
+	end
+	api.engine.system = api.engine.system or {}
+	local oldOctree = api.engine.system.octreeSystem
+	api.engine.system.octreeSystem = { findIntersectingEntities = function(box, cb)
+		g.aroundCalls = g.aroundCalls + 1
+		if spec.octreeRaises then error("octree gone") end
+		if oldOctree then oldOctree.findIntersectingEntities(box, cb) end
+		local ids = {}
+		for e in pairs(things) do ids[#ids + 1] = e end
+		table.sort(ids)
+		for _, e in ipairs(ids) do
+			local t = things[e]
+			local b = t.box
+			if b and not (spec.notInOctree or {})[e] and b[4] >= box.min.x and b[1] <= box.max.x
+				and b[5] >= box.min.y and b[2] <= box.max.y then
+				cb(e, bvOf(t))
+			end
+		end
+	end }
+	local exists = api.engine.entityExists
+	api.engine.entityExists = function(e) return things[e] ~= nil or exists(e) end
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		local t = things[e]
+		if t then
+			if kind == "BOUNDING_VOLUME" and t.box then return bvOf(t) end
+			local c = t.comps and t.comps[kind]
+			if c and kind == "BASE_EDGE" and type(c.roadType) == "string" then
+				c = copy(c); c.roadType = api.type.enum.RoadType[c.roadType]
+			end
+			return c
+		end
+		return getComponent(e, kind)
+	end
+	api.engine.util = api.engine.util or {}
+	local getName = api.engine.util.getEntityName
+	api.engine.util.getEntityName = function(e)
+		if things[e] then return things[e].name or "" end
+		return getName and getName(e) or ""
+	end
+	local sc = api.engine.system.streetConnectorSystem or {}
+	api.engine.system.streetConnectorSystem = sc
+	local conFor = sc.getConstructionEntityForEdge
+	sc.getConstructionEntityForEdge = function(e)
+		local t = things[e]
+		if t then return t.construction or -1 end
+		if conFor then return conFor(e) end
+		return -1
+	end
+end
+
+
 -- The engine's side of parcels (remote_parcels.lua): road pieces, their nodes, parcels and the buildings on them.
 -- spec.nodes = { [node] = { x, y, z } }; spec.edges = { [edge] = { node0, node1, street (default true),
 -- construction (default -1) } }; spec.parcels = { [parcel] = { edge, left (boolean), faces = { { { x, y, z }, ... } },
@@ -3467,6 +3570,12 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		edges = { [9010] = { node0 = 9001, node1 = 9002 }, [9011] = { node0 = 9002, node1 = 9003, construction = 9900 } },
 		parcels = { [9101] = { edge = 9010, left = true, faces = { { { 0, 5005, 0 }, { 10, 5005, 0 }, { 10, 5025, 0 }, { 0, 5025, 0 } } } },
 			[9102] = { edge = 9010, left = true, building = 9201 }, [9103] = { edge = 9010, left = false } } })
+	-- around: a house of town 9700 (its building 9601 and construction 9602) and a field, far from the rest (y 7000)
+	M.installAround(g, { things = {
+		[9601] = { box = { 10, 7010, 0, 25, 7025, 10 }, comps = { TOWN_BUILDING = { town = 9700, construction = 9602 } } },
+		[9602] = { box = { 10, 7010, 0, 25, 7025, 10 }, comps = { CONSTRUCTION = { fileName = "building/res.con" } } },
+		[9604] = { box = { 60, 7000, 0, 100, 7040, 0.5 }, comps = { FIELD = {} } },
+		[9700] = { box = { -300, 6700, 0, 300, 7300, 30 }, name = "Fakeham", comps = { TOWN = {} } } } })
 	local start = os.clock()
 	local wall = 0
 	local speedControl

@@ -22,6 +22,10 @@ function M.new(ctx)
 	local built = {} -- [construction] = { res, x, y, z } for what this load of the probe built
 	local count = 0
 	local finishRoad, roadLost -- (the road command's, below)
+	local joinsOf -- (below, before finish)
+	local streetEdgesNear -- (below, after place: place and joinsOf call it)
+	local describeHits -- (remote_around.lua's describe, set by the script: B.setDescribeHits)
+	local NODES_BEFORE_M = 150
 
 	local function CT() return api.type.ComponentType end
 	local function comp(e, kind)
@@ -191,11 +195,14 @@ function M.new(ctx)
 	-- brush's contexts do; the base's tools warn "fields will be removed" and build). Without it a field in the
 	-- way is a collision: a road by a forest was refused so although the dry run had said buildable with that
 	-- warning (2026-11-23)
-	local function context(fields)
+	-- buildings: let it take town buildings in its way (gatherBuildings, as the player's tools do: --remove-buildings);
+	-- streets: cleanupStreetGraph (--join-streets: whether a construction's road end put on a node of a road becomes
+	-- one node with it, not checked in a game yet)
+	local function context(fields, buildings, streets)
 		local c = api.type.Context.new()
 		c.player = player()
-		-- nothing of the player's or a town's is knocked down for it: what is in the way is a refusal
-		c.cleanupStreetGraph, c.gatherBuildings, c.gatherFields = false, false, fields == true
+		-- nothing of the player's or a town's is knocked down for it unless asked: what is in the way is a refusal
+		c.cleanupStreetGraph, c.gatherBuildings, c.gatherFields = streets == true, buildings == true, fields == true
 		return c
 	end
 
@@ -213,6 +220,11 @@ function M.new(ctx)
 			errors = es and strings(try(function() return es.messages end)) or nil,
 			warnings = es and strings(try(function() return es.warnings end)) or nil,
 			collisions = #hit > 0 and core.array(hit) or nil,
+			-- the town buildings the proposal takes away (CollisionInfo.buildingEntities, type.d.tl; with gatherBuildings)
+			buildingsInWay = (function()
+				local b = ids(data and try(function() return data.collisionInfo.buildingEntities end))
+				return #b > 0 and core.array(b) or nil
+			end)(),
 			cost = data and tonumber(try(function() return data.costs end)) or nil,
 		}
 	end
@@ -365,9 +377,14 @@ function M.new(ctx)
 		end
 		local out, why = {}, nil
 		for _, m in ipairs(mouths) do
-			out[#out + 1] = nodeEntry(m.node, { kind = "mouth" }, m.track)
 			local segs
 			if m.track then segs = trackSegmentsAt(m.node) else segs = streetSegmentsAt(m.node) end
+			-- joined: pieces at the mouth that are not the construction's frozen ones (a road or track joined to it;
+			-- also its own free pieces, an industry's arms)
+			local others = {}
+			for _, s in ipairs(segs or {}) do if not frozenE[s] then others[#others + 1] = s end end
+			out[#out + 1] = nodeEntry(m.node, { kind = "mouth", joined = segs ~= nil and #others > 0 or nil,
+				joinedPieces = #others > 0 and core.array(others) or nil }, m.track)
 			if segs == nil then
 				why = (m.track and "streetSystem.getNodeTrackSegments" or "streetSystem.getNodeStreetSegments") ..
 					" could not be read: no arms"
@@ -424,6 +441,20 @@ function M.new(ctx)
 		end
 		local okC, conn, connWhy = pcall(connectableOf, c)
 		if not okC then conn, connWhy = nil, tostring(conn) end
+		-- where it stands and its turn (transf), and each end's place in its own frame (local: dx along its x, dy
+		-- along its y): where its road leaves it, wherever it is put
+		local t = core.field(c, "transf")
+		local tx, ty, tz = tonumber(core.field(t, 13)), tonumber(core.field(t, 14)), tonumber(core.field(t, 15))
+		local angle = core.transfAngle(tonumber(core.field(t, 1)), tonumber(core.field(t, 2)))
+		local place
+		if tx and ty then
+			place = { x = tx, y = ty, z = tz, angle = angle }
+			for _, list2 in ipairs({ ends, conn or {} }) do
+				for _, en in ipairs(list2) do
+					if en.x and en.y then en["local"] = core.toLocal(place, en.x, en.y, en.z) end
+				end
+			end
+		end
 		-- the stock lists under it (a warehouse's: { entity, kind = "WAREHOUSE", stockList }), the ids stock list
 		-- and stock set take (they take this construction's id too, when there is one): only ids the engine has
 		-- reach getComponent, and only component kinds this game has
@@ -431,7 +462,7 @@ function M.new(ctx)
 			if v == e or CT()[k] == nil or try(function() return api.engine.entityExists(v) end) ~= true then return nil end
 			return comp(v, k)
 		end)
-		return { entity = e, fileName = tostring(core.field(c, "fileName")), name = nameOf(e),
+		return { entity = e, fileName = tostring(core.field(c, "fileName")), name = nameOf(e), at = place,
 			ends = #ends > 0 and core.array(ends) or nil, depots = list("depots"), stations = list("stations"),
 			industries = list("industries"), stockLists = okS and #owners > 0 and core.array(owners) or nil,
 			connectable = conn, connectableWhy = connWhy }
@@ -541,8 +572,22 @@ function M.new(ctx)
 			return answer(c.id, out)
 		end
 		-- (the job is listed once the command is sent: a send that raises is answered by the handler's pcall alone)
-		local job = { id = c.id, kind = "place", out = out, started = appTime(), before = balance() }
-		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(), false, true), function(data, success, entities)
+		out.removeBuildings, out.joinStreets = r.removeBuildings or nil, r.joinStreets or nil
+		if r.removeBuildings or r.joinStreets then
+			out.contextNote = "gatherBuildings " .. tostring(r.removeBuildings == true) .. ", cleanupStreetGraph " ..
+				tostring(r.joinStreets == true) .. ": not checked in a game yet what the engine does with them: look at it"
+		end
+		-- the road nodes there before (so the answer can tell a mouth that took an old node from a new one)
+		local nodesBefore = {}
+		for _, e in ipairs(streetEdgesNear(r.x, r.y, NODES_BEFORE_M)) do
+			local be = comp(e, "BASE_EDGE")
+			for _, k in ipairs({ "node0", "node1" }) do
+				local n = tonumber(be and core.field(be, k))
+				if n then nodesBefore[n] = true end
+			end
+		end
+		local job = { id = c.id, kind = "place", out = out, started = appTime(), before = balance(), nodesBefore = nodesBefore }
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(false, r.removeBuildings, r.joinStreets), false, true), function(data, success, entities)
 			-- all of it guarded, as AoM's strawberries.lua: it may run where an error has no one to catch it. Only
 			-- plain values leave the callback (the engine's objects belong to it)
 			local ok, err = pcall(function()
@@ -605,6 +650,37 @@ function M.new(ctx)
 		jobs[#jobs + 1] = job
 	end
 
+	-- each road mouth of a new construction: its node, whether that node was there before the build (an old road's
+	-- node the construction took), and the other road nodes within JOIN_M of it (a node beside it, not one with it)
+	local JOIN_M = 0.5
+	function joinsOf(d, before)
+		local out = {}
+		for _, m in ipairs(d and d.connectable or {}) do
+			if m.kind == "mouth" and m.x and m.y then
+				local j = { node = m.node, track = m.track, x = m.x, y = m.y, joined = m.joined,
+					joinedPieces = m.joinedPieces, wasThere = before and before[m.node] == true or false }
+				if not m.track then
+					local near, seen = {}, {}
+					for _, e in ipairs(streetEdgesNear(m.x, m.y, 2)) do
+						local be = comp(e, "BASE_EDGE")
+						for _, k in ipairs({ "node0", "node1" }) do
+							local n = tonumber(be and core.field(be, k))
+							local p = n and n ~= m.node and not seen[n] and nodePos(n)
+							if p then
+								seen[n] = true
+								local dd = math.sqrt((p.x - m.x) ^ 2 + (p.y - m.y) ^ 2 + ((p.z or 0) - (m.z or 0)) ^ 2)
+								if dd <= JOIN_M then near[#near + 1] = { node = n, d = dd, wasThere = before and before[n] == true or false } end
+							end
+						end
+					end
+					j.nodesHere = core.array(near)
+				end
+				out[#out + 1] = j
+			end
+		end
+		return #out > 0 and core.array(out) or nil
+	end
+
 	local function finish(job)
 		local out, res = job.out, job.result
 		for k, v in pairs(res.verdict) do out[k] = v end
@@ -654,6 +730,7 @@ function M.new(ctx)
 					w[#w + 1] = "built, but it cost nothing (cost 0, spent 0): a no-costs mod, or look at it"
 					out.warnings = w
 				end
+				out.joins = joinsOf(cons[1], job.nodesBefore)
 				-- a station construction (a harbour) with no terminal: its modules may be on no slot
 				local d = cons[1]
 				if d and d.stations then
@@ -675,6 +752,13 @@ function M.new(ctx)
 			out.ok = false
 			local msgs = out.errors and #out.errors > 0 and table.concat(out.errors, "; ") or "no message"
 			out.error = "the engine refused it: " .. msgs
+			if out.collisions and describeHits then
+				-- what is in the way, one by one: its kind, name, place and box (remote_around.lua)
+				local ref = job.kind == "place" and out.at or (out.from and out.to and
+					{ x = (out.from.x + out.to.x) / 2, y = (out.from.y + out.to.y) / 2 }) or nil
+				local okH, hits = pcall(describeHits, out.collisions, ref and ref.x, ref and ref.y)
+				if okH then out.hits = hits else out.hitsError = tostring(hits) end
+			end
 			if job.kind == "road" and not out.removeFields and out.collisions then
 				-- (what a dry run's buildable with warnings meant, 2026-11-23: fields in the way)
 				out.hint = "a collision: if it is with farm fields (road --dry-run --engine-check warns that fields will " ..
@@ -794,7 +878,7 @@ function M.new(ctx)
 	-- the road pieces (BASE_EDGE of roadType STREET) whose box meets a circle of r metres around x, y: the octree
 	-- lists edges, not nodes (as nova's elevated_road builder.lua finds road ends: BASE_EDGE by findEntitiesInCircle,
 	-- then their node0 / node1). A piece whose road type cannot be read is left out (never taken for a road).
-	local function streetEdgesNear(x, y, r)
+	function streetEdgesNear(x, y, r)
 		local street = enumOf("RoadType", "STREET")
 		local out, seen = {}, {}
 		local function take(e)
@@ -1159,14 +1243,14 @@ function M.new(ctx)
 	-- Connector calls it in its game script with the proposal and a Context, tried second here). Never from a recipe's body (api.util /
 	-- api.gui there killed the game, BUG.md 2026-11-15). -> the verdict (as a build's) and the form taken, or nil and
 	-- why (not there, or it raised both ways)
-	local function engineCheck(sp, fields)
+	local function engineCheck(sp, fields, buildings)
 		local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
 		if mpd == nil then return nil, "api.engine.util.proposal.makeProposalData is not there" end
 		-- (the proposal alone first: the form Overpass Builder uses on the GUI thread; with a Context only after)
 		local ok, data = pcall(mpd, sp)
 		if ok and data ~= nil then return verdict(data), "SimpleProposal" end
 		local first = ok and "nothing given back" or tostring(data)
-		ok, data = pcall(mpd, sp, context(fields))
+		ok, data = pcall(mpd, sp, context(fields, buildings))
 		if ok and data ~= nil then return verdict(data), "SimpleProposal, Context" end
 		return nil, "makeProposalData (proposal): " .. first .. "; (proposal, context): " ..
 			(ok and "nothing given back" or tostring(data))
@@ -1298,7 +1382,7 @@ function M.new(ctx)
 		if r.dryRun then
 			-- (engineCheck) the same proposal a build sends, asked of the engine and not sent
 			out.dryRun = true
-			local v, form = engineCheck(sp, r.removeFields)
+			local v, form = engineCheck(sp, r.removeFields, r.removeBuildings)
 			if not v then
 				out.ok, out.checked = true, false
 				out.engineCheck = "not available: " .. tostring(form)
@@ -1316,7 +1400,11 @@ function M.new(ctx)
 			-- (its warning "fields will be removed") where the build, without --remove-fields, does not and collides
 			if form == "SimpleProposal" then
 				out.engineContext = "the engine's own (the proposal alone): not the build's, whose gatherFields is " ..
-					tostring(r.removeFields == true)
+					tostring(r.removeFields == true) .. " and gatherBuildings " .. tostring(r.removeBuildings == true)
+				if r.removeBuildings then
+					out.removeBuildingsNote = "the dry run judged it in the engine's own context, not with gatherBuildings: " ..
+						"town buildings it names among the collisions (hits) may still go in the build"
+				end
 				if warned and not r.removeFields then
 					out.caution = "the engine warned (" .. table.concat(v.warnings, "; ") .. ") in its own context; the " ..
 						"build gathers no fields and may be refused for what a warning lets through here (a field " ..
@@ -1336,6 +1424,10 @@ function M.new(ctx)
 				out.ok = false
 				local msgs = v.errors and #v.errors > 0 and table.concat(v.errors, "; ") or "no message"
 				out.error = "the engine would refuse it: " .. msgs .. " (dry run: nothing sent)"
+				if out.collisions and describeHits then
+					local okH, hits = pcall(describeHits, out.collisions, (a.x + b.x) / 2, (a.y + b.y) / 2)
+					if okH then out.hits = hits else out.hitsError = tostring(hits) end
+				end
 				return answer(c.id, out, "error")
 			end
 			out.ok = true
@@ -1348,7 +1440,8 @@ function M.new(ctx)
 		end
 		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
 			piecesBefore = piecesAround(a, b) }
-		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields), false, true), function(data, success, entities)
+		out.removeBuildings = r.removeBuildings or nil
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields, r.removeBuildings), false, true), function(data, success, entities)
 			local ok, cerr = pcall(function()
 				local v = verdict(try(function() return data.resultProposalData end))
 				local list = ids(try(function() return data.resultEntities end))
@@ -1567,6 +1660,8 @@ function M.new(ctx)
 	end
 
 	B.built = function() return built end
+	B.setDescribeHits = function(f) describeHits = f end
+	B.describe = describe -- (around: a construction's ends and mouths)
 	return B
 end
 

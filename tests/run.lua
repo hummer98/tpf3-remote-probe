@@ -10963,6 +10963,10 @@ end)
 -- reach and persons --town / --destination (tests/run_reach.lua, its fake tests/fake_reach.lua)
 dofile(root .. "/tests/run_reach.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
 	newGame = newGame, send = send, frames = frames, final = final, FIRST = FIRST, SAVES = SAVES })
+-- around, the names of a refusal's collisions, --remove-buildings / --join-streets (tests/run_around.lua)
+dofile(root .. "/tests/run_around.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core,
+	newGame = newGame, send = send, frames = frames, final = final, FIRST = FIRST, SAVES = SAVES,
+	buildWorld = buildWorld, buildRun = buildRun, roadWorld = roadWorld, roadRun = roadRun, RAMP = RAMP })
 -- the diagnosis of stations --catchment (tests/run_catchment.lua)
 dofile(root .. "/tests/run_catchment.lua")({ test = test, eq = eq, truthy = truthy, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
