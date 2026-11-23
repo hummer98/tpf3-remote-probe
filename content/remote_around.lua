@@ -29,8 +29,9 @@ local MOVING = { "TRANSPORT_VEHICLE", "LAND_VEHICLE", "TRAIN", "CARRIAGE", "SHIP
 	"MODEL_PERSON" }
 
 -- ctx: core, answer(id, payload, tag), fail(id, msg), try(fn), appTime(), construction(e) (optional: remote_build's
--- describe: a construction's place, ends and mouths)
+-- describe: a construction's place, ends and mouths), lanes(e) (optional: remote_lanes' read, for --lanes)
 M.MOUTHS_MAX = 50 -- constructions per answer whose ends and mouths are read (nearest first)
+M.LANES_MAX = 100 -- --lanes: streets and tracks per answer whose lanes are read (nearest first)
 function M.new(ctx)
 	local core, answer, fail, try, appTime = ctx.core, ctx.answer, ctx.fail, ctx.try, ctx.appTime
 
@@ -273,6 +274,28 @@ function M.new(ctx)
 			if withMouths >= M.MOUTHS_MAX then break end
 			if addMouths(d) then withMouths = withMouths + 1 end
 		end
+		-- --lanes: each street and track listed gets its lanes (remote_lanes.lua), the nearest LANES_MAX of them
+		-- (under the same time limit as the walk, counted from here: past it the rest are skipped, lanesTimeTruncated)
+		local tL = appTime()
+		local tried, withLanes, lanesSkipped, lanesTime = 0, 0, 0, false
+		if r.lanes and ctx.lanes then
+			for _, d in ipairs(list) do
+				if d.kind == "street" or d.kind == "track" then
+					if not lanesTime and (appTime() - tL) * 1000 > core.AROUND_TIME_MS then lanesTime = true end
+					if tried >= M.LANES_MAX or lanesTime then
+						d.lanesSkipped, lanesSkipped = true, lanesSkipped + 1
+					else
+						tried = tried + 1
+						local ok, info, why = pcall(ctx.lanes, d.id)
+						if ok and info then
+							d.lanes, withLanes = info, withLanes + 1
+						else
+							d.lanesError = ok and why or tostring(info)
+						end
+					end
+				end
+			end
+		end
 		local t2 = appTime()
 		local kinds = {}
 		for _, k in ipairs(core.AROUND_KINDS) do if r.kinds[k] then kinds[#kinds + 1] = k end end
@@ -280,7 +303,11 @@ function M.new(ctx)
 			entities = core.array(list), counts = counts, total = total, listed = #list, truncated = total > #list,
 			scanned = scanned, scanTruncated = dropped > 0, dropped = dropped > 0 and dropped or nil,
 			timeTruncated = timeUp or nil, looked = looked,
-			ms = { octree = math.floor((t1 - t0) * 1000 + 0.5), classify = math.floor((t2 - t1) * 1000 + 0.5),
+			lanesRead = (r.lanes and ctx.lanes) and withLanes or nil, lanesSkipped = lanesSkipped > 0 and lanesSkipped or nil,
+			lanesTimeTruncated = lanesTime or nil,
+			lanesNote = (r.lanes and ctx.lanes) and ctx.lanesNote or nil,
+			ms = { octree = math.floor((t1 - t0) * 1000 + 0.5), classify = math.floor((tL - t1) * 1000 + 0.5),
+				lanes = (r.lanes and ctx.lanes) and math.floor((t2 - tL) * 1000 + 0.5) or nil,
 				total = math.floor((t2 - t0) * 1000 + 0.5) },
 			note = NOTE })
 	end

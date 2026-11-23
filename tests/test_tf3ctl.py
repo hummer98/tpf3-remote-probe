@@ -1089,6 +1089,25 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("around", "--at", "0,7000", "--kinds", "field")
         self.assertEqual([e["id"] for e in res["entities"]], [9604])
 
+    def test_9xz_lanes(self):
+        # the fake's electric tram street 9620 (the base's town_new_medium_tram_electrified lanes): track on the
+        # outer road lanes, 2 (left, against the piece) and 5 (right)
+        code, res = self.ctl("lanes", "--edge", "9620")
+        self.assertEqual(code, 0, res)
+        d = res["edges"][0]
+        self.assertEqual(d["tramTrackType"], "ELECTRIC")
+        self.assertEqual(d["tramLanes"], [2, 5])
+        self.assertEqual([d["lanes"][1]["side"], d["lanes"][4]["side"]], ["left", "right"])
+        self.assertIn("ELECTRIC_TRAM", d["lanes"][1]["modes"])
+        self.assertEqual(d["lanes"][1]["direction"], "node1->node0")
+        code, res = self.ctl("lanes", "--edge", "9620,9601")
+        self.assertEqual(code, 0, res)
+        self.assertIn("no BASE_EDGE", res["edges"][1]["error"])
+        code, res = self.ctl("around", "--at", "0,7400", "--radius", "20", "--kinds", "street", "--lanes")
+        self.assertEqual(code, 0, res)
+        self.assertEqual([e["id"] for e in res["entities"]], [9620])
+        self.assertEqual(res["entities"][0]["lanes"]["tramLanes"], [2, 5])
+
     def test_9xz_fit(self):
         # the house at x 10..25, y 7010..7025 and the field at x 60..100 (around's fake): the fake's 20 m box fits
         # between them, the engine's check takes it
@@ -1548,6 +1567,33 @@ class QuitLaunchTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 tf3ctl.main(["parcels"])
         self.assertEqual(sent, [("parcels", {"edge": 12}), ("parcels", {"rect": [-5.0, -5.0, 5.0, 5.0], "list": True})])
+
+    def test_lanes_args_and_main(self):
+        parse = tf3ctl.make_parser().parse_args
+
+        def args(*a):
+            return tf3ctl.lanes_args(parse(["lanes"] + list(a)))
+        self.assertEqual(args("--edge", "9010"), {"edges": [9010]})
+        self.assertEqual(args("--edge", " 1, 2 ", "--no-network"), {"edges": [1, 2], "network": False})
+        too_many = ",".join(str(i) for i in range(tf3ctl.EDGE_LANES_MAX + 1))
+        for bad in (["--edge", "a"], ["--edge", ""], ["--edge", "1,,2"], ["--edge=-1"], ["--edge", "1.5"],
+                    ["--edge", too_many]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                args(*bad)
+        self.assertNotIn("edgeLanes", tf3ctl.CHANGES_GAME)
+        self.assertFalse(tf3ctl.changes_game("edgeLanes", {"edges": [1]}))
+        self.assertEqual(tf3ctl.around_args(parse(["around", "--at", "1,2", "--lanes"])), {"at": [1.0, 2.0], "lanes": True})
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["lanes", "--edge", "5,6"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["lanes", "--edge", "x"]), 2, "refused before sending")
+        self.assertEqual(sent, [("edgeLanes", {"edges": [5, 6]})])
 
     def test_around_args_and_main(self):
         parse = tf3ctl.make_parser().parse_args
