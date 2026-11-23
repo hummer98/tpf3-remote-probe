@@ -368,6 +368,7 @@ python3 tools/tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con
     --params '{"rbr_height": 8, "rbr_length": 120}' [--name "Ramp A"] [--seed 3] [--dry-run]
 python3 tools/tf3ctl.py build --remove 51234[,51240]      # take away constructions the probe built
 python3 tools/tf3ctl.py build --remove-all                # all it built since this load
+python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engine-check --collision-detail   # the whole ProposalData
 ```
 
 **For test saves.** `build` puts one construction (a `.con`: a depot, a station, an asset, an industry, another
@@ -429,6 +430,23 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   run had `海岸線に配置` ("place on the coastline") the same way. Infos that do not refuse a build are not seen yet: if
   one turns up, the check says refused where the build would go. `fit` also skips a place whose check is buildable
   with infos (an older mod's answer).
+- `--collision-detail` (`build` and `road`; with a build, or with `--dry-run --engine-check`; off by default, the
+  answer grows): the engine's whole `ProposalData` copied out into `collisionDetail`, field by field as the game's
+  types name them (`api/tealdef/api/type.d.tl` `ProposalData`): `collisionInfo` (`collisionEntities[].entity`,
+  `autoRemovalEntity2models`, `buildingEntities`, `removableModules`), `errorState`, `old2new`, `toAddData`
+  (`boundingVolume.bbox` as `x0`..`z1`, `subconstructionDatas`), `parallelProposal`, `terrainPreviewHeightMod*`,
+  `entity2tn` (each network's list lengths only), `tpNetLinkProposal`, `costs`. Maps come as `[{key, value}]`
+  (their keys are entity ids). `from` says which ProposalData (`resultProposalData` of the build's callback, or
+  the check's form). A field that raises is in `unread` with its error, one that reads nil in `absent`; lists
+  longer than 40 items, nesting deeper than 10 and more than 4000 values are cut and named in `truncated` /
+  `valuesCut`; keys the types leave out are in `unlisted` (a table's own keys, a userdata's metatable keys) and a
+  few guessed names that read something on the collision records in `guessed`. With hits, `overlaps` says how
+  each box in the way meets the proposal's own (`build`: the new construction's box; `road`: the piece's ends,
+  no width): `overlap` per axis as `[lo, hi]`, or `gap` in metres, `meet`, and `noZ` when a height is unknown.
+  The boxes are axis aligned: a T pier's box runs from its foot to its beam, so `meet` says the boxes meet, not
+  which model does. Without the option the answers are as before. The game's types give `CollisionInfo.EntityData`
+  only an `entity`: which part of the proposal collides, and at what height, is not in them; what the engine
+  really hands back is **not checked in a game yet** (written 2026-11-24).
 - `--dry-run` alone builds nothing and does **not** ask the engine (`road --dry-run --engine-check` does: `makeProposalData` takes a
   `SimpleProposal` on the GUI thread, though `engine/util.d.tl:939` types it for a `Proposal`; a construction's is
   not asked yet). The probe checks the name, the params it

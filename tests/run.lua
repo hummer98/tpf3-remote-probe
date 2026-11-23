@@ -11796,6 +11796,9 @@ dofile(root .. "/tests/run_catchment.lua")({ test = test, eq = eq, truthy = trut
 -- running-costs and finance (tests/run_runcost.lua)
 dofile(root .. "/tests/run_runcost.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
+-- build / road --collision-detail (tests/run_collision.lua)
+dofile(root .. "/tests/run_collision.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core,
+	buildWorld = buildWorld, buildRun = buildRun, roadWorld = roadWorld, roadRun = roadRun, RAMP = RAMP })
 
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it

@@ -349,6 +349,7 @@ python3 tools/tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con
     --params '{"rbr_height": 8, "rbr_length": 120}' [--name "Ramp A"] [--seed 3] [--dry-run]
 python3 tools/tf3ctl.py build --remove 51234[,51240]      # プローブが建てたものを取り除く
 python3 tools/tf3ctl.py build --remove-all                # この読み込みのあとに建てたもの全部
+python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engine-check --collision-detail   # ProposalData を丸ごと
 ```
 
 **テスト用のセーブで使います。** `build` は建物 (`.con`: 車庫、駅、アセット、産業、別の MOD の建物) を1つ、クリックも
@@ -404,6 +405,21 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   `ProposalData error: 陸上に配置`)。前の回では `海岸線に配置` も同じでした。建てられるのに infos が付く例はまだ見ていません。
   もし出たら、建てられる所を断ると答えることになります。`fit` は、確認の答えが buildable でも infos があれば (前の版の
   MOD の答え)、その場所を採りません。
+- `--collision-detail` (`build` と `road`。建てるときか、`--dry-run --engine-check` と一緒に。初期設定では出しません。
+  答えが大きくなるため): エンジンの `ProposalData` を丸ごと `collisionDetail` に写します。欄はゲームの型
+  (`api/tealdef/api/type.d.tl` の `ProposalData`) が名前を挙げるとおり: `collisionInfo` (`collisionEntities[].entity`・
+  `autoRemovalEntity2models`・`buildingEntities`・`removableModules`)、`errorState`、`old2new`、`toAddData`
+  (`boundingVolume.bbox` を `x0`..`z1` で、`subconstructionDatas`)、`parallelProposal`、`terrainPreviewHeightMod*`、`entity2tn`
+  (網ごとのリストの長さだけ)、`tpNetLinkProposal`、`costs`。map は `[{key, value}]` の形です (キーが entity の id のため)。
+  `from` はどの ProposalData か (建てたときのコールバックの `resultProposalData`、または確認の形)。読むとエラーになる欄は
+  `unread` にエラーつきで、nil の欄は `absent` に入ります。40 個を超えるリスト、10 段を超える入れ子、4000 個を超える値は
+  切り、`truncated`・`valuesCut` に書きます。型に無いキーは `unlisted` (表のキー、userdata の metatable のキー) に、衝突の
+  記録の上で読めた推測の名前は `guessed` に入ります。hits があるときは `overlaps` に、邪魔をしている箱とこちらの箱
+  (`build`: 新しい建造物の箱、`road`: 区間の両端。幅なし) の重なりを書きます: 軸ごとの `overlap` (`[lo, hi]`)、または離れて
+  いる距離 `gap` (m)、`meet`、高さが分からないときは `noZ`。箱は世界の軸にそろった箱です: T 型の橋脚の箱は足元から梁まで
+  あるので、`meet` は箱が重なることで、どの模型が当たるかではありません。旗を付けないときの答えは前と同じです。ゲームの型では
+  `CollisionInfo.EntityData` は `entity` だけで、こちらのどの部品が、どの高さで当たるかはありません。エンジンが本当に何を
+  返すかは**ゲーム内では未確認**です (2026-11-24 に書いた)。
 - `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は
   `engine/util.d.tl:939` では `Proposal` 用ですが、GUI のスレッドでは `SimpleProposal` を受けます。建物のほうはまだ
   聞いていません)。プローブが確認するのは、名前・送る params・高さと、

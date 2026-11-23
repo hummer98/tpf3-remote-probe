@@ -212,7 +212,9 @@ function M.new(ctx)
 	-- what the engine said about a proposal (ProposalData): copied out as plain values, in the callback itself.
 	-- where: what data is, for errorStateRead (which fields were read and what they held: a refusal with no message
 	-- says so, 2026-11-23: "陸上に配置" in the game's log, nothing in the answer)
-	local function verdict(data, where)
+	-- detail (--collision-detail): ProposalData copied out whole as well (core.collisionDetail), here in the callback
+	-- or the check, while the engine's object is there
+	local function verdict(data, where, detail)
 		where = where or "ProposalData"
 		local es = data and try(function() return data.errorState end)
 		local critical = es and try(function() return es.critical end)
@@ -264,7 +266,33 @@ function M.new(ctx)
 				return #b > 0 and core.array(b) or nil
 			end)(),
 			cost = data and tonumber(try(function() return data.costs end)) or nil,
+			collisionDetail = detail and (function()
+				local ok, d = pcall(core.collisionDetail, data, where)
+				return ok and d or { from = where, error = tostring(d) }
+			end)() or nil,
 		}
+	end
+
+	-- with --collision-detail: what is in the way described (hits) where a refusal did not already do it, and how
+	-- each of its boxes meets the proposal's own (mine: newBoxes, or a road piece's box from its ends), into
+	-- out.collisionDetail.overlaps. Nothing without the detail asked
+	local function detailHits(out, x, y, mine)
+		local d = out.collisionDetail
+		if type(d) ~= "table" then return end
+		if out.collisions and not out.hits and describeHits then
+			local okH, hits = pcall(describeHits, out.collisions, x, y)
+			if okH then out.hits = hits else out.hitsError = tostring(hits) end
+		end
+		if out.hits then
+			local okO, o = pcall(core.collisionOverlaps, mine, out.hits)
+			if okO then d.overlaps = o else d.overlapsError = tostring(o) end
+		end
+	end
+	-- a road piece's box from its ends (no width: the line between them, its heights)
+	local function pieceBox(a, b)
+		if not (a and b and a.x and b.x) then return nil end
+		return { x0 = math.min(a.x, b.x), y0 = math.min(a.y, b.y), x1 = math.max(a.x, b.x), y1 = math.max(a.y, b.y),
+			z0 = (a.z and b.z) and math.min(a.z, b.z) or nil, z1 = (a.z and b.z) and math.max(a.z, b.z) or nil, fromEnds = true }
 	end
 
 	-- the engine's reason for a refusal, from a verdict (or an answer it was copied into): its messages, else its
@@ -618,7 +646,7 @@ function M.new(ctx)
 			-- verdict, and the box the construction takes (newBoxes; footprint: that box less the point, axis aligned
 			-- in the world)
 			out.dryRun = true
-			local v, form, both = engineCheck(sp, false, r.removeBuildings, r.joinStreets)
+			local v, form, both = engineCheck(sp, false, r.removeBuildings, r.joinStreets, r.collisionDetail)
 			if not v then
 				out.ok, out.checked = true, false
 				out.engineCheck = "not available: " .. tostring(form)
@@ -651,8 +679,10 @@ function M.new(ctx)
 					local okH, hits = pcall(describeHits, out.collisions, r.x, r.y)
 					if okH then out.hits = hits else out.hitsError = tostring(hits) end
 				end
+				detailHits(out, r.x, r.y, v.newBoxes)
 				return answer(c.id, out, "error")
 			end
+			detailHits(out, r.x, r.y, v.newBoxes)
 			out.ok = true
 			return answer(c.id, out)
 		end
@@ -692,12 +722,12 @@ function M.new(ctx)
 		end
 		-- (sp and the context's flags kept: a refusal with no message asks the engine again, recheck in finish)
 		local job = { id = c.id, kind = "place", out = out, started = appTime(), before = balance(), nodesBefore = nodesBefore,
-			sp = sp, ctxArgs = { false, r.removeBuildings, r.joinStreets } }
+			sp = sp, ctxArgs = { false, r.removeBuildings, r.joinStreets }, detail = r.collisionDetail }
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(false, r.removeBuildings, r.joinStreets), false, true), function(data, success, entities)
 			-- all of it guarded, as AoM's strawberries.lua: it may run where an error has no one to catch it. Only
 			-- plain values leave the callback (the engine's objects belong to it)
 			local ok, err = pcall(function()
-				local v = verdict(try(function() return data.resultProposalData end), "resultProposalData")
+				local v = verdict(try(function() return data.resultProposalData end), "resultProposalData", job.detail)
 				local list = ids(try(function() return data.resultEntities end))
 				if #list == 0 then list = ids(entities) end
 				job.result = { success = success == true, verdict = v, entities = list }
@@ -892,6 +922,11 @@ function M.new(ctx)
 					{ x = (out.from.x + out.to.x) / 2, y = (out.from.y + out.to.y) / 2 }) or nil
 				local okH, hits = pcall(describeHits, out.collisions, ref and ref.x, ref and ref.y)
 				if okH then out.hits = hits else out.hitsError = tostring(hits) end
+			end
+			if job.detail then
+				local ref = job.kind == "place" and out.at or (out.from and out.to and
+					{ x = (out.from.x + out.to.x) / 2, y = (out.from.y + out.to.y) / 2 }) or {}
+				detailHits(out, ref.x, ref.y, job.kind == "place" and out.newBoxes or { pieceBox(out.from, out.to) })
 			end
 			if job.kind == "road" and not out.removeFields and out.collisions then
 				-- (what a dry run's buildable with warnings meant, 2026-11-23: fields in the way)
@@ -1494,15 +1529,15 @@ function M.new(ctx)
 			critical = v.critical, errors = v.errors, warnings = v.warnings, infos = v.infos, infosRefusal = v.infosRefusal,
 			collisions = v.collisions and #v.collisions or nil, cost = v.cost, errorStateRead = v.errorStateRead }
 	end
-	function engineCheck(sp, fields, buildings, streets)
+	function engineCheck(sp, fields, buildings, streets, detail)
 		local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
 		if mpd == nil then return nil, "api.engine.util.proposal.makeProposalData is not there" end
 		-- (the proposal alone first: the form known to work on the GUI thread)
 		local ok, data = pcall(mpd, sp)
-		local own = ok and data ~= nil and verdict(data, "makeProposalData (proposal)") or nil
+		local own = ok and data ~= nil and verdict(data, "makeProposalData (proposal)", detail) or nil
 		local ownRaised = not own and (ok and "nothing given back" or tostring(data)) or nil
 		ok, data = pcall(mpd, sp, context(fields, buildings, streets))
-		local mine = ok and data ~= nil and verdict(data, "makeProposalData (proposal, context)") or nil
+		local mine = ok and data ~= nil and verdict(data, "makeProposalData (proposal, context)", detail) or nil
 		local mineRaised = not mine and (ok and "nothing given back" or tostring(data)) or nil
 		if not own and not mine then
 			return nil, "makeProposalData (proposal): " .. ownRaised .. "; (proposal, context): " .. mineRaised
@@ -1753,7 +1788,7 @@ function M.new(ctx)
 			out.dryRun = true
 			-- (--ignore-errors with --dry-run: nothing is forced; the verdict below is the unforced one)
 			if r.ignoreErrors then out.ignoredErrors = false end
-			local v, form, both = engineCheck(sp, r.removeFields, r.removeBuildings)
+			local v, form, both = engineCheck(sp, r.removeFields, r.removeBuildings, nil, r.collisionDetail)
 			if not v then
 				out.ok, out.checked = true, false
 				out.engineCheck = "not available: " .. tostring(form)
@@ -1800,8 +1835,10 @@ function M.new(ctx)
 					local okH, hits = pcall(describeHits, out.collisions, (a.x + b.x) / 2, (a.y + b.y) / 2)
 					if okH then out.hits = hits else out.hitsError = tostring(hits) end
 				end
+				detailHits(out, (a.x + b.x) / 2, (a.y + b.y) / 2, { pieceBox(a, b) })
 				return answer(c.id, out, "error")
 			end
+			detailHits(out, (a.x + b.x) / 2, (a.y + b.y) / 2, { pieceBox(a, b) })
 			out.ok = true
 			return answer(c.id, out)
 		end
@@ -1827,13 +1864,14 @@ function M.new(ctx)
 						(key == "from" and a or b).node, plans[key].keep.construction))
 				end
 			end
-			local okV, v, form, both = pcall(engineCheck, sp, r.removeFields, r.removeBuildings)
+			local okV, v, form, both = pcall(engineCheck, sp, r.removeFields, r.removeBuildings, nil, r.collisionDetail)
 			if okV and v then
 				local u = summary(v)
 				u.form = form
 				-- (whether the unforced build would have been refused: ignoredErrors only says it was sent forced)
 				u.refused = refuses(v) or (v.errors ~= nil and #v.errors > 0)
 				u.collisionEntities = v.collisions and core.array(v.collisions) or nil
+				u.collisionDetail = v.collisionDetail
 				out.unforced = u
 				if both then out.unforcedContexts = { own = both.own, build = both.build } end
 				if v.critical then
@@ -1844,17 +1882,22 @@ function M.new(ctx)
 					local okH, hits = pcall(describeHits, v.collisions, (a.x + b.x) / 2, (a.y + b.y) / 2)
 					if okH then out.unforced.hits = hits else out.unforced.hitsError = tostring(hits) end
 				end
+				if type(u.collisionDetail) == "table" and u.hits then
+					local okO, o = pcall(core.collisionOverlaps, { pieceBox(a, b) }, u.hits)
+					if okO then u.collisionDetail.overlaps = o else u.collisionDetail.overlapsError = tostring(o) end
+				end
 			else
 				out.unforced = { unread = tostring(okV and form or v) }
 			end
 			out.ignoredErrors = true
 		end
 		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
-			piecesBefore = piecesAround(a, b), sp = sp, ctxArgs = { r.removeFields, r.removeBuildings } }
+			piecesBefore = piecesAround(a, b), sp = sp, ctxArgs = { r.removeFields, r.removeBuildings },
+			detail = r.collisionDetail }
 		out.removeBuildings = r.removeBuildings or nil
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields, r.removeBuildings), force, true), function(data, success, entities)
 			local ok, cerr = pcall(function()
-				local v = verdict(try(function() return data.resultProposalData end), "resultProposalData")
+				local v = verdict(try(function() return data.resultProposalData end), "resultProposalData", job.detail)
 				local list = ids(try(function() return data.resultEntities end))
 				if #list == 0 then list = ids(entities) end
 				job.result = { success = success == true, verdict = v, entities = list }
