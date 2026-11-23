@@ -30,7 +30,8 @@ local CMD_NOTE = "via cmd: stops built by the probe; cargo is loaded only with -
 local NO_REPORT_NOTE = "via gui: no report from the speed control came through: what was sent is unknown (the " ..
 	"line shows what the engine holds)"
 
--- ctx: core, answer(id, payload, tag), fail(id, msg), appTime(), try(fn), say(msg, level), publishUi
+-- ctx: core, answer(id, payload, tag), fail(id, msg), appTime(), fineTime() (a clock that moves within a frame, for
+-- the catchment's readMs), try(fn), say(msg, level), publishUi
 function M.new(ctx)
 	local core, answer, fail, appTime, try, say = ctx.core, ctx.answer, ctx.fail, ctx.appTime, ctx.try, ctx.say
 	local req = ctx.require or ug_require or require
@@ -920,7 +921,7 @@ function M.new(ctx)
 		-- failure leaves the counts above as they are
 		local ok, d = pcall(function()
 			return catchmentDiag.new({ core = core, try = try, comp = comp, posOf = posOf, nameOf = nameOf,
-				appTime = appTime, say = say, walk = function() return L.walkBetween end })
+				appTime = ctx.fineTime or appTime, say = say, walk = function() return L.walkBetween end })
 				.diagnose(stations, caught, { radius = opts and opts.radius, paths = opts and opts.paths, target = id,
 					caughtCargo = caughtCargo })
 		end)

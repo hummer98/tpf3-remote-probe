@@ -6,7 +6,8 @@
 -- STOCK_LIST component, stock ids 0-based (its slider sends params.stockId - 1), the count from
 -- simEntityAtStockSystem.getStockCount. An industry, town building or warehouse whose own entity has no STOCK_LIST
 -- is followed to its stockList entity, as cargo_util.getStockListEntityFromOwner does; a construction (a
--- warehouse's, as build gives it) to the one such owner among its subconstructions (core.stockOwnersOf). A vehicle
+-- warehouse's, as build gives it) to the one such owner among its subconstructions (core.stockOwnersOf), else to a
+-- warehouse whose WAREHOUSE.construction is it (core.warehousesOf). A vehicle
 -- has no stock list: the panel sets its load with stock -1 and the cargo type's name, per cargo type.
 --
 -- Sent as rename and build send theirs: api.cmd.sendCommand with a callback, everything round it in pcall. A debug
@@ -70,9 +71,11 @@ function M.new(ctx)
 		local names = cargoNames()
 		local slEntity, sl, via = e, comp(e, "STOCK_LIST"), nil
 		local owner, construction = nil, nil
+		-- an owner's stockList may be the owner itself (a game's warehouse 46841 has stockList 46841, 2026-11-23):
+		-- taken, as cargo_util.getStockListEntityFromOwner gives it
 		local function follow(o, k)
 			local s = tonumber(core.field(comp(o, k), "stockList"))
-			if s and s >= 0 and s ~= o and try(function() return api.engine.entityExists(s) end) == true then
+			if s and s >= 0 and try(function() return api.engine.entityExists(s) end) == true then
 				local c = comp(s, "STOCK_LIST")
 				if c ~= nil then return s, c end
 			end
@@ -90,10 +93,17 @@ function M.new(ctx)
 		if sl == nil then
 			local con = comp(e, "CONSTRUCTION")
 			if con ~= nil then
-				local owners = core.stockOwnersOf(con, function(v, k)
+				local function read(v, k)
 					if v == e or try(function() return api.engine.entityExists(v) end) ~= true then return nil end
 					return comp(v, k)
-				end)
+				end
+				local owners = core.stockOwnersOf(con, read)
+				-- none under it: a warehouse that names it as its construction (its subconstructions may not list it)
+				if #owners == 0 then
+					local ct = try(function() return CT().WAREHOUSE end)
+					local ids = ct ~= nil and try(function() return api.engine.getEntitiesWithComponent(ct) end) or nil
+					owners = core.warehousesOf(e, ids, read)
+				end
 				if #owners > 1 then
 					local listed = {}
 					for _, o in ipairs(owners) do
@@ -158,7 +168,8 @@ function M.new(ctx)
 		end
 		if construction then
 			return nil, "construction " .. e .. " has no stock list under it (no warehouse, industry or town building "
-				.. "among its subconstructions with one; a warehouse with no modules has no stocks)"
+				.. "among its subconstructions with one, nor a warehouse that names it; a warehouse with no modules "
+				.. "has no stocks)"
 		end
 		return nil, "entity " .. e .. " holds no stock list (no STOCK_LIST, no industry, town building, warehouse "
 			.. "or construction with one) and is no vehicle"
@@ -177,6 +188,52 @@ function M.new(ctx)
 			for _, c in ipairs(s.cargoTypes) do if c.cargo == r.cargo then return c.count end end
 		end
 		return s.count
+	end
+
+	-- every count a stock list holder reads: "stock:cargo" (per cargo type) and "stock" (the stock's whole count), so
+	-- that what the engine changed can be told from what was asked; nil for a vehicle
+	local function snapshot(h)
+		if h == nil or h.kind ~= "stockList" then return nil end
+		local m = {}
+		for _, s in ipairs(h.stocks) do
+			m[tostring(s.stockId)] = s.count
+			for _, c in ipairs(s.cargoTypes or {}) do m[s.stockId .. ":" .. c.cargo] = c.count end
+		end
+		return m
+	end
+
+	-- the counts that moved between two snapshots and are not the request's: another stock, or (with a cargo) another
+	-- cargo in the same stock. -> { { stock, cargo, before, after } } sorted, empty when only the request's moved.
+	-- A count not read at either end is left out (nothing to compare).
+	local function strayChanges(before, after, r)
+		local out = {}
+		if before == nil or after == nil then return out end
+		for k, b in pairs(before) do
+			local a = after[k]
+			if a ~= nil and a ~= b then
+				local st, cargo = k:match("^(%-?%d+):(.+)$")
+				st = tonumber(st or k)
+				local mine = st == r.stock and (cargo == nil or r.cargo == nil or cargo == r.cargo)
+				if not mine then out[#out + 1] = { stock = st, cargo = cargo, before = b, after = a } end
+			end
+		end
+		table.sort(out, function(x, y)
+			if x.stock ~= y.stock then return x.stock < y.stock end
+			return (x.cargo or "") < (y.cargo or "")
+		end)
+		return out
+	end
+
+	-- the stock id the command is sent with: a mixed stock's (cargoType -1) cargo goes with stock -1 and its name,
+	-- as the base's debug panel sets a vehicle's load per cargo type (make_entity_debug_panel.tl: make(e, -1, v,
+	-- cargoName)); with its own stock id the engine did not take the name (grain asked, bricks set, 2026-11-23).
+	-- A stock of one cargo type, and a mixed stock without a cargo, go with their stock id, as the panel's slider
+	-- sends them (make(entity, stockId - 1, amount)). -> the id, and true when it is the cargo's form
+	local function sendStockOf(h, r)
+		if h.kind ~= "stockList" or r.cargo == nil then return r.stock, false end
+		local s = h.stocks[r.stock + 1]
+		if s and (s.cargoType == nil or s.cargoType < 0) then return -1, true end
+		return r.stock, false
 	end
 
 	-- whether the request fits the holder (an id or cargo the stock does not have may be the engine's assertion,
@@ -304,21 +361,38 @@ function M.new(ctx)
 		local why = misfit(h, r)
 		if why then return fail(c.id, why) end
 		local target = h.kind == "vehicle" and h.entity or h.stockList
+		local sendStock, byCargo = sendStockOf(h, r)
 		local out = { ok = true, cmd = "stockSet", dryRun = r.dryRun or nil, entity = r.entity, stockList = target,
 			holder = h.kind, via = h.via, owner = h.owner, construction = h.construction, stock = r.stock, amount = r.amount, cargo = r.cargo,
+			sentStock = sendStock, form = byCargo and "mixed stock: stock -1 with the cargo (not checked in a game yet)" or nil,
 			before = countIn(h, r), functionPresent = core.debugFunction(path) ~= nil, note = NOTE }
+		if byCargo then
+			-- stock -1 names no stock: another stock that takes the cargo too may be the one the engine fills
+			local also = {}
+			for _, o in ipairs(h.stocks) do
+				if o.stockId ~= r.stock then
+					for _, c in ipairs(o.cargoTypes or {}) do
+						if c.cargo == r.cargo then also[#also + 1] = tostring(o.stockId) end
+					end
+				end
+			end
+			if #also > 0 then
+				out.warning = "stock " .. table.concat(also, ", ") .. " takes " .. r.cargo .. " too: the engine picks "
+					.. "the stock (the answer says which changed)"
+			end
+		end
 		if r.dryRun then
 			out.sent = false
 			return answer(c.id, out)
 		end
 		if not out.functionPresent then return missingAnswer(c.id, path, out) end
-		local job = { id = c.id, kind = "stockSet", r = r, out = out, target = target,
+		local job = { id = c.id, kind = "stockSet", r = r, out = out, target = target, snap = snapshot(h),
 			deadline = appTime() + RESULT_SEC }
 		local ok, serr = send(job, function()
 			local make = api.cmd.debug.makeStockSetCargoAmountCmd
 			-- the cargo only when given: the base's panel leaves it out for a stock list's stock
-			if r.cargo then return make(target, r.stock, r.amount, r.cargo) end
-			return make(target, r.stock, r.amount)
+			if r.cargo then return make(target, sendStock, r.amount, r.cargo) end
+			return make(target, sendStock, r.amount)
 		end)
 		if not ok then
 			out.ok, out.sent, out.error = false, false, serr
@@ -413,7 +487,34 @@ function M.new(ctx)
 			local h = holderOf(job.r.entity)
 			out.after = countIn(h, job.r)
 			if out.after ~= nil and out.after ~= job.r.amount and job.success == true then
-				out.warning = "the stock reads back " .. out.after .. ", not " .. job.r.amount
+				out.warning = (out.warning and out.warning .. "; " or "") .. "the stock reads back " .. out.after
+					.. ", not " .. job.r.amount
+			end
+			-- what else moved (another cargo or stock). A running game moves counts by itself (production, deliveries):
+			-- so only a count that now reads the very amount asked, where the asked one did not get it, says the engine
+			-- put it elsewhere, and ok is not claimed; any other move is listed with a warning
+			local stray = strayChanges(job.snap, snapshot(h), job.r)
+			if #stray > 0 then
+				out.elsewhere = core.array(stray)
+				local landed = false
+				for _, x in ipairs(stray) do
+					if x.after == job.r.amount and out.after ~= job.r.amount then landed = true end
+				end
+				if not landed then
+					out.warning = (out.warning and out.warning .. "; " or "") .. "other counts moved meanwhile (elsewhere: "
+						.. "the game running, or the engine)"
+				elseif job.success == true then
+					local parts = {}
+					for _, x in ipairs(stray) do
+						parts[#parts + 1] = string.format("stock %d%s %s -> %s", x.stock, x.cargo and (" " .. x.cargo) or "",
+							tostring(x.before), tostring(x.after))
+					end
+					out.ok = false
+					out.error = "the engine changed what was not asked: " .. table.concat(parts, ", ")
+						.. " (asked: stock " .. job.r.stock .. (job.r.cargo and (" " .. job.r.cargo) or "") .. ")"
+					say("stockSet (command " .. job.id .. "): changed what was not asked", 1)
+					return answer(job.id, out, "error")
+				end
 			end
 		else
 			stepsDeltas(job, now)

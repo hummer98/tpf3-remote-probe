@@ -2397,7 +2397,11 @@ FIT_STEP_MIN = 0.5
 FIT_CANDIDATES_MAX = 200000  # places tried at most (each against the obstacles near it only)
 FIT_GRID_MAX = 1000000  # grid points made at most
 FIT_CHECK_MAX = 10
-FIT_SKIP_KINDS = ("town", "moving", "node", "asset")  # a town's box is the whole town; trees go when one builds
+# a town's box is the whole town; trees go when one builds; map: a box the size of the map (around's kind)
+FIT_SKIP_KINDS = ("town", "moving", "node", "asset", "map")
+# m, both sides: a box this large is the map's own (entity 2, kind other, 14,336 m square, stood in the way of every
+# place a road depot's fit tried, 2026-11-23), never a thing a build collides with. The mod's core.AROUND_MAP_SIZE
+FIT_MAP_SIZE = 2000
 FIT_ANGLES_ANY = tuple(i * math.pi / 2 for i in range(4))
 FIT_ANGLES_JOIN = tuple(i * math.pi / 12 for i in range(24))
 
@@ -2479,7 +2483,8 @@ def fit_poly_seg_dist(poly, a, b):
 def fit_obstacles(entities, skip=FIT_SKIP_KINDS):
     """around's entries -> obstacles: {"id", "kind", "name", "line": (a, b, halfWidth)} for a road or track piece,
     {"id", "kind", "name", "poly": corners} for one with a box (a point: 1 m square). One entry per town building:
-    its construction (with building) is dropped when its TOWN_BUILDING entity (with construction) is there."""
+    its construction (with building) is dropped when its TOWN_BUILDING entity (with construction) is there. The kinds
+    in skip and a box the size of the map (FIT_MAP_SIZE both sides, from a mod that lists it as other) are none."""
     houses = {e.get("construction") for e in entities if e.get("kind") == "town_building" and not e.get("fileName")}
     out = []
     for e in entities:
@@ -2499,6 +2504,8 @@ def fit_obstacles(entities, skip=FIT_SKIP_KINDS):
             if not b or b.get("x0") is None:
                 continue
             x0, y0, x1, y1 = b["x0"], b["y0"], b["x1"], b["y1"]
+            if x1 - x0 >= FIT_MAP_SIZE and y1 - y0 >= FIT_MAP_SIZE:
+                continue
             if x1 - x0 < 1:
                 x0, x1 = (x0 + x1) / 2 - 0.5, (x0 + x1) / 2 + 0.5
             if y1 - y0 < 1:
@@ -3673,7 +3680,7 @@ def parcels_args(ns):
 AROUND_RADIUS_MAX = 2000  # the mod's core.AROUND_RADIUS.max
 AROUND_LIMIT_MAX = 2000  # the mod's core.AROUND_LIMIT.max
 AROUND_KINDS = ("street", "track", "node", "town_building", "station", "depot", "industry", "construction", "field",
-                "asset", "town", "model", "moving", "other")  # the mod's core.AROUND_KINDS
+                "asset", "town", "model", "moving", "other", "map")  # the mod's core.AROUND_KINDS
 
 
 def around_args(ns):
@@ -4619,7 +4626,8 @@ def make_parser():
                         "octree's, axis aligned), distance; a construction's road ends and mouths in its own frame")
     ar.add_argument("--at", required=True, metavar="X,Y", help="the point (for a negative x write --at=-100,50)")
     ar.add_argument("--radius", type=float, help="metres (default 100, at most %d)" % AROUND_RADIUS_MAX)
-    ar.add_argument("--kinds", metavar="A,B", help="only these (all: every kind; default all but node and moving): "
+    ar.add_argument("--kinds", metavar="A,B", help="only these (all: every kind; default all but node, moving and map: map is a box "
+                    "the size of the map): "
                     + ", ".join(AROUND_KINDS))
     ar.add_argument("--limit", type=int, help="entries listed, nearest first (default 200, at most %d)" % AROUND_LIMIT_MAX)
     fi = sub.add_parser("fit", help="where a construction fits near a point: around's list searched here (its box, "

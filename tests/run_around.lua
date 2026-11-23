@@ -114,6 +114,40 @@ return function(t)
 		eq(#g.commands, 0, "nothing sent"); truthy(not g.crashed, g.crashed)
 	end)
 
+	test("around: the map's own boxes (the map's size, whatever their components) are map, off unless asked", function()
+		local things = {}
+		for k, v in pairs(THINGS) do things[k] = v end
+		-- as a game's entity 2 (kind other, 14,336 m square), and map-sized boxes with TERRAIN / EMISSION_GRID (map by size)
+		things[2] = { box = { -7168, -7168, -100, 7168, 7168, 2000 }, comps = {} }
+		things[3] = { box = { -7168, -7168, -100, 7168, 7168, 900 }, comps = { TERRAIN = {} } }
+		things[4] = { box = { -7168, -7168, 0, 7168, 7168, 1 }, comps = { EMISSION_GRID = {} } }
+		-- large but no map: an airport-sized construction stays what it is
+		things[5] = { box = { -900, -700, 0, 900, 700, 30 }, comps = { CONSTRUCTION = { fileName = "airport.con" } } }
+		local g = aroundGame({ things = things })
+		local a = aroundRun(g, 2741, '{ at = "0,10", radius = 120 }')
+		truthy(a.ok, a.error)
+		eq(byId(a.entities, 2), nil, "the map-sized box: off by default"); eq(byId(a.entities, 3), nil); eq(byId(a.entities, 4), nil)
+		eq(byId(a.entities, 5).kind, "construction")
+		eq(byId(a.entities, 700).kind, "town", "the town is listed as a town")
+		local b = aroundRun(g, 2742, '{ at = "0,10", radius = 120, kinds = "map" }')
+		truthy(b.ok, b.error); eq(#b.entities, 3)
+		eq(byId(b.entities, 2).kind, "map"); eq(byId(b.entities, 2).mapOf, "other")
+		eq(byId(b.entities, 3).kind, "map"); eq(byId(b.entities, 4).kind, "map"); eq(b.counts.map, 3)
+		-- a town as large stays a town (fit skips towns by their kind)
+		things[6] = { box = { -3000, -3000, 0, 3000, 3000, 50 }, name = "Bigtown", comps = { TOWN = {} } }
+		local c = aroundRun(aroundGame({ things = things }), 2744, '{ at = "0,10", radius = 120 }')
+		eq(byId(c.entities, 6).kind, "town")
+		truthy(not g.crashed, g.crashed)
+	end)
+
+	test("around: its ms are read on a clock that moves within the frame (not 0 when the read took time)", function()
+		local g = aroundGame()
+		g.clockStepUs = 2000 -- 2 ms each time the clock is read
+		local a = aroundRun(g, 2743, '{ at = "0,10", radius = 120 }')
+		truthy(a.ok, a.error)
+		truthy(a.ms.octree > 0 and a.ms.classify > 0 and a.ms.total >= a.ms.octree + a.ms.classify, a.ms.total)
+	end)
+
 	test("around: kinds, all, limit, a small radius, an octree that raises, bad arguments", function()
 		local g = aroundGame()
 		local a = aroundRun(g, 2711, '{ at = "0,10", radius = 120, kinds = "station,field" }')

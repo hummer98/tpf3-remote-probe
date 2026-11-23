@@ -3104,6 +3104,26 @@ function M.stockOwnersOf(c, read)
 	return out
 end
 
+-- The warehouses whose WAREHOUSE component names construction e, for a construction whose subconstructions do
+-- not list its warehouse (a game's warehouse 46841 of construction 46840 was not reached from 46840, 2026-11-23,
+-- while entities --kind warehouse showed it so). ids: the entities with a WAREHOUSE component; read(v, kind) as for
+-- stockOwnersOf. -> { { entity, kind = "WAREHOUSE", stockList } }, in the order of ids
+function M.warehousesOf(e, ids, read)
+	local out, seen = {}, {}
+	for _, v in ipairs(M.toList(ids)) do
+		v = tonumber(v)
+		if v and v >= 0 and not seen[v] then
+			seen[v] = true
+			local w = read(v, "WAREHOUSE")
+			local s = tonumber(M.field(w, "stockList"))
+			if tonumber(M.field(w, "construction")) == e and s and s >= 0 then
+				out[#out + 1] = { entity = v, kind = "WAREHOUSE", stockList = s }
+			end
+		end
+	end
+	return out
+end
+
 -- stockList: args entity (a stock list, an industry / town building / warehouse holding one, a construction with
 -- one of those under it, or a vehicle)
 function M.stockListArgs(args)
@@ -3711,8 +3731,12 @@ M.AROUND_SCAN_MAX = 10000 -- entities the octree gives that are looked at; more:
 M.AROUND_TIME_MS = 2000
 -- every kind an entry can have; the default leaves out nodes (each road end: the pieces are listed) and what moves
 M.AROUND_KINDS = { "street", "track", "node", "town_building", "station", "depot", "industry", "construction",
-	"field", "asset", "town", "model", "moving", "other" }
-M.AROUND_DEFAULT_OFF = { node = true, moving = true }
+	"field", "asset", "town", "model", "moving", "other", "map" }
+-- map: an entity whose box spans AROUND_MAP_SIZE both ways (the terrain, the world or a grid over the map) never
+-- stands in a build's way (a road depot's fit met entity 2, a box 14,336 m square, at every place, 2026-11-23):
+-- off unless asked for
+M.AROUND_DEFAULT_OFF = { node = true, moving = true, map = true }
+M.AROUND_MAP_SIZE = 2000 -- m, both sides: more than any station or industry, less than the smallest map
 -- a road or track piece is a line with a width: half of these, a guess (not read from the street type)
 M.AROUND_HALF_WIDTH = { street = 6, track = 3 }
 
