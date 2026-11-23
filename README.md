@@ -690,7 +690,7 @@ autosave loaded again saves under any name.
   list of at most 16 pieces; each is an object with this command's own values by their flags' names (`from`, `to`,
   `type`, `bridge`, `snap`, `tangent-from`, `tangent-to`, `align-to-edge`, `align-edge`; the mod's names
   `tangentFrom`, ... are read too; points as `"x,y[,z]"` or `[x, y, z]`) and, for sharing a node, `from-node` /
-  `to-node`: an existing road node's entity id (joined as it is, no snap; `from` / `to` not given with it), or a
+  `to-node`: an existing road node's entity id (joined as it is, no snap; giving `from` / `to` at the same end as well is refused), or a
   name `"@a"` for a new node the pieces share (never snapped; its point given at one of its ends at least and the
   same, within 0.01 m, at each end that gives one; a name used at one end only is refused). `--dry-run`,
   `--engine-check`, `--remove-fields`, `--remove-buildings`, `--ignore-errors` and `--collision-detail` go on the

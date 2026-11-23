@@ -645,7 +645,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   それぞれはこの命令の引数の名前で書いた object です (`from`・`to`・`type`・`bridge`・`snap`・`tangent-from`・
   `tangent-to`・`align-to-edge`・`align-edge`。MOD の名前 `tangentFrom` なども読みます。点は `"x,y[,z]"` か
   `[x, y, z]`)。node を共有するには `from-node` / `to-node` を使います: 既存の道路の node の entity id (そのまま
-  つなぐ。snap しない。同じ端に `from` / `to` は書かない)、または新しい node の名前 `"@a"` (複数の道路で共有する
+  つなぐ。snap しない。同じ端に `from` / `to` を一緒に書くと断ります)、または新しい node の名前 `"@a"` (複数の道路で共有する
   新しい node。snap しない。点は少なくとも 1 つの端で書き、書いた端どうしは 0.01 m 以内で同じであること。1 つの端に
   しか出てこない名前は断ります)。`--dry-run`・`--engine-check`・`--remove-fields`・`--remove-buildings`・
   `--ignore-errors`・`--collision-detail` は提案全体のものとしてコマンドラインに書き、1 本のときと同じ意味・同じ柵です (命令の名前は
