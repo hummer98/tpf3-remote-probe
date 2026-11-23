@@ -3175,6 +3175,12 @@ def cmd_fit(ns, sender=None):
         # or buildings gathered) may still refuse it (a road's dry run said buildable with "fields will be
         # removed" and the build collided, 2026-11-23): not taken
         doubt = isinstance(res, dict) and (res.get("warnings") or res.get("buildingsInWay"))
+        # infos with a buildable verdict (an older mod's answer: this one says refused, infosRefusal): the engine
+        # refuses such a build all the same (2026-11-23, a depot over water, infos only): not taken
+        if isinstance(res, dict) and res.get("buildable") and res.get("infos"):
+            refused.append({"place": cand, "error": "the engine's check has infos (%s): such a build is refused"
+                            % "; ".join(res.get("infos"))})
+            continue
         if isinstance(res, dict) and res.get("ok") and res.get("buildable") and not doubt:
             out.update(place=cand, checked=True, engine={k: res.get(k) for k in ("verdict", "cost", "warnings",
                                                                                   "engineContext")})

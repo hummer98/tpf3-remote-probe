@@ -1940,6 +1940,17 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(len(out["refusedFirst"]), 2)
         self.assertIn("warnings", out["refusedFirst"][0]["error"])
         self.assertEqual(out["refusedFirst"][1]["buildingsInWay"], [601])
+        # infos only: refused by this mod (buildable false, its own error), and an older mod's buildable with infos
+        # not taken either (the engine refuses such a build, 2026-11-23); the third place taken
+        sender, calls = make([{"ok": False, "buildable": False, "verdict": "refused", "infos": ["陸上に配置"],
+                               "infosRefusal": True, "error": "the engine would refuse it: 陸上に配置 (errorState.infos"},
+                              {"ok": True, "buildable": True, "verdict": "buildable", "infos": ["海岸線に配置"]},
+                              {"ok": True, "buildable": True, "verdict": "buildable"}])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(len(out["refusedFirst"]), 2)
+        self.assertIn("陸上に配置", out["refusedFirst"][0]["error"])
+        self.assertIn("infos (海岸線に配置)", out["refusedFirst"][1]["error"])
         # the engine could not be asked: said so, not "refused"
         sender, calls = make([{"ok": True, "checked": False, "engineCheck": "not available: x"}])
         out = tf3ctl.cmd_fit(ns, sender=sender)
