@@ -6428,5 +6428,95 @@ class RunningCostsTest(_ForceBase):
         self.assertEqual(got[1][2], tf3ctl.RUNNING_COSTS_TIMEOUT_SEC)
 
 
+class LightsTest(_ForceBase):
+    """lights --node ID --off (2026-11-24): a junction's traffic light taken off (lightsOff), only
+    on a test save, not in coop, as road --ignore-errors, and through the owner check; its dry run asks the engine,
+    so it goes through the same rules. road --inspect-node (its trafficLightPreference) only reads."""
+
+    def la(self, *a):
+        return tf3ctl.lights_args(self.p.parse_args(["lights"] + list(a)))
+
+    def test_args(self):
+        self.assertEqual(self.la("--node", "4077", "--off"), {"node": 4077})
+        self.assertEqual(self.la("--node", "4077", "--off", "--dry-run"), {"node": 4077, "dryRun": True})
+        for bad in (["--node", "4077"], ["--node", "-1", "--off"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                self.la(*bad)
+        with contextlib.redirect_stderr(io.StringIO()):
+            for bad in (["--off"], ["--node", "x", "--off"]):
+                with self.assertRaises(SystemExit, msg=bad):
+                    self.p.parse_args(["lights"] + bad)
+
+    def test_changes_the_game_dry_run_too(self):
+        self.assertTrue(tf3ctl.changes_game("lightsOff", {"node": 1}))
+        self.assertTrue(tf3ctl.changes_game("lightsOff", {"node": 1, "dryRun": True}))
+        self.assertFalse(tf3ctl.changes_game("roadInspect", {"node": 1}))
+
+    def test_on_a_test_save_names_it(self):
+        for save in ("probe-flat-base", "3-probe", "aom-ops-x"):
+            self.loaded(save)
+            for extra in ((), ("--dry-run",)):
+                a = self.sent("lightsOff", self.la("--node", "9000", "--off", *extra))
+                self.assertEqual(a["_testSave"], save)
+                self.assertEqual(a["_owner"], "alice")
+                self.assertEqual(a["node"], 9000)
+
+    def test_refused_on_a_persons_save_a_new_game_or_an_unknown_one(self):
+        args = self.la("--node", "9000", "--off")
+        self.loaded("aom-eu-1900")
+        e = self.refused("lightsOff", args, "'aom-eu-1900' is not a test save's")
+        self.assertEqual(e.refused, "lights")
+        self.assertIsInstance(e, tf3ctl.LightsRefused)
+        self.refused("lightsOff", dict(args, dryRun=True), "is not a test save's")
+        self.loaded("")
+        self.refused("lightsOff", args, "save probe-NAME), then load that")
+        self.loaded(None)
+        self.refused("lightsOff", args, "is not known")
+        # a _testSave written by hand is dropped and named again from the log
+        self.loaded("aom-eu-1900")
+        self.refused("lightsOff", dict(args, _testSave="probe-x"), "is not a test save's")
+
+    def test_refused_in_coop_and_by_the_owner_check(self):
+        args = self.la("--node", "9000", "--off")
+        tf3ctl.coop_start(60, "look together")
+        self.refused("lightsOff", args, "during coop")  # the coop client: coop_check refuses it
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True
+        e = self.refused("lightsOff", args, "coop mark")
+        self.assertEqual(e.refused, "lights")
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "alice", False
+        tf3ctl.coop_end()
+        # another owner's game: the owner check refuses it before anything, its dry run too
+        tf3ctl.OWNER = "bob"
+        e = self.refused("lightsOff", args, "not by bob")
+        self.assertNotIsInstance(e, tf3ctl.LightsRefused)
+        self.refused("lightsOff", dict(args, dryRun=True), "not by bob")
+        # --other-owner-ok passes the owner check, but not the test-save rule
+        tf3ctl.OTHER_OWNER_OK = True
+        self.loaded("aom-eu-1900")
+        self.refused("lightsOff", args, "is not a test save's")
+        self.loaded("probe-x")
+        self.assertEqual(self.sent("lightsOff", args)["_testSave"], "probe-x")
+
+    def test_the_other_test_save_commands_still_checked(self):
+        # (test_save_checks: road --ignore-errors and running-costs writes as before)
+        self.loaded("aom-eu-1900")
+        self.refused("road", self.road("--ignore-errors"), "is not a test save's")
+        self.refused("runningCostsSet", {"model": "x", "ops": [{"field": "runningCosts", "set": 1}]},
+                     "is not a test save's")
+        self.assertNotIn("_testSave", self.sent("roadInspect", {"node": 5, "_testSave": "probe-x"}))
+        self.loaded("probe-x")
+        self.assertEqual(self.sent("road", self.road("--ignore-errors"))["_testSave"], "probe-x")
+
+    def test_main_routes_it(self):
+        got = []
+
+        def fake_send(cmd, args=None, **kw):
+            got.append((cmd, args, kw.get("timeout")))
+            return {"ok": True}
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["--owner", "alice", "lights", "--node", "9000", "--off", "--dry-run"]), 0)
+        self.assertEqual(got, [("lightsOff", {"node": 9000, "dryRun": True}, tf3ctl.BUILD_TIMEOUT_SEC)])
+
+
 if __name__ == "__main__":
     unittest.main()

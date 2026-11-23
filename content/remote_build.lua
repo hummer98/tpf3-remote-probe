@@ -22,6 +22,7 @@ function M.new(ctx)
 	local built = {} -- [construction] = { res, x, y, z } for what this load of the probe built
 	local count = 0
 	local finishRoad, roadLost -- (the road command's, below)
+	local finishLights, lightsLost, lightPreference -- (the lights command's, below)
 	local joinsOf -- (below, before finish)
 	local streetEdgesNear -- (below, after place: place and joinsOf call it)
 	local engineCheck -- (below, by the road command; place's dry run with engineCheck calls it too)
@@ -796,6 +797,8 @@ function M.new(ctx)
 		if out.balanceBefore and out.balanceAfter then out.spent = out.balanceBefore - out.balanceAfter end
 		if job.kind == "road" then
 			finishRoad(job, out, res)
+		elseif job.kind == "lights" then
+			finishLights(job, out, res)
 		elseif job.kind == "place" then
 			local cons = {}
 			for _, e in ipairs(res.entities) do
@@ -907,6 +910,7 @@ function M.new(ctx)
 	local function lost(job)
 		local why = string.format("no answer from the engine in %d s", RESULT_SEC)
 		if job.kind == "road" then return roadLost(job, why) end
+		if job.kind == "lights" then return lightsLost(job, why) end
 		if job.kind == "place" then
 			local o = job.out
 			for _, e in ipairs(constructionsNear(o.at.x, o.at.y, FIND_M)) do
@@ -1860,6 +1864,20 @@ function M.new(ctx)
 		jobs[#jobs + 1] = job
 	end
 
+	-- a junction set-up's trafficLightPreference (engine.d.tl BaseNodeConfig; type.d.tl TrafficLightPreference YES /
+	-- NO / AUTO): its name, by the enum's values, and its number; "unread" (and nil) when it does not read, the
+	-- number alone as a string when it is none of the three
+	local LIGHT_PREFS = { "YES", "NO", "AUTO" }
+	function lightPreference(cfg)
+		local ok, v = pcall(function() return cfg.trafficLightPreference end)
+		if not ok or v == nil then return "unread", nil end
+		for _, k in ipairs(LIGHT_PREFS) do
+			local e = enumOf("TrafficLightPreference", k)
+			if e ~= nil and e == v then return k, tonumber(v) end
+		end
+		return tostring(v), tonumber(v)
+	end
+
 	-- road --inspect-node (read only): what the road command reads of a node, as plain values: the street system's
 	-- pieces there, the construction it belongs to, its junction set-up, and what the octree meets around it
 	local INSPECT_RADII, INSPECT_MAX = { 1, 5, 20 }, 40
@@ -1924,6 +1942,12 @@ function M.new(ctx)
 					crosswalks = tonumber(try(function() return core.size(cfg.crosswalks) end)),
 					trafficLightStates = tonumber(try(function() return core.size(cfg.trafficLightConfig.states) end)),
 					doubleSlipSwitch = try(function() return cfg.doubleSlipSwitch end) }
+				-- whether a light is wanted there (YES / NO / AUTO: lights --off writes NO), its number, and the
+				-- light's type
+				local pref, prefValue = lightPreference(cfg)
+				out.nodeConfig.trafficLightPreference = pref
+				out.nodeConfig.trafficLightPreferenceValue = prefValue
+				out.nodeConfig.trafficLightType = tonumber(try(function() return cfg.trafficLightConfig.trafficLightType end))
 			end
 		end
 		-- the octree's pieces around the node (findEntitiesInCircle, BASE_EDGE; every road type): whether each ends there
@@ -2017,6 +2041,156 @@ function M.new(ctx)
 			return finish(job)
 		end
 		return fail(job.id, why .. "; no piece between the ends (look at the map)")
+	end
+
+	---------------------------------------------------------------------------------------------------------------
+	-- lights --node ID --off (lightsOff): a junction's traffic light taken off as the node's window does it
+	-- (base gui/entity_window/double_slip_switch.tl, TrafficLightConfigWidget: makeData copies the set-up's
+	-- trafficLightConfig with clone(), its "None" button sets trafficLightPreference NO, its "Reset to Default"
+	-- button sets the config's states to {}; both in one proposal here, because the road command refuses a node by
+	-- its phases (planJoin reads states, not the preference) and None alone keeps them; makeCmd sends
+	-- api.engine.util.proposal.createTrafficLightProposal(node, config, preference) as
+	-- api.cmd.makeWorldBuildProposalCmd(proposal, nil, false, true): no Context, ignoreErrors off, player-initiated).
+	-- The window offers it only where more than two street pieces meet (view_manager_util.tl
+	-- baseNodeCanConfigTrafficLight), so this refuses other nodes; a construction's node is refused too (its set-up
+	-- is the construction's; not seen in the window). The road command does not join a node with traffic lights
+	-- (planJoin): this is the way to take them off first. Not checked in a game yet (written 2026-11-24).
+	local NOTE_LIGHTS = "the node's window's way (its None button: trafficLightPreference NO, and its Reset to Default: " ..
+		"the phases emptied, in one proposal sent with createTrafficLightProposal); not checked in a game yet whether " ..
+		"the engine keeps both (after: what was read back) and whether road then joins the node: look at it (road " ..
+		"--inspect-node)"
+
+	-- what a set-up says of its traffic light, as plain values
+	local function lightsOf(cfg)
+		local pref, value = lightPreference(cfg)
+		return { trafficLightPreference = pref, trafficLightPreferenceValue = value,
+			trafficLightStates = tonumber(try(function() return core.size(cfg.trafficLightConfig.states) end)),
+			trafficLightType = tonumber(try(function() return cfg.trafficLightConfig.trafficLightType end)) }
+	end
+	local function lightsNow(n)
+		local ok, cfg = pcall(function() return api.engine.getComponent(n, CT().BASE_NODE_CONFIG) end)
+		if not ok then return { unread = tostring(cfg) } end
+		if cfg == nil then return { unread = "no junction set-up" } end
+		return lightsOf(cfg)
+	end
+
+	function B.lightsOff(c)
+		local r, err = core.lightsOffRequest(c.args)
+		if not r then return fail(c.id, err) end
+		local n = r.node
+		local exists = try(function() return api.engine.entityExists(n) end)
+		if exists == false then return fail(c.id, string.format("%d is no entity: nothing sent", n)) end
+		local p = nodePos(n)
+		if not p then return fail(c.id, string.format("%d is no node (no BASE_NODE position): nothing sent", n)) end
+		local NO = enumOf("TrafficLightPreference", "NO")
+		if NO == nil then return fail(c.id, "api.type.enum.TrafficLightPreference.NO could not be read: nothing sent") end
+		local make = try(function() return api.engine.util.proposal.createTrafficLightProposal end)
+		if make == nil then
+			return fail(c.id, "api.engine.util.proposal.createTrafficLightProposal is not there: nothing sent")
+		end
+		local segs = streetSegmentsAt(n)
+		if not segs then
+			return fail(c.id, "the street pieces at node " .. n .. " could not be read (getNodeStreetSegments): nothing sent")
+		end
+		if #segs <= 2 then
+			return fail(c.id, string.format("node %d has %d street piece%s: the node's window offers traffic lights " ..
+				"only where more than two meet (baseNodeCanConfigTrafficLight): nothing sent", n, #segs,
+				#segs == 1 and "" or "s"))
+		end
+		local con, unread = constructionOfNode(n, segs)
+		if con then
+			return fail(c.id, string.format("node %d is construction %d's (%s): its junction set-up is the " ..
+				"construction's, and lights does not change it: nothing sent", n, con.construction, tostring(con.fileName)))
+		end
+		if unread then
+			return fail(c.id, "whether node " .. n .. " is a construction's could not be read (" .. unread .. "): nothing sent")
+		end
+		local ok, cfg = pcall(function() return api.engine.getComponent(n, CT().BASE_NODE_CONFIG) end)
+		if not ok then return fail(c.id, "the junction set-up of node " .. n .. " could not be read: " .. tostring(cfg) .. ": nothing sent") end
+		if cfg == nil then return fail(c.id, "node " .. n .. " has no junction set-up (BASE_NODE_CONFIG): nothing sent") end
+		local before = lightsOf(cfg)
+		local out = { ok = true, node = n, x = p.x, y = p.y, z = p.z, before = before, testSave = r.testSave,
+			note = NOTE_LIGHTS }
+		local okP, isNo = pcall(function() return cfg.trafficLightPreference == NO end)
+		if okP and isNo and before.trafficLightStates == 0 then
+			out.changed, out.sent = false, false
+			out.why = "its trafficLightPreference is NO already and it has no phases: nothing sent"
+			return answer(c.id, out)
+		end
+		-- (the window's makeData: a copy of the config, the type kept; its phases emptied, as Reset to Default)
+		local okC, config = pcall(function() return cfg.trafficLightConfig:clone() end)
+		if not okC or config == nil then
+			return fail(c.id, "the traffic light config of node " .. n .. " could not be copied (clone): " ..
+				tostring(okC and "nothing given back" or config) .. ": nothing sent")
+		end
+		local okS, serr = pcall(function() config.states = {} end)
+		if not okS then
+			return fail(c.id, "the traffic light phases of node " .. n .. " could not be emptied: " .. tostring(serr) ..
+				": nothing sent")
+		end
+		local okM, prop = pcall(make, n, config, NO)
+		if not okM or prop == nil then
+			return fail(c.id, "createTrafficLightProposal: " .. tostring(okM and "nothing given back" or prop) .. ": nothing sent")
+		end
+		if r.dryRun then
+			-- the proposal asked of the engine alone (makeProposalData with no Context, as the window sends none),
+			-- never sent
+			out.dryRun, out.sent = true, false
+			local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
+			local okD, data = false, "api.engine.util.proposal.makeProposalData is not there"
+			if mpd then okD, data = pcall(mpd, prop) end
+			if not okD or data == nil then
+				out.checked = false
+				out.engineCheck = "not available: " .. tostring(okD and "nothing given back" or data)
+				return answer(c.id, out)
+			end
+			local v = verdict(data, "makeProposalData (proposal)")
+			for k, val in pairs(v) do out[k] = val end
+			out.checked, out.engineCheck = true, "makeProposalData (proposal)"
+			local no = refuses(v)
+			out.verdict = no and "refused" or ((v.warnings ~= nil and #v.warnings > 0) and "buildable with warnings" or "buildable")
+			if no then
+				out.ok = false
+				out.error = "the engine would refuse it: " .. dryReason(v) .. " (dry run: nothing sent)"
+				return answer(c.id, out, "error")
+			end
+			return answer(c.id, out)
+		end
+		local job = { id = c.id, kind = "lights", out = out, started = appTime(), before = balance(), node = n }
+		out.sent = true
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(prop, nil, false, true), function(data, success, entities)
+			local okV, cerr = pcall(function()
+				local v = verdict(try(function() return data.resultProposalData end), "resultProposalData")
+				job.result = { success = success == true, verdict = v, entities = ids(entities) }
+			end)
+			if not okV then job.result = { success = success == true, verdict = { callbackError = tostring(cerr) }, entities = {} } end
+		end)
+		jobs[#jobs + 1] = job
+	end
+
+	-- a lights result: the node's light read back (after), and whether it is off now
+	finishLights = function(job, out, res)
+		local after = lightsNow(job.node)
+		out.after = after
+		out.off = after.trafficLightPreference == "NO" and after.trafficLightStates == 0
+		out.changed = res.success and out.off or false
+		if res.success and not out.off then
+			out.warning = "the engine said done, but the node reads trafficLightPreference " ..
+				tostring(after.trafficLightPreference or after.unread) .. " and " .. tostring(after.trafficLightStates) ..
+				" phases, not NO and 0 (road refuses a node with phases; look at it: road --inspect-node)"
+		end
+	end
+
+	-- no callback in RESULT_SEC: the node is read again; NO there is taken as done
+	lightsLost = function(job, why)
+		local after = lightsNow(job.node)
+		if after.trafficLightPreference == "NO" and after.trafficLightStates == 0 then
+			job.result = { success = true, verdict = {}, entities = {} }
+			job.out.why = why .. "; the node reads trafficLightPreference NO and no phases"
+			return finish(job)
+		end
+		return fail(job.id, why .. "; the node's trafficLightPreference reads " ..
+			tostring(after.trafficLightPreference or after.unread) .. " (look at it: road --inspect-node)")
 	end
 
 	function B.handle(c)

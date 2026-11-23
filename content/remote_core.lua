@@ -1337,6 +1337,27 @@ function M.roadInspectRequest(args)
 	return { node = n }
 end
 
+-- lights --node ID --off (lightsOff, remote_build.lua B.lightsOff): one junction's traffic light taken off, the
+-- way the node's window does it (gui/entity_window/double_slip_switch.tl, its "None" button: the set-up's
+-- trafficLightConfig kept, trafficLightPreference NO, createTrafficLightProposal sent with
+-- makeWorldBuildProposalCmd(proposal, nil, false, true)). It changes the game: test saves only, as road
+-- --ignore-errors (tf3ctl names the loaded save in _testSave; without a test save's name it is refused here too,
+-- so an older tf3ctl or a command written by hand does not send it: a second fence, not a check of the save
+-- itself). dryRun: the proposal made and asked of the engine (makeProposalData), never sent; the same fence.
+M.COMMANDS.lightsOff = true
+M.CHANGES_GAME.lightsOff = true -- (its dry run too: it asks the engine, as road --dry-run --engine-check)
+function M.lightsOffRequest(args)
+	args = type(args) == "table" and args or {}
+	local n = tonumber(args.node)
+	if n == nil or n ~= math.floor(n) or n < 0 or n > 2 ^ 31 then return nil, "node must be a node's entity id (0 or more)" end
+	if args.dryRun ~= nil and type(args.dryRun) ~= "boolean" then return nil, "dryRun must be true or false" end
+	if not M.isTestSaveName(args._testSave) then
+		return nil, "lightsOff is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave) ..
+			" is no test save's name): nothing sent"
+	end
+	return { node = n, dryRun = args.dryRun == true, testSave = args._testSave }
+end
+
 function M.waterRequest(args)
 	args = type(args) == "table" and args or {}
 	if (args.at == nil) == (args.grid == nil) then return nil, "give at (x,y) or grid (x0,y0,x1,y1,step)" end

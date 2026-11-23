@@ -490,6 +490,7 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 --bridge concrete [--dry-run --engine-check]
 python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
+python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # 試験用のセーブだけ: 交差点の信号を外す
 python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車線 (「道路の車線」を参照)
 ```
 
@@ -623,9 +624,25 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ
-  `false`。あれば `laneConnections`・`crosswalks`・`trafficLightStates`・`doubleSlipSwitch`)、`octree`
+  `false`。あれば `laneConnections`・`crosswalks`・`trafficLightStates`・`doubleSlipSwitch`・`trafficLightPreference`
+  (`YES` / `NO` / `AUTO`。ゲームの enum で読む。数は `trafficLightPreferenceValue`)・`trafficLightType`)、`octree`
   (`findEntitiesInCircle` が 1・5・20 m の中で当たる道路と、それぞれがその node で終わるか。最大 40 本)、`road`
   (その node を端にしたとき road がすること)。
+- road は信号のある node にはつなぎません (信号の段階が車線を名指ししていて、作り直せないため)。`lights --node ID --off`
+  で、先に交差点の信号を外せます。node の窓の2つのボタンを1つの提案にまとめて送ります: 「なし」
+  (`trafficLightPreference` を NO) と「デフォルトにリセット」(信号の段階 `states` を空に。road は段階の有無で断り、「なし」
+  だけでは段階が残るため)。交差点の設定にある信号の config を `clone` で写し (種類はそのまま)、
+  `createTrafficLightProposal` を `makeWorldBuildProposalCmd(proposal, nil, false, true)` で送ります。
+  - **試験用のセーブだけで、coop の間は使えません**: `road --ignore-errors` と同じ決まりで tf3ctl が断ります
+    (終了コード 4、`"refused": "lights"`、何も送らない)。MOD もセーブの名前をもう一度確認します。持ち主の検査も
+    通します (`--dry-run` も)。
+  - 送る前に断るもの: 道路が 2 本以下の node (node の窓が信号を出すのは 3 本以上が集まる所だけ)、建物の node、
+    交差点の設定の無い node。すでに NO で段階も無い node には何も送りません (`changed: false`)。
+  - 答え: `before` と `after` (読み直した `trafficLightPreference`・`trafficLightStates`・`trafficLightType`)、
+    `off` (読み直して NO で段階が 0)、`changed`。`--dry-run` は提案を作ってエンジンに聞くだけ (makeProposalData。窓と同じく Context なし):
+    `verdict`。何も送りません。
+  - **ゲーム内では未確認** (2026-11-24 に書いたもの): エンジンが NO と空の段階をそのまま保つか (段階を作り直さないか)、
+    そのあと road がその node につなげるか。信じる前に `road --inspect-node` で見てください。
 - 長さは 1 m から 2000 m まで。水の上や谷を渡るには橋が要りますが、これは橋を建てません (エンジンが断るか、地形に沿うか:
   未確認)。
 - 使い道: 港の歩行者用接続路だけでは、港は道路網につながりません。その横に、港の道路の空いた端から町の道路まで道路を
