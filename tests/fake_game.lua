@@ -1211,7 +1211,8 @@ function M.new(dir, opts)
 			end },
 			enum = { Carrier = { ROAD = 0, RAIL = 1, TRAM = 2, AIR = 3, WATER = 4, OTHER = 5 },
 				TransportMode = { PERSON = 0, CARGO = 1, CAR = 2, BUS = 3, TRUCK = 4, TRAM = 5, ELECTRIC_TRAM = 6, TRAIN = 7,
-					ELECTRIC_TRAIN = 8, AIRCRAFT = 9, SHIP = 10, SMALL_AIRCRAFT = 11, SMALL_SHIP = 12, HELICOPTER = 13 },
+					ELECTRIC_TRAIN = 8, AIRCRAFT = 9, SHIP = 10, SMALL_AIRCRAFT = 11, SMALL_SHIP = 12, HELICOPTER = 13,
+					TRAM_TRACK = 14, ELECTRIC_TRAM_TRACK = 15 },
 				LandUseType = { RESIDENTIAL = 0, COMMERCIAL = 1, INDUSTRIAL = 2 },
 				TransportVehicleState = { IN_DEPOT = 0, EN_ROUTE = 1, AT_TERMINAL = 2, GOING_TO_DEPOT = 3 },
 				StockListType = { InputStock = 0, OutputStock = 1, StorageStock = 2 } },
@@ -3111,6 +3112,15 @@ end
 -- callback, engine/system.d.tl); spec.notInOctree = { [id] = true }: not given (trees, if their asset groups are not
 -- in it). BOUNDING_VOLUME reads the box too. Over what was installed before (the build's fake): its things are still
 -- found. g.aroundCalls counts the octree walks. spec.octreeRaises: the walk raises.
+-- the lanes of the base's town_new_medium_tram_electrified (its street template): sidewalk, road with electric
+-- tram track, road, road, road with track, sidewalk; transportModes by name (installAround makes the engine's map)
+function M.TRAM_ELECTRIC_LANES()
+	local function lane(fwd, off, w, h, modes) return { forward = fwd, offset = off, width = w, height = h, speed = 13.89, transportModes = modes } end
+	return { lane(false, 0.15, 3, 0.15, { "PERSON", "CARGO" }), lane(false, -0.5, 5, 0, { "CAR", "BUS", "TRUCK", "TRAM", "ELECTRIC_TRAM" }),
+		lane(false, 0, 4, 0, { "CAR", "BUS", "TRUCK" }), lane(true, 0, 4, 0, { "CAR", "BUS", "TRUCK" }),
+		lane(true, 0.5, 5, 0, { "CAR", "BUS", "TRUCK", "TRAM", "ELECTRIC_TRAM" }), lane(true, -0.15, 3, 0.15, { "PERSON", "CARGO" }) }
+end
+
 function M.installAround(g, spec)
 	spec = spec or {}
 	local things = spec.things or {}
@@ -3118,11 +3128,12 @@ function M.installAround(g, spec)
 	local CT = api.type.ComponentType
 	-- (these types are added to the whole fake game, also the e2e one tools/tf3ctl.py's tests run against: a module
 	-- that takes a path by whether a type is there goes the path the game's own types give)
-	for _, k in ipairs({ "BASE_EDGE", "BASE_NODE", "BASE_EDGE_STREET", "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY",
+	for _, k in ipairs({ "BASE_EDGE", "BASE_NODE", "BASE_EDGE_STREET", "TRANSPORT_NETWORK", "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY",
 		"SUBCONSTRUCTION", "FIELD", "TOWN", "ASSET_GROUP", "TRANSPORT_VEHICLE", "SIM_PERSON", "ANIMAL",
 		"MODEL_INSTANCE_LIST", "BOUNDING_VOLUME", "TERRAIN", "WORLD", "EMISSION_GRID" }) do CT[k] = CT[k] or k end
 	api.type.enum = api.type.enum or {}
 	api.type.enum.RoadType = api.type.enum.RoadType or { STREET = 0, TRACK = 1 }
+	api.type.enum.BaseEdgeType = api.type.enum.BaseEdgeType or { NORMAL = 0, BRIDGE = 1, TUNNEL = 2 }
 	api.type.Box3 = api.type.Box3 or { new = function(lo, hi) return { min = lo, max = hi } end }
 	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
 	local function bvOf(t)
@@ -3157,6 +3168,25 @@ function M.installAround(g, spec)
 			local c = t.comps and t.comps[kind]
 			if c and kind == "BASE_EDGE" and type(c.roadType) == "string" then
 				c = copy(c); c.roadType = api.type.enum.RoadType[c.roadType]
+			end
+			if c and kind == "BASE_EDGE" and type(c.type) == "string" then
+				c = copy(c); c.type = (api.type.enum.BaseEdgeType or {})[c.type]
+			end
+			-- lanes' and network edges' transportModes given as names (as a street template writes them): the
+			-- engine's map, keyed by the TransportMode enum's values; a lane list given as userdata stays as it is
+			local function modeMap(list)
+				if type(list) ~= "table" or type(list[1]) ~= "string" then return list end
+				local m = {}
+				for _, n in ipairs(list) do m[api.type.enum.TransportMode[n]] = true end
+				return m
+			end
+			if c and kind == "BASE_EDGE" and type(c.laneConfigs) == "table" then
+				c = copy(c)
+				for _, lc in ipairs(c.laneConfigs) do lc.transportModes = modeMap(lc.transportModes) end
+			end
+			if c and kind == "TRANSPORT_NETWORK" and type(c.edges) == "table" then
+				c = copy(c)
+				for _, ed in ipairs(c.edges) do ed.transportModes = modeMap(ed.transportModes) end
 			end
 			return c
 		end
@@ -3655,7 +3685,13 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		[9601] = { box = { 10, 7010, 0, 25, 7025, 10 }, comps = { TOWN_BUILDING = { town = 9700, construction = 9602 } } },
 		[9602] = { box = { 10, 7010, 0, 25, 7025, 10 }, comps = { CONSTRUCTION = { fileName = "building/res.con" } } },
 		[9604] = { box = { 60, 7000, 0, 100, 7040, 0.5 }, comps = { FIELD = {} } },
-		[9700] = { box = { -300, 6700, 0, 300, 7300, 30 }, name = "Fakeham", comps = { TOWN = {} } } } })
+		[9700] = { box = { -300, 6700, 0, 300, 7300, 30 }, name = "Fakeham", comps = { TOWN = {} } },
+		-- lanes: an electric tram street (the base's town_new_medium_tram_electrified lanes: track on the outer
+		-- road lanes), west to east at y 7400
+		[9620] = { box = { -50, 7392, 0, 50, 7408, 1 }, comps = { BASE_EDGE = { roadType = "STREET", type = "NORMAL",
+			roadTemplate = "town_new_medium_tram_electrified.lua", node0 = 9621, node1 = 9622,
+			position0 = { x = -50, y = 7400, z = 0 }, position1 = { x = 50, y = 7400, z = 0 },
+			laneConfigs = M.TRAM_ELECTRIC_LANES() }, BASE_EDGE_STREET = {} } } } })
 	local start = os.clock()
 	local wall = 0
 	local speedControl
