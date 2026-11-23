@@ -1134,11 +1134,13 @@ end
 -- WATER_MAX_POINTS points). -> { points = { { x, y } }, grid = { x0, y0, x1, y1, step, nx, ny } or nil }
 M.WATER_MAX_POINTS = 400
 M.WATER_MIN_STEP = 0.1 -- metres: a smaller step makes the point count overflow before the limit is checked
--- a way on the map made one long: { x, y } or nil when it has no length. Scaled by its larger part first, so
+-- a way on the map made one long: { x, y } or nil when it has no length (or is not finite). Scaled by its larger part first, so
 -- that a huge dx,dy (1e300) does not overflow into a way of length 0
 local function unitWay(x, y)
+	-- (NaN checked first: math.max(nan, 1) is 1 in LuaJIT)
+	if not (finite(x) and finite(y)) then return nil end
 	local m = math.max(math.abs(x), math.abs(y))
-	if not (m >= M.ROAD_MIN_DIR and m < math.huge) then return nil end
+	if not (m >= M.ROAD_MIN_DIR) then return nil end
 	x, y = x / m, y / m
 	local l = math.sqrt(x * x + y * y)
 	return { x = x / l, y = y / l }
@@ -1215,6 +1217,7 @@ function M.roadRequest(args)
 		for _, id in ipairs(v) do
 			if id ~= math.floor(id) or id < 0 or id > 2 ^ 31 then return nil, "alignEdge must be pieces' entity ids (0 or more)" end
 		end
+		if v[2] == v[1] then return nil, "alignEdge names piece " .. v[1] .. " twice: give it once" end
 		alignEdge = v
 	end
 	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true,
@@ -1248,7 +1251,7 @@ function M.roadTangents(a, b, dir0, dir1)
 			out[i], turns[i] = { x = dx, y = dy, z = dz }, 0
 		else
 			local u = unitWay(d[1], d[2])
-			if not u then return nil, (i == 1 and "from" or "to") .. ": a direction of length 0 gives no way" end
+			if not u then return nil, (i == 1 and "from" or "to") .. ": a direction of length 0 (or not finite) gives no way" end
 			local ux, uy = u.x, u.y
 			local cos = math.max(-1, math.min(1, (ux * dx + uy * dy) / flat))
 			local turn = math.deg(math.acos(cos))

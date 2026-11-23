@@ -2134,7 +2134,7 @@ def road_args(ns):
             raise ToolError("%s must be numbers: dx,dy" % flag)
         if len(v) != 2 or any(x != x or abs(x) == float("inf") for x in v):
             raise ToolError("%s must be dx,dy (finite numbers; for a negative dx write %s=-1,0)" % (flag, flag))
-        if math.hypot(v[0], v[1]) < 1e-6:
+        if max(abs(v[0]), abs(v[1])) < 1e-6:  # the mod's core.ROAD_MIN_DIR, on the larger part
             raise ToolError("%s: a direction of length 0 gives no way" % flag)
         args[key] = v
     align = getattr(ns, "align_to_edge", None)
@@ -2149,6 +2149,8 @@ def road_args(ns):
             raise ToolError("--align-edge goes with --align-to-edge only")
         if len(ns.align_edge) > 2 or any(i < 0 for i in ns.align_edge):
             raise ToolError("--align-edge: at most two pieces' entity ids (one per end)")
+        if len(ns.align_edge) == 2 and ns.align_edge[0] == ns.align_edge[1]:
+            raise ToolError("--align-edge %d given twice: give it once" % ns.align_edge[0])
         args["alignEdge"] = list(ns.align_edge)
     return args
 
@@ -4688,8 +4690,8 @@ def make_parser():
                     "(the Context's gatherBuildings). Test saves only (changes the game)")
     rd.add_argument("--tangent-from", metavar="DX,DY", help="a curved piece: the way the road leaves the from end "
                     "(a direction only; the length is the chord's). Both tangents point the way from -> to; at most "
-                    "90 degrees off the line from -> to")
-    rd.add_argument("--tangent-to", metavar="DX,DY", help="the way the road arrives at the to end (from -> to)")
+                    "90 degrees off the line from -> to. A negative dx: --tangent-from=-1,0")
+    rd.add_argument("--tangent-to", metavar="DX,DY", help="the way the road arrives at the to end (from -> to; a negative dx: --tangent-to=-1,0)")
     rd.add_argument("--align-to-edge", choices=("from", "to", "both"), help="at a joined end (a road node within "
                     "--snap), follow the road there: a dead end's piece straight on. A node with more than one road "
                     "piece needs --align-edge")

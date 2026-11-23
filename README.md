@@ -548,13 +548,14 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   to follow: refused. `--tangent-*` and `--align-to-edge` for the same end are refused; for different ends they go
   together. The piece is sent as a cubic Hermite curve: each tangent as long on the map as the chord (the usual
   length; a straight piece's tangents are its chord) and climbing the chord's whole rise, so the height still runs
-  evenly. Refused before sending (the dry run too): a way of length 0, ends under 1 m apart on the map, an end
+  evenly. A negative dx is written with `=` (`--tangent-to=-1,0`). Refused before sending (the dry run too): a way of length 0, ends under 1 m apart on the map, an end
   turned more than 90 degrees off the line from -> to (the curve would run back behind its end).
 - Every answer (the dry run too) gives `tangent0` / `tangent1` (sent, rounded to mm), `curved`, and on a curve
   `turnOffChord` (`from` / `to`, degrees). A joined end gives `kinks` (each road piece at the node: `edge`, `kinkDeg`:
   the angle between the way it runs on out past the node and the way the new piece leaves it, 0 = straight on;
   `wayFrom`: `tangent` or `chord`), `kinkDeg` (the followed piece's, or the only one's) and with `--align-to-edge`
-  `alignedTo` (`edge`, `from`). A straight piece's `kinkDeg` shows how bent the chord joins the road.
+  `alignedTo` (`edge`, `from`). A straight piece's `kinkDeg` shows how bent the chord joins the road. `length` (and its 2000 m limit) stays the
+  chord's on a curve too; the curve itself is longer.
   **Not checked in a game yet** (written 2026-11-23): whether the engine takes these curves (and refuses less
   than the bent straight piece did), and how close the chord-long tangents keep it to a circle.
 - The answer: `from` / `to` (`node` and `snapped` when joined, else `zFrom`), `template`, `year`, `length`,

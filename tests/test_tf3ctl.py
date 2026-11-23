@@ -2007,6 +2007,7 @@ class QuitLaunchTest(unittest.TestCase):
         plain = road()
         for k in ("tangentFrom", "tangentTo", "alignToEdge", "alignEdge"):
             self.assertNotIn(k, plain, "no flag: nothing sent (a straight piece, as before)")
+        self.assertEqual(road("--tangent-to=-1,0")["tangentTo"], [-1.0, 0.0], "a negative dx written with =")
         r = road("--tangent-from", "1,0.5", "--tangent-to=-0,1")
         self.assertEqual((r["tangentFrom"], r["tangentTo"]), ([1.0, 0.5], [0.0, 1.0]))
         r = road("--align-to-edge", "both", "--align-edge", "9010", "--align-edge", "9011")
@@ -2017,7 +2018,8 @@ class QuitLaunchTest(unittest.TestCase):
                     ["--align-to-edge", "from", "--tangent-from", "1,0"],
                     ["--align-to-edge", "both", "--tangent-to", "1,0"], ["--align-edge", "5"],
                     ["--align-to-edge", "to", "--align-edge", "-1"],
-                    ["--align-to-edge", "both", "--align-edge", "1", "--align-edge", "2", "--align-edge", "3"]):
+                    ["--align-to-edge", "both", "--align-edge", "1", "--align-edge", "2", "--align-edge", "3"],
+                    ["--align-to-edge", "both", "--align-edge", "4", "--align-edge", "4"]):
             with self.assertRaises(tf3ctl.ToolError, msg=bad):
                 road(*bad)
         with self.assertRaises(SystemExit):
