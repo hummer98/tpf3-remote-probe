@@ -2220,10 +2220,78 @@ def log_errors_since(path, start):
     return [e[:LOG_ERROR_CHARS] for e in out[:LOG_ERRORS_MAX]]
 
 
+PROPOSAL_LOG_RE = re.compile(r"ProposalData (error|warning|info)s?:\s*(.*)$", re.IGNORECASE)
+PROPOSAL_LOG_WAIT_SEC = 0.75
+
+
+def log_proposal_since(path, start):
+    """The engine's "ProposalData error: <reason>" lines (any thread: the Simulation Thread writes them) from byte
+    start on, as {"time", "kind", "text"}, the proposal's dump below each left out. A build refused on water came
+    back with no message while this line had its reason (2026-11-23: "ProposalData error: 陸上に配置")."""
+    if not path or start is None:
+        return []
+    try:
+        if os.path.getsize(path) < start:
+            return []
+        with open(path, "rb") as f:
+            f.seek(start)
+            data = f.read(4_000_000)
+    except OSError:
+        return []
+    out = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        if not line.startswith("["):
+            continue
+        head = line.split("]", 1)
+        if len(head) < 2:
+            continue
+        m = PROPOSAL_LOG_RE.match(head[1].lstrip("+ ").strip())
+        if m and m.group(2).strip():
+            out.append({"time": head[0][1:21], "kind": m.group(1).lower(), "text": m.group(2).strip()[:LOG_ERROR_CHARS]})
+    return out[:LOG_ERRORS_MAX]
+
+
+def add_proposal_log(args, res, log_path, log_start):
+    """The engine's ProposalData lines of the command's seconds into a build's or a road's answer (proposalLog).
+    A refusal whose answer had no message takes its reason from them (errorFrom: "game log"); a dry run that said
+    buildable while the log has a ProposalData error gets a note (another mod's proposal may have written it)."""
+    lines = log_proposal_since(log_path, log_start)
+    if not lines and not res.get("ok") and "no message" in str(res.get("error", "")):
+        # the Simulation Thread may write its line after the mod's answer (2026-11-23: the answer's log line came
+        # first in the same second): read once more
+        time.sleep(PROPOSAL_LOG_WAIT_SEC)
+        lines = log_proposal_since(log_path, log_start)
+    if not lines:
+        if not res.get("ok") and "no message" in str(res.get("error", "")):
+            res = dict(res, proposalLogNote="no ProposalData line in the game's log while the command ran")
+        return res
+    res = dict(res, proposalLog=lines)
+    errors = [ln["text"] for ln in lines if ln["kind"] == "error"]
+    err = str(res.get("error", ""))
+    if not res.get("ok") and errors and "no message" in err:
+        # (the answer's own "no message (...)" stays after it, as what the mod read)
+        reason = "; ".join(dict.fromkeys(errors))
+        if "no message (" in err:
+            res["error"] = err.replace("no message (", "%s (from the game's log, ProposalData error; the answer had "
+                                       "no message: " % reason, 1)
+        else:
+            res["error"] = err.replace("no message", "%s (from the game's log, ProposalData error; the answer had "
+                                       "no message)" % reason, 1)
+        res["errorFrom"] = "game log"
+        res["proposalLogNote"] = ("the engine's ProposalData lines written while the command ran: its reason, unless "
+                                  "another mod's proposal wrote one in the same seconds")
+    elif res.get("ok") and args.get("dryRun") and args.get("engineCheck") and errors:
+        res["proposalLogNote"] = ("the game's log has a ProposalData error from the seconds of this check (%s): the "
+                                  "build may be refused although the check said %s (or another mod's proposal wrote it)"
+                                  % ("; ".join(errors), res.get("verdict") or "buildable"))
+    return res
+
+
 def check_build_answer(args, res, log_path=None, log_start=None):
     """A place the mod says is built must name its construction: an engine that says success and builds nothing
     (2026-11-22, a harbour whose update script failed) is no success, whatever an older mod answered. The game
-    log's errors from the command on are added (logErrors): the engine's reason is only there."""
+    log's errors from the command on are added (logErrors), and its ProposalData lines (proposalLog): the engine's
+    reason is sometimes only there. For road's answers too (no res in args: nothing to name)."""
     if not isinstance(res, dict):
         return res
     placing = "res" in args and not args.get("dryRun")
@@ -2235,6 +2303,8 @@ def check_build_answer(args, res, log_path=None, log_start=None):
     if errs:
         res = dict(res, logErrors=errs, logErrorsNote="the game log's Main Thread errors written while the "
                    "command ran: likely its reason, not certainly")
+    if not res.get("ok") or (args.get("dryRun") and args.get("engineCheck")):
+        res = add_proposal_log(args, res, log_path, log_start)
     return res
 
 
@@ -5263,7 +5333,10 @@ def main(argv=None):
         elif ns.cmd == "road" and ns.inspect_node is not None:
             res = send("roadInspect", road_inspect_args(ns))
         elif ns.cmd == "road":
-            res = send("road", road_args(ns), timeout=BUILD_TIMEOUT_SEC)
+            args = road_args(ns)
+            log_path = game_log_path()
+            log_start = log_size(log_path)
+            res = check_build_answer(args, send("road", args, timeout=BUILD_TIMEOUT_SEC), log_path, log_start)
         elif ns.cmd == "water":
             res = send("water", water_args(ns))
         elif ns.cmd == "terrain":

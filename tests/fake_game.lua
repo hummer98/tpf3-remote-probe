@@ -1785,6 +1785,13 @@ end
 -- callback would, building nothing (g.proposalDataCalls); spec.noSimpleProposalData: it raises for a SimpleProposal
 -- (as bus_loops' notes say it does); spec.proposalDataOneArg: it raises when a Context is given too;
 -- spec.proposalDataTwoArgs: it raises without a Context.
+-- spec.landOnly(x, y) -> true: a construction there is refused ("陸上に配置", the game's word for "place on land":
+-- 2026-11-23, a construction at the map's edge over water) by the build and by makeProposalData with a Context, never
+-- by makeProposalData alone (the engine's own context said buildable there); spec.landOnlyBuildOnly: by the build
+-- alone. spec.silentCallback: the build's callback carries critical but no messages, warnings or infos (as the
+-- refusal on water came back, the reason only in the log); spec.noErrorState: its ProposalData has no errorState;
+-- spec.infosOnly: its reason is in errorState.infos, messages empty. spec.landOnlyOwnOnly: the other way round, only
+-- makeProposalData alone refuses it (the stricter of a dry run's two verdicts).
 -- The octree finds the constructions in g.built by their transf's position.
 -- A construction's shape may have free pieces (shape.free = { { i, j } }: an industry's arms, street_cross_01 / 02,
 -- not among its frozenEdges) and frozen nodes (shape.frozenNodes = { i }: CONSTRUCTION.frozenNodes, the inner end
@@ -2174,6 +2181,13 @@ function M.installBuild(g, spec)
 				table.insert(data.errorState.messages, "Collision")
 				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
 			end
+			local onWater = spec.landOnly and spec.landOnly(ce.transf[13], ce.transf[14])
+			local own = ctx and ctx.engineOwn
+			if onWater and (spec.landOnlyOwnOnly and own or not spec.landOnlyOwnOnly and not own
+				and not (dry and spec.landOnlyBuildOnly)) then
+				data.errorState.critical = true
+				table.insert(data.errorState.messages, "陸上に配置")
+			end
 			-- spec.houses(x, y) -> { town building ids } in its way: with the Context's gatherBuildings they go
 			-- (CollisionInfo.buildingEntities, a guess of the engine's), else a collision with each
 			local hs = spec.houses and spec.houses(ce.transf[13], ce.transf[14])
@@ -2211,7 +2225,7 @@ function M.installBuild(g, spec)
 		-- (the proposal alone: the GUI's own context, taken to gather fields from the game's answer, a warning that
 		-- fields go where the build with gatherFields off collided, 2026-11-23: a guess at why, not read; with a
 		-- Context: that one)
-		return (evaluate(p, true, ctx or { gatherFields = true }))
+		return (evaluate(p, true, ctx or { gatherFields = true, engineOwn = true }))
 	end }
 	api.type.Box3 = { new = function(lo, hi) return { min = lo, max = hi } end }
 	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
@@ -2275,6 +2289,8 @@ function M.installBuild(g, spec)
 
 	local function apply(cmd)
 		local data, adds, removes = evaluate(cmd.proposal, false, cmd.context)
+		-- spec.refuseBuild: every build refused, whatever makeProposalData says (with silentCallback: no reason)
+		if spec.refuseBuild then data.errorState.critical = true end
 		if data.errorState.critical and not cmd.ignoreErrors then return false, data, {} end
 		if data.fieldsGone then g.fieldsRemoved = (g.fieldsRemoved or 0) + data.fieldsGone end
 		-- a construction whose own script fails its check (scriptFails): the engine logs "Error during construction
@@ -2423,6 +2439,13 @@ function M.installBuild(g, spec)
 		g.buildCmds[#g.buildCmds + 1] = cmd
 		local ok, data, results = apply(cmd)
 		if cb and not spec.lostCallback then
+			if spec.silentCallback or spec.infosOnly then
+				local es = data.errorState
+				data.errorState = { critical = es.critical, messages = {}, warnings = {},
+					infos = spec.infosOnly and copy(es.messages) or {} }
+			elseif spec.noErrorState then
+				data.errorState = nil
+			end
 			local d = { resultProposalData = data, resultEntities = {} }
 			if spec.raiseInCallback then d = setmetatable({}, { __index = function() error("engine data gone") end }) end
 			cb(d, ok, results)

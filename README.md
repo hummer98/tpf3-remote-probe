@@ -395,11 +395,31 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   `connect --from`; and `connectable`: where a `road` can join it, see `road`), `cost` (the engine's), `balanceBefore` / `balanceAfter` / `spent`, `errors`, `warnings`,
   `collisions` (ids in the way), `params` as sent, `at` (with the z used, `zFrom`). A refusal is `ok: false` with
   the engine's messages in `error`.
+- The reason of a refusal (`build` and `road`, built or a dry run's engine check): the engine's
+  `errorState.messages` (ProposalData, `type.d.tl`), else its `infos` or `warnings` (named so), else
+  `no message (...)` with the fields read in `errorStateRead` (e.g. `resultProposalData.errorState: critical true,
+  messages 0, warnings 0, infos 0`, or `errorState: none`). A build or a road refused with no message asks the engine about
+  the same proposal again (`makeProposalData`, both contexts, nothing sent) and takes its message (`recheck`;
+  `recheckNote` when that says buildable). tf3ctl then adds the game log's `ProposalData error: ...` lines written
+  while the command ran (`proposalLog`; the Simulation Thread writes them) and, when the answer had no message,
+  puts their text in `error` (`errorFrom: "game log"`). Measured 2026-11-23: a construction placed over water at
+  the map's edge was refused with no message in the callback, while the log said `ProposalData error: 陸上に配置`
+  ("place on land"); collisions (`衝突`) did come with their message. Another mod's proposal in the same seconds
+  may write a line too (`proposalLogNote`).
 - `--dry-run --engine-check` asks the engine about the same proposal a build sends, building nothing
   (`makeProposalData`, as `road`'s; it counts as changing the game): `buildable`, `verdict`, `errors`,
   `collisions` with `hits`, `cost`, and `footprint`: the box the construction takes there (the engine's
   `toAddData` bounding volume less the point: `x0`, `y0`, `x1`, `y1`, `height`, axis aligned in the world).
   `fit` takes its box from it.
+- `--dry-run --engine-check` asks the engine in two contexts: the proposal alone (the engine's own context, the
+  form known to work on the GUI thread) and the proposal with the build's Context (player, `gatherFields`,
+  `gatherBuildings`, `cleanupStreetGraph` as the build sends them). The verdict is the build's context's, unless
+  only the engine's own refuses (the stricter is taken); `engineCheck` names the form, `engineContexts` has both
+  (`own`, `build`: each `verdict`, `critical`, `errors`, `warnings`, `infos`, `collisions` count, `cost`, or
+  `raised` when that form raised), and when they differ `contextsDisagree: true` with `contextsNote`. Why: the
+  engine's own context gathered fields where the build collided, and said buildable on water where the build was
+  refused (2026-11-23). Whether the Context form judges as the build does on the GUI thread is **not checked in a
+  game yet**; when it raises, the answer is the engine's own context's as before (`engineContext`, `caution`).
 - `--dry-run` alone builds nothing and does **not** ask the engine (`road --dry-run --engine-check` does: `makeProposalData` takes a
   `SimpleProposal` on the GUI thread, though `engine/util.d.tl:939` types it for a `Proposal`; a construction's is
   not asked yet). The probe checks the name, the params it
@@ -567,15 +587,16 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
 - `--dry-run` sends nothing and does not ask the engine: it answers the plan, checked by the probe only
   (`checked: false`, `engineCheck: "not asked (use --engine-check)"`), so it is safe to run as other dry runs.
 - `--dry-run --engine-check` (`--engine-check` goes with `--dry-run` only): it also makes the same proposal the
-  road's build sends (set-ups included) and asks the engine about it with `api.engine.util.proposal.makeProposalData` (the proposal alone, else with a context), in
+  road's build sends (set-ups included) and asks the engine about it with `api.engine.util.proposal.makeProposalData` (the proposal alone and with the build's context, as `build`'s), in
   the guiUpdate (never in a recipe's body). The answer has `checked: true`, `engineCheck` (the form taken),
   `buildable`, the engine's `cost`, `errors`, `warnings`, `collisions`, `critical`, and `balance`; one the engine
   would refuse is `ok: false` with its messages in `error`. When `makeProposalData` is not there or raises both
   ways, the answer is the probe's own plan (`checked: false`, `engineCheck: "not available: ..."`). The engine's
   evaluation runs native code a `pcall` cannot guard (an assertion there would end the game), so tf3ctl counts
   this as changing the game: ask for the game first, test saves only.
-  `verdict` is `buildable`, `buildable with warnings` or `refused`. With the proposal alone the engine judges it
-  in its own context, not the build's (`engineContext` says which): that one gathers farm fields, so a field in
+  `verdict` is `buildable`, `buildable with warnings` or `refused` (`engineContexts` and `contextsDisagree` as
+  `build`'s). Where only the proposal alone answers, the engine judges it in its own context, not the build's
+  (`engineContext` says which): that one gathers farm fields, so a field in
   the way is only a warning ("3 fields will be removed") where the build without `--remove-fields` collides with
   it (2026-11-23, a road by a forest). Then the answer has a `caution`.
 - `--remove-fields` lets the road take farm fields in its way: the build's context gathers fields

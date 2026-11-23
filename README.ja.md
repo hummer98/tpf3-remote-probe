@@ -374,10 +374,28 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   道路・線路の空いた端と位置。`connect --from` の候補。`connectable`: `road` でつなげる所。`road` を参照)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
   `spent`、`errors`、`warnings`、`collisions` (邪魔をしている id)、送った `params`、`at` (使った z と `zFrom`)。断られた
   ときは `ok: false` で、エンジンの文言が `error` に入ります。
+- 断られた理由 (`build` と `road`。建てるときも、dry-run の engine-check も): エンジンの `errorState.messages`
+  (ProposalData、`type.d.tl`)、無ければ `infos` か `warnings` (その名前を付けて)、どれも無ければ `no message (...)` と、
+  読んだ欄を `errorStateRead` に書きます (例 `resultProposalData.errorState: critical true, messages 0, warnings 0,
+  infos 0`、`errorState: none`)。文言の無いまま断られた build と road は、同じ proposal をもう一度エンジンに聞き
+  (`makeProposalData`、2つの context。何も送らない)、その文言を使います (`recheck`。そちらが建てられると言ったときは
+  `recheckNote`)。さらに tf3ctl が、命令の間にゲームのログに出た `ProposalData error: ...` の行 (Simulation Thread が書く) を
+  `proposalLog` に足し、答えに文言が無かったときは、その文を `error` に入れます (`errorFrom: "game log"`)。2026-11-23 の
+  計測: 地図の端の水の上に置いた建造物は、コールバックに文言が無いまま断られ、ログには `ProposalData error: 陸上に配置`
+  が出ていました。衝突 (`衝突`) は文言つきで返っていました。同じ秒にほかの MOD の proposal が行を書くこともあります
+  (`proposalLogNote`)。
 - `--dry-run --engine-check` は、建てるときと同じ提案をエンジンに聞き、何も建てません (`makeProposalData`。`road` と
   同じ。ゲームを変える側に数えます)。`buildable`・`verdict`・`errors`・`collisions` と `hits`・`cost`、それに `footprint`:
   その場所で建造物が占める箱 (エンジンの `toAddData` の bounding volume から点を引いたもの: `x0`・`y0`・`x1`・`y1`・
   `height`。世界の軸にそろった箱) を返します。`fit` はこの箱を使います。
+- `--dry-run --engine-check` は、エンジンに2つの context で聞きます: proposal だけ (エンジン自身の context。GUI の
+  スレッドで動くと分かっている形) と、build と同じ Context (player、`gatherFields`、`gatherBuildings`、`cleanupStreetGraph`
+  を build が送るとおりに) を付けた形です。判定は build の context のものを使い、エンジン自身の context だけが断ったときは
+  そちら (厳しいほう) を使います。`engineCheck` は使った形、`engineContexts` に両方 (`own`・`build`。それぞれ `verdict`・
+  `critical`・`errors`・`warnings`・`infos`・`collisions` の数・`cost`、その形がエラーになったときは `raised`)、食い違ったときは
+  `contextsDisagree: true` と `contextsNote` が付きます。わけ: エンジン自身の context は、build が衝突した畑を取り除く扱いに
+  し、build が断られた水の上を建てられると答えました (2026-11-23)。Context の形が GUI のスレッドで build と同じに判定するかは
+  **ゲーム内では未確認**です。その形がエラーになるときは、前と同じくエンジン自身の context の判定です (`engineContext`、`caution`)。
 - `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は
   `engine/util.d.tl:939` では `Proposal` 用ですが、GUI のスレッドでは `SimpleProposal` を受けます。建物のほうはまだ
   聞いていません)。プローブが確認するのは、名前・送る params・高さと、
@@ -534,14 +552,14 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   `engineCheck: "not asked (use --engine-check)"`)。ほかの dry-run と同じく、安全に使えます。
 - `--dry-run --engine-check` (`--engine-check` は `--dry-run` と一緒にだけ使う): 建てるときに送るのと同じ proposal
   (設定も含む) も作り、
-  `api.engine.util.proposal.makeProposalData` (proposal だけ、だめなら context も渡す) でエンジンに聞きます。
+  `api.engine.util.proposal.makeProposalData` (proposal だけと、build の context を付けた形。`build` と同じ) でエンジンに聞きます。
   呼ぶのは guiUpdate の中で、レシピの本体では呼びません。答えは `checked: true`、`engineCheck` (使った形)、`buildable`、
   エンジンの `cost`・`errors`・`warnings`・`collisions`・`critical`、`balance`。エンジンが断るものは `ok: false` で、文言が
   `error` に入ります。`makeProposalData` が無いか、どちらの形でもエラーになるときは、プローブの計画だけを返します
   (`checked: false`、`engineCheck: "not available: ..."`)。エンジンの評価は pcall で守れないネイティブのコードを通る
   (そこで assertion が出るとゲームが終わる) ので、tf3ctl はこれをゲームを変える命令に数えます。統括から時間をもらって、
   テスト用のセーブでだけ使ってください。
-  `verdict` は `buildable`・`buildable with warnings`・`refused` のどれかです。proposal だけの形では、エンジンは build の
+  `verdict` は `buildable`・`buildable with warnings`・`refused` のどれかです (`engineContexts`・`contextsDisagree` は `build` と同じ)。proposal だけの形しか答えないときは、エンジンは build の
   context ではなく、自分の context で判定します (どちらかは `engineContext`)。その context は畑を取り除くので、道に畑がある
   ときは警告 (「3 個の畑が取り除かれます」) だけになりますが、`--remove-fields` の無い build ではその畑と衝突します
   (2026-11-23、伐採場のそばの道路)。そのときは答えに `caution` が付きます。
