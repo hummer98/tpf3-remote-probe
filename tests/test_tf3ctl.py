@@ -5990,10 +5990,8 @@ class NoAbbrevTest(unittest.TestCase):
         self.assertEqual((ns.action, ns.force_unload), ("create", "1"))
         self.assertEqual(p.parse_args(["stock", "set", "--entity", "1", "--stock", "0", "--amount", "5"]).entity, 1)
 
-class IgnoreErrorsTest(unittest.TestCase):
-    """road --ignore-errors (2026-11-24): the build sent with the engine's ignoreErrors on, for test saves only;
-    refused (nothing sent) on a person's save, a new game with no name, an unknown save, during coop, and on any
-    command but road."""
+class _ForceBase(unittest.TestCase):
+    """A running test save (pid 4242) launched by alice, with the mod faked (IgnoreErrorsTest, ForcedSaveTest)."""
 
     def setUp(self):
         self.saved = {k: getattr(tf3ctl, k) for k in ("game_pids", "OWNER", "OTHER_OWNER_OK", "USER_ASKED",
@@ -6055,9 +6053,17 @@ class IgnoreErrorsTest(unittest.TestCase):
             with self.assertRaises(tf3ctl.OwnerRefused) as cm:
                 tf3ctl.send(cmd, args, timeout=0.1, folder=self.x)
         self.assertEqual(written, [], "nothing written for the game")
-        self.assertEqual([f for f in os.listdir(self.x) if f != "stdout.txt"], [])
+        # (the command lock an earlier send left is no command)
+        self.assertEqual([f for f in os.listdir(self.x) if f not in ("stdout.txt", tf3ctl.PREFIX + "lock")], [])
         self.assertIn(why, str(cm.exception))
         return cm.exception
+
+
+
+class IgnoreErrorsTest(_ForceBase):
+    """road --ignore-errors (2026-11-24): the build sent with the engine's ignoreErrors on, for test saves only;
+    refused (nothing sent) on a person's save, a new game with no name, an unknown save, during coop, and on any
+    command but road."""
 
     def test_args_and_help(self):
         self.assertNotIn("ignoreErrors", self.road(), "off unless asked: as before")
@@ -6129,6 +6135,171 @@ class IgnoreErrorsTest(unittest.TestCase):
             self.refused(cmd, {"ignoreErrors": True, "res": "x"}, "road only")
             self.refused(cmd, {"ignoreErrors": False}, "road only")
         self.refused("road", dict(self.road(), ignoreErrors=1), "must be true")
+
+
+class ForcedSaveTest(_ForceBase):
+    """After road --ignore-errors went to this run of the game (a build, not --dry-run), save goes to probe-force-*
+    names only (2026-11-24): a state built past the engine's checks must not land in a test base or a person's
+    save. The mark lives in the launch record, so the next launch has none."""
+
+    OTHER_NAMES = ("probe-flat-base-x", "aom-shot-x", "aom-bgm-check-x", "3-probe", "aom-eu-1900-2", "My Railway",
+                   "probe-force-", "probe-force-/x", " probe-force-a", "probe-forced-a", "probe-force")
+
+    def record(self):
+        return json.loads(read(tf3ctl.launched_path()))
+
+    def save_refused(self, name):
+        e = self.refused("save", {"name": name}, "probe-force-* names")
+        self.assertEqual(e.refused, "forced-save")
+        self.assertIsInstance(e, tf3ctl.ForcedSaveRefused)
+        return e
+
+    def test_unforced_saves_go_as_before(self):
+        for name in self.OTHER_NAMES[:6] + ("probe-force-a",):
+            self.assertEqual(self.sent("save", {"name": name})["name"], name)
+        self.sent("road", self.road())  # an unforced build
+        self.sent("road", self.road("--ignore-errors", "--dry-run"))  # a forced dry run builds nothing
+        self.assertNotIn("forced", self.record())
+        self.assertNotIn("forcedCount", self.record())
+        for name in ("aom-shot-x", "3-probe", "probe-flat-base-x"):
+            self.assertEqual(self.sent("save", {"name": name})["name"], name, "a dry run does not count")
+        self.assertEqual(tf3ctl.forced_note(), {})
+
+    def test_after_a_forced_build_only_probe_force_names(self):
+        before = self.record()
+        self.assertIs(self.sent("road", self.road("--ignore-errors"))["ignoreErrors"], True)
+        rec = self.record()
+        self.assertEqual((rec["forced"], rec["forcedCount"]), (True, 1))
+        self.assertEqual({k: v for k, v in rec.items() if k not in ("forced", "forcedCount")}, before,
+                         "the record's other keys stay as they were (the guard outside reads them)")
+        self.assertEqual(self.sent("save", {"name": "probe-force-a"})["name"], "probe-force-a")
+        for name in self.OTHER_NAMES:
+            e = self.save_refused(name)
+            self.assertIn("road --ignore-errors, 1 time)", str(e))
+        # neither --other-owner-ok nor --user-asked widens it
+        tf3ctl.OTHER_OWNER_OK, tf3ctl.USER_ASKED = True, True
+        self.save_refused("aom-shot-x")
+        tf3ctl.OWNER = "bob"  # another owner's client on this game, with --other-owner-ok
+        self.save_refused("probe-flat-base-x")
+        self.assertEqual(self.sent("save", {"name": "probe-force-b"})["name"], "probe-force-b")
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK, tf3ctl.USER_ASKED = "alice", False, False
+        # a second forced build counts; a forced dry run does not
+        self.sent("road", self.road("--ignore-errors"))
+        self.sent("road", self.road("--ignore-errors", "--dry-run"))
+        self.assertEqual(self.record()["forcedCount"], 2)
+        note = tf3ctl.forced_note()["forced"]
+        self.assertEqual((note["count"], note["savePrefix"]), (2, "probe-force-"))
+        self.assertIn("2 times", note["text"])
+        self.assertIn("probe-force-*", note["textJa"])
+        self.assertIn("2 回", note["textJa"])
+
+    def test_the_next_launch_has_no_mark(self):
+        self.sent("road", self.road("--ignore-errors"))
+        self.save_refused("aom-shot-x")
+        # the same game, coop start / end: the mark stays
+        tf3ctl.coop_start(30, "look at it together")
+        self.assertTrue(self.record()["forced"])
+        tf3ctl.coop_end()
+        self.assertTrue(self.record()["forced"])
+        self.save_refused("aom-shot-x")
+        # a new run of the game (restart): a new record, no mark
+        tf3ctl.game_pids = lambda: [4243]
+        with contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.write_launched(4243, owner="alice")
+        self.assertNotIn("forced", self.record())
+        self.assertEqual(self.sent("save", {"name": "aom-shot-x"})["name"], "aom-shot-x")
+        self.assertEqual(tf3ctl.forced_note(), {})
+
+    def test_a_record_of_another_game_does_not_count(self):
+        self.sent("road", self.road("--ignore-errors"))
+        # the game quit by hand and was started again from Steam: the old record names a pid not running
+        tf3ctl.game_pids = lambda: [5000]
+        tf3ctl.OTHER_OWNER_OK = True
+        self.assertEqual(self.sent("save", {"name": "aom-shot-x"})["name"], "aom-shot-x")
+        self.assertEqual(tf3ctl.forced_note(), {})
+        # ... and a forced build on it has no record to keep the mark in: refused, nothing sent
+        e = self.refused("road", self.road("--ignore-errors"), "no launch record of the running game")
+        self.assertEqual(e.refused, "ignore-errors")
+        os.remove(tf3ctl.launched_path())
+        self.refused("road", self.road("--ignore-errors"), "no launch record of the running game")
+        self.sent("road", self.road("--ignore-errors", "--dry-run"))  # a dry run needs no mark
+
+    def test_a_refused_forced_build_leaves_no_mark(self):
+        self.loaded("aom-eu-1900")
+        self.refused("road", self.road("--ignore-errors"), "is not a test save's")
+        self.assertNotIn("forced", self.record())
+
+    def test_a_mark_that_cannot_be_written_refuses_the_build(self):
+        def fail(record):
+            raise OSError("disk full")
+        with unittest.mock.patch.object(tf3ctl, "_write_record", fail):
+            self.refused("road", self.road("--ignore-errors"), "could not write the force mark")
+
+    def test_malformed_marks_count(self):
+        rec = self.record()
+        rec.update(forced="yes", forcedCount="many")
+        write(tf3ctl.launched_path(), json.dumps(rec))
+        self.assertIn("1 time)", str(self.save_refused("aom-shot-x")))
+
+    def test_a_loaded_probe_force_save_saves_only_to_probe_force_names(self):
+        # forced, saved, then restarted (a new record without the mark) and that save loaded again
+        self.sent("road", self.road("--ignore-errors"))
+        self.sent("save", {"name": "probe-force-j"})
+        tf3ctl.game_pids = lambda: [4243]
+        with contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.write_launched(4243, owner="alice")
+        self.loaded("probe-force-j")
+        e = self.save_refused("probe-flat-base")
+        self.assertIn("the loaded save 'probe-force-j'", str(e))
+        self.save_refused("aom-shot-x")
+        self.assertEqual(self.sent("save", {"name": "probe-force-k"})["name"], "probe-force-k")
+        note = tf3ctl.forced_note()["forced"]
+        self.assertEqual((note["count"], note["loaded"]), (0, "probe-force-j"))
+        self.assertIn("probe-force-*", note["textJa"])
+        self.loaded("/some/where/probe-force-j.sav")  # a loaded save given as a path counts by its file name
+        self.save_refused("aom-shot-x")
+        # another save loaded: as before
+        self.loaded("probe-flat-base")
+        self.assertEqual(self.sent("save", {"name": "aom-shot-x"})["name"], "aom-shot-x")
+        self.assertEqual(tf3ctl.forced_note(), {})
+
+    def test_a_persons_game_after_coop_keeps_the_mark_and_its_record(self):
+        # a game a person started, shared once (coop end leaves coopChanges and no owner): forced with
+        # --other-owner-ok, the record keeps no owner key and still reads
+        write(tf3ctl.launched_path(), json.dumps({"v": 1, "pid": 4242, "started_at": 1, "cmd": "coop",
+                                                  "coopChanges": 2}))
+        tf3ctl.OTHER_OWNER_OK = True
+        self.sent("road", self.road("--ignore-errors"))
+        rec = self.record()
+        self.assertNotIn("owner", rec)
+        self.assertEqual((rec["forced"], rec["forcedCount"], rec["coopChanges"]), (True, 1, 2))
+        self.assertIsNotNone(tf3ctl.read_launched()[0])
+        self.save_refused("aom-shot-x")
+
+    def test_status_says_so(self):
+        self.sent("road", self.road("--ignore-errors"))
+        for answer in ({"ok": True}, tf3ctl.GameNotReady("loading", {"state": "loading"})):
+            def fake_send(cmd, args=None, **kw):
+                if isinstance(answer, Exception):
+                    raise answer
+                return dict(answer)
+            out = io.StringIO()
+            with unittest.mock.patch.object(tf3ctl, "send", fake_send), contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                tf3ctl.main(["--owner", "alice", "status"])
+            res = json.loads(out.getvalue())
+            self.assertEqual(res["forced"]["count"], 1, answer)
+            self.assertIn("textJa", res["forced"])
+
+    def test_main_exit_code_and_answer(self):
+        self.sent("road", self.road("--ignore-errors"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
+                unittest.mock.patch.object(tf3ctl, "write_command", lambda *a: self.fail("sent")):
+            code = tf3ctl.main(["--owner", "alice", "--other-owner-ok", "save", "aom-shot-x", "--user-asked"])
+        self.assertEqual(code, 4)
+        res = json.loads(out.getvalue())
+        self.assertEqual((res["ok"], res["refused"]), (False, "forced-save"))
 
 
 if __name__ == "__main__":

@@ -640,6 +640,16 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   (`--engine-check` is implied) and nothing is built: the answer is the unforced verdict, with `ignoredErrors:
   false`. **Not checked in a game yet** (written 2026-11-24): whether the engine builds a colliding piece, whether
   vehicles take it, and whether it survives a save and a load.
+  **Saving after a forced build**: once a forced build (not `--dry-run`) went to the running game, its launch
+  record (`launched.json`) carries `"forced": true` and `"forcedCount"`, and `save` then goes only to names starting
+  with `probe-force-` (for example `save probe-force-junction`). Any other name is refused (exit 4,
+  `"refused": "forced-save"`, nothing sent), with `--other-owner-ok` and `--user-asked` too, so a state built past
+  the engine's checks never lands in a test base or a user's save. `status` says so in `forced` (`text`, `textJa`).
+  The mark goes with that run of the game: the next `launch` / `restart` writes a new record without it. A forced
+  build is refused when there is no launch record of the running game to keep the mark in (a game started from
+  Steam). A loaded `probe-force-*` save (saved forced in an earlier run) saves only to `probe-force-*` names too.
+Not covered: the game's own autosave (every 10 minutes) still writes the forced state to its autosave slot, and an
+autosave loaded again saves under any name.
 - `--inspect-node ID` (read only, alone): the node's position, `streetSegments` (each piece's `edge`, `node0` /
   `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
   (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,

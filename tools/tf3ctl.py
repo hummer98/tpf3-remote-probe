@@ -100,6 +100,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py road --from 1500,-300 --to 1620,-300 --ignore-errors [--dry-run]   # for test saves only: skips the
             # engine's checks (ignoreErrors); refused unless a test save is loaded (not a new game), and refused
             # during coop. Answers ignoredErrors (sent forced), and unforced: what a build without it would get
+            # After one forced build (not --dry-run), this run of the game saves only to probe-force-* names
+            # (exit 4, "refused": "forced-save"; --other-owner-ok / --user-asked do not widen it; status says so)
   tf3ctl.py water --at 1500,-300 | water --grid 1000,-800,2000,200,50   # read only: the water level, and per
             # point water or land and the terrain's height (a grid: at most 400 points, rows of ~ water . land)
   tf3ctl.py terrain --rect 0,0,500,300 --flat 40 [--blend 16] [--dry-run]   # a rectangle's ground replaced
@@ -653,6 +655,130 @@ def ignore_errors_check(cmd, args):
     return save
 
 
+# The force mark (2026-11-24): once road --ignore-errors went to the running game (a build, not --dry-run), its
+# launch record carries "forced": true and "forcedCount". A game built past the engine's checks then saves only
+# under FORCED_SAVE_PREFIX names, so the state never lands in a test base or a person's save. The mark is part of the
+# record: the next launch / restart writes a new record without it, and the record goes once the game is seen
+# stopped. Any "forced" key counts (the strict side, like a malformed coop mark).
+FORCED_SAVE_PREFIX = "probe-force-"
+
+
+class ForcedSaveRefused(OwnerRefused):
+    """save to a name but FORCED_SAVE_PREFIX's after road --ignore-errors went to this run of the game; nothing
+    was sent. Exit code 4. Neither --other-owner-ok nor --user-asked sends it."""
+    refused = "forced-save"
+
+
+def forced_count(rec, pids):
+    """How many forced builds the record notes for the running game (at least 1 once marked), or None: no record,
+    no mark, or a record of another game (its pid not running)."""
+    if rec is None or "forced" not in rec or rec.get("pid") not in pids:
+        return None
+    n = rec.get("forcedCount")
+    return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 1
+
+
+def is_forced_save_name(name):
+    """A plain save name starting with FORCED_SAVE_PREFIX and more after it."""
+    return (isinstance(name, str) and name.startswith(FORCED_SAVE_PREFIX) and len(name) > len(FORCED_SAVE_PREFIX)
+            and "/" not in name and "\\" not in name and name == name.strip())
+
+
+def loaded_forced_save():
+    """The loaded save's name when it is a FORCED_SAVE_PREFIX save (a state built forced in an earlier run of the
+    game), else None. Never raises."""
+    save = loaded_save()
+    if not isinstance(save, str) or not save:
+        return None
+    name = re.split(r"[/\\]", save.strip())[-1]
+    name = name[:-4] if name.endswith(".sav") else name
+    return name if is_forced_save_name(name) else None
+
+
+def forced_save_check(cmd, args):
+    """Before save: refused (ForcedSaveRefused, nothing sent) when the name is not FORCED_SAVE_PREFIX's and the
+    running game carries the force mark, or has a FORCED_SAVE_PREFIX save loaded (its forced state, saved in an
+    earlier run, would else go under another name). Unforced games save as before."""
+    if cmd != "save":
+        return
+    name = (args or {}).get("name")
+    if is_forced_save_name(name):
+        return
+    pids = game_pids()
+    if not pids:
+        return
+    rec, _ = read_launched()
+    n = forced_count(rec, pids)
+    if n is None:
+        loaded = loaded_forced_save()
+        if loaded is None:
+            return
+        raise ForcedSaveRefused(
+            "refused 'save %s', nothing sent: the loaded save %r was built with the engine's checks skipped "
+            "(road --ignore-errors), so it saves only under %s* names, to keep test bases and the user's saves free "
+            "of that state (--other-owner-ok and --user-asked do not change it)" % (name, loaded, FORCED_SAVE_PREFIX))
+    raise ForcedSaveRefused(
+        "refused 'save %s', nothing sent: this run of the game had roads built with the engine's checks skipped "
+        "(road --ignore-errors, %d time%s), so it saves only under %s* names, to keep test bases and the user's "
+        "saves free of that state (--other-owner-ok and --user-asked do not change it; the mark goes with the game: "
+        "the next launch / restart has none)" % (name, n, "" if n == 1 else "s", FORCED_SAVE_PREFIX))
+
+
+def note_forced(cmd, args):
+    """Before a forced road build (ignoreErrors, not dryRun) is written for the mod: the force mark in the running
+    game's launch record, count + 1. Without a record of the running game to keep it in, or when it cannot be
+    written, the build is refused (IgnoreErrorsRefused, nothing sent): a force nobody remembers would let a save
+    through. Counted before the send, so a build that then fails still counts (the strict side)."""
+    if cmd != "road" or not args or args.get("ignoreErrors") is not True or args.get("dryRun") is True:
+        return None
+    head = "refused 'road --ignore-errors', nothing sent: "
+    pids = game_pids()
+    if not pids:
+        return None  # no game: send says where the game is, and nothing is built
+    try:
+        with launched_lock():
+            rec, why = read_launched()
+            if rec is None or rec["pid"] not in pids:
+                raise IgnoreErrorsRefused(
+                    head + "no launch record of the running game to keep the force mark in (%s); the mark keeps "
+                    "later saves to %s* names. Start the game with tf3ctl launch / restart --owner"
+                    % (why or "the record names pid %d, not the running game" % rec["pid"], FORCED_SAVE_PREFIX))
+            n = forced_count(rec, pids) or 0
+            record = dict(rec, forced=True, forcedCount=n + 1)
+            if record.get("owner") is None:
+                record.pop("owner", None)  # as written: a record without an owner has no owner key
+            _write_record(record)
+    except OSError as e:
+        raise IgnoreErrorsRefused(head + "could not write the force mark into the launch record %s: %s"
+                                  % (launched_path(), e))
+    return n + 1
+
+
+def forced_note():
+    """For status: {"forced": one line} while the running game carries the force mark, else {}. Never raises."""
+    try:
+        rec, _ = read_launched()
+        n = forced_count(rec, game_pids()) if rec else None
+        if n is None:
+            loaded = loaded_forced_save() if game_pids() else None
+            if loaded is None:
+                return {}
+            return {"forced": {
+                "count": 0, "loaded": loaded, "savePrefix": FORCED_SAVE_PREFIX,
+                "text": "the loaded save %s was built past the engine's checks: save goes to %s* names only"
+                        % (loaded, FORCED_SAVE_PREFIX),
+                "textJa": "読み込んだセーブ %s はエンジンの検査を外して建てたものです。保存できるのは %s* の名前だけです"
+                          % (loaded, FORCED_SAVE_PREFIX)}}
+        return {"forced": {
+            "count": n, "savePrefix": FORCED_SAVE_PREFIX,
+            "text": "built past the engine's checks in this run (road --ignore-errors, %d time%s): save goes to %s* "
+                    "names only" % (n, "" if n == 1 else "s", FORCED_SAVE_PREFIX),
+            "textJa": "この起動でエンジンの検査を外して建てました（road --ignore-errors、%d 回）。保存できるのは %s* の名前だけです"
+                      % (n, FORCED_SAVE_PREFIX)}}
+    except Exception:
+        return {}
+
+
 class CoopRefused(OwnerRefused):
     """A command the coop client may not send while a person shares the game; nothing was sent. Exit code 4."""
     refused = "coop"
@@ -854,6 +980,9 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
     if other and other.get("launchedBy"):
         args["_otherOwnerOk"] = other["launchedBy"]  # the mod's log line says so
     with command_lock(folder):
+        # under the command lock: no other client's forced build can come between this check and this save
+        forced_save_check(cmd, args)  # (after road --ignore-errors, or a probe-force-* save loaded: probe-force-*)
+        note_forced(cmd, args)  # (a forced build: the mark goes into the launch record before it is sent)
         cleanup(folder)
         if cmd in CHANGES_GAME:
             try:
@@ -5662,7 +5791,8 @@ def make_parser():
                                                 "mod.io (not while the game says the upload is Publishing)")
     mpc.add_argument("--yes", action="store_true", help="required: you looked at mod.io")
     v = sub.add_parser("save")
-    v.add_argument("name")
+    v.add_argument("name", help="the save's name; after road --ignore-errors in this run of the game, only "
+                   + FORCED_SAVE_PREFIX + "* names")
     v.add_argument("--user-asked", action="store_true", help="during coop with a person's save loaded: save to a "
                    "new test save's name, only when the user asked for it")
     cp = sub.add_parser("coop", help="share the running game with the user: the --owner client may look, build and "
@@ -5721,6 +5851,7 @@ def main(argv=None):
             if isinstance(res, dict):
                 res.update(profile_note())
                 res.update(coop_note())
+                res.update(forced_note())
         elif ns.cmd == "poll":
             args = {k: v for k, v in (("idle", ns.idle), ("active", ns.active)) if v is not None}
             res = send("poll", args)
@@ -5903,7 +6034,7 @@ def main(argv=None):
     except GameNotReady as e:
         print("error: " + str(e), file=sys.stderr)
         out = {"ok": False, "error": str(e), "gameState": e.state}
-        show(dict(out, **profile_note(), **coop_note()) if ns.cmd == "status" else out)
+        show(dict(out, **profile_note(), **coop_note(), **forced_note()) if ns.cmd == "status" else out)
         return 3
     except ToolError as e:
         print("error: " + str(e), file=sys.stderr)
