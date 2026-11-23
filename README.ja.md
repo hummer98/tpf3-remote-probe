@@ -1194,12 +1194,34 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
   フォルダは 0700、ファイルは 0600。同じフォルダの一時ファイルに書いてから置き換えるので、読む側が書きかけを見ることはありません。
 - 形: JSON 1 つ。`{"v": 1, "owner": "<owner>", "pid": <ゲームの pid>, "started_at": <epoch 秒>, "cmd": "launch"}`
   (`restart` でも `cmd` は `launch`。`started_at` は probe が答えた時刻)。
+- 共同作業の印 (上の `coop`) は、キーを 1 つ足すだけです (ほかは変わりません): `"coop": {"with": "<owner>", "reason": "<文>",
+  "since": <epoch 秒>, "until": <epoch 秒>}`。人のセーブでは `"modified": true, "changes": <回数>` も付きます。tf3ctl は `with` を 1 人の名前で書きます。読む側はリストも受けてください。人が起動したゲームでは、`owner` の無い記録になります: `{"v": 1, "pid": ..., "started_at": ..., "cmd": "coop", "coop": {...}}`。キーが無い、`until` を過ぎた、pid が動いているゲームでない、のどれかなら共同作業ではありません。`coop end` はキーだけを消します (記録は残るので、人のゲームでは owner も coop も無い記録になり、無いのと同じに扱います)。ゲームが変更されていたときは、上の段に `"coopChanges": <回数>` を残します。同じゲームでまた `coop start` したとき、変更ありを言い直すためです (印ではないので、読む側は無視してよい)。
 - 書く: `launch` / `restart` で、probe がメインメニューで答えたあと (`--load` / `--new` の前)。pid は動いている
   `TransportFever3` のプロセス (複数あれば一番新しいもの)。owner が無ければ書かず、前のファイルを消します。
 - 消す: ゲームが止まったのを tf3ctl が見たとき。`quit` (`--kill` も、動いていなかったときも)、`restart` の中の quit、
   ゲームが動いていないときの `launch`、起動の途中か、そのあとの `--load` / `--new` (単独の `load` / `newgame` も) の途中でゲームが終わったとき。
 - `launch` / `restart` / `quit` の答えの `launchedFile` に、何をしたかが出ます。書けない・消せないときは stderr に
   警告を出すだけです。残ったファイル (クラッシュ、手で終了したとき) はそれだけで信じず、読む側で pid が生きていてゲームか確認してください。`/tmp` のときは、フォルダとファイルが自分のもので 0700 / 0600 かも確認してください (`/tmp/tf3ctl-<uid>` は誰でも先に作れます)。
+
+### ユーザーと同じゲームを使う (`coop`)
+
+上の owner の確認は、ほかのクライアントをゲームから遠ざけます。そのため、ユーザーと一緒に遊ぶゲームにも、クライアントは手を出せません。`coop` はそのためのものです。ユーザーと 1 つのクライアント (その `--owner`) が、しばらくの間、動いているゲームを一緒に使います。
+
+```
+tf3ctl.py --owner bob coop start --reason "新しい車庫をユーザーと試す" [--minutes 60]
+tf3ctl.py --owner bob launch --load probe-x --coop --reason "..." [--minutes 60]   # 起動・読み込みのあとに共有
+tf3ctl.py --owner bob coop end
+```
+
+- `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。`until` が 7 日より先・NaN・Infinity の印は、印ではないとみなします。
+- 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`。ユーザーのセーブでも同じです。
+- `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`。
+- `save` は試験用のセーブの名前にだけ: `probe-*`、`aom-ops-*`、`aom-shot-*`、`aom-bgm-check-*`、数字 1 文字で始まる名前 (`3-probe`)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
+- ほかは断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`、`tool`、`buy`、`line`、`terrain`、`town`、`modhub` など。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。
+- 読み込まれているセーブは、ゲームのログから読みます (起動から最後の `Loading game from file` / `Start new game`)。
+- 人のセーブで、ゲームを変える命令を MOD が受け取るたびに (`camera`・`window`・`speed`・`save`・dry run は除く)、印に `"modified": true` を付け、`"changes"` を数えます。そのあと `status` と `coop end` が、共同作業で変更されていること、保存すると変更が残ることを出します。`coop end` は続けて、オートセーブには変更後の状態が入っていること、元に戻すには保存せずに名前のついたセーブを読み直すことを出します。文は `text` (英) と `textJa` (日)。
+- ほかのクライアントは、これまでどおり断ります (`--other-owner-ok` もこれまでどおり)。
+- 終わるのは、`until` を過ぎたとき、ゲームが無くなったとき (記録の pid が動いているゲームでない)、tf3ctl が記録を消したとき (quit)、`coop end` (印だけを消す。権限を減らすだけなので誰が打ってもよい)。`status` の `coop` に出ます (`active`・`with`・`minutesLeft`・`save`・`testSave`・`text` など)。
 
 ### 環境変数
 

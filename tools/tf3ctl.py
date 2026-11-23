@@ -133,6 +133,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # when that has none, --previous-revision N; the page's name, summary and description are kept unless
             # --update-metadata, which replaces them with modinfo.json's)
   tf3ctl.py modhub publish-clear --yes       # remove that mark, after looking at mod.io
+  tf3ctl.py --owner bob coop start --reason "test the new depot with the user" [--minutes 60]   # share the game
+  tf3ctl.py --owner bob coop end             # the mark goes; says whether the game was changed during coop
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is shown (status:
 run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes.
@@ -143,6 +145,15 @@ started: it is refused (exit 4, nothing sent) when the record names another owne
 when there is no record or its pid is not the running game (a game started outside tf3ctl, e.g. by a person from
 Steam). Reading commands, --dry-run / --list and camera without arguments always go. --other-owner-ok sends anyway,
 for a client the others agreed may use that game; the answer (otherOwnerOk) and the game's log line say so.
+
+coop start --reason "..." [--minutes 60] (or launch --coop --reason "...") shares the running game between the user
+and this --owner: the game this owner started, or one a person started from Steam (never another owner's). The
+launch record then carries "coop": {"with", "reason", "since", "until"[, "modified", "changes"]}; it counts until
+"until", while its pid is the running game. Meanwhile this owner may send camera, window, event, build, road,
+stock set, money and steps (fit too); speed, run and pause only with --user-asked; save only to a test save's
+name (probe-*, aom-ops-*, aom-shot-*, aom-bgm-check-*, one digit first), and with a person's save loaded only with
+--user-asked; nothing else (quit, load, newgame, restart, ...): exit 4, "refused": "coop". A game-changing command
+on a person's save sets "modified" and counts "changes"; status and coop end say so. coop end removes the mark.
 
 Several tool processes may run at once (e.g. a long run plus status calls): a lock makes them write the single
 command file one after another, each waiting until the mod has picked its command up.
@@ -551,7 +562,9 @@ def changes_game(cmd, args):
 
 
 def read_launched():
-    """(record, why): the launch record as written by write_launched, or (None, why it does not count)."""
+    """(record, why): the launch record as written by write_launched (or coop start), or (None, why it does not
+    count). A record without an owner counts only while it carries a coop mark (or coopChanges, after coop end): a game a person started, shared with
+    one client (coop start); its "owner" is None then."""
     path = launched_path()
     try:
         st = os.lstat(path)
@@ -566,29 +579,150 @@ def read_launched():
     if not isinstance(rec, dict) or rec.get("v") != 1:
         return None, "the launch record %s is not a version 1 object" % path
     owner, pid = rec.get("owner"), rec.get("pid")
-    if not isinstance(owner, str) or not owner or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None, "the launch record %s has no owner and pid" % path
+    if owner is None and (isinstance(rec.get("coop"), dict) or isinstance(rec.get("coopChanges"), int)):
+        return dict(rec, owner=None), None
+    if not isinstance(owner, str) or not owner:
         return None, "the launch record %s has no owner and pid" % path
     return rec, None
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# coop: a person and one client (--owner) share the running game. The launch record carries
+# "coop": {"with", "reason", "since", "until"[, "modified", "changes"]}; it counts while until is ahead and the
+# record's pid is the running game. The client then may do what helps a person playing (look, build, test events),
+# but nothing that takes the game away from them or writes their saves.
+
+# saves tf3ctl's clients may write and change freely (the shared rules for test saves): these prefixes, or one digit
+# and then no digit ("3-probe"). Every other name is a person's own save.
+TEST_SAVE_PREFIXES = ("probe-", "aom-ops-", "aom-shot-", "aom-bgm-check-")
+TEST_SAVE_ONE_DIGIT = re.compile(r"[0-9](?![0-9])")
+COOP_MINUTES_MAX = 7 * 24 * 60  # a mark further ahead, NaN or Infinity is no mark (also for the guard outside)
+COOP_UNTIL_MAX_SEC = COOP_MINUTES_MAX * 60
+COOP_REASON_MAX = 200
+# what the coop client may send (after the reading commands, which always go): a person keeps the game itself
+COOP_ALLOWED = {"camera", "window", "event", "build", "road", "stockSet", "money", "steps"}
+COOP_USER_ASKED = {"speed", "run"}  # pause is speed 0: only when the person asked (--user-asked)
+COOP_UNCOUNTED = {"camera", "window", "speed", "save"}  # they leave the world as it was
+LOADED_ANCHORS = (b"Application startup", b"Loading game from file", b"Start new game")
+USER_ASKED = False  # set by main from --user-asked
+
+
+class CoopRefused(OwnerRefused):
+    """A command the coop client may not send while a person shares the game; nothing was sent. Exit code 4."""
+
+
+def is_test_save(name, path_ok=True):
+    """Whether name is a test save's (TEST_SAVE_PREFIXES or one digit first). A loaded save may be given as a path
+    (its file name counts); a name to save to must be a plain name (path_ok=False)."""
+    if not isinstance(name, str) or not name.strip():
+        return False
+    name = name.strip()
+    if "/" in name or "\\" in name:
+        if not path_ok:
+            return False
+        name = re.split(r"[/\\]", name)[-1]
+    if name.endswith(".sav"):
+        name = name[:-4]
+    return name.startswith(TEST_SAVE_PREFIXES) or bool(TEST_SAVE_ONE_DIGIT.match(name))
+
+
+def loaded_save():
+    """The save the running game loaded, from its log: its name, "" for a new game (no save name yet), None when
+    unknown (no log, the main menu). Never raises."""
+    try:
+        path = os.environ.get("TF3_LOG") or stdout_log(exchange_dir())
+        lines = log_tail_from_anchor(path, LOADED_ANCHORS)
+    except (OSError, ToolError):
+        return None
+    first = lines[0] if lines else ""
+    if "Loading game from file" in first:
+        return first.split("Loading game from file", 1)[1].strip()
+    if "Start new game" in first:
+        return ""
+    return None
+
+
+def coop_with(coop):
+    """The coop mark's clients: "with" is one name (a list is read too, for other writers)."""
+    w = coop.get("with") if isinstance(coop, dict) else None
+    if isinstance(w, str):
+        return [w] if w else []
+    if isinstance(w, list):
+        return [x for x in w if isinstance(x, str) and x]
+    return []
+
+
+def active_coop(rec, pids, now=None):
+    """The record's coop mark while it counts: until ahead, the record's pid among the running game's. Else None."""
+    c = rec.get("coop") if isinstance(rec, dict) else None
+    if not isinstance(c, dict) or not coop_with(c):
+        return None
+    until = c.get("until")
+    if isinstance(until, bool) or not isinstance(until, (int, float)) or not math.isfinite(until):
+        return None
+    now = time.time() if now is None else now
+    if until <= now or until > now + COOP_UNTIL_MAX_SEC or rec.get("pid") not in pids:
+        return None
+    return c
+
+
+def coop_check(cmd, args, coop):
+    """For the coop client: {"coop": ..., "count": bool} when cmd may go (count: it changes a person's game), else
+    CoopRefused."""
+    args = args or {}
+    save = loaded_save()
+    test = is_test_save(save)
+    who = ", ".join(coop_with(coop))
+    head = ("refused '%s', nothing sent: during coop (%s with the user, until %s) the user is playing, so "
+            % (cmd, who, time.strftime("%H:%M", time.localtime(coop["until"]))))
+    if cmd == "window" and args.get("closeAll"):
+        raise CoopRefused(head + "their windows stay open (window --close-all is not sent)")
+    if cmd in COOP_USER_ASKED and not USER_ASKED:
+        raise CoopRefused(head + "the game's speed is theirs: add --user-asked only when the user asked for it")
+    if cmd == "save":
+        target = args.get("name")
+        if not is_test_save(target, path_ok=False):
+            raise CoopRefused(head + "no save of theirs is written: %r is not a test save's name (%s, or one digit "
+                              "first)" % (target, ", ".join(p + "*" for p in TEST_SAVE_PREFIXES)))
+        if not test and not USER_ASKED:
+            raise CoopRefused(head + "their game (%s) is not saved, not even to a new name: add --user-asked only "
+                              "when the user asked for it" % (repr(save) if save else "no test save loaded"))
+    elif cmd not in COOP_ALLOWED and cmd not in COOP_USER_ASKED:
+        raise CoopRefused(head + "'%s' is theirs to do (coop sends looking, building and test commands only); ask "
+                          "the user, or end coop with them first (coop end)" % cmd)
+    count = not test and cmd not in COOP_UNCOUNTED and args.get("dryRun") is not True
+    return {"coop": {"with": who, "save": save, "testSave": test}, "count": count}
 
 
 def check_game_owner(cmd, args=None):
     """Before a game-changing command: refuses it (OwnerRefused, nothing sent) unless the running game is the one
     this --owner started through tf3ctl (2026-11-23: a script left running after a crash sent save and quit to the
     game another client had started meanwhile). Returns None when it may go, or, with --other-owner-ok, a note of
-    whose game it went to. No game process: nothing to protect, and send says where the game is."""
+    whose game it went to. While a coop mark names this --owner, coop_check decides instead (--other-owner-ok does
+    not widen it). No game process: nothing to protect, and send says where the game is."""
     if not changes_game(cmd, args):
         return None
     pids = game_pids()
     if not pids:
         return None
     rec, why = read_launched()
+    coop = active_coop(rec, pids) if rec else None
+    if coop is not None and OWNER and OWNER in coop_with(coop):
+        return coop_check(cmd, args, coop)
     if rec is None:
         problem = ("%s: the running game (pid %s) was not started by tf3ctl with an --owner (started from Steam "
                    "by a person?)" % (why, ", ".join(map(str, pids))))
         whose = "none"
     elif rec["pid"] not in pids:
         problem = ("the launch record names pid %d (owner %s), but the running game is pid %s: it was started "
-                   "outside tf3ctl (from Steam by a person?)" % (rec["pid"], rec["owner"], ", ".join(map(str, pids))))
+                   "outside tf3ctl (from Steam by a person?)" % (rec["pid"], rec["owner"] or "none",
+                                                               ", ".join(map(str, pids))))
+        whose = "none"
+    elif rec["owner"] is None:
+        problem = ("the running game (pid %d) was started by a person, and its coop mark %s"
+                   % (rec["pid"], "names %s" % ", ".join(coop_with(coop)) if coop else "has ended"))
         whose = "none"
     elif not OWNER:
         problem = "the running game was started by %s, and this command has no --owner" % rec["owner"]
@@ -600,6 +734,8 @@ def check_game_owner(cmd, args=None):
         return None
     if OTHER_OWNER_OK:
         note = {"launchedBy": whose, "why": problem, "owner": OWNER}
+        if coop is not None:
+            problem += " (the user is playing it in coop with %s)" % ", ".join(coop_with(coop))
         print("warning: --other-owner-ok: '%s' sent although %s" % (cmd, problem), file=sys.stderr)
         return note
     raise OwnerRefused("refused '%s', nothing sent: %s. Only the owner who started the game changes it; ask the "
@@ -612,7 +748,7 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
     args = dict(args or {})
     if OWNER:
         args["_owner"] = OWNER
-    if other:
+    if other and other.get("launchedBy"):
         args["_otherOwnerOk"] = other["launchedBy"]  # the mod's log line says so
     with command_lock(folder):
         cleanup(folder)
@@ -628,14 +764,18 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
             wait_pickup(folder, cid)
             if cmd in CHANGES_GAME:
                 note_activity(folder, OWNER, cmd)  # only commands the mod really took
+            if other and other.get("count"):
+                coop_note_change()  # a person's game changed: status and coop end say so
         except ToolError:
             # withdraw it: a mod that wakes up later must not run a command reported as failed (a load twice)
             write_command(folder, 0, "none", {})
             raise
     try:
         res = wait_answer(folder, cid, timeout, final_tag, on_progress)
-        if other and isinstance(res, dict):
+        if other and other.get("launchedBy") and isinstance(res, dict):
             res["otherOwnerOk"] = other
+        elif other and other.get("coop") and isinstance(res, dict):
+            res["coop"] = other["coop"]
         return res
     finally:
         if final_tag is None:
@@ -771,7 +911,7 @@ CHUNK = 2_000_000
 MAX_BACK = 200_000_000
 
 
-def log_tail_from_anchor(path):
+def log_tail_from_anchor(path, anchors=ANCHORS):
     """The log's lines from the last anchor marker on: read backwards in chunks, since a chatty mod can write
     megabytes between two markers."""
     with open(path, "rb") as f:
@@ -784,7 +924,7 @@ def log_tail_from_anchor(path):
             data = f.read(prev - pos) + data
             # the first line of a chunk may be cut: look for anchors only after its first newline
             body = data if pos == 0 else data[data.find(b"\n") + 1:]
-            idx = max(body.rfind(a) for a in ANCHORS)
+            idx = max(body.rfind(a) for a in anchors)
             if idx >= 0:
                 start = body.rfind(b"\n", 0, idx) + 1
                 return body[start:].decode("utf-8", "replace").splitlines()
@@ -1079,18 +1219,11 @@ def remove_launched():
     return {"removed": path}
 
 
-def write_launched(pid, owner=None, cmd="launch", now=None):
-    """Writes the launch record for pid started by owner, through a temporary file in the same folder and
-    os.replace (a reader never sees half a file). Without an owner there is nothing to record: an older record is
-    removed instead. Returns what was done for the command's answer; a failure is a warning."""
-    owner = OWNER if owner is None else owner
-    if not owner or pid is None:
-        gone = remove_launched()
-        return dict(gone or {}, written=False, why="no --owner" if not owner else "no game process found")
+def _write_record(record):
+    """Writes the launch record through a temporary file in the same folder and os.replace (a reader never sees
+    half a file). Returns the path; OSError on failure."""
     path = launched_path()
     folder = os.path.dirname(path)
-    record = {"v": 1, "owner": owner, "pid": int(pid), "started_at": int(time.time() if now is None else now),
-              "cmd": cmd}
     tmp = None
     try:
         _own_private_dir(folder)
@@ -1101,13 +1234,187 @@ def write_launched(pid, owner=None, cmd="launch", now=None):
             os.fsync(f.fileno())
         os.replace(tmp, path)
         tmp = None
-    except OSError as e:
-        print("warning: could not write the launch record %s: %s" % (path, e), file=sys.stderr)
-        return {"written": False, "warning": "could not write %s: %s" % (path, e)}
     finally:
         if tmp:
             _remove_quietly(tmp)
+    return path
+
+
+def write_launched(pid, owner=None, cmd="launch", now=None):
+    """Writes the launch record for pid started by owner. Without an owner there is nothing to record: an older
+    record is removed instead. Returns what was done for the command's answer; a failure is a warning."""
+    owner = OWNER if owner is None else owner
+    if not owner or pid is None:
+        gone = remove_launched()
+        return dict(gone or {}, written=False, why="no --owner" if not owner else "no game process found")
+    path = launched_path()
+    record = {"v": 1, "owner": owner, "pid": int(pid), "started_at": int(time.time() if now is None else now),
+              "cmd": cmd}
+    try:
+        _write_record(record)
+    except OSError as e:
+        print("warning: could not write the launch record %s: %s" % (path, e), file=sys.stderr)
+        return {"written": False, "warning": "could not write %s: %s" % (path, e)}
     return {"written": path, "owner": owner, "pid": int(pid)}
+
+
+@contextlib.contextmanager
+def launched_lock():
+    """One read-change-write of the launch record at a time (coop start / end, the change count)."""
+    folder = os.path.dirname(launched_path())
+    _own_private_dir(folder)
+    with open(os.path.join(folder, ".launched.lock"), "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _clock(t):
+    return time.strftime("%H:%M", time.localtime(t))
+
+
+def coop_summary(rec, pids, now=None, ending=False):
+    """status / coop start / coop end: the coop mark of the running game as one line (text, and textJa for the
+    person), or None when the record has none for this game."""
+    now = time.time() if now is None else now
+    c = rec.get("coop") if isinstance(rec, dict) else None
+    if not isinstance(c, dict) or rec.get("pid") not in pids:
+        return None
+    active = active_coop(rec, pids, now) is not None and not ending
+    who = ", ".join(coop_with(c)) or "?"
+    until = c.get("until") if isinstance(c.get("until"), (int, float)) else now
+    save = loaded_save()
+    out = {"active": active, "with": who, "reason": c.get("reason"), "since": c.get("since"), "until": until,
+           "minutesLeft": max(0, int((until - now) // 60)) if active else 0, "save": save,
+           "testSave": is_test_save(save)}
+    if active:
+        text = "coop with %s until %s (%d min left): %s" % (who, _clock(until), out["minutesLeft"], c.get("reason"))
+        ja = "共同作業中（%s、%s まで、残り %d 分）: %s" % (who, _clock(until), out["minutesLeft"], c.get("reason"))
+    else:
+        text = "coop with %s %s" % (who, "ended now" if ending else "ended at %s" % _clock(until))
+        ja = "共同作業（%s）は%s" % (who, "終わりました" if ending else " %s に終わりました" % _clock(until))
+    n = c.get("changes") if isinstance(c.get("changes"), int) else 0
+    if c.get("modified"):
+        out.update(modified=True, changes=n)
+        text += "; this game was changed during coop (%d times): saving keeps the changes" % n
+        ja += "。このゲームは共同作業で変更されています（%d 回）。保存すると変更が残ります" % n
+        if ending:
+            text += (". The autosave (every 10 minutes) has the changed game: to go back, do not save, and load a "
+                     "named save again")
+            ja += "。オートセーブ（10 分ごと）には変更後の状態が入っています。元に戻すには、保存せずに、名前のついたセーブを読み直してください"
+    out.update(text=text, textJa=ja)
+    return out
+
+
+def coop_args(minutes, reason):
+    """The checked (minutes, reason) of coop start / launch --coop, else ToolError."""
+    reason = (reason or "").strip()
+    if not reason or len(reason) > COOP_REASON_MAX:
+        raise ToolError("coop needs --reason: what the user and the client do together (1-%d characters)"
+                        % COOP_REASON_MAX)
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= COOP_MINUTES_MAX:
+        raise ToolError("--minutes must be 1-%d" % COOP_MINUTES_MAX)
+    return minutes, reason
+
+
+def coop_start(minutes, reason, now=None):
+    """Puts a coop mark for this --owner on the running game: the game this owner started, or a game a person
+    started (no record of a running game, or one without an owner). Never on another owner's game, nor while
+    another client's coop mark counts."""
+    now = int(time.time() if now is None else now)
+    if not OWNER:
+        raise ToolError("coop start needs --owner: the client that shares the game with the user")
+    minutes, reason = coop_args(minutes, reason)
+    pids = game_pids()
+    if not pids:
+        raise ToolError("no game is running to share (launch --coop starts one and shares it)")
+    try:
+        with launched_lock():
+            rec, _ = read_launched()
+            old = None
+            if rec is not None and rec["pid"] in pids:
+                if rec["owner"] is not None and rec["owner"] != OWNER:
+                    raise OwnerRefused("refused 'coop start', nothing changed: the running game was started by %s, "
+                                       "not by %s; coop goes on the game this owner started or on one a person "
+                                       "started (--other-owner-ok does not change that)" % (rec["owner"], OWNER))
+                cur = active_coop(rec, pids, now)
+                if cur is not None and OWNER not in coop_with(cur):
+                    raise OwnerRefused("refused 'coop start', nothing changed: the game is shared with %s until %s "
+                                       "(coop end first)" % (", ".join(coop_with(cur)), _clock(cur["until"])))
+                old = rec.get("coop") if isinstance(rec.get("coop"), dict) else None
+                if old is None and isinstance(rec.get("coopChanges"), int) and rec["coopChanges"] > 0:
+                    old = {"modified": True, "changes": rec["coopChanges"]}  # an earlier coop on this game
+                record = {k: v for k, v in rec.items() if k not in ("coop", "coopChanges")
+                          and not (k == "owner" and v is None)}
+            else:
+                # a game a person started: the record names no owner, only the coop mark
+                record = {"v": 1, "pid": int(launched_pid()), "started_at": now, "cmd": "coop"}
+            mark = {"with": OWNER, "reason": reason, "since": now, "until": now + minutes * 60}
+            if old and old.get("modified"):  # the same game, still changed by an earlier coop
+                mark.update(modified=True, changes=old.get("changes") if isinstance(old.get("changes"), int) else 0)
+            record["coop"] = mark
+            path = _write_record(record)
+    except OSError as e:
+        raise ToolError("coop start: could not write the launch record %s: %s" % (launched_path(), e))
+    return {"ok": True, "coop": coop_summary(record, pids, now), "launchedFile": path}
+
+
+def coop_end(now=None):
+    """Removes the coop mark (the rest of the record stays). Anybody may: it only takes rights away."""
+    try:
+        with launched_lock():
+            rec, why = read_launched()
+            if rec is None or not isinstance(rec.get("coop"), dict):
+                return {"ok": True, "note": "no coop mark (%s)" % (why or "the record has none")}
+            summary = coop_summary(rec, game_pids(), now, ending=True)
+            record = {k: v for k, v in rec.items() if k != "coop" and not (k == "owner" and v is None)}
+            c = rec["coop"]
+            if c.get("modified") and isinstance(c.get("changes"), int):
+                # the game stays changed: a later coop start on it says so again
+                record["coopChanges"] = c["changes"]
+            path = _write_record(record)
+    except OSError as e:
+        raise ToolError("coop end: could not change the launch record %s: %s" % (launched_path(), e))
+    out = {"ok": True, "ended": rec["coop"], "launchedFile": path}
+    if summary:
+        out["coop"] = summary
+    return out
+
+
+def coop_note_change():
+    """After the mod took a coop client's command that changes a person's game: "modified" and the count in the
+    coop mark. Advisory: a failure only warns."""
+    try:
+        with launched_lock():
+            rec, _ = read_launched()
+            c = rec.get("coop") if rec else None
+            if not isinstance(c, dict):
+                return
+            c["modified"] = True
+            c["changes"] = (c.get("changes") if isinstance(c.get("changes"), int) else 0) + 1
+            if rec["owner"] is None:
+                rec = {k: v for k, v in rec.items() if k != "owner"}
+            _write_record(rec)
+    except OSError as e:
+        print("warning: could not count the change in the coop mark: %s" % e, file=sys.stderr)
+
+
+def coop_note():
+    """For status: {"coop": one line of the running game's coop mark} while there is one, else {}. Never raises."""
+    try:
+        rec, _ = read_launched()
+        summary = coop_summary(rec, game_pids()) if rec else None
+        return {"coop": summary} if summary else {}
+    except Exception:
+        return {}
+
+
+def cmd_coop(ns):
+    if ns.coop_action == "start":
+        return coop_start(ns.minutes, ns.reason)
+    return coop_end()
 
 
 def launched_pid():
@@ -1591,6 +1898,11 @@ def start_args(ns):
 
 def cmd_start(ns, restart):
     plan = start_args(ns)  # refused before anything is quit
+    coop = getattr(ns, "coop", False)
+    if coop and not OWNER:
+        raise ToolError("launch --coop needs --owner (the client that shares the game with the user)")
+    if coop:
+        coop_args(ns.minutes, ns.reason)  # before anything is started
     if plan and not OWNER and not OTHER_OWNER_OK:
         # without an owner there is no launch record, so the --load / --new after the launch would be refused
         raise OwnerRefused("refused '%s --%s', nothing started: give --owner, so that the %s after the launch goes "
@@ -1645,6 +1957,11 @@ def cmd_start(ns, restart):
         out["ok"] = bool(res.get("ok"))
         if res.get("note"):
             out["note"] = res["note"]
+    if coop and out["ok"] and out["launchedFile"].get("written"):
+        # after the load: coop itself refuses a load
+        out["coop"] = coop_start(ns.minutes, ns.reason)["coop"]
+    elif coop:
+        out["coopNote"] = "coop was not started (the start or the load failed, or no launch record)"
     return out
 
 
@@ -4635,8 +4952,11 @@ def make_parser():
     s = sub.add_parser("speed")
     s.add_argument("speed", type=int)
     s.add_argument("--force", action="store_true", help="above the game's estimate of what it can sustain")
-    sub.add_parser("pause")
+    s.add_argument("--user-asked", action="store_true", help="send it during coop: only when the user asked for it")
+    pz = sub.add_parser("pause")
+    pz.add_argument("--user-asked", action="store_true", help="send it during coop: only when the user asked for it")
     r = sub.add_parser("run")
+    r.add_argument("--user-asked", action="store_true", help="send it during coop: only when the user asked for it")
     g = r.add_mutually_exclusive_group(required=True)
     g.add_argument("--days", type=int)
     g.add_argument("--months", type=int)
@@ -4897,6 +5217,12 @@ def make_parser():
         st.add_argument("--launch-timeout", type=float, default=LAUNCH_TIMEOUT_SEC)
         st.add_argument("--lang", metavar="CODE", help="start in this language (de, en, ja, ...): profile.lua is "
                         "changed for the start and put back after quit or before the next launch / restart")
+        if name == "launch":
+            st.add_argument("--coop", action="store_true", help="share the game with the user once started (and "
+                            "loaded): coop start for --owner")
+            st.add_argument("--reason", help="with --coop: what the user and the client do together")
+            st.add_argument("--minutes", type=int, default=60, help="with --coop: how long (1-%d, default 60)"
+                            % COOP_MINUTES_MAX)
         if name == "restart":
             st.add_argument("--quit-timeout", type=float, default=QUIT_TIMEOUT_SEC)
             st.add_argument("--no-kill", action="store_true", help="give up instead of SIGKILL when it does not quit")
@@ -5205,6 +5531,16 @@ def make_parser():
     mpc.add_argument("--yes", action="store_true", help="required: you looked at mod.io")
     v = sub.add_parser("save")
     v.add_argument("name")
+    v.add_argument("--user-asked", action="store_true", help="during coop with a person's save loaded: save to a "
+                   "new test save's name, only when the user asked for it")
+    cp = sub.add_parser("coop", help="share the running game with the user: the --owner client may look, build and "
+                        "send test commands, not quit, load or save the user's game")
+    cps = cp.add_subparsers(dest="coop_action", required=True)
+    cst = cps.add_parser("start", help="put the coop mark for --owner on the running game (this owner's, or one a "
+                         "person started)")
+    cst.add_argument("--minutes", type=int, default=60, help="how long it counts (1-%d, default 60)" % COOP_MINUTES_MAX)
+    cst.add_argument("--reason", required=True, help="what the user and the client do together")
+    cps.add_parser("end", help="remove the coop mark (says whether the game was changed during coop)")
     sub.add_parser("state", help="where the game is (menu, loading, ...), from its log; needs no mod")
     sub.add_parser("restore-profile", help="put profile.lua back from the backup launch / restart --lang made (not "
                                            "while the game runs)")
@@ -5220,9 +5556,10 @@ def make_parser():
 
 def main(argv=None):
     ns = make_parser().parse_args(argv)
-    global OWNER, OTHER_OWNER_OK
+    global OWNER, OTHER_OWNER_OK, USER_ASKED
     OWNER = ns.owner
     OTHER_OWNER_OK = ns.other_owner_ok
+    USER_ASKED = getattr(ns, "user_asked", False)
 
     try:
         if ns.cmd == "log":
@@ -5251,6 +5588,7 @@ def main(argv=None):
             res = send("status")
             if isinstance(res, dict):
                 res.update(profile_note())
+                res.update(coop_note())
         elif ns.cmd == "poll":
             args = {k: v for k, v in (("idle", ns.idle), ("active", ns.active)) if v is not None}
             res = send("poll", args)
@@ -5424,14 +5762,16 @@ def main(argv=None):
             res = cmd_connect(ns)
         elif ns.cmd == "modhub":
             res = cmd_modhub(ns)
+        elif ns.cmd == "coop":
+            res = cmd_coop(ns)
     except OwnerRefused as e:
         print("error: " + str(e), file=sys.stderr)
-        show({"ok": False, "error": str(e), "refused": "owner"})
+        show({"ok": False, "error": str(e), "refused": "coop" if isinstance(e, CoopRefused) else "owner"})
         return 4
     except GameNotReady as e:
         print("error: " + str(e), file=sys.stderr)
         out = {"ok": False, "error": str(e), "gameState": e.state}
-        show(dict(out, **profile_note()) if ns.cmd == "status" else out)
+        show(dict(out, **profile_note(), **coop_note()) if ns.cmd == "status" else out)
         return 3
     except ToolError as e:
         print("error: " + str(e), file=sys.stderr)
