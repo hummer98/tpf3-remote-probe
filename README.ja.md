@@ -1145,15 +1145,18 @@ python3 tools/tf3ctl.py persons --destination 51          # その産業を行�
   網の edge のうち、その mode が通るものの `conns` (`from.edge` に `node0` / `node1`)、交差点 (`BASE_NODE`) も同じ
   (自分の網の edge が無い交差点は、その網の node。mode は見ていない: `modesUnread`)、ほかは位置または点から `--radius` m
   (初期設定 40、500 まで) の中の網の node (`findTransportNetworkNodesInCircle`)。端ごとに 32 node まで。区間と交差点は
-  円を使わないので、`--radius` で答えは変わりません (その mode の車線が無い区間は `found` が null で `why`。その mode の車線はあるが端の
-  node が読めない場合とは、`why` を分けて書きます)。両方の端が円から持つ node と、片方の端が 40 m より大きい円から持つ node は、円が重なっていることしか言わないので、円の側の端から外し (`sharedNode`、
-  `droppedFrom` / `droppedTo`)、残りで探します。外して端が空になったときだけ、探さずに `found` は null、`trivial:
-  true`、`why` を付けます (`--radius` を小さくして試す)。両方の端が自分で持つ node (区間・駅・行き先) を共有するとき
-  (半径によらない) と、片方が自分で持つ node が相手の 40 m 以下の円にあるときは、`found: true`・`sameNode: true` で、
-  `sameNodeFrom` / `sameNodeTo` にそれぞれの端がどこから持ったか (`circle`・`edge`・`node`・`terminal`・`target`・
-  `personCapacity`) が出ます。円は平面 (点と半径だけで、高さが無い) なので、橋のそばや下の点の円は、40 m でも、上と
-  下の両方の node を含みます。円から取った端は違う高さから始まることがあります (円を使った探索には `circleNote` が付く)。
-  確実にするには、端に道路の区間の id を指定します。`paths` の mode ごとに:
+  円を使わないので、`--radius` で答えは変わりません (その mode の車線が無い区間は `found` が null で `why`。
+  その mode の車線はあるが端の node が読めない場合とは、`why` を分けて書きます)。両方の端が円から持つ node と、
+  片方の端が 40 m より大きい円から持つ node は、円が重なっていることしか言わないので、円から持った端から外し
+  (両方とも円なら両方から。`sharedNode`、`droppedFrom` / `droppedTo`)、残りで探します (`fromNodes` / `toNodes` は
+  探した node の数)。外して端が空になったときだけ、探さずに `found` は null、`trivial: true`、`why` を付けます
+  (`--radius` を小さくして試す)。40 m より大きい円でこうして見つかった経路は、点の場所ではなく、円の中の相手の
+  すぐ隣 (相手につながった区間) の node から始まっていることがあります (`wideNote`)。両方の端が自分で持つ node
+  (区間・駅・行き先) を共有するとき (半径によらない) と、片方が自分で持つ node が相手の 40 m 以下の円にあるときは、
+  `found: true`・`sameNode: true` で、`sameNodeFrom` / `sameNodeTo` にそれぞれの端がどこから持ったか (`circle`・
+  `edge`・`node`・`terminal`・`target`・`personCapacity`) が出ます。円は平面 (点と半径だけで、高さが無い) なので、
+  橋のそばや下の点の円は、40 m でも、上と下の両方の node を含みます。円から取った端は違う高さから始まることが
+  あります (円を使った探索には `circleNote` が付く)。確実にするには、端に道路の区間の id を指定します。`paths` の mode ごとに:
   `found` (端に node が無いときは null で `why`)、`edges`、`pieces` (経路の網の entity の数、最初の 50 が
   `pieceIds`)、`ms`、node をどこから取ったか (`fromFrom` / `toFrom`)。見つからなかったときは、この探し方でそもそも
   道が見つかるとゲームで分かるまで `unverified: true` が付きます (まず、つながっていると分かっている2点で試す)。

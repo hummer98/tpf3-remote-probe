@@ -16,7 +16,8 @@
 --   (BASE_NODE); give them a spec.tn entry for their networks and spec.positions for their places;
 -- api.type.NodeId.new(entity, index) is there (spec.noNodeIdNew: not); spec.modesAsNumbers: transportModes values
 --   1 instead of true (0 for an edge's off modes); spec.modesAsStrings: its keys the names; spec.modesOpaque:
---   transportModes a userdata that does not read; spec.tn[e].edges[i].noConns: its conns empty;
+--   transportModes a userdata that does not read; spec.tn[e].edges[i].noConns: its conns empty; .unnamed = { 99 }:
+--   keys that are no mode;
 -- spec.graph = { walk = { ["a:0"] = { "a:1", ... } }, drive = { ... } }: directed links per mode (PERSON: walk, CAR:
 --   drive); findPathNodeToNode does a breadth-first search and gives the edges as { { { entity = tn, index = k },
 --   true } ... } (the tn of the node it reached);
@@ -148,6 +149,8 @@ function M.install(g, spec)
 				for _, m in ipairs(ed.modes or {}) do
 					tm[spec.modesAsStrings and m or TM[m]] = spec.modesAsNumbers and 1 or true
 				end
+				-- unnamed: keys that are no TransportMode value (true)
+				for _, k in ipairs(ed.unnamed or {}) do tm[k] = true end
 				for _, m in ipairs(ed.off or {}) do
 					tm[spec.modesAsStrings and m or TM[m]] = spec.modesAsNumbers and 0 or false
 				end

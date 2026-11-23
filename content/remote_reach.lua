@@ -38,6 +38,8 @@ M.NOTE = "read only; getTargetsByLandUse read as empty in a game once (2026-11-2
 M.CIRCLE_NOTE = "a circle (findTransportNetworkNodesInCircle) is flat (a Vec2f and a radius): round a point by a " ..
 	"bridge or under one it holds the nodes above and below, at any radius, so an end from a circle may start on " ..
 	"the wrong level; give a road piece (its id) as the end to be sure"
+M.WIDE_NOTE = "nodes of the other end were in a circle wider than 40 m and left out of it: a path found may start " ..
+	"at a node of the circle next to the other end (a piece joined to it), not where the point is"
 M.TARGETS_LIST_MAX = 200 -- entries listed by reach --town (counts take them all)
 M.TOWN_BUILDINGS_MAX = 5000 -- town buildings read by reach --town (more: counted, not read; truncated says so)
 M.PATH_NODES_MAX = 32 -- nodes of each end handed to the path search
@@ -661,11 +663,16 @@ function M.new(ctx)
 	local function carries(ed, mode)
 		local tm = core.field(ed, "transportModes")
 		if tm == nil or ctx.modeNames == nil or M.MODES[mode] == nil then return nil end
-		tmName = tmName or (ctx.tmNamer and ctx.tmNamer(try(function() return api.type.enum.TransportMode end), try))
-			or function() return nil end
-		local names, set, _, _, _, read = ctx.modeNames(tm, tmName)
+		-- (kept only once the enum read: one that did not would leave every later key nameless)
+		if tmName == nil then
+			local TM = try(function() return api.type.enum.TransportMode end)
+			if TM ~= nil and ctx.tmNamer then tmName = ctx.tmNamer(TM, try) end
+		end
+		local names, set, _, unnamed, _, read = ctx.modeNames(tm, tmName or function() return nil end)
 		if names == nil or (read or 0) == 0 then return nil end
 		for _, k in ipairs(M.MODES[mode]) do if set[k] then return true end end
+		-- a key with no name may be the mode itself: not known, rather than "does not carry it"
+		if unnamed then return nil end
 		return false
 	end
 	-- the nodes of a piece's or a junction's own transport network edges that carry the mode (an edge whose modes
@@ -678,7 +685,8 @@ function M.new(ctx)
 			local ed = core.at(edges, i)
 			local c = ed and carries(ed, mode)
 			if c == nil then set.modesUnread = (set.modesUnread or 0) + 1 end
-			if ed and c ~= false then
+			-- (an edge that does not read at all is taken too: its conns, if any, tell; else the why says so)
+			if c ~= false then
 				taken = taken + 1
 				for _, n in ipairs(core.toList(core.field(ed, "conns"))) do addNode(set, n, why) end
 			end
@@ -709,7 +717,7 @@ function M.new(ctx)
 					kind == "edge" and "piece" or "junction", e, mode)
 			elseif count > 0 then
 				-- (told apart from no lane for the mode: here the lanes are there, their ends would not read)
-				set.why = string.format("%d of the %d network edges of %s %d carry %s (or their modes did not read), " ..
+				set.why = string.format("%d of the %d network edges of %s %d carry %s (or did not read), " ..
 					"but their conns gave no node", taken, count, kind == "edge" and "piece" or "junction", e, mode)
 			else
 				set.why = string.format("no network nodes on %s %d", kind == "edge" and "piece" or "junction", e)
@@ -782,6 +790,7 @@ function M.new(ctx)
 	-- radius: the circle's (a node one end has of its own counts as met in the other end's circle only within the
 	-- default radius: a wider circle round a point by a road reaches a bridge above it with no road between them)
 	local function searchPath(from, to, mode, radius)
+		-- fromNodes / toNodes: the nodes searched (after a circle's shared ones are left out, below)
 		local res = { mode = mode, fromNodes = #from.list, toNodes = #to.list }
 		-- the circle has no height: under a bridge it holds the bridge's nodes too, whatever the radius
 		if (from.from.circle or 0) > 0 or (to.from.circle or 0) > 0 then res.circleNote = M.CIRCLE_NOTE end
@@ -826,6 +835,9 @@ function M.new(ctx)
 			for _ in pairs(drop.to) do nt = nt + 1 end
 			from, to = without(from, drop.from), without(to, drop.to)
 			res.sharedNode, res.droppedFrom, res.droppedTo = dropped, nf, nt
+			res.fromNodes, res.toNodes = #from.list, #to.list
+			-- what a path found now means: from some node of the circle near the other end, not from the point
+			if wide then res.wideNote = M.WIDE_NOTE end
 			if #from.list == 0 or #to.list == 0 then
 				res.found, res.trivial = nil, true
 				res.why = "every node of " .. (#from.list == 0 and "from" or "to") .. " is also at the other end, " ..
@@ -1055,7 +1067,7 @@ function M.new(ctx)
 		local p = searchPath(from, to, "walk")
 		return { found = p.found, why = p.why, ms = p.ms, edges = p.edges, fromNodes = p.fromNodes, toNodes = p.toNodes,
 			unverified = p.unverified, sameNode = p.sameNode, trivial = p.trivial, sharedNode = p.sharedNode,
-			droppedFrom = p.droppedFrom, droppedTo = p.droppedTo }
+			droppedFrom = p.droppedFrom, droppedTo = p.droppedTo, circleNote = p.circleNote }
 	end
 
 	function R.handle(c)

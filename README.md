@@ -1235,16 +1235,19 @@ python3 tools/tf3ctl.py persons --destination 51          # those with the indus
   network's nodes, modes not checked: `modesUnread`), else the network nodes within `--radius` m (default 40, at most
   500) of its position or the point (`findTransportNetworkNodesInCircle`); at most 32 nodes an end. A piece or a
   junction never takes the circle, so `--radius` does not change its answer (a piece without a lane for the
-  mode: `found` null and `why`, which also tells a piece whose lanes for the mode give no node). A node both ends
-  have from their circles, or that one end has from a circle wider than 40 m, says only that the circles
-  overlap: it is left out of the circle's end (`sharedNode`, `droppedFrom` / `droppedTo`) and the rest searched;
-  only when an end has nothing left: no search, `found` null, `trivial: true`, `why` (try a smaller `--radius`).
-  A node both ends have of their own (a piece, a station, a target), at any radius, or that one end has of its
-  own and the other from a circle of at most 40 m, is `found: true`, `sameNode: true`, with `sameNodeFrom` /
-  `sameNodeTo` saying where each end had it (`circle`, `edge`, `node`, `terminal`, `target`, `personCapacity`).
-  A circle is flat (a point and a radius, no height): round a point by a bridge, or under one, it holds the
-  nodes above and below at any radius, 40 m too, so an end from a circle may start on the wrong level
-  (`circleNote` says so on each search with a circle); give the road piece's id as the end to be sure. Per mode in `paths`: `found` (null when an end
+  mode: `found` null and `why`, which also tells a piece whose lanes for the mode give no node). A node both
+  ends have from their circles, or that one end has from a circle wider than 40 m, says only that the circles
+  overlap: it is left out of each end that had it from a circle (of both, when both are circles;
+  `sharedNode`, `droppedFrom` / `droppedTo`) and the rest searched (`fromNodes` / `toNodes` are the nodes
+  searched); only when an end has nothing left: no search, `found` null, `trivial: true`, `why` (try a smaller
+  `--radius`). A path found so with a circle wider than 40 m may start at a node of the circle next to the
+  other end (a piece joined to it), not where the point is (`wideNote`). A node both ends have of their own (a
+  piece, a station, a target), at any radius, or that one end has of its own and the other from a circle of
+  at most 40 m, is `found: true`, `sameNode: true`, with `sameNodeFrom` / `sameNodeTo` saying where each end
+  had it (`circle`, `edge`, `node`, `terminal`, `target`, `personCapacity`). A circle is flat (a point and a
+  radius, no height): round a point by a bridge, or under one, it holds the nodes above and below at any
+  radius, 40 m too, so an end from a circle may start on the wrong level (`circleNote` says so on each search
+  with a circle); give the road piece's id as the end to be sure. Per mode in `paths`: `found` (null when an end
   has no nodes: `why`), `edges`, `pieces` (network entities on the path; the first 50 in `pieceIds`), `ms`, and
   where the nodes came from (`fromFrom` / `toFrom`); a miss has `unverified: true` until a game shows the search
   finds such paths at all (first try two places known to connect); a search of 100 ms or more is logged. The

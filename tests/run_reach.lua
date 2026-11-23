@@ -489,6 +489,7 @@ return function(t)
 		local b = run(g, "reach", "{ from = '2000,2000', to = 1103, mode = 'walk', radius = 100 }")
 		truthy(b.ok, b.error); eq(b.paths.walk.found, true); eq(b.paths.walk.trivial, nil); eq(b.paths.walk.edges, 1)
 		eq(b.paths.walk.droppedFrom, 1, "701:0 left out of the point's circle")
+		eq(b.paths.walk.fromNodes, 1, "the nodes searched"); truthy(b.paths.walk.wideNote:find("not where the point is", 1, true))
 		-- the circle holding nothing but the shop's node: trivial
 		local o = edgeGame({ circle = { { 2070, 2000, node = "701:0" } } })
 		local c = run(o, "reach", "{ from = '2000,2000', to = 1103, mode = 'walk', radius = 100 }", true)
@@ -521,6 +522,15 @@ return function(t)
 		truthy(r.paths.drive.why:find("but their conns gave no node", 1, true), r.paths.drive.why)
 		local w = run(c, "reach", "{ from = 850, to = 804, mode = 'walk' }")
 		truthy(w.paths.walk.why:find("carries walk", 1, true), w.paths.walk.why)
+		-- a key that names no mode: not known whether it is the one (taken, counted), not "carries none"
+		local un = edgeSpec().tn
+		un[802] = { edges = { { 0, 1, modes = { "CAR" }, unnamed = { 99 } } } }
+		local u = edgeGame({ tn = un })
+		local ur = run(u, "reach", "{ from = 802, to = 801, mode = 'walk' }", true)
+		truthy(ur.ok, ur.error); eq(ur.paths.walk.fromNodes, 2); eq(ur.from.modesUnread, 1)
+		local ud = run(u, "reach", "{ from = 802, to = 801, mode = 'drive' }")
+		eq(ud.paths.drive.fromNodes, 2); eq(ud.from.modesUnread, nil, "CAR named: carried, known")
+		truthy(not u.crashed, u.crashed)
 		for _, gg in ipairs({ s, c }) do truthy(not gg.crashed, gg.crashed); eq(#gg.commands, 0) end
 	end)
 
@@ -538,6 +548,7 @@ return function(t)
 			end })
 		local r = w.walkBetween(1101, 1104)
 		eq(r.found, nil); eq(r.trivial, true); eq(r.sharedNode, "701:0"); truthy(r.why:find("trivial"), r.why)
+		eq(r.droppedFrom, 1); eq(r.droppedTo, 1, "both ends circles: left out of both"); truthy(r.circleNote)
 		-- a building (its circle) to a station's waiting node: found, as before
 		local s = w.walkBetween(1101, 4100)
 		eq(s.found, true); eq(s.sameNode, true); eq(s.trivial, nil)
