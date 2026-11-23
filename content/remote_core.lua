@@ -9,6 +9,7 @@ M.VERSION = 7 -- 2: speed and run follow the game's estimate of what it can sust
 -- 6: stations, lines, line (create, update, delete)
 -- 7: connect (a track or road between two ends, planned and built through the Track Connector mod)
 M.MOD_ID = "hummer_remote_probe"
+M.RUNCOST_EVENT_ID = "hummer_remote_probe.runningCosts" -- (running costs, at the end of this file)
 M.PREFIX = "remote_probe__"
 M.LOG = "[remote_probe] "
 
@@ -68,8 +69,11 @@ M.OPTION_VALUES = {
 	speedLabel = { true, false }, -- the label beside the speed buttons (gui/remote_speed.script.lua)
 	-- our ×8 / ×16 buttons: off for screenshots, where they are another mod's UI in the bottom bar (05, 2026-11-19)
 	speedButtons = { true, false },
+	-- the game script (remote_gs.script.lua) listens for runningCostsSet only when on: off, it subscribes to nothing,
+	-- so a person's save never gets the probe's subscription or state
+	gameScript = { false, true },
 }
-M.OPTION_DEFAULT = { pollIdle = 2, pollActive = 2, logLevel = 2, speedLabel = 1, speedButtons = 1 }
+M.OPTION_DEFAULT = { pollIdle = 2, pollActive = 2, logLevel = 2, speedLabel = 1, speedButtons = 1, gameScript = 1 }
 
 function M.options(raw)
 	local out = {}
@@ -954,6 +958,10 @@ end
 function M.scriptEventRequest(args)
 	args = type(args) == "table" and args or {}
 	if type(args.id) ~= "string" or args.id == "" then return nil, "give the script event's id (e.g. the mod's UI id)" end
+	-- the probe's own game script event goes only through runningCostsSet, whose test-save check script-event lacks
+	if args.id == M.RUNCOST_EVENT_ID then
+		return nil, "the id " .. args.id .. " is the probe's own: use running-costs --set-* (test saves only)"
+	end
 	local ev, err = M.eventRequest(args)
 	if not ev then return nil, err end
 	return { id = args.id, name = ev.name, param = ev.param or {} }
@@ -3992,6 +4000,218 @@ function M.boxOf(bb)
 	local x1, y1, z1 = tonumber(hi and M.field(hi, "x")), tonumber(hi and M.field(hi, "y")), tonumber(hi and M.field(hi, "z"))
 	if not (finite(x0) and finite(y0) and finite(x1) and finite(y1)) then return nil end
 	return { x0 = math.min(x0, x1), y0 = math.min(y0, y1), z0 = z0, x1 = math.max(x0, x1), y1 = math.max(y0, y1), z1 = z1 }
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- running costs (remote_runcost.lua, remote_gs.script.lua): a vehicle model's running-cost fields read, and written
+-- at run time for a measurement (does the engine bill a rewritten value?). runningCosts reads only (the GUI's view);
+-- runningCostsSet writes, test saves only (tf3ctl names the loaded save in _testSave, as for road --ignore-errors),
+-- through the game script (where "script", the way price_probe wrote metadata.cost.price in 2026-11-16) or in the
+-- GUI's own Lua state (where "gui"). finance reads the finance table and the vehicles' running costs (read only).
+
+M.COMMANDS.runningCosts = true
+M.COMMANDS.runningCostsSet = true
+M.COMMANDS.finance = true
+M.CHANGES_GAME.runningCostsSet = true
+
+-- the event the GUI sends the game script (makeScriptingSendEventCmd's id and names); the game script only listens
+-- while the mod setting gameScript is on (it subscribes in its update then)
+M.RUNCOST_EVENT_ID = M.RUNCOST_EVENT_ID -- (set near the top: scriptEventRequest refuses it)
+-- (names of their own: subscribeToEvent goes by the name, and another mod's event may be called "write")
+M.RUNCOST_EVENT_WRITE = "hummer_remote_probe.runningCosts.write"
+M.RUNCOST_EVENT_READ = "hummer_remote_probe.runningCosts.read"
+M.RUNCOST_WAIT_SEC = 15
+
+-- the fields read: metadata.cost and metadata.maintenance (api/type.d.tl Model.Metadata: Cost { price, priceScale },
+-- Maintenance { lifespan, runningCosts, runningCostScale, maintenanceScale, topSpeedMaintenanceFactorPenaltyPerLevel })
+M.RUNCOST_READ = {
+	{ "cost", "price" }, { "cost", "priceScale" },
+	{ "maintenance", "lifespan" }, { "maintenance", "runningCosts" }, { "maintenance", "runningCostScale" },
+	{ "maintenance", "maintenanceScale" }, { "maintenance", "topSpeedMaintenanceFactorPenaltyPerLevel" },
+}
+-- the fields that may be written (all in metadata.maintenance): what a running or maintenance bill could be made of
+M.RUNCOST_WRITABLE = { runningCosts = "maintenance", runningCostScale = "maintenance", maintenanceScale = "maintenance" }
+M.RUNCOST_SET_MAX = 1e9
+M.RUNCOST_SCALE_MAX = 100
+
+-- the model argument: an id (a whole number, or digits) or a part of the file name
+local function modelQuery(v)
+	if type(v) == "number" and v == math.floor(v) and v >= 0 then return string.format("%d", v) end
+	if type(v) == "string" and v:find("%S") and #v <= 512 and not v:find("%c") then return v:match("^%s*(.-)%s*$") end
+	return nil
+end
+
+-- ops: { { field, set = n } or { field, scale = k } }, at most one per field. Returns the checked list or nil + why
+function M.runningCostOps(ops)
+	if type(ops) ~= "table" then return nil, "ops must be a list of { field, set } or { field, scale }" end
+	local out, seen = {}, {}
+	for i, op in ipairs(ops) do
+		if type(op) ~= "table" then return nil, "ops[" .. i .. "] must be { field, set } or { field, scale }" end
+		local f = op.field
+		if type(f) ~= "string" or M.RUNCOST_WRITABLE[f] == nil then
+			local names = {}
+			for k in pairs(M.RUNCOST_WRITABLE) do names[#names + 1] = k end
+			table.sort(names)
+			return nil, "field must be one of " .. table.concat(names, ", ") .. " (got " .. tostring(f) .. ")"
+		end
+		if seen[f] then return nil, f .. " is given twice" end
+		seen[f] = true
+		if (op.set == nil) == (op.scale == nil) then return nil, f .. ": give set or scale (one of them)" end
+		if op.set ~= nil then
+			if not finite(op.set) or op.set < 0 or op.set > M.RUNCOST_SET_MAX then
+				return nil, f .. ": set must be a number from 0 to " .. string.format("%d", M.RUNCOST_SET_MAX)
+			end
+			out[#out + 1] = { field = f, group = M.RUNCOST_WRITABLE[f], set = op.set }
+		else
+			if not finite(op.scale) or op.scale <= 0 or op.scale > M.RUNCOST_SCALE_MAX then
+				return nil, f .. ": scale must be a number above 0 and at most " .. M.RUNCOST_SCALE_MAX
+			end
+			out[#out + 1] = { field = f, group = M.RUNCOST_WRITABLE[f], scale = op.scale }
+		end
+	end
+	if #out == 0 then return nil, "ops must name at least one field" end
+	return out
+end
+
+-- runningCosts (read): model, limit (vehicles of the model listed, default 20, 0-50).
+-- runningCostsSet (write): model, ops, where ("script", the default, or "gui"), _testSave (a test save's name,
+-- tf3ctl's word: a second fence, as for road --ignore-errors). Returns the checked args or nil + why
+M.RUNCOST_VEHICLES = 20
+M.RUNCOST_VEHICLES_MAX = 50
+function M.runningCostsArgs(args, write)
+	args = type(args) == "table" and args or {}
+	local q = modelQuery(args.model)
+	if not q then return nil, "give model: an id or a part of the file name (models --grep lists them)" end
+	local out = { model = q, limit = M.RUNCOST_VEHICLES }
+	if args.limit ~= nil then
+		local n = tonumber(args.limit)
+		if n == nil or n ~= math.floor(n) or n < 0 or n > M.RUNCOST_VEHICLES_MAX then
+			return nil, "limit must be a whole number from 0 to " .. M.RUNCOST_VEHICLES_MAX
+		end
+		out.limit = n
+	end
+	if not write then
+		if args.ops ~= nil or args.where ~= nil then
+			return nil, "ops and where go with runningCostsSet (runningCosts only reads)"
+		end
+		return out
+	end
+	if not M.isTestSaveName(args._testSave) then
+		return nil, "runningCostsSet is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave)
+			.. " is no test save's name): nothing written"
+	end
+	local ops, err = M.runningCostOps(args.ops)
+	if not ops then return nil, err end
+	local where = args.where == nil and "script" or args.where
+	if where ~= "script" and where ~= "gui" then return nil, "where must be script or gui" end
+	out.ops, out.where, out.testSave = ops, where, args._testSave
+	return out
+end
+
+-- the value each op writes, from the value read now in the Lua state that writes: { field, group, from, to } or nil
+-- + why (a field that is not a number cannot be scaled; a negative one, as a -1 the base did not fill in, neither)
+function M.runningCostTargets(before, ops)
+	local out = {}
+	for _, op in ipairs(ops) do
+		local from = type(before) == "table" and type(before[op.group]) == "table" and before[op.group][op.field] or nil
+		local to = op.set
+		if op.scale then
+			if type(from) ~= "number" then return nil, op.field .. " cannot be scaled: it reads " .. tostring(from) end
+			if from < 0 then return nil, op.field .. " cannot be scaled: it reads " .. tostring(from) .. " (set it)" end
+			to = from * op.scale
+		end
+		out[#out + 1] = { field = op.field, group = op.group, from = from, to = to }
+	end
+	return out
+end
+
+-- the game script's request: what the GUI hands makeScriptingSendEventCmd (plain values only)
+function M.runningCostRequest(req, modelId, a)
+	local ops = {}
+	for _, op in ipairs(a.ops or {}) do ops[#ops + 1] = { field = op.field, set = op.set, scale = op.scale } end
+	return { req = req, model = modelId, ops = ops, testSave = a.testSave }
+end
+
+-- the game script checks the request again (a script event can be sent by hand: script-event): the same rules
+function M.runningCostRequestChecked(p)
+	if type(p) ~= "table" then return nil, "no request" end
+	local req, model = tonumber(p.req), tonumber(p.model)
+	if req == nil or model == nil or model < 0 or model ~= math.floor(model) then return nil, "req and model must be numbers" end
+	if not M.isTestSaveName(p.testSave) then
+		return nil, "for test saves only (" .. tostring(p.testSave) .. " is no test save's name): nothing written"
+	end
+	local ops, err = M.runningCostOps(p.ops)
+	if not ops then return nil, err end
+	return { req = req, model = model, ops = ops }
+end
+
+-- finance: columns (of the finance table, 1-8, default 4), vehicles (entity ids, at most 50), since (a game time:
+-- the vehicles' and the fleet's running costs from then to now; default: one twelfth of a year back)
+M.FINANCE_COLUMNS = 4
+M.FINANCE_COLUMNS_MAX = 8
+function M.financeArgs(args)
+	args = type(args) == "table" and args or {}
+	local out = { columns = M.FINANCE_COLUMNS }
+	if args.columns ~= nil then
+		local n = tonumber(args.columns)
+		if n == nil or n ~= math.floor(n) or n < 1 or n > M.FINANCE_COLUMNS_MAX then
+			return nil, "columns must be a whole number from 1 to " .. M.FINANCE_COLUMNS_MAX
+		end
+		out.columns = n
+	end
+	if args.vehicles ~= nil then
+		if type(args.vehicles) ~= "table" then return nil, "vehicles must be a list of entity ids" end
+		local list, seen = {}, {}
+		for _, e in ipairs(args.vehicles) do
+			local n = entityArg(e)
+			if n == nil then return nil, "vehicles must be a list of entity ids (whole numbers >= 0)" end
+			if not seen[n] then seen[n] = true; list[#list + 1] = n end
+		end
+		if #list > M.MAX_VEHICLE_ENTITIES then return nil, "at most " .. M.MAX_VEHICLE_ENTITIES .. " vehicles at once" end
+		out.vehicles = list
+	end
+	if args.since ~= nil then
+		local n = tonumber(args.since)
+		if not finite(n) or n < 0 then return nil, "since must be a game time (a number >= 0)" end
+		out.since = math.floor(n)
+	end
+	return out
+end
+
+-- The fields of RUNCOST_READ as one Lua state sees them: { cost = { price, priceScale }, maintenance = { ... } }, a
+-- field nil when it cannot be read; nil + why when the model or its metadata cannot be read. rep: api.res.modelRep
+function M.readRunningCostFields(rep, id)
+	local okG, md = pcall(function() return rep.get(id).metadata end)
+	if not okG or md == nil then return nil, "modelRep.get(" .. tostring(id) .. ").metadata: " .. tostring(md) end
+	local out = { cost = {}, maintenance = {} }
+	for _, gf in ipairs(M.RUNCOST_READ) do
+		local ok, v = pcall(function() return md[gf[1]][gf[2]] end)
+		if ok then out[gf[1]][gf[2]] = tonumber(v) end
+	end
+	return out
+end
+
+function M.closeTo(a, b)
+	if type(a) ~= "number" or type(b) ~= "number" then return false end
+	return math.abs(a - b) <= 1e-5 * math.max(1, math.abs(b))
+end
+
+-- Writes each target straight into the object modelRep.get hands out (rep.get(id).metadata.<group>.<field> = to),
+-- as price_probe wrote metadata.cost.price (direct, 2026-11-16), then reads it back. One entry per target: { field,
+-- from, to, ok, error (the engine's words), readBack }
+function M.writeRunningCosts(rep, id, targets)
+	local out = {}
+	for _, t in ipairs(targets) do
+		local ok, err = pcall(function() rep.get(id).metadata[t.group][t.field] = t.to end)
+		local okR, back = pcall(function() return rep.get(id).metadata[t.group][t.field] end)
+		out[#out + 1] = { field = t.field, from = t.from, to = t.to, ok = ok,
+			error = (not ok) and tostring(err) or nil, readBack = okR and tonumber(back) or nil,
+			readBackError = (not okR) and tostring(back) or nil,
+			-- a write that raised nothing but did not stick (a copy handed out, say). Within 1e-5 of the value: the
+			-- engine may keep the field as a float (not known)
+			stuck = ok and okR and M.closeTo(tonumber(back), t.to) or false }
+	end
+	return out
 end
 
 return M

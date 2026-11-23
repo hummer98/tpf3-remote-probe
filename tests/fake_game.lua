@@ -842,12 +842,17 @@ function M.new(dir, opts)
 				-- opts.infiniteMoney: nil, as the engine gives for infinite money
 				finance = { getPlayersBalance = function() if opts.infiniteMoney then return nil end return g.balance end,
 					-- opts.vehicleBalances = { [entity] = { { time, amount } } }: the journal of a vehicle
-					calculateBalance = function(list, from, to, maintenanceIncomeOnly)
-						g.balanceAsked = { list = copy(list), from = from, to = to, only = maintenanceIncomeOnly }
+					-- an entry's third value: its maintenance type (the 5th argument keeps only those)
+					calculateBalance = function(list, from, to, maintenanceIncomeOnly, maintenanceType)
+						g.balanceAsked = { list = copy(list), from = from, to = to, only = maintenanceIncomeOnly,
+							maintenanceType = maintenanceType }
+						if opts.balanceRaises then error("std::exception") end
 						local sum = 0
 						for _, e in ipairs(list) do
 							for _, j in ipairs((opts.vehicleBalances or {})[e] or {}) do
-								if j[1] >= from and j[1] <= to then sum = sum + j[2] end
+								if j[1] >= from and j[1] <= to and (maintenanceType == nil or j[3] == maintenanceType) then
+									sum = sum + j[2]
+								end
 							end
 						end
 						return sum
@@ -1635,6 +1640,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_company.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_town_connect.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_parcels.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_runcost.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_reach.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
@@ -1706,7 +1712,8 @@ function M.new(dir, opts)
 		end
 		-- the --script copy: in the menu, and (opts.menuKeepsRunning) maybe in the game too
 		if g.menuScript and (g.menu or opts.menuKeepsRunning) then g.asMod(g.menuScript.update) end
-		if g.script then g.script.guiUpdate() end
+		-- (g.gsReadOnly: the probe's game script state, as the engine hands guiUpdate; installRunningCosts sets it)
+		if g.script then g.script.guiUpdate(nil, g.gsReadOnly) end
 	end
 
 	function g.date() return dateOf(g.gameTime) end
@@ -3771,6 +3778,158 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		ffi.C.usleep(20000)
 	end
 	for _, l in ipairs(g.logs) do io.stderr:write(l, "\n") end
+end
+
+-- Running costs (remote_runcost.lua) and the probe's game script (remote_gs.script.lua). The models' metadata
+-- becomes one object per model, the resource of the process: what one Lua state writes, the other reads (as
+-- price_probe saw in game, 2026-11-16). spec.maintenance = { [id] = { runningCosts, ... } } (default for each
+-- vehicle model: lifespan 20, runningCosts price / 6, runningCostScale 1, maintenanceScale 1, penalty 0.1);
+-- spec.readOnly = "gui" | "script" | "both": a write from that state raises the engine's "cannot write to read only
+-- member" (seen for street costs, 2026-11-16); spec.copies: get hands out a copy (a write does not stick);
+-- spec.noDelivery: script events never reach the game script; spec.finance = { header = { "1899", "1900" },
+-- rows = { ROAD = { { type, maintenance, construction, values } } }, total, balance } for computeFinanceTable
+-- (TRAM gives ROAD's rows unless given); spec.financeRaises. g.luaState is "script" while the game script runs.
+-- getRunningCost: the sum over the vehicle's parts of runningCosts x runningCostScale, read now.
+M.JOURNAL = {
+	Type = { LOAN = 0, INTEREST = 1, CONSTRUCTION = 2, ACQUISITION = 3, MAINTENANCE = 4, INCOME = 5, OTHER = 7, SUBSIDY = 8 },
+	Maintenance = { VEHICLE = 0, INFRASTRUCTURE = 1, OTHER = 2, VEHICLE_MAINTENANCE = 3 },
+	Construction = { STREET = 0, TRACK = 1, SIGNAL = 2, STATION = 3, DEPOT = 4, BULLDOZER = 5, WAREHOUSE = 6, OTHER = 7 },
+	Carrier = { ROAD = 0, RAIL = 1, TRAM = 2, OTHER = 3, AIR = 4, WATER = 5 },
+}
+function M.installRunningCosts(g, spec)
+	spec = spec or {}
+	local here = (debug.getinfo(1, "S").source:match("^@(.*)/tests/") or ".")
+	g.luaState = "gui"
+	local meta = {}
+	local function readOnlyHere()
+		local ro = spec.readOnly
+		return ro == "both" or ro == g.luaState
+	end
+	local function guarded(t, what)
+		local u = newproxy(true)
+		local mt = getmetatable(u)
+		mt.__index = function(_, k) return t[k] end
+		mt.__newindex = function(_, k, v)
+			if readOnlyHere() then error("cannot write to read only member '" .. tostring(k) .. "'", 0) end
+			if t[k] == nil then error("no member named '" .. tostring(k) .. "' in " .. what, 0) end
+			t[k] = tonumber(v) or v
+		end
+		return u, t
+	end
+	local function metaOf(id)
+		if meta[id] then return meta[id] end
+		local m = g.models[id]
+		if not m then return nil end
+		local mt = copy((spec.maintenance or {})[id] or {})
+		local defaults = { lifespan = 20, runningCosts = (m.price or 0) / 6, runningCostScale = 1, maintenanceScale = 1,
+			topSpeedMaintenanceFactorPenaltyPerLevel = 0.1 }
+		for k, v in pairs(defaults) do if mt[k] == nil then mt[k] = v end end
+		local maint, raw = guarded(mt, "Maintenance")
+		local cost, rawCost = guarded({ price = m.price, priceScale = m.priceScale or 1 }, "Cost")
+		meta[id] = { metadata = { cost = cost, maintenance = maint,
+			transportVehicle = m.vehicle and { compartments = { {}, {} } } or nil }, raw = raw, rawCost = rawCost }
+		return meta[id]
+	end
+	g.runningCostMeta = function(id) local m = metaOf(id); return m and m.raw end
+	local rep = api.res.modelRep
+	rep.get = function(id)
+		local m = metaOf(id)
+		if not m then return nil end
+		if spec.copies then
+			return { metadata = { cost = copy(m.rawCost), maintenance = copy(m.raw),
+				transportVehicle = m.metadata.transportVehicle } }
+		end
+		return { metadata = m.metadata }
+	end
+	api.engine.util.vehicle.getRunningCost = function(e)
+		local c = g.fleet[e]
+		if not c then error("ASSERT: no transport vehicle " .. tostring(e)) end
+		local sum = 0
+		for _, p in ipairs(c.vehicles) do
+			local m = metaOf(p.part.modelId)
+			sum = sum + m.raw.runningCosts * m.raw.runningCostScale
+		end
+		return sum
+	end
+	for k, v in pairs(M.JOURNAL) do api.type.JournalEntry[k] = v end
+	api.type.ChartConfig = { new = function() return { interval = 0, count = 0, minCount = 0, yStepScale = 1 } end }
+	api.engine.util.finance.computeFinanceTable = function(player, config)
+		g.financeAsked = { player = player, count = config.count }
+		if spec.financeRaises then error("std::exception") end
+		local f = spec.finance or {}
+		local rows = copy(f.rows or {})
+		if rows.TRAM == nil then rows.TRAM = rows.ROAD end
+		local keys = {}
+		local fd = { header = copy(f.header or { "1899", "1900" }), total = copy(f.total or {}), balance = copy(f.balance or {}) }
+		function fd.foreach_transport(self, fn, carrier)
+			assert(self == fd, "foreach_transport is a method")
+			for name, c in pairs(M.JOURNAL.Carrier) do
+				if c == carrier then
+					for _, r in ipairs(rows[name] or {}) do
+						local key = #keys + 1
+						keys[key] = { M.JOURNAL.Type[r.type], r.maintenance and M.JOURNAL.Maintenance[r.maintenance] or 0,
+							r.construction and M.JOURNAL.Construction[r.construction] or 0 }
+						fn(key, copy(r.values or {}))
+					end
+				end
+			end
+		end
+		function fd.unfoldKey(self, key)
+			assert(self == fd, "unfoldKey is a method")
+			return keys[key]
+		end
+		return fd
+	end
+	-- the game script: loaded as the engine would, with its own state
+	_G.data = nil
+	dofile(here .. "/content/remote_gs.script.lua")
+	local gs = _G.data()
+	_G.data = nil
+	g.gs = gs
+	g.gsValue, g.gsSubs, g.gsDelivered = nil, {}, {}
+	local state = {
+		get = function() return copy(g.gsValue) end,
+		set = function(_, v) g.gsValue = copy(v) end,
+		hasEventSubscriptions = function() return next(g.gsSubs) ~= nil end,
+		subscribeToEvent = function(_, name) g.gsSubs[name] = true end,
+		subscribeToAllEvents = function() g.gsSubs["*"] = true end,
+		subscribeToNoEvents = function() g.gsSubs = {} end,
+	}
+	state.get = function(self) assert(self == state, "get is a method"); return copy(g.gsValue) end
+	g.gsState = state
+	local ro = {}
+	ro.get = function(self) assert(self == ro, "get is a method"); return copy(g.gsValue) end
+	g.gsReadOnly = ro
+	local function asScript(fn, ...)
+		local was = g.luaState
+		g.luaState = "script"
+		local ok, err = pcall(fn, ...)
+		g.luaState = was
+		if not ok then error(err, 0) end
+	end
+	local pending = {}
+	local send = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		if type(cmd) == "table" and cmd.kind == "scriptEvent" and cmd.id == "hummer_remote_probe.runningCosts" then
+			g.runcostEvents = (g.runcostEvents or 0) + 1
+			if (g.gsSubs[cmd.name] or g.gsSubs["*"]) and not spec.noDelivery then pending[#pending + 1] = copy(cmd) end
+		end
+		return send(cmd, cb)
+	end
+	local step = g.step
+	g.step = function(dt)
+		-- the game script first (its update, then the commands of the last frame), as the engine runs it
+		if not g.menu then
+			asScript(gs.update, nil, state, dt or 1 / 30)
+			local due = pending
+			pending = {}
+			for _, cmd in ipairs(due) do
+				g.gsDelivered[#g.gsDelivered + 1] = cmd
+				asScript(gs.handleEvent, nil, state, cmd.src, cmd.id, cmd.name, cmd.param)
+			end
+		end
+		return step(dt)
+	end
 end
 
 return M

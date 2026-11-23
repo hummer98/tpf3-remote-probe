@@ -906,6 +906,53 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   **Not checked in game yet**: the waiting answer itself, `stock set`, whether a station holds a stock list of its
   own.
 
+### A vehicle model's running costs (`running-costs`) and the finance rows (`finance`)
+
+```sh
+python3 tools/tf3ctl.py running-costs --model bus_1900                 # read only
+python3 tools/tf3ctl.py running-costs --model bus_1900 --scale-running 2 [--set-maintenance 1.5] [--where gui]
+python3 tools/tf3ctl.py running-costs --model 101 --set runningCostScale=2 --scale maintenanceScale=3
+python3 tools/tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--columns 4]   # read only
+```
+
+Made to measure whether the engine bills a running cost rewritten during a game (the purchase price written this
+way is paid, the shop shows it and the sale price follows it: measured 2026-11-16 with a test mod).
+
+- `running-costs` without a write reads the model's `metadata.cost` (`price`, `priceScale`) and
+  `metadata.maintenance` (`lifespan`, `runningCosts`, `runningCostScale`, `maintenanceScale`,
+  `topSpeedMaintenanceFactorPenaltyPerLevel`), as the GUI's Lua state sees them (`view`), and the company's vehicles
+  with a part of that model (`vehicles`, at most `--limit`, default 20; `vehicleCount` counts them all) with the
+  running cost per year the engine gives each (`getRunningCost`, as the vehicle window shows it). `--model` is an
+  id or a part of the file name (`models --grep` lists them). It goes anywhere, as every reading command.
+- **A write (`--set-running X`, `--scale-running K`, `--set-maintenance Y`, `--scale-maintenance K`, `--set
+  FIELD=X`, `--scale FIELD=K` for `runningCosts`, `runningCostScale`, `maintenanceScale`) is for test saves only**,
+  by the same rule as `road --ignore-errors`: the loaded save must have a test save's name (a new game with no name
+  yet: `save probe-NAME`, then `load probe-NAME`), no coop mark may be on the running game, and the owner check
+  applies (a game-changing command). The mod checks the save's name again. A model has no maintenance amount of its
+  own, only `maintenanceScale`, so the `--*-maintenance` flags write that.
+- The fields are written in place (`modelRep.get(id).metadata.maintenance.<field> = value`) and read back. `--where
+  script` (the default) writes in the game script, as the test mod wrote prices; it needs the mod setting **Game
+  script commands** on: `launch` / `load` with `--param hummer_remote_probe:gameScript=2`. Off (the default), the
+  mod's game script subscribes to nothing and keeps no state. `--where gui`
+  writes in the GUI's Lua state, and (with the setting on) the game script reads the model back (a way not tried in
+  a game yet: whether writing there while the simulation reads the model is safe is not known).
+- `load` (and `launch` / `restart --load`) refuses `--param hummer_remote_probe:gameScript=2` on a save that is
+  not a test save's, so a person's save is not loaded with the game script listening (a new game may take it).
+- The answer has `before` (`gui`, and `script` for a game-script write), `writes` (per field: `from`, `to`, `ok`,
+  the engine's `error` word for word, `readBack`, `stuck`), `after` (`script`, `gui`), `vehiclesBefore` and
+  `vehiclesAfter` (`runningCostPerYear` per vehicle), `wroteIn`, `testSave` and `gameTime`. `ok` is false when a
+  field did not take the value. The game script answers through its state within 15 s, or the answer says it did
+  not (with a game-script write, look at the log: `log --grep "game script"`).
+- A write lasts for the session only: each load reads the models anew.
+- `finance` reads the finance table as the base's finance window does (`computeFinanceTable`, `--columns` columns,
+  the years in `header`): per carrier its rows (`type`, `maintenance`, `construction`, `values`), and
+  `vehicleRunning` (the `MAINTENANCE` / `VEHICLE` rows: the vehicles' running costs) and `vehicleMaintenance`
+  (`MAINTENANCE` / `VEHICLE_MAINTENANCE`) summed per column. `sameAs` marks a carrier whose rows are an earlier
+  carrier's (TRAM gave ROAD's rows in a game). `fleet` is `calculateBalance` of all the company's vehicles over
+  `[since, gameTime]` (maintenance and income entries; `running`: `Maintenance.VEHICLE` only; `maintenance`:
+  `VEHICLE_MAINTENANCE`; `all`); `--vehicles` gives the same per vehicle. Without `--since`, a twelfth of a year
+  back. Amounts are as the engine books them (costs negative). Not checked in a game yet.
+
 ### Town building parcels along a road (`parcels`, read only)
 
 ```
@@ -1412,6 +1459,7 @@ tf3ctl.py --owner bob coop end
 | Check interval after a command and during a run | 0.1 / **0.25** / 0.5 / 1 s | for two minutes after a command and during a `run` |
 | Log amount | Minimal / **Per command** / Detailed | `[remote_probe]` lines in the game log |
 | Label beside the speed buttons | **Show** / Hide | e.g. `×16 real ×3.2 →2045-07-03` for speeds the buttons do not have, and during a `run` |
+| Game script commands (test saves) | **Off** / On | on: the mod's game script takes `running-costs` writes (`--param hummer_remote_probe:gameScript=2`) |
 
 The settings and the speed label are in English and Japanese (`strings.json`), in the game's language; other
 languages get English. The name, summary, description and cover in the game's mod list come from

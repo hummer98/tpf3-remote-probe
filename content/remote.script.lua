@@ -1267,6 +1267,11 @@ for k, fn in pairs(modhub.handlers) do handlers[k] = fn end
 local reach = (ug_require or require)(MOD .. "::/remote_reach.lua").new({ core = core, answer = answer, fail = fail,
 	try = try, appTime = fineTime, say = say, posOf = function(e) return lines.posOf(e) end })
 handlers.reach = reach.handle
+-- running costs and finance (remote_runcost.lua): a model's running-cost fields read and (test saves) written, through
+-- the game script (remote_gs.script.lua) whose state guiUpdate is handed
+local runcost = (ug_require or require)(MOD .. "::/remote_runcost.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = appTime, try = try, say = say, findModel = vehicles.findModel, gsState = function() return G.gsState end })
+for k, fn in pairs(runcost.handlers) do handlers[k] = fn end
 lines.walkBetween = reach.walkBetween -- (stations --catchment: whether a building can be walked to its station)
 
 -- args: entity (one industry; none: all). Read only. Per industry: its capacity (PERSON_CAPACITY), the sims that
@@ -1495,6 +1500,7 @@ local function init()
 		townGrow.reset()
 		company.reset()
 		townConnect.reset()
+		runcost.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1616,6 +1622,7 @@ local function step()
 	townGrow.step()
 	company.step()
 	townConnect.step()
+	runcost.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()
@@ -1630,7 +1637,10 @@ function script.setMenu()
 	G.menu = true
 end
 
-function script.guiUpdate()
+-- state: the game script's (remote.gs.lua, read only here), which remote_gs.script.lua answers runningCostsSet in;
+-- nil in the main menu (startup.lua calls this without it)
+function script.guiUpdate(_userParams, state)
+	G.gsState = state
 	if G.phase == "off" then return end
 	local ok, err = pcall(step)
 	if not ok then

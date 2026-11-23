@@ -53,6 +53,14 @@
 			"uiType": "ComboBox",
 			"values": ["hummer_remote_probe_speedButtons_v1", "hummer_remote_probe_speedButtons_v2"],
 			"defaultIndex": 0
+		},
+		{
+			"key": "gameScript",
+			"name": "hummer_remote_probe_gameScript_name",
+			"tooltip": "hummer_remote_probe_gameScript_tip",
+			"uiType": "ComboBox",
+			"values": ["hummer_remote_probe_gameScript_v1", "hummer_remote_probe_gameScript_v2"],
+			"defaultIndex": 0
 		}
 	]
 }
