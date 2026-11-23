@@ -154,12 +154,16 @@ return function(h)
 		local nosave = run(g, 2624, "runningCostsSet", '{ model = 101, ops = { { field = "runningCosts", scale = 2 } } }', 20)
 		eq(nosave.ok, false); truthy(nosave.error:find("test saves only"))
 		eq(g.runcostEvents, nil, "nothing sent"); eq(g.runningCostMeta(101).runningCosts, 5000)
-		-- a script event sent by hand with a person's save's name: the game script refuses it too
-		send(g, 2625, "scriptEvent", '{ id = "hummer_remote_probe.runningCosts", name = "' .. core.RUNCOST_EVENT_WRITE
-			.. '", param = { req = 1, model = 101, ops = { { field = "runningCosts", set = 1 } }, testSave = "aom-eu-1900" } }')
-		frames(g, 20)
-		eq(g.runningCostMeta(101).runningCosts, 5000)
-		eq(g.gsValue.runningCosts.ok, false); truthy(g.gsValue.runningCosts.error:find("test saves only"))
+		-- script-event cannot send the probe's own event (it has no test-save check), even with a test save's name
+		local se = run(g, 2625, "scriptEvent", '{ id = "hummer_remote_probe.runningCosts", name = "' .. core.RUNCOST_EVENT_WRITE
+			.. '", param = { req = 1, model = 101, ops = { { field = "runningCosts", set = 1 } }, testSave = "probe-x" } }', 20)
+		eq(se.ok, false); truthy(se.error:find("probe's own"), se.error)
+		eq(g.runcostEvents, nil); eq(g.runningCostMeta(101).runningCosts, 5000)
+		-- an event that reaches the game script anyway with a person's save's name: refused, no state written
+		g.gsState:set({ keep = 1 })
+		g.gs.handleEvent(nil, g.gsState, "", core.RUNCOST_EVENT_ID, core.RUNCOST_EVENT_WRITE,
+			{ req = 1, model = 101, ops = { { field = "runningCosts", set = 1 } }, testSave = "aom-eu-1900" })
+		eq(g.runningCostMeta(101).runningCosts, 5000); eq(g.gsValue.keep, 1); eq(g.gsValue.runningCosts, nil)
 		-- the setting off: where script refused, nothing subscribed, the state untouched (a person's save keeps none)
 		local off = game({}, { gameScriptOff = true })
 		frames(off, 200)
@@ -186,6 +190,48 @@ return function(h)
 		eq(n2, nil, "taken and waiting: no answer yet")
 		local busy = run(nd, 2632, "runningCostsSet", DOUBLE, 20)
 		eq(busy.ok, false); truthy(busy.error:find("still waiting"), busy.error)
+	end)
+
+	test("game script: other events, the setting off, a request twice, an engine error; no new globals", function()
+		local g = game({})
+		frames(g, 5)
+		local gs, st = g.gs, g.gsState
+		local req = { req = 77, model = 101, ops = { { field = "runningCosts", scale = 2 } }, testSave = "probe-x" }
+		-- events of other ids or names: nothing read, no state
+		gs.handleEvent(nil, st, "", "", "initNewGame", {})
+		gs.handleEvent(nil, st, "", "VehicleModifier", core.RUNCOST_EVENT_WRITE, req)
+		gs.handleEvent(nil, st, "", core.RUNCOST_EVENT_ID, "other", req)
+		eq(g.gsValue, nil); eq(g.runningCostMeta(101).runningCosts, 5000)
+		-- once applied, the same req again is dropped (a write is never applied twice)
+		gs.handleEvent(nil, st, "", core.RUNCOST_EVENT_ID, core.RUNCOST_EVENT_WRITE, req)
+		eq(g.runningCostMeta(101).runningCosts, 10000)
+		gs.handleEvent(nil, st, "", core.RUNCOST_EVENT_ID, core.RUNCOST_EVENT_WRITE, req)
+		eq(g.runningCostMeta(101).runningCosts, 10000, "not 4x")
+		-- subscribing again at each read of the setting (no hasEventSubscriptions guard), without saying it again
+		g.gsSubs = { other = true }
+		gs._resetForTests()
+		frames(g, 2)
+		truthy(g.gsSubs[core.RUNCOST_EVENT_WRITE], "subscribed although another name was in")
+		-- the setting off in a game that is subscribed: a write event does nothing
+		local off = game({}, { gameScriptOff = true })
+		off.gs.handleEvent(nil, off.gsState, "", core.RUNCOST_EVENT_ID, core.RUNCOST_EVENT_WRITE, req)
+		eq(off.gsValue, nil); eq(off.runningCostMeta(101).runningCosts, 5000)
+		-- the engine raising inside: logged, not raised
+		local rep = api.res.modelRep
+		api.res.modelRep = nil
+		local ok = pcall(gs.handleEvent, nil, st, "", core.RUNCOST_EVENT_ID, core.RUNCOST_EVENT_WRITE,
+			{ req = 78, model = 101, ops = { { field = "runningCosts", set = 1 } }, testSave = "probe-x" })
+		api.res.modelRep = rep
+		eq(ok, true)
+		-- loading the file makes no global but data (TF3's init.lua refuses new globals)
+		local before = {}
+		for k in pairs(_G) do before[k] = true end
+		_G.data = nil
+		dofile(h.root .. "/content/remote_gs.script.lua")
+		local new = {}
+		for k in pairs(_G) do if not before[k] and k ~= "data" then new[#new + 1] = tostring(k) end end
+		eq(table.concat(new, ","), "")
+		_G.data = nil
 	end)
 
 	test("running-costs --where gui: written in the GUI's state, read back by the game script", function()

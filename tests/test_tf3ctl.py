@@ -6388,6 +6388,20 @@ class RunningCostsTest(_ForceBase):
         self.loaded("probe-x")
         self.assertEqual(self.sent("runningCostsSet", args)["_testSave"], "probe-x")
 
+    def test_game_script_setting_only_on_test_saves_or_a_new_game(self):
+        def load(*a):
+            return tf3ctl.load_args(self.p.parse_args(["load"] + list(a)))
+        p = "--param=hummer_remote_probe:gameScript=2"
+        self.assertEqual(load("probe-runcost", p)["params"], {"hummer_remote_probe": {"gameScript": 2}})
+        self.assertEqual(load("3-probe", p)["params"]["hummer_remote_probe"]["gameScript"], 2)
+        for save in ("aom-eu-1900", "My Railway", "12-probe"):
+            with self.assertRaises(tf3ctl.ToolError, msg=save):
+                load(save, p)
+        load("aom-eu-1900", "--param=hummer_remote_probe:gameScript=1")  # off: anywhere
+        load("aom-eu-1900", "--param=hummer_remote_probe:speedLabel=2")
+        ns = tf3ctl.make_parser().parse_args(["newgame", "--param", "hummer_remote_probe:gameScript=2"])
+        self.assertEqual(tf3ctl.newgame_args(ns)["params"]["hummer_remote_probe"]["gameScript"], 2)
+
     def test_main_routes_reads_and_writes(self):
         got = []
 

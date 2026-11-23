@@ -11507,7 +11507,7 @@ dofile(root .. "/tests/run_lanes.lua")({ test = test, eq = eq, truthy = truthy, 
 dofile(root .. "/tests/run_catchment.lua")({ test = test, eq = eq, truthy = truthy, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
 -- running-costs and finance (tests/run_runcost.lua)
-dofile(root .. "/tests/run_runcost.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core,
+dofile(root .. "/tests/run_runcost.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
 
 print(string.format("\n%d passed, %d failed", passes, failures))

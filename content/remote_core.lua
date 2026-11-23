@@ -9,6 +9,7 @@ M.VERSION = 7 -- 2: speed and run follow the game's estimate of what it can sust
 -- 6: stations, lines, line (create, update, delete)
 -- 7: connect (a track or road between two ends, planned and built through the Track Connector mod)
 M.MOD_ID = "hummer_remote_probe"
+M.RUNCOST_EVENT_ID = "hummer_remote_probe.runningCosts" -- (running costs, at the end of this file)
 M.PREFIX = "remote_probe__"
 M.LOG = "[remote_probe] "
 
@@ -957,6 +958,10 @@ end
 function M.scriptEventRequest(args)
 	args = type(args) == "table" and args or {}
 	if type(args.id) ~= "string" or args.id == "" then return nil, "give the script event's id (e.g. the mod's UI id)" end
+	-- the probe's own game script event goes only through runningCostsSet, whose test-save check script-event lacks
+	if args.id == M.RUNCOST_EVENT_ID then
+		return nil, "the id " .. args.id .. " is the probe's own: use running-costs --set-* (test saves only)"
+	end
 	local ev, err = M.eventRequest(args)
 	if not ev then return nil, err end
 	return { id = args.id, name = ev.name, param = ev.param or {} }
@@ -4011,7 +4016,7 @@ M.CHANGES_GAME.runningCostsSet = true
 
 -- the event the GUI sends the game script (makeScriptingSendEventCmd's id and names); the game script only listens
 -- while the mod setting gameScript is on (it subscribes in its update then)
-M.RUNCOST_EVENT_ID = "hummer_remote_probe.runningCosts"
+M.RUNCOST_EVENT_ID = M.RUNCOST_EVENT_ID -- (set near the top: scriptEventRequest refuses it)
 -- (names of their own: subscribeToEvent goes by the name, and another mod's event may be called "write")
 M.RUNCOST_EVENT_WRITE = "hummer_remote_probe.runningCosts.write"
 M.RUNCOST_EVENT_READ = "hummer_remote_probe.runningCosts.read"

@@ -870,8 +870,11 @@ python3 tools/tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--colum
 - 欄はその場で書き (`modelRep.get(id).metadata.maintenance.<欄> = 値`)、読み直します。`--where script` (初期設定)
   はゲームスクリプトで書きます (試験用の MOD が価格を書いたのと同じ)。MOD の設定 **ゲームスクリプトの命令** をオンに
   する必要があります: `launch` / `load` に `--param hummer_remote_probe:gameScript=2`。オフ (初期設定) のとき、
-  この MOD のゲームスクリプトはどのイベントにも登録せず、状態も持たないので、人のセーブにはどちらも残りません。
-  `--where gui` は GUI の Lua の状態で書き、(設定がオンなら) ゲームスクリプトがその型を読み直します。
+  この MOD のゲームスクリプトはどのイベントにも登録せず、状態も持ちません。
+  `--where gui` は GUI の Lua の状態で書き、(設定がオンなら) ゲームスクリプトがその型を読み直します (ゲームではまだ
+  試していない道です。シミュレーションが型を読んでいる間に、そこで書いて安全かは分かっていません)。
+- `load` (と `launch` / `restart --load`) は、試験用でないセーブに `--param hummer_remote_probe:gameScript=2` を
+  付けると断ります。人のセーブを、ゲームスクリプトが受け付ける状態で読み込まないためです (新しいゲームには付けられます)。
 - 答えには `before` (`gui`、ゲームスクリプトで書いたときは `script` も)、`writes` (欄ごとに `from`・`to`・`ok`・
   エンジンのエラーの文言そのままの `error`・`readBack`・`stuck`)、`after` (`script`・`gui`)、`vehiclesBefore` と
   `vehiclesAfter` (車両ごとの `runningCostPerYear`)、`wroteIn`・`testSave`・`gameTime` が入ります。値が入らなかった

@@ -933,8 +933,11 @@ way is paid, the shop shows it and the sale price follows it: measured 2026-11-1
 - The fields are written in place (`modelRep.get(id).metadata.maintenance.<field> = value`) and read back. `--where
   script` (the default) writes in the game script, as the test mod wrote prices; it needs the mod setting **Game
   script commands** on: `launch` / `load` with `--param hummer_remote_probe:gameScript=2`. Off (the default), the
-  mod's game script subscribes to nothing and keeps no state, so a save of a person never gets either. `--where gui`
-  writes in the GUI's Lua state, and (with the setting on) the game script reads the model back.
+  mod's game script subscribes to nothing and keeps no state. `--where gui`
+  writes in the GUI's Lua state, and (with the setting on) the game script reads the model back (a way not tried in
+  a game yet: whether writing there while the simulation reads the model is safe is not known).
+- `load` (and `launch` / `restart --load`) refuses `--param hummer_remote_probe:gameScript=2` on a save that is
+  not a test save's, so a person's save is not loaded with the game script listening (a new game may take it).
 - The answer has `before` (`gui`, and `script` for a game-script write), `writes` (per field: `from`, `to`, `ok`,
   the engine's `error` word for word, `readBack`, `stuck`), `after` (`script`, `gui`), `vehiclesBefore` and
   `vehiclesAfter` (`runningCostPerYear` per vehicle), `wroteIn`, `testSave` and `gameTime`. `ok` is false when a

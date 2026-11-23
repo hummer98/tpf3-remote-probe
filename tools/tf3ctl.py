@@ -1284,6 +1284,14 @@ def load_args(ns):
         for p in ns.param:
             mod, key, idx = parse_param(p)
             params.setdefault(mod, {})[key] = idx
+        # the probe's game script listens for running-costs writes with this on (and may keep its subscription in
+        # the save): never on a person's save. A new game (save None) may: it is a test until saved, and
+        # running-costs writes only once it is loaded from a test save's name
+        if (params.get(SELF_MOD, {}).get("gameScript") not in (None, 1) and ns.save is not None
+                and not is_test_save(ns.save)):
+            raise ToolError("--param %s:gameScript=%s goes with test saves only (%s, or one digit first); %r is not one"
+                            % (SELF_MOD, params[SELF_MOD]["gameScript"], ", ".join(p + "*" for p in TEST_SAVE_PREFIXES),
+                               ns.save))
         args["params"] = params
     if ns.dry_run:
         args["dryRun"] = True
