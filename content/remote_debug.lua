@@ -95,12 +95,12 @@ function M.new(ctx)
 					return comp(v, k)
 				end)
 				if #owners > 1 then
-					local names = {}
+					local listed = {}
 					for _, o in ipairs(owners) do
-						names[#names + 1] = string.format("%d (%s, stock list %d)", o.entity, o.kind, o.stockList)
+						listed[#listed + 1] = string.format("%d (%s, stock list %d)", o.entity, o.kind, o.stockList)
 					end
 					return nil, "construction " .. e .. " has " .. #owners .. " stock lists under it: give one of "
-						.. table.concat(names, ", ")
+						.. table.concat(listed, ", ")
 				end
 				construction = e
 				if #owners == 1 then

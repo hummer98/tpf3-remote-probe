@@ -745,14 +745,17 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   `count`). An industry, town building or warehouse whose own entity has no `STOCK_LIST` is followed to its
   `stockList` entity (`via`). A construction (the id `build` answers, e.g. a warehouse's) is followed to the one
   warehouse, industry or town building with a stock list among its subconstructions (`via`
-  `CONSTRUCTION>WAREHOUSE`, `owner`, `construction`), as the base finds a warehouse's window from its construction;
-  two or more are refused, naming them, and none is an error. A warehouse (`warehouse.con`) keeps all its stocks
+  `CONSTRUCTION>WAREHOUSE`, `owner`, `construction`), through the subconstructions as the base finds a
+  warehouse's window from its construction (the base takes the first; here two or more are refused, naming them,
+  so that nothing is guessed), and none is an error. A warehouse (`warehouse.con`) keeps all its stocks
   in one stock list: one mixed stock for its universal modules (500 each, summed) and one stock per specialized
-  module (bulk, liquid, flatbed, goods); a warehouse without modules has no stocks. A vehicle has no stock list: `kind` is `vehicle`, with `cargo` per cargo type it has
+  module (bulk, liquid, flatbed, goods). A stock of capacity 0 is left out, so stock 0 is the mixed one only when
+  there is a universal module: read the ids with `stock list`. A warehouse without modules has no stocks. A vehicle has no stock list: `kind` is `vehicle`, with `cargo` per cargo type it has
   room for (`capacity`, `count`; passengers left out and refused, as the base panel does), set with
   `--stock -1 --cargo NAME`. `--cargo` takes the `cargo` field exactly as `stock list` shows it. Ids come from `industry-stocks`, `stations`,
-  `entities --kind warehouse` (or `build`'s answer) and `vehicles`. **Not checked in game yet**: a warehouse's
-  stock list (read from the base's sources, not measured).
+  `entities --kind warehouse` (or `build`'s answer) and `vehicles`; `window --warehouse NAME` opens a warehouse's
+  window by the name `entities --kind warehouse` shows. **Not checked in game yet**: a warehouse's stock list
+  (read from the base's sources, not measured), and whether its WAREHOUSE entity has a name to pick it by.
 - `stock set` sends `api.cmd.debug.makeStockSetCargoAmountCmd(stock list entity, stock, amount[, cargo])` (the cargo
   only when given, as the base panel leaves it out for a stock list's stock). Refused before anything is sent: a
   stock id the list does not have, an amount over the stock's capacity (or the vehicle's for that cargo, or

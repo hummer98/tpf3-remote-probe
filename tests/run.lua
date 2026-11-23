@@ -7848,6 +7848,17 @@ test("build: a warehouse's answer names the stock list under its construction (s
 	truthy(sl, "stockLists in the answer"); eq(#sl, 1)
 	local wh = g.built[a.entity].subconstructions[1]
 	eq(sl[1].entity, wh); eq(sl[1].kind, "WAREHOUSE"); eq(sl[1].stockList, g.buildWarehouses[wh].stockList)
+	-- the construction's id, as build answered it, reaches that stock list in stock list and stock set
+	local slId = sl[1].stockList
+	fake.installDebug(g, { stockLists = { [slId] = { stocks = {
+		{ type = 2, cargoType = -1, cargoTypes = { 1, 2 }, capacity = 500, count = 0, byCargo = {} } } } } })
+	send(g, 907, "stockList", string.format("{ entity = %d }", a.entity)); frames(g, FIRST + 10)
+	local l = final(g, 907)
+	truthy(l.ok, l.error); eq(l.stockList, slId); eq(l.owner, wh); eq(l.via, "CONSTRUCTION>WAREHOUSE"); eq(#l.stocks, 1)
+	send(g, 908, "stockSet", string.format('{ entity = %d, stock = 0, amount = 200, cargo = "COAL" }', a.entity))
+	frames(g, FIRST + 10)
+	local s = final(g, 908)
+	truthy(s.ok, s.error); eq(g.debugCmds[1].entity, slId); eq(s.after, 200)
 	-- a construction with nothing under it: no stockLists
 	local r = buildRun(g, 906, string.format('{ res = %q, at = "400,200" }', RAMP))
 	truthy(r.ok, r.error); eq(r.construction.stockLists, nil)

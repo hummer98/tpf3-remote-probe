@@ -3060,8 +3060,9 @@ local function wholeNumber(v)
 	return n
 end
 
--- The stock lists under a construction, as the base finds a warehouse's or an industry's window from the
--- construction (view_manager_util.tl: the WAREHOUSE / INDUSTRY component of one of con.subconstructions; the
+-- The stock lists under a construction, through its subconstructions as the base finds a warehouse's or an
+-- industry's window from the construction (the base takes the first; the caller here refuses two or more)
+-- (view_manager_util.tl: the WAREHOUSE / INDUSTRY component of one of con.subconstructions; the
 -- stock list entity in its stockList, as cargo_util.getStockListEntityFromOwner). A warehouse (warehouse.script.lua)
 -- has one subconstruction holding all its stocks: one mixed stock for the universal modules (their capacities
 -- summed) and one stock for each specialized module. c: the CONSTRUCTION component; read(e, kind): that component

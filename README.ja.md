@@ -701,13 +701,17 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   entity そのものに `STOCK_LIST` が無い産業・町の建物・倉庫は、その `stockList` の entity をたどります (`via`)。
   construction (`build` が答える id。倉庫のものなど) は、その subconstruction のうち在庫の一覧を持つ倉庫・産業・町の
   建物 1 つをたどります (`via` は `CONSTRUCTION>WAREHOUSE`、`owner`・`construction` も出す)。本体が倉庫の
-  construction から窓を開くときと同じです。2 つ以上あれば名前を挙げて断り、無ければエラーにします。倉庫
+  construction から窓を開くときと同じく subconstruction からたどります (本体は最初の 1 つを取りますが、ここでは推し量らず、
+  2 つ以上あれば名前を挙げて断ります)。無ければエラーにします。倉庫
   (`warehouse.con`) の在庫は全部 1 つの一覧にあります: 汎用のモジュールの分は混合の stock 1 つ (1 つ 500 を足したもの)、
-  専用のモジュール (bulk・liquid・flatbed・goods) は 1 つずつ stock になります。モジュールの無い倉庫には stock がありません。
+  専用のモジュール (bulk・liquid・flatbed・goods) は 1 つずつ stock になります。capacity が 0 の stock は入らないので、
+  stock 0 が混合になるのは汎用のモジュールがあるときだけです。番号は `stock list` で見てください。モジュールの無い倉庫には stock がありません。
   車両には在庫の一覧が無いので、`kind` が `vehicle` になり、積める貨物の種類ごとの `cargo` (`capacity`・`count`)
   が出ます (乗客は本体のパネルと同じく外し、断ります)。決めるのは `--stock -1 --cargo NAME`。`--cargo` には
   `stock list` の `cargo` をそのまま渡します。id は `industry-stocks`・`stations`・`entities --kind warehouse`
-  (または `build` の答え)・`vehicles` で分かります。**ゲーム内では未確認**: 倉庫の在庫の一覧 (本体のソースから読んだもの。計測はまだ)。
+  (または `build` の答え)・`vehicles` で分かります。`window --warehouse NAME` は、`entities --kind warehouse` に出る名前で
+  倉庫の窓を開きます。**ゲーム内では未確認**: 倉庫の在庫の一覧 (本体のソースから読んだもの。計測はまだ)、倉庫の WAREHOUSE
+  の entity に選べる名前があるか。
 - `stock set` は `api.cmd.debug.makeStockSetCargoAmountCmd(在庫の一覧の entity, stock, amount[, cargo])` を送ります
   (cargo は指定したときだけ。本体のパネルも在庫の一覧の stock には付けない)。送る前に断るもの: 一覧に無い stock の
   番号、stock の capacity (車両ならその貨物の capacity、ほかは 100000。混合の stock ではほかの貨物と合わせて) を超える量、乗客、stock や車両が受けない貨物、
