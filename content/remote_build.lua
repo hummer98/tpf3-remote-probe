@@ -1271,6 +1271,32 @@ function M.new(ctx)
 		return set
 	end
 
+	-- the way each road piece at a joined node runs on out past it, on the map: the piece's own tangent there
+	-- (BASE_EDGE tangent1 at its node1; tangent0 turned round at its node0: both point node0 -> node1), else (no
+	-- tangent, or one of length 0) its chord from its other node. A dead end's one piece: the way straight on out
+	-- of it. -> { { edge, x, y, from = "tangent" | "chord" } } (x, y nil when neither reads)
+	local function waysAt(node, p)
+		local out = {}
+		for _, o in ipairs((piecesAt(node, p))) do
+			local be = comp(o.entity, "BASE_EDGE")
+			local at1 = o.node1 == node
+			local t = be and core.field(be, at1 and "tangent1" or "tangent0")
+			local tx, ty = tonumber(core.field(t, "x")), tonumber(core.field(t, "y"))
+			local w = { edge = o.entity }
+			if tx and ty and math.sqrt(tx * tx + ty * ty) >= core.ROAD_MIN_DIR then
+				local k = at1 and 1 or -1
+				w.x, w.y, w.from = k * tx, k * ty, "tangent"
+			else
+				local here, other = nodePos(node), nodePos(at1 and o.node0 or o.node1)
+				if here and other and math.sqrt((here.x - other.x) ^ 2 + (here.y - other.y) ^ 2) >= core.ROAD_MIN_DIR then
+					w.x, w.y, w.from = here.x - other.x, here.y - other.y, "chord"
+				end
+			end
+			out[#out + 1] = w
+		end
+		return out
+	end
+
 	-- the piece between the two ends, read back: a road piece not there before (before: piecesAround) whose ends
 	-- are at the planned points (after a lost callback, or when the callback gives no ids)
 	local function pieceBetween(a, b, before)
@@ -1287,6 +1313,8 @@ function M.new(ctx)
 
 	local NOTE_ROAD = "one straight piece as a SimpleStreetProposal; not checked in a game yet: look at it (frame) " ..
 		"before trusting the answer"
+	local NOTE_CURVE = "one curved piece (tangents given or followed from the road there) as a SimpleStreetProposal; " ..
+		"curves are not checked in a game yet: look at it (frame) before trusting the answer"
 	local NOTE_KEEP = "joined to a construction's node: its junction set-up is the construction's and was left as it " ..
 		"is (neither removed nor remade); whether the engine joins the new piece's lanes there is not checked in a " ..
 		"game yet: look at it, and whether vehicles take the new piece"
@@ -1355,6 +1383,81 @@ function M.new(ctx)
 				end
 			end
 		end
+		-- the tangents: the way given at an end (tangentFrom / tangentTo), the road's way there (alignToEdge), else
+		-- the chord's (a straight piece, as before)
+		local aligned, used = {}, {}
+		for _, q in ipairs({ { "from", a, r.alignFrom }, { "to", b, r.alignTo } }) do
+			local key, endp = q[1], q[2]
+			if endp.node then endp.ways = waysAt(endp.node, endp) end
+			if q[3] then
+				if not endp.node then
+					return fail(c.id, key .. ": alignToEdge needs a road node at this end (none within snap: a new node " ..
+						"has no road to follow): nothing sent")
+				end
+				local ways, pick = endp.ways, nil
+				for _, w in ipairs(ways) do
+					for _, id in ipairs(r.alignEdge or {}) do
+						if w.edge == id then
+							if pick then return fail(c.id, key .. ": alignEdge names two pieces at node " .. endp.node .. ": give one") end
+							pick, used[id] = w, true
+						end
+					end
+				end
+				if not pick then
+					if #ways == 1 then
+						pick = ways[1]
+					else
+						local names = {}
+						for _, w in ipairs(ways) do names[#names + 1] = tostring(w.edge) end
+						return fail(c.id, string.format("%s: node %d has %d road pieces (%s): which one to follow is not " ..
+							"guessed; give it with alignEdge (--align-edge ID): nothing sent", key, endp.node, #ways,
+							#names > 0 and table.concat(names, ", ") or "none read"))
+					end
+				end
+				if pick.x == nil then
+					return fail(c.id, string.format("%s: the way of piece %d at node %d could not be read (no tangent, no " ..
+						"node positions): nothing sent", key, pick.edge, endp.node))
+				end
+				aligned[key] = pick
+				endp.alignedTo = { edge = pick.edge, from = pick.from }
+			end
+		end
+		for _, id in ipairs(r.alignEdge or {}) do
+			if not used[id] then
+				return fail(c.id, string.format("alignEdge %d is not one of the road pieces at the end%s aligned: nothing sent",
+					id, (r.alignFrom and r.alignTo) and "s" or ""))
+			end
+		end
+		local dir0 = r.tangentFrom or (aligned.from and { aligned.from.x, aligned.from.y })
+		-- (at the to end the road there runs on out past it, so the new piece comes in against that way)
+		local dir1 = r.tangentTo or (aligned.to and { -aligned.to.x, -aligned.to.y })
+		local t0, t1, turns = core.roadTangents(a, b, dir0, dir1)
+		if not t0 then return fail(c.id, tostring(t1) .. ": nothing sent") end
+		local function r3(v) return math.floor(v * 1000 + 0.5) / 1000 end
+		out.tangent0 = { x = r3(t0.x), y = r3(t0.y), z = r3(t0.z) }
+		out.tangent1 = { x = r3(t1.x), y = r3(t1.y), z = r3(t1.z) }
+		out.curved = dir0 ~= nil or dir1 ~= nil
+		if out.curved then
+			out.note = NOTE_CURVE
+			out.turnOffChord = { from = r3(turns[1]), to = r3(turns[2]) }
+		end
+		-- the bend at each joined end: the angle between the way each piece there runs on out past the node and the
+		-- way the new piece leaves the node (0: straight on). The followed piece's (or the only one's) is kinkDeg
+		for _, q in ipairs({ { "from", a, { x = t0.x, y = t0.y } }, { "to", b, { x = -t1.x, y = -t1.y } } }) do
+			local key, endp, leave = q[1], q[2], q[3]
+			if endp.ways then
+				local kinks = {}
+				for _, w in ipairs(endp.ways) do
+					local k = w.x and core.angleDeg(w, leave)
+					kinks[#kinks + 1] = { edge = w.edge, kinkDeg = k and r3(k) or nil, wayFrom = w.from }
+					if (aligned[key] and aligned[key].edge == w.edge) or (not aligned[key] and #endp.ways == 1) then
+						endp.kinkDeg = k and r3(k) or nil
+					end
+				end
+				endp.kinks = kinks
+			end
+			endp.ways = nil
+		end
 		if r.dryRun and not r.engineCheck then
 			-- the probe's own checks only, nothing made for the engine: a dry run is to be safe to run without asking
 			-- for the game (the shared rules), and the engine's evaluation might assert where pcall cannot catch it
@@ -1384,9 +1487,9 @@ function M.new(ctx)
 		e.comp.node0, e.comp.node1 = n0, n1
 		e.comp.position0 = api.type.Vec3f.new(a.x, a.y, a.z)
 		e.comp.position1 = api.type.Vec3f.new(b.x, b.y, b.z)
-		-- straight: both tangents along the chord, as long as the piece
-		e.comp.tangent0 = api.type.Vec3f.new(dx, dy, dz)
-		e.comp.tangent1 = api.type.Vec3f.new(dx, dy, dz)
+		-- (core.roadTangents: the chord at both ends unless a way was given or followed)
+		e.comp.tangent0 = api.type.Vec3f.new(t0.x, t0.y, t0.z)
+		e.comp.tangent1 = api.type.Vec3f.new(t1.x, t1.y, t1.z)
 		e.comp.type = normal
 		e.comp.typeIndex = -1
 		e.comp.roadType = streetType

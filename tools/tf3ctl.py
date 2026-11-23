@@ -93,6 +93,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # a modular construction: slot ids made whole numbers, autoFillSlots off, each module's name checked
             # and its metadata / updateScript filled from moduleRep; --no-owner: playerEntity -1 (an industry)
   tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
+  tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
+            # a curved piece: the from end follows the road there, the to end arrives heading east
   tf3ctl.py road --inspect-node 4077   # read only: the node's pieces, construction, set-up, octree hits
             # one straight road piece, no click: test saves only; an end within --snap m of a road node joins it
   tf3ctl.py water --at 1500,-300 | water --grid 1000,-800,2000,200,50   # read only: the water level, and per
@@ -2081,6 +2083,10 @@ def road_inspect_args(ns):
             or ns.engine_check or ns.remove_fields or getattr(ns, "remove_buildings", False):
         raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run, "
                         "--engine-check, --remove-fields, --remove-buildings)")
+    if getattr(ns, "tangent_from", None) is not None or getattr(ns, "tangent_to", None) is not None \
+            or getattr(ns, "align_to_edge", None) is not None or getattr(ns, "align_edge", None):
+        raise ToolError("--inspect-node takes nothing else (no --tangent-from, --tangent-to, --align-to-edge, "
+                        "--align-edge)")
     if ns.inspect_node < 0:
         raise ToolError("--inspect-node must be a node's entity id (0 or more)")
     return {"node": ns.inspect_node}
@@ -2118,6 +2124,32 @@ def road_args(ns):
         args["removeFields"] = True
     if getattr(ns, "remove_buildings", False):
         args["removeBuildings"] = True
+    for key, text in (("tangentFrom", getattr(ns, "tangent_from", None)), ("tangentTo", getattr(ns, "tangent_to", None))):
+        if text is None:
+            continue
+        flag = "--tangent-" + key[len("tangent"):].lower()
+        try:
+            v = [float(x) for x in text.split(",")]
+        except ValueError:
+            raise ToolError("%s must be numbers: dx,dy" % flag)
+        if len(v) != 2 or any(x != x or abs(x) == float("inf") for x in v):
+            raise ToolError("%s must be dx,dy (finite numbers; for a negative dx write %s=-1,0)" % (flag, flag))
+        if math.hypot(v[0], v[1]) < 1e-6:
+            raise ToolError("%s: a direction of length 0 gives no way" % flag)
+        args[key] = v
+    align = getattr(ns, "align_to_edge", None)
+    if align is not None:
+        if align in ("from", "both") and "tangentFrom" in args:
+            raise ToolError("--tangent-from and --align-to-edge %s both set the from end's way: give one" % align)
+        if align in ("to", "both") and "tangentTo" in args:
+            raise ToolError("--tangent-to and --align-to-edge %s both set the to end's way: give one" % align)
+        args["alignToEdge"] = align
+    if getattr(ns, "align_edge", None):
+        if align is None:
+            raise ToolError("--align-edge goes with --align-to-edge only")
+        if len(ns.align_edge) > 2 or any(i < 0 for i in ns.align_edge):
+            raise ToolError("--align-edge: at most two pieces' entity ids (one per end)")
+        args["alignEdge"] = list(ns.align_edge)
     return args
 
 
@@ -4654,6 +4686,15 @@ def make_parser():
                     "buildings, tracks and the rest still refuse it. Test saves only (changes the game)")
     rd.add_argument("--remove-buildings", action="store_true", help="let the road take town buildings in its way "
                     "(the Context's gatherBuildings). Test saves only (changes the game)")
+    rd.add_argument("--tangent-from", metavar="DX,DY", help="a curved piece: the way the road leaves the from end "
+                    "(a direction only; the length is the chord's). Both tangents point the way from -> to; at most "
+                    "90 degrees off the line from -> to")
+    rd.add_argument("--tangent-to", metavar="DX,DY", help="the way the road arrives at the to end (from -> to)")
+    rd.add_argument("--align-to-edge", choices=("from", "to", "both"), help="at a joined end (a road node within "
+                    "--snap), follow the road there: a dead end's piece straight on. A node with more than one road "
+                    "piece needs --align-edge")
+    rd.add_argument("--align-edge", type=int, action="append", metavar="ID", help="with --align-to-edge: the road "
+                    "piece to follow at a node with more than one (once per end; each id is taken at the end it is at)")
     rd.add_argument("--inspect-node", type=int, metavar="ID", help="read only, alone: what road reads of one node "
                     "(the street system's pieces there, the construction it belongs to and whether it is frozen, its "
                     "junction set-up, the octree's pieces within 1, 5 and 20 m) and what road would do with it")

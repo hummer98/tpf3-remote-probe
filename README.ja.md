@@ -461,6 +461,7 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
 ```
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # エンジンに聞く (ゲームを変える側)
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
 python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車線 (「道路の車線」を参照)
 ```
@@ -505,7 +506,25 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
 - `--type` は street template の resName か、バニラの道路のファイル名 (`town_new_small`、`country_old_medium`。バニラの
   town・country・highway の下で探す)。線路の種類と、ゲームの年に作れないものは断ります。指定が無ければ、その年の
   バニラの中くらいの町の道路 (1940 年までは old、それから new)。道路には template の `laneConfigs` と `streetStyle`、
-  種類 NORMAL (`typeIndex` -1: 橋もトンネルも無し)、会社の `PlayerOwned` を付け、両端の tangent は2点を結ぶ線 (まっすぐ) です。
+  種類 NORMAL (`typeIndex` -1: 橋もトンネルも無し)、会社の `PlayerOwned` を付け、両端の tangent は2点を結ぶ線 (まっすぐ) です (向きを渡したときは次のとおり)。
+- 曲がった道路: `--tangent-from DX,DY` / `--tangent-to DX,DY` は、from の端から出る向きと、to の端に入る向きです
+  (向きだけ。どちらも from -> to の進む向きなので、東へまっすぐなら両端とも `1,0`)。`--align-to-edge from|to|both`
+  は、つないだ端 (`--snap` の中の道路の node) で、そこにある道路の向きにそろえます。向きは、その道路が node の先へ
+  そのまま伸びる向き (行き止まりなら、その道のまっすぐ先) で、`BASE_EDGE` のその端の tangent (node1 なら `tangent1`、
+  node0 なら `tangent0` を逆に) から、読めなければ道路の弦から取ります。node の道路が1本ならそれに、2本以上なら
+  `--align-edge ID` で選んだものにそろえ、選ばなければ断ります (端ごとに1回ずつ。id はそれがある端で使い、そろえる端の
+  どれにも無い id は断ります)。新しい node の端には、そろえる道路が無いので断ります。同じ端に `--tangent-*` と
+  `--align-to-edge` を両方付けると断り、別の端なら一緒に使えます。送るのは3次のエルミート曲線で、tangent の長さは
+  地図の上で弦の長さ (よく使う長さ。まっすぐなら弦そのもの)、高さは弦の上がり分全部 (高さは今までどおり一様に
+  変わる) です。長さ 0 の向き、地図の上で 1 m 未満の両端、from -> to の線から 90 度より大きく曲がる端 (曲線が端の後ろ
+  へ回り込む) は、dry-run も含めて送る前に断ります。
+- 答え (dry-run も) には `tangent0` / `tangent1` (送る値。mm に丸める)、`curved`、曲線なら `turnOffChord` (`from` /
+  `to`、度) が付きます。つないだ端には `kinks` (その node の道路ごとに `edge`、`kinkDeg`: その道路が node の先へ伸びる
+  向きと、新しい道路が node から出る向きの角度。0 ならまっすぐ。`wayFrom`: `tangent` か `chord`)、`kinkDeg` (そろえた
+  道路の、または1本だけの道路の値)、`--align-to-edge` なら `alignedTo` (`edge`、`from`) が付きます。まっすぐな道路の
+  `kinkDeg` で、弦がどれだけ折れて入るかが分かります。
+  **ゲーム内では未確認** (2026-11-23 に書いたもの): エンジンがこの曲線を受け付けるか (折れたまっすぐの道路より断られ
+  にくいか)、弦の長さの tangent で円にどれだけ近いか。
 - 答え: `from` / `to` (つないだときは `node` と `snapped`、ほかは `zFrom`)、`template`、`year`、`length`、`edges` /
   `nodes` (結果の新しい entity)、`edge`、`node0` / `node1`、`cost`、`spent`、断られたときはエンジンの `errors`・`warnings`・
   `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい

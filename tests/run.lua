@@ -8776,6 +8776,182 @@ test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on 
 	eq(#g.buildCmds, 0); truthy(not g.crashed, g.crashed)
 end)
 
+-- 2026-11-23 (mod-keeper): a road joined to a construction's road end went in bent 6-12 degrees and was refused;
+-- road sent the chord as both tangents. Now a way can be given at either end or followed from the road there
+test("core.roadRequest / roadTangents: tangentFrom, tangentTo, alignToEdge, alignEdge; ways of length 0 and turns past 90 refused", function()
+	local r = core.roadRequest({ from = "0,0", to = "10,0" })
+	eq(r.tangentFrom, nil); eq(r.tangentTo, nil); eq(r.alignFrom, false); eq(r.alignTo, false); eq(r.alignEdge, nil)
+	r = core.roadRequest({ from = "0,0", to = "10,0", tangentFrom = "1,1", tangentTo = { 0, -2 } })
+	eq(r.tangentFrom[2], 1); eq(r.tangentTo[2], -2)
+	r = core.roadRequest({ from = "0,0", to = "10,0", alignToEdge = "both", alignEdge = { 5, 6 } })
+	eq(r.alignFrom, true); eq(r.alignTo, true); eq(r.alignEdge[2], 6)
+	r = core.roadRequest({ from = "0,0", to = "10,0", alignToEdge = "to", alignEdge = 7, tangentFrom = "1,0" })
+	eq(r.alignFrom, false); eq(r.alignTo, true); eq(r.alignEdge[1], 7)
+	for _, bad in ipairs({
+		{ { tangentFrom = "0,0" }, "length 0" }, { { tangentTo = "1e-9,0" }, "length 0" }, { { tangentFrom = "1" }, "needs dx,dy" },
+		{ { tangentTo = "1,2,3" }, "at most 2" }, { { tangentFrom = "nan,1" }, "finite" }, { { tangentFrom = 5 }, "commas" },
+		{ { alignToEdge = "middle" }, "from, to or both" }, { { alignToEdge = "from", tangentFrom = "1,0" }, "give one" },
+		{ { alignToEdge = "both", tangentTo = "1,0" }, "give one" }, { { alignEdge = 5 }, "with alignToEdge only" },
+		{ { alignToEdge = "from", alignEdge = -1 }, "entity ids" }, { { alignToEdge = "from", alignEdge = 1.5 }, "entity ids" },
+		{ { alignToEdge = "from", alignEdge = "1,2,3" }, "at most 2" },
+	}) do
+		bad[1].from, bad[1].to = "0,0", "10,0"
+		local ok, err = core.roadRequest(bad[1])
+		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	local function near(x, y, msg) truthy(math.abs(x - y) < 1e-9, string.format("%s: %.12g ~= %.12g", msg or "", x, y)) end
+	-- no way given: the chord at both ends, as before (rises too)
+	local a, b = { x = 0, y = 0, z = 1 }, { x = 30, y = 40, z = 6 }
+	local t0, t1, turns = core.roadTangents(a, b)
+	eq(t0.x, 30); eq(t0.y, 40); eq(t0.z, 5); eq(t1.x, 30); eq(t1.z, 5); eq(turns[1], 0)
+	-- a way: only its direction counts, the length is the chord's on the map (50), the rise the chord's
+	t0, t1, turns = core.roadTangents(a, b, { 0, 1e-3 }, { 7, 0 })
+	near(t0.x, 0); near(t0.y, 50); eq(t0.z, 5); near(t1.x, 50); near(t1.y, 0); eq(t1.z, 5)
+	near(turns[1], math.deg(math.atan2(30, 40)), "from: off the chord"); near(turns[2], math.deg(math.atan2(40, 30)), "to")
+	-- one end given, the other the chord's
+	t0, t1 = core.roadTangents(a, b, nil, { 1, 1 })
+	eq(t0.x, 30); eq(t0.y, 40); near(t1.x, 50 / math.sqrt(2)); near(t1.y, 50 / math.sqrt(2))
+	-- a huge way does not overflow into one of length 0; a right angle is taken, more is not
+	t0 = core.roadTangents({ x = 0, y = 0, z = 0 }, { x = 10, y = 0, z = 0 }, { 1e300, 1e300 })
+	near(t0.x, 10 / math.sqrt(2)); near(t0.y, 10 / math.sqrt(2))
+	truthy(core.roadTangents({ x = 0, y = 0, z = 0 }, { x = 10, y = 0, z = 0 }, { 0, 1 }), "90 degrees")
+	for _, d in ipairs({ { { -1, 0.01 }, nil, "from: " }, { nil, { -1, -1 }, "to: " } }) do
+		local no, why = core.roadTangents({ x = 0, y = 0, z = 0 }, { x = 10, y = 0, z = 0 }, d[1], d[2])
+		eq(no, nil); truthy(why:find("^" .. d[3]) and why:find("at most 90", 1, true), why)
+	end
+	local no, why = core.roadTangents({ x = 0, y = 0, z = 0 }, { x = 0, y = 0.5, z = 5 }, { 1, 0 })
+	eq(no, nil); truthy(why:find("at least 1 m", 1, true), why)
+	no, why = core.roadTangents(a, b, { 0, 0 })
+	eq(no, nil); truthy(why:find("length 0", 1, true), why)
+	near(core.angleDeg({ x = 1, y = 0 }, { x = 0, y = -3 }), 90); eq(core.angleDeg({ x = 0, y = 0 }, { x = 1, y = 0 }), nil)
+end)
+
+test("road: no way given sends the chord (as before) and says the bend at a joined end; tangentFrom / tangentTo bend the piece", function()
+	-- the default network: 8100 from 8002 (0,0) to the dead end 8001 (100,0), no tangents (its chord: east)
+	local flat = function() return 2 end
+	local g = roadWorld({ height = flat })
+	local a = roadRun(g, 1301, '{ from = "100,0", to = "200,20" }')
+	truthy(a.ok, a.error); eq(a.from.node, 8001); eq(a.curved, false); eq(a.turnOffChord, nil)
+	local sent = g.streetCmds[1].comp
+	eq(sent.tangent0.x, 100); eq(sent.tangent0.y, 20); eq(sent.tangent1.x, 100); eq(sent.tangent1.y, 20)
+	eq(a.tangent0.x, 100); eq(a.tangent1.y, 20)
+	truthy(math.abs(a.from.kinkDeg - math.deg(math.atan(0.2))) < 1e-3, "the chord bends 11.3 degrees off the road")
+	eq(#a.from.kinks, 1); eq(a.from.kinks[1].edge, 8100); eq(a.from.kinks[1].wayFrom, "chord")
+	eq(a.to.kinks, nil, "a new node: nothing to bend against"); eq(a.from.alignedTo, nil)
+	truthy(a.note:find("one straight piece", 1, true))
+	-- the ways given: the from end straight on east, the to end arriving north; the lengths the chord's on the map
+	g = roadWorld({ height = flat })
+	a = roadRun(g, 1302, '{ from = "100,0", to = "200,20", tangentFrom = "5,0", tangentTo = "0,1", dryRun = true }')
+	truthy(a.ok, a.error); eq(#g.buildCmds, 0); eq(a.curved, true); truthy(a.note:find("curved", 1, true))
+	local L = math.sqrt(100 ^ 2 + 20 ^ 2)
+	truthy(math.abs(a.tangent0.x - L) < 1e-3 and a.tangent0.y == 0 and a.tangent0.z == 0, "from: east, chord long")
+	truthy(a.tangent1.x == 0 and math.abs(a.tangent1.y - L) < 1e-3, "to: north")
+	eq(a.from.kinkDeg, 0, "straight on out of the dead end")
+	truthy(math.abs(a.turnOffChord.from - 11.31) < 0.01 and math.abs(a.turnOffChord.to - 78.69) < 0.01)
+	-- built: those tangents are what is sent and the piece keeps them
+	a = roadRun(g, 1303, '{ from = "100,0", to = "200,20", tangentFrom = "5,0", tangentTo = "0,1" }')
+	truthy(a.ok, a.error)
+	sent = g.streetCmds[#g.streetCmds].comp
+	truthy(math.abs(sent.tangent0.x - L) < 1e-9 and sent.tangent0.y == 0 and math.abs(sent.tangent1.y - L) < 1e-9)
+	eq(g.edges[a.edge].tangent1.y, sent.tangent1.y)
+	-- turned back past a right angle: refused, nothing sent (the dry run too)
+	for i, dry in ipairs({ "false", "true" }) do
+		local before = #g.buildCmds
+		a = roadRun(g, 1303 + i, '{ from = "100,0", to = "200,20", tangentTo = "-1,0", dryRun = ' .. dry .. ' }')
+		eq(a.ok, false); truthy(tostring(a.error):find("to: ", 1, true) and a.error:find("at most 90", 1, true), tostring(a.error))
+		eq(#g.buildCmds, before, "nothing sent")
+	end
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --align-to-edge: a dead end straight on (either way round), a curved piece's own tangent, the to end coming in", function()
+	local flat = function() return 2 end
+	local g = roadWorld({ height = flat })
+	-- from the dead end 8001 (8100's node1): on east, whatever the chord
+	local a = roadRun(g, 1311, '{ from = "100,0", to = "200,40", alignToEdge = "from" }')
+	truthy(a.ok, a.error); eq(a.from.alignedTo.edge, 8100); eq(a.from.alignedTo.from, "chord"); eq(a.from.kinkDeg, 0)
+	local L = math.sqrt(100 ^ 2 + 40 ^ 2)
+	local sent = g.streetCmds[1].comp
+	truthy(math.abs(sent.tangent0.x - L) < 1e-9 and math.abs(sent.tangent0.y) < 1e-9, "east")
+	eq(sent.tangent1.x, 100); eq(sent.tangent1.y, 40, "the to end (new) keeps the chord")
+	-- from 8002 (8100's node0): the way on out of it is west
+	g = roadWorld({ height = flat })
+	a = roadRun(g, 1312, '{ from = "0,0", to = "-100,-30", alignToEdge = "from", dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.node, 8002); eq(a.from.kinkDeg, 0)
+	truthy(a.tangent0.x < 0 and math.abs(a.tangent0.y) < 1e-9, "west")
+	-- the to end: the piece comes in against the road's way on out (heading west into 8001)
+	a = roadRun(g, 1313, '{ from = "200,-40", to = "100,0", alignToEdge = "to", dryRun = true }')
+	truthy(a.ok, a.error); eq(a.to.node, 8001); eq(a.to.kinkDeg, 0)
+	truthy(a.tangent1.x < 0 and math.abs(a.tangent1.y) < 1e-9, "arriving west"); eq(a.tangent0.x, -100)
+	-- both ends, each a dead end: a piece from 8001 to 8003's road
+	g = roadWorld({ height = flat, roads = { nodes = { [8001] = { x = 100, y = 0, z = 2 }, [8002] = { x = 0, y = 0, z = 2 },
+		[8003] = { x = 300, y = 100, z = 2 }, [8004] = { x = 400, y = 100, z = 2 } },
+		edges = { [8100] = { node0 = 8002, node1 = 8001 }, [8101] = { node0 = 8003, node1 = 8004 } } } })
+	a = roadRun(g, 1314, '{ from = "100,0", to = "300,100", alignToEdge = "both" }')
+	truthy(a.ok, a.error); eq(a.from.kinkDeg, 0); eq(a.to.kinkDeg, 0); eq(a.to.alignedTo.edge, 8101)
+	sent = g.streetCmds[1].comp
+	truthy(sent.tangent0.x > 0 and math.abs(sent.tangent0.y) < 1e-9 and sent.tangent1.x > 0 and math.abs(sent.tangent1.y) < 1e-9,
+		"an S: east out of 8001, east into 8101")
+	-- a curved piece (a construction's road end bending in): its own tangent at the node, not its chord
+	g = roadWorld({ height = flat, roads = { nodes = { [8001] = { x = 100, y = 0, z = 2 }, [8002] = { x = 0, y = 0, z = 2 } },
+		edges = { [8100] = { node0 = 8002, node1 = 8001, tangent0 = { x = 100, y = -50, z = 0 }, tangent1 = { x = 50, y = 100, z = 0 } } } } })
+	a = roadRun(g, 1315, '{ from = "100,0", to = "150,100", alignToEdge = "from", dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.alignedTo.from, "tangent"); eq(a.from.kinkDeg, 0)
+	local Lc = math.sqrt(50 ^ 2 + 100 ^ 2)
+	truthy(math.abs(a.tangent0.x - Lc / math.sqrt(5)) < 1e-3 and math.abs(a.tangent0.y - 2 * Lc / math.sqrt(5)) < 1e-3, "its tangent1's way")
+	-- straight to the same point: the bend against the tangent (not the chord's 63.4)
+	a = roadRun(g, 1316, '{ from = "100,0", to = "200,0", dryRun = true }')
+	truthy(math.abs(a.from.kinkDeg - math.deg(math.atan2(2, 1))) < 1e-3, tostring(a.from.kinkDeg)); eq(a.from.kinks[1].wayFrom, "tangent")
+	-- at its node0 the tangent0 turned round: (-100, 50)
+	a = roadRun(g, 1317, '{ from = "0,0", to = "-100,60", alignToEdge = "from", dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.kinkDeg, 0)
+	truthy(math.abs(a.tangent0.y / a.tangent0.x + 0.5) < 1e-4 and a.tangent0.x < 0, "on along -tangent0 (rounded to mm)")
+	-- tangentTo with alignToEdge from: both apply
+	a = roadRun(g, 1318, '{ from = "100,0", to = "150,100", alignToEdge = "from", tangentTo = "1,0", dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.kinkDeg, 0); truthy(a.tangent1.y == 0 and a.tangent1.x > 0)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --align-to-edge: a node with two pieces needs alignEdge; ids not there, a new end, a way past 90: refused", function()
+	local flat = function() return 2 end
+	-- 8001 in the middle of a road: 8100 from the west, 8101 on north
+	local g = roadWorld({ height = flat, roads = { nodes = { [8001] = { x = 100, y = 0, z = 2 }, [8002] = { x = 0, y = 0, z = 2 },
+		[8004] = { x = 100, y = 100, z = 2 } }, edges = { [8100] = { node0 = 8002, node1 = 8001 }, [8101] = { node0 = 8001, node1 = 8004 } } } })
+	local a = roadRun(g, 1321, '{ from = "100,0", to = "200,-50", alignToEdge = "from" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("node 8001 has 2 road pieces (8100, 8101)", 1, true), tostring(a.error))
+	truthy(a.error:find("alignEdge", 1, true)); eq(#g.buildCmds, 0)
+	-- 8100 chosen: east, straight on past the node (the bend against 8101 is listed too)
+	a = roadRun(g, 1322, '{ from = "100,0", to = "200,-50", alignToEdge = "from", alignEdge = 8100, dryRun = true }')
+	truthy(a.ok, a.error); eq(a.from.alignedTo.edge, 8100); eq(a.from.kinkDeg, 0); eq(#a.from.kinks, 2)
+	for _, k in ipairs(a.from.kinks) do
+		if k.edge == 8101 then eq(k.kinkDeg, 90, "8101 runs on south past 8001; the piece leaves east") end
+	end
+	-- 8101 chosen: on south out of 8001 (8101 starts there); to the east-south-east point that is 63 degrees off: taken
+	a = roadRun(g, 1323, '{ from = "100,0", to = "200,-50", alignToEdge = "from", alignEdge = 8101, dryRun = true }')
+	truthy(a.ok, a.error); truthy(math.abs(a.tangent0.x) < 1e-9 and a.tangent0.y < 0, "south")
+	-- the same but to a point north-east: south is more than 90 off the chord: refused
+	a = roadRun(g, 1324, '{ from = "100,0", to = "200,50", alignToEdge = "from", alignEdge = 8101, dryRun = true }')
+	eq(a.ok, false); truthy(tostring(a.error):find("at most 90", 1, true), tostring(a.error))
+	-- an id at no aligned end; two ids at one node; an end on a new node
+	for i, case in ipairs({
+		{ '{ from = "100,0", to = "200,-50", alignToEdge = "from", alignEdge = 9999 }', "has 2 road pieces" },
+		{ '{ from = "100,0", to = "200,-50", alignToEdge = "from", alignEdge = { 8100, 9999 } }', "alignEdge 9999 is not one" },
+		{ '{ from = "100,0", to = "200,-50", alignToEdge = "from", alignEdge = { 8100, 8101 } }', "names two pieces" },
+		{ '{ from = "100,0", to = "200,-50", alignToEdge = "to" }', "to: alignToEdge needs a road node" },
+		{ '{ from = "101,0", to = "200,-50", alignToEdge = "from", alignEdge = 8100, snap = 0 }', "from: alignToEdge needs a road node" },
+	}) do
+		a = roadRun(g, 1324 + i, case[1])
+		eq(a.ok, false, case[2]); truthy(tostring(a.error):find(case[2], 1, true), tostring(a.error) .. " / " .. case[2])
+	end
+	eq(#g.buildCmds, 0, "nothing sent")
+	-- built with 8100 followed: the piece sent goes on east
+	a = roadRun(g, 1331, '{ from = "100,0", to = "200,-50", alignToEdge = "from", alignEdge = 8100 }')
+	truthy(a.ok, a.error); eq(#g.buildCmds, 1)
+	local t0 = g.streetCmds[1].comp.tangent0
+	truthy(t0.x > 0 and math.abs(t0.y) < 1e-9)
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("road: a new node right on an old node is refused before sending (the engine refuses the whole proposal)", function()
 	local g = roadWorld({ height = function() return 2 end })
 	for i, dry in ipairs({ "false", "true" }) do
