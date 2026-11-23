@@ -2240,6 +2240,82 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(len(shown["logErrors"]), 2, "the older error before the command is left out")
         self.assertIn("SHIP", shown["logErrors"][0])
 
+    def test_refusal_with_no_message_takes_the_reason_from_the_game_log(self):
+        # 2026-11-23: a build refused on water answered "no message" while the Simulation Thread logged its reason
+        log = os.path.join(self.x, "stdout.txt")
+        before = ("[2026-11-23 08:14:00Z - MESSAGE  - Simulation Threa - Main           ]  ProposalData error: "
+                  "older\n")
+        mine = ("[2026-11-23 08:14:33Z - MESSAGE  - Main Thread      - Main           ]  [remote_probe] command 1: build\n"
+                "[2026-11-23 08:14:33Z - MESSAGE  - Simulation Threa - Main           ]  ProposalData error: 陸上に配置\n"
+                "[2026-11-23 08:14:33Z - MESSAGE  - Simulation Threa - Main           ]+ Proposal:\n"
+                "    | Added segments:\n"
+                "    |  - -21 -1 -2 \n")
+        write(log, before)
+        start = tf3ctl.log_size(log)
+        with open(log, "a") as f:
+            f.write(mine)
+        lines = tf3ctl.log_proposal_since(log, start)
+        self.assertEqual(lines, [{"time": "2026-11-23 08:14:33Z", "kind": "error", "text": "陸上に配置"}],
+                         "the older line and the proposal's dump are left out")
+        self.assertEqual(tf3ctl.log_proposal_since(log, 10 ** 9), [])
+        self.assertEqual(tf3ctl.log_proposal_since(None, 0), [])
+        refused = {"ok": False, "error": "the engine refused it: no message (resultProposalData.errorState: critical "
+                   "true, messages 0, warnings 0, infos 0)"}
+        got = tf3ctl.check_build_answer({"res": "h.con", "at": [1.0, 2.0]}, dict(refused), log, start)
+        self.assertEqual(got["error"], "the engine refused it: 陸上に配置 (from the game's log, ProposalData error; the "
+                         "answer had no message: resultProposalData.errorState: critical true, messages 0, warnings 0, "
+                         "infos 0)")
+        self.assertEqual(got["errorFrom"], "game log")
+        self.assertEqual(got["proposalLog"][0]["text"], "陸上に配置")
+        # an older mod's plain "no message"
+        old = tf3ctl.check_build_answer({"res": "h.con", "at": [1.0, 2.0]},
+                                        {"ok": False, "error": "the engine refused it: no message"}, log, start)
+        self.assertEqual(old["error"], "the engine refused it: 陸上に配置 (from the game's log, ProposalData error; "
+                         "the answer had no message)")
+        # a refusal with its own message keeps it; the log's lines come along
+        own = tf3ctl.check_build_answer({"res": "h.con", "at": [1.0, 2.0]},
+                                        {"ok": False, "error": "the engine refused it: 衝突"}, log, start)
+        self.assertEqual(own["error"], "the engine refused it: 衝突"); self.assertNotIn("errorFrom", own)
+        self.assertIn("proposalLog", own)
+        # a road's answer (no res): the same
+        road = tf3ctl.check_build_answer({"from": [0, 0], "to": [1, 1]}, dict(refused), log, start)
+        self.assertEqual(road["errorFrom"], "game log")
+        # a dry run that said buildable while the log has an error: a note
+        dry = tf3ctl.check_build_answer({"res": "h.con", "at": [1, 2], "dryRun": True, "engineCheck": True},
+                                        {"ok": True, "verdict": "buildable"}, log, start)
+        self.assertIs(dry["ok"], True); self.assertIn("陸上に配置", dry["proposalLogNote"])
+        # a dry run that asked no engine: no note
+        plain = tf3ctl.check_build_answer({"res": "h.con", "at": [1, 2], "dryRun": True}, {"ok": True}, log, start)
+        self.assertNotIn("proposalLogNote", plain); self.assertNotIn("proposalLog", plain)
+        # the words inside another mod's line are not the engine's
+        self.assertEqual(tf3ctl.PROPOSAL_LOG_RE.match("[x] saw ProposalData error: y"), None)
+        # a build that is ok: no lines read
+        self.assertNotIn("proposalLog", tf3ctl.check_build_answer({"res": "h.con", "at": [1, 2]},
+                                                                  {"ok": True, "entity": 5}, log, start))
+        # nothing in the log: said so, the answer's own text kept
+        write(log, before)
+        start = tf3ctl.log_size(log)
+        none = tf3ctl.check_build_answer({"res": "h.con", "at": [1, 2]}, dict(refused), log, start)
+        self.assertEqual(none["error"], refused["error"])
+        self.assertIn("no ProposalData line", none["proposalLogNote"])
+        # main: road goes through it too
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            with open(log, "a") as f:
+                f.write(mine)
+            return dict(refused)
+        saved = tf3ctl.send
+        tf3ctl.send = fake_send
+        os.environ["TF3_LOG"] = log
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = tf3ctl.main(["road", "--from", "0,0", "--to", "10,0"])
+        finally:
+            os.environ.pop("TF3_LOG")
+            tf3ctl.send = saved
+        self.assertEqual(code, 1)
+        self.assertIn("陸上に配置", json.loads(out.getvalue())["error"])
+
     def test_build_modules_owner_and_water_args(self):
         def ns(**kw):
             base = dict(res="h.con", at="1,2", angle=None, params=None, seed=None, name=None, dry_run=False,

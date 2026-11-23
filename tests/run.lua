@@ -8655,7 +8655,7 @@ test("road --dry-run: the plan, nothing sent; no ids in the result or no callbac
 	eq(a.engineCheck, "not asked (use --engine-check)")
 	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 0, "a dry run alone never asks the engine")
 	a = roadRun(g, 9581, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
-	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(g.proposalDataCalls, 1, "asked with engineCheck")
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(g.proposalDataCalls, 2, "asked with engineCheck, in both contexts")
 	eq(#g.buildCmds, 0)
 	g = roadWorld({ noStreetResults = true })
 	a = roadRun(g, 959, '{ from = "102,1", to = "200,0" }')
@@ -8691,13 +8691,14 @@ test("road --remove-fields: fields in the way go (gatherFields); without it a co
 		return roadWorld(spec)
 	end
 	local g = world()
-	-- the dry run (the proposal alone: the engine's own context gathers fields): buildable with warnings, and why
-	-- the build may differ
+	-- the dry run asks both contexts: the engine's own gathers fields (buildable with warnings), the build's does not
+	-- (a collision): refused, as the build is, and the two named
 	local a = roadRun(g, 1120, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true }')
-	truthy(a.ok, a.error); eq(a.buildable, true); eq(a.verdict, "buildable with warnings")
-	eq(a.warnings[1], "3 fields will be removed")
-	truthy(a.engineContext:find("not the build's, whose gatherFields is false", 1, true), a.engineContext)
-	truthy(a.caution:find("--remove-fields", 1, true), a.caution)
+	eq(a.ok, false); eq(a.buildable, false); eq(a.verdict, "refused"); eq(a.engineContext, "the build's")
+	eq(a.contextsDisagree, true); eq(a.engineContexts.own.verdict, "buildable with warnings")
+	eq(a.engineContexts.own.warnings[1], "3 fields will be removed"); eq(a.engineContexts.build.verdict, "refused")
+	truthy(a.contextsNote:find("own context (the proposal alone): buildable with warnings", 1, true), a.contextsNote)
+	truthy(a.error:find("Collision", 1, true), a.error)
 	-- the build without it: refused, the fields among the collisions, a hint; nothing removed
 	a = roadRun(g, 1121, '{ from = "60,1000", to = "60,1129.5" }')
 	eq(a.ok, false); truthy(a.error:find("Collision", 1, true), a.error); eq(a.collisions[1], 9594)
@@ -8712,9 +8713,6 @@ test("road --remove-fields: fields in the way go (gatherFields); without it a co
 	-- something else in the way: still refused with it, and no hint
 	a = roadRun(g, 1124, '{ from = "5100,0", to = "5200,0", removeFields = true }')
 	eq(a.ok, false); eq(a.collisions[1], 4343); eq(a.hint, nil)
-	-- with it the dry run's caution: a warning of anything but fields may still be a collision
-	a = roadRun(g, 1130, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true, removeFields = true }')
-	truthy(tostring(a.caution):find("anything but fields", 1, true), tostring(a.caution))
 	-- no fields and no warnings: buildable
 	a = roadRun(g, 1131, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.verdict, "buildable"); eq(a.caution, nil)
@@ -8732,6 +8730,18 @@ test("road --remove-fields: fields in the way go (gatherFields); without it a co
 	eq(a.ok, false); eq(a.verdict, "refused"); eq(a.engineContext, "the build's"); eq(a.collisions[1], 9594)
 	a = roadRun(g, 1127, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true, removeFields = true }')
 	truthy(a.ok, a.error); eq(a.verdict, "buildable with warnings")
+	-- where the Context form raises (the proposal alone only): buildable with warnings, and why the build may differ
+	local g1 = world({ proposalDataOneArg = true })
+	a = roadRun(g1, 1132, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true }')
+	truthy(a.ok, a.error); eq(a.buildable, true); eq(a.verdict, "buildable with warnings")
+	eq(a.warnings[1], "3 fields will be removed")
+	truthy(a.engineContext:find("not the build's, whose gatherFields is false", 1, true), a.engineContext)
+	truthy(a.caution:find("--remove-fields", 1, true), a.caution)
+	truthy(a.engineContexts.build.raised:find("no such overload", 1, true), a.engineContexts.build.raised)
+	eq(a.contextsDisagree, nil)
+	-- with --remove-fields there the dry run's caution: a warning of anything but fields may still be a collision
+	a = roadRun(g1, 1130, '{ from = "60,1000", to = "60,1129.5", dryRun = true, engineCheck = true, removeFields = true }')
+	truthy(tostring(a.caution):find("anything but fields", 1, true), tostring(a.caution))
 	-- the request: a boolean only
 	local no, why = core.roadRequest({ from = "0,0", to = "10,0", removeFields = "yes" })
 	eq(no, nil); truthy(why:find("removeFields must be", 1, true), why)
@@ -8743,7 +8753,8 @@ test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on 
 	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end })
 	local a = roadRun(g, 1010, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(a.cost, 1000, "the engine's cost")
-	eq(a.engineCheck, "makeProposalData (SimpleProposal)", "the proposal alone first (Overpass Builder's form)")
+	eq(a.engineCheck, "makeProposalData (SimpleProposal, Context)", "the build's context's verdict")
+	eq(a.engineContexts.own.verdict, "buildable"); eq(a.engineContexts.build.verdict, "buildable"); eq(a.contextsDisagree, nil)
 	eq(a.nodeConfigs, 2, "the set-ups planned, as a build's"); eq(a.newNodes, 1)
 	eq(#g.buildCmds, 0); eq(#g.streetCmds, 0, "nothing recorded as sent"); eq(g.balance, a.balance)
 	-- a collision: not buildable, an error, the collisions; nothing sent
@@ -8755,14 +8766,14 @@ test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on 
 	g.balance = 10
 	a = roadRun(g, 1012, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true }')
 	eq(a.ok, false); truthy(a.error:find("Not enough money", 1, true), a.error)
-	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 3)
+	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 6, "each dry run asks both contexts")
 	-- the form with a Context: taken after the proposal alone raises; the proposal alone is never sent twice
 	g = roadWorld({ proposalDataTwoArgs = true })
 	a = roadRun(g, 1013, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
 	truthy(a.ok, a.error); eq(a.checked, true); eq(a.engineCheck, "makeProposalData (SimpleProposal, Context)"); eq(g.proposalDataCalls, 2)
 	g = roadWorld({ proposalDataOneArg = true })
 	a = roadRun(g, 1016, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')
-	truthy(a.ok, a.error); eq(a.engineCheck, "makeProposalData (SimpleProposal)"); eq(g.proposalDataCalls, 1)
+	truthy(a.ok, a.error); eq(a.engineCheck, "makeProposalData (SimpleProposal)"); eq(g.proposalDataCalls, 2)
 	-- not to be had: the probe's own answer, and why
 	g = roadWorld({ noSimpleProposalData = true })
 	a = roadRun(g, 1014, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true }')

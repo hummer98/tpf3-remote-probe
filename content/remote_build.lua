@@ -25,6 +25,7 @@ function M.new(ctx)
 	local joinsOf -- (below, before finish)
 	local streetEdgesNear -- (below, after place: place and joinsOf call it)
 	local engineCheck -- (below, by the road command; place's dry run with engineCheck calls it too)
+	local contextsInto -- (below, by engineCheck: both contexts into a dry run's answer)
 	local describeHits -- (remote_around.lua's describe, set by the script: B.setDescribeHits)
 	local NODES_BEFORE_M = 150
 
@@ -207,9 +208,26 @@ function M.new(ctx)
 		return c
 	end
 
-	-- what the engine said about a proposal (ProposalData): copied out as plain values, in the callback itself
-	local function verdict(data)
+	-- what the engine said about a proposal (ProposalData): copied out as plain values, in the callback itself.
+	-- where: what data is, for errorStateRead (which fields were read and what they held: a refusal with no message
+	-- says so, 2026-11-23: "陸上に配置" in the game's log, nothing in the answer)
+	local function verdict(data, where)
+		where = where or "ProposalData"
 		local es = data and try(function() return data.errorState end)
+		local critical = es and try(function() return es.critical end)
+		local errors = es and strings(try(function() return es.messages end)) or nil
+		local warnings = es and strings(try(function() return es.warnings end)) or nil
+		-- (ErrorState.infos, type.d.tl: a reason may be there when messages is empty)
+		local infos = es and strings(try(function() return es.infos end)) or nil
+		local read
+		if data == nil then
+			read = where .. ": none"
+		elseif es == nil then
+			read = where .. ".errorState: none"
+		else
+			read = string.format("%s.errorState: critical %s, messages %d, warnings %d, infos %d", where,
+				tostring(critical), #errors, #warnings, #infos)
+		end
 		local col = data and try(function() return data.collisionInfo.collisionEntities end)
 		local hit = {}
 		for _, d in ipairs(core.toList(col)) do
@@ -217,9 +235,11 @@ function M.new(ctx)
 			if e then hit[#hit + 1] = e end
 		end
 		return {
-			critical = es and try(function() return es.critical end) == true or nil,
-			errors = es and strings(try(function() return es.messages end)) or nil,
-			warnings = es and strings(try(function() return es.warnings end)) or nil,
+			critical = critical == true or nil,
+			errors = errors,
+			warnings = warnings,
+			infos = infos and #infos > 0 and infos or nil,
+			errorStateRead = read,
 			collisions = #hit > 0 and core.array(hit) or nil,
 			-- the boxes of the constructions the proposal adds (ProposalData.toAddData[i].boundingVolume, type.d.tl):
 			-- how much room one takes where it was asked, before it is built (build --dry-run --engine-check)
@@ -238,6 +258,17 @@ function M.new(ctx)
 			end)(),
 			cost = data and tonumber(try(function() return data.costs end)) or nil,
 		}
+	end
+
+	-- the engine's reason for a refusal, from a verdict (or an answer it was copied into): its messages, else its
+	-- infos or warnings (named so), else "no message" with the fields read (errorStateRead). -> the text, and
+	-- whether the engine gave one
+	local function reasonOf(v)
+		if v.errors and #v.errors > 0 then return table.concat(v.errors, "; "), true end
+		if v.infos and #v.infos > 0 then return "no message; infos: " .. table.concat(v.infos, "; "), true end
+		if v.warnings and #v.warnings > 0 then return "no message; warnings: " .. table.concat(v.warnings, "; "), true end
+		return "no message (" .. tostring(v.errorStateRead or (v.callbackError and ("reading the callback's data " ..
+			"raised: " .. v.callbackError)) or "nothing read") .. ")", false
 	end
 
 	local function setOf(list)
@@ -568,7 +599,7 @@ function M.new(ctx)
 			-- verdict, and the box the construction takes (newBoxes; footprint: that box less the point, axis aligned
 			-- in the world)
 			out.dryRun = true
-			local v, form = engineCheck(sp)
+			local v, form, both = engineCheck(sp, false, r.removeBuildings, r.joinStreets)
 			if not v then
 				out.ok, out.checked = true, false
 				out.engineCheck = "not available: " .. tostring(form)
@@ -577,7 +608,8 @@ function M.new(ctx)
 			for k, val in pairs(v) do out[k] = val end
 			out.checked, out.engineCheck = true, "makeProposalData (" .. form .. ")"
 			out.engineContext = form == "SimpleProposal" and "the engine's own (the proposal alone)" or "the build's"
-			if form == "SimpleProposal" and ((v.warnings and #v.warnings > 0) or v.buildingsInWay) then
+			contextsInto(out, both)
+			if form == "SimpleProposal" and not v.critical and ((v.warnings and #v.warnings > 0) or v.buildingsInWay) then
 				-- (as road's: the build gathers no fields or buildings, so what a warning lets through here may be a
 				-- collision there)
 				out.caution = "judged in the engine's own context, not the build's (no fields or buildings gathered): " ..
@@ -594,8 +626,7 @@ function M.new(ctx)
 			out.balance = balance()
 			if v.critical then
 				out.ok = false
-				local msgs = v.errors and #v.errors > 0 and table.concat(v.errors, "; ") or "no message"
-				out.error = "the engine would refuse it: " .. msgs .. " (dry run: nothing sent)"
+				out.error = "the engine would refuse it: " .. reasonOf(v) .. " (dry run: nothing sent)"
 				if out.collisions and describeHits then
 					local okH, hits = pcall(describeHits, out.collisions, r.x, r.y)
 					if okH then out.hits = hits else out.hitsError = tostring(hits) end
@@ -639,12 +670,14 @@ function M.new(ctx)
 				if n then nodesBefore[n] = true end
 			end
 		end
-		local job = { id = c.id, kind = "place", out = out, started = appTime(), before = balance(), nodesBefore = nodesBefore }
+		-- (sp and the context's flags kept: a refusal with no message asks the engine again, recheck in finish)
+		local job = { id = c.id, kind = "place", out = out, started = appTime(), before = balance(), nodesBefore = nodesBefore,
+			sp = sp, ctxArgs = { false, r.removeBuildings, r.joinStreets } }
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(false, r.removeBuildings, r.joinStreets), false, true), function(data, success, entities)
 			-- all of it guarded, as AoM's strawberries.lua: it may run where an error has no one to catch it. Only
 			-- plain values leave the callback (the engine's objects belong to it)
 			local ok, err = pcall(function()
-				local v = verdict(try(function() return data.resultProposalData end))
+				local v = verdict(try(function() return data.resultProposalData end), "resultProposalData")
 				local list = ids(try(function() return data.resultEntities end))
 				if #list == 0 then list = ids(entities) end
 				job.result = { success = success == true, verdict = v, entities = list }
@@ -696,7 +729,7 @@ function M.new(ctx)
 			before = balance(), list = list }
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(), false, true), function(data, success)
 			local ok, err = pcall(function()
-				job.result = { success = success == true, verdict = verdict(try(function() return data.resultProposalData end)) }
+				job.result = { success = success == true, verdict = verdict(try(function() return data.resultProposalData end), "resultProposalData") }
 			end)
 			if not ok then job.result = { success = success == true, verdict = { callbackError = tostring(err) } } end
 		end)
@@ -803,7 +836,30 @@ function M.new(ctx)
 		end
 		if not res.success then
 			out.ok = false
-			local msgs = out.errors and #out.errors > 0 and table.concat(out.errors, "; ") or "no message"
+			local msgs, given = reasonOf(out)
+			if not given and job.sp and engineCheck then
+				-- the callback carried no reason (2026-11-23: "陸上に配置" only in the game's log): the same proposal
+				-- asked of the engine again, in both contexts, on this thread; nothing is sent
+				local okR, v, form, both = pcall(engineCheck, job.sp, job.ctxArgs[1], job.ctxArgs[2], job.ctxArgs[3])
+				if okR and v then
+					out.recheck = { form = form, own = both and both.own, build = both and both.build }
+					-- (a refusal only: the build's context's first; the engine's own only when that one alone
+					-- refused, and named so)
+					local b, o = both and both.build, both and both.own
+					local pick = (b and b.critical and b) or (o and o.critical and o) or nil
+					local again, gave
+					if pick then again, gave = reasonOf(pick) end
+					if gave then
+						msgs = again .. " (asked again with makeProposalData" .. (pick == o and ", in the engine's own " ..
+							"context" or "") .. ": the callback gave no message; " .. tostring(out.errorStateRead) .. ")"
+					elseif not pick then
+						out.recheckNote = "asked again, makeProposalData says buildable: the build's refusal is not " ..
+							"in its check; the game's log (ProposalData error) may say why (tf3ctl adds it: proposalLog)"
+					end
+				else
+					out.recheck = { raised = tostring(okR and form or v) }
+				end
+			end
 			out.error = "the engine refused it: " .. msgs
 			if out.collisions and describeHits then
 				-- what is in the way, one by one: its kind, name, place and box (remote_around.lua)
@@ -1321,20 +1377,55 @@ function M.new(ctx)
 
 	-- what the engine says of a proposal without building it: api.engine.util.proposal.makeProposalData, called
 	-- here in the guiUpdate (the GUI thread: Overpass Builder calls it there with a SimpleProposal alone; Track
-	-- Connector calls it in its game script with the proposal and a Context, tried second here). Never from a recipe's body (api.util /
-	-- api.gui there killed the game, BUG.md 2026-11-15). -> the verdict (as a build's) and the form taken, or nil and
-	-- why (not there, or it raised both ways)
-	function engineCheck(sp, fields, buildings)
+	-- Connector calls it in its game script with the proposal and a Context). Never from a recipe's body (api.util /
+	-- api.gui there killed the game, BUG.md 2026-11-15). Both forms are asked: the proposal alone is judged in the
+	-- engine's own context, which is not the build's (it gathered fields where the build collided, 2026-11-23, and
+	-- it said buildable on water where the build was refused, "陸上に配置", 2026-11-23); with the build's Context
+	-- (player, gatherFields, gatherBuildings, cleanupStreetGraph, as the build sends it) second. Whether that form
+	-- judges as the build on the GUI thread is not checked in a game yet. -> the verdict (the build's context's
+	-- when it answered, unless only the engine's own refused: the stricter), the form, and both ({ own, build }: each a verdict or { raised }),
+	-- or nil and why (not there, or it raised both ways)
+	local function summary(v, raised)
+		if not v then return { raised = raised } end
+		local warned = v.warnings ~= nil and #v.warnings > 0
+		return { verdict = v.critical and "refused" or (warned and "buildable with warnings" or "buildable"),
+			critical = v.critical, errors = v.errors, warnings = v.warnings, infos = v.infos,
+			collisions = v.collisions and #v.collisions or nil, cost = v.cost, errorStateRead = v.errorStateRead }
+	end
+	function engineCheck(sp, fields, buildings, streets)
 		local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
 		if mpd == nil then return nil, "api.engine.util.proposal.makeProposalData is not there" end
-		-- (the proposal alone first: the form Overpass Builder uses on the GUI thread; with a Context only after)
+		-- (the proposal alone first: the form known to work on the GUI thread)
 		local ok, data = pcall(mpd, sp)
-		if ok and data ~= nil then return verdict(data), "SimpleProposal" end
-		local first = ok and "nothing given back" or tostring(data)
-		ok, data = pcall(mpd, sp, context(fields, buildings))
-		if ok and data ~= nil then return verdict(data), "SimpleProposal, Context" end
-		return nil, "makeProposalData (proposal): " .. first .. "; (proposal, context): " ..
-			(ok and "nothing given back" or tostring(data))
+		local own = ok and data ~= nil and verdict(data, "makeProposalData (proposal)") or nil
+		local ownRaised = not own and (ok and "nothing given back" or tostring(data)) or nil
+		ok, data = pcall(mpd, sp, context(fields, buildings, streets))
+		local mine = ok and data ~= nil and verdict(data, "makeProposalData (proposal, context)") or nil
+		local mineRaised = not mine and (ok and "nothing given back" or tostring(data)) or nil
+		if not own and not mine then
+			return nil, "makeProposalData (proposal): " .. ownRaised .. "; (proposal, context): " .. mineRaised
+		end
+		local both = { own = summary(own, ownRaised), build = summary(mine, mineRaised) }
+		-- (refused in either: the stricter is the verdict, so a dry run never says buildable where one context
+		-- refuses; contextsDisagree says so)
+		if mine and not (own and own.critical and not mine.critical) then return mine, "SimpleProposal, Context", both end
+		return own, "SimpleProposal", both
+	end
+
+	-- both contexts' verdicts into an answer (a dry run's): engineContexts always; when they differ (refused in one,
+	-- buildable in the other, or warnings in one only), contextsDisagree and a note of which the build follows
+	function contextsInto(out, both)
+		if not both then return end
+		out.engineContexts = { own = both.own, build = both.build }
+		local a, b = both.own, both.build
+		if a.verdict and b.verdict and a.verdict ~= b.verdict then
+			out.contextsDisagree = true
+			out.contextsNote = string.format("the engine's own context (the proposal alone): %s%s; the build's " ..
+				"context: %s%s. The verdict here is the stricter of the two; the build is judged in the build's context, but which " ..
+				"of the two the engine really applies on the GUI thread is not checked in a game yet",
+				a.verdict, a.errors and #a.errors > 0 and (" (" .. table.concat(a.errors, "; ") .. ")") or "",
+				b.verdict, b.errors and #b.errors > 0 and (" (" .. table.concat(b.errors, "; ") .. ")") or "")
+		end
 	end
 
 	function B.road(c)
@@ -1538,7 +1629,7 @@ function M.new(ctx)
 		if r.dryRun then
 			-- (engineCheck) the same proposal a build sends, asked of the engine and not sent
 			out.dryRun = true
-			local v, form = engineCheck(sp, r.removeFields, r.removeBuildings)
+			local v, form, both = engineCheck(sp, r.removeFields, r.removeBuildings)
 			if not v then
 				out.ok, out.checked = true, false
 				out.engineCheck = "not available: " .. tostring(form)
@@ -1549,6 +1640,7 @@ function M.new(ctx)
 			end
 			for k, val in pairs(v) do out[k] = val end
 			out.checked, out.engineCheck = true, "makeProposalData (" .. form .. ")"
+			contextsInto(out, both)
 			out.buildable = not v.critical
 			local warned = v.warnings ~= nil and #v.warnings > 0
 			out.verdict = v.critical and "refused" or (warned and "buildable with warnings" or "buildable")
@@ -1578,8 +1670,7 @@ function M.new(ctx)
 			out.balance = balance()
 			if v.critical then
 				out.ok = false
-				local msgs = v.errors and #v.errors > 0 and table.concat(v.errors, "; ") or "no message"
-				out.error = "the engine would refuse it: " .. msgs .. " (dry run: nothing sent)"
+				out.error = "the engine would refuse it: " .. reasonOf(v) .. " (dry run: nothing sent)"
 				if out.collisions and describeHits then
 					local okH, hits = pcall(describeHits, out.collisions, (a.x + b.x) / 2, (a.y + b.y) / 2)
 					if okH then out.hits = hits else out.hitsError = tostring(hits) end
@@ -1595,11 +1686,11 @@ function M.new(ctx)
 				"and buildings and tracks still refuse it: look at it (frame)"
 		end
 		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
-			piecesBefore = piecesAround(a, b) }
+			piecesBefore = piecesAround(a, b), sp = sp, ctxArgs = { r.removeFields, r.removeBuildings } }
 		out.removeBuildings = r.removeBuildings or nil
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields, r.removeBuildings), false, true), function(data, success, entities)
 			local ok, cerr = pcall(function()
-				local v = verdict(try(function() return data.resultProposalData end))
+				local v = verdict(try(function() return data.resultProposalData end), "resultProposalData")
 				local list = ids(try(function() return data.resultEntities end))
 				if #list == 0 then list = ids(entities) end
 				job.result = { success = success == true, verdict = v, entities = list }

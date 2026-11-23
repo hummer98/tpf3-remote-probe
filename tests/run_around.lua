@@ -235,6 +235,11 @@ return function(t)
 		-- a road's dry run judged in the engine's own context: said that gatherBuildings did not apply
 		local rg = roadWorld()
 		local d = roadRun(rg, 2747, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true, removeBuildings = true }')
+		truthy(d.ok, d.error); eq(d.engineContext, "the build's"); eq(d.removeBuildingsNote, nil)
+		truthy(not rg.crashed, rg.crashed)
+		-- where only the proposal alone answers: said that gatherBuildings did not apply
+		rg = roadWorld({ proposalDataOneArg = true })
+		d = roadRun(rg, 2751, '{ from = "0,500", to = "0,600", dryRun = true, engineCheck = true, removeBuildings = true }')
 		truthy(d.ok, d.error); truthy(d.engineContext:find("gatherBuildings true", 1, true), d.engineContext)
 		truthy(d.removeBuildingsNote:find("own context", 1, true), d.removeBuildingsNote)
 		truthy(not rg.crashed, rg.crashed)
@@ -250,7 +255,7 @@ return function(t)
 		local a = buildRun(g, 2748, string.format('{ res = %q, at = "100,50", angle = %s, dryRun = true, engineCheck = true }',
 			RAMP, math.pi / 2))
 		truthy(a.ok, a.error); eq(a.buildable, true); eq(a.verdict, "buildable"); eq(a.checked, true)
-		eq(g.proposalDataCalls, calls + 1, "asked once"); eq(next(g.built), nil, "nothing built"); eq(#g.buildCmds, 0)
+		eq(g.proposalDataCalls, calls + 2, "asked once in each context"); eq(next(g.built), nil, "nothing built"); eq(#g.buildCmds, 0)
 		-- the fake's 20 m square, turned a quarter: the same square round the point
 		eq(a.footprint.x0, -10); eq(a.footprint.x1, 10); eq(a.footprint.y1, 10); eq(a.footprint.height, 10)
 		-- a 40 x 10 box turned 30 degrees: its world box from the four turned corners
@@ -322,5 +327,103 @@ return function(t)
 		eq(d.kind, "depot"); eq(d.place.x, 300); eq(d.mouths[1].kind, "mouth"); eq(d.mouths[1]["local"].dy, -10)
 		eq(#d.ends, 2)
 		truthy(not g.crashed, g.crashed)
+	end)
+
+	-- 2026-11-23 (probe-flat-base, a construction at (2600, 3600) over the map's edge water): the dry run's engine
+	-- check said buildable, the build was refused "no message" while the game's log had "ProposalData error: 陸上に配置"
+	test("build refused with no message in the callback: what was read, the engine asked again; the dry run's two contexts", function()
+		local WET = function(x) return x > 2500 end
+		local g = buildWorld({ landOnly = WET, silentCallback = true })
+		-- the dry run asks both contexts: the engine's own says buildable, the build's refuses; the stricter wins
+		local d = buildRun(g, 2770, string.format('{ res = %q, at = "2600,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.verdict, "refused"); eq(d.contextsDisagree, true); eq(d.engineContext, "the build's")
+		eq(d.engineContexts.own.verdict, "buildable"); eq(d.engineContexts.build.verdict, "refused")
+		eq(d.engineContexts.build.errors[1], "陸上に配置")
+		truthy(d.error:find("would refuse it: 陸上に配置", 1, true), d.error)
+		truthy(d.contextsNote:find("the build's context: refused (陸上に配置)", 1, true), d.contextsNote)
+		-- the build: its callback has no message; the same proposal asked again gives the engine's reason
+		local calls = g.proposalDataCalls
+		local a = buildRun(g, 2771, string.format('{ res = %q, at = "2600,3600" }', RAMP))
+		eq(a.ok, false); eq(#g.buildCmds, 1); eq(next(g.built), nil)
+		truthy(a.error:find("refused it: 陸上に配置 (asked again", 1, true), a.error)
+		truthy(a.errorStateRead:find("resultProposalData.errorState: critical true, messages 0, warnings 0, infos 0", 1, true),
+			a.errorStateRead)
+		eq(a.recheck.form, "SimpleProposal, Context"); eq(a.recheck.build.errors[1], "陸上に配置")
+		eq(g.proposalDataCalls, calls + 2, "asked again once in each context")
+		-- a refusal with its message (a collision) is not asked again
+		local g2 = buildWorld({ blocked = function(x) return x > 1000 and 601 or nil end })
+		local b = buildRun(g2, 2772, string.format('{ res = %q, at = "2000,0" }', RAMP))
+		eq(b.ok, false); truthy(b.error:find("refused it: Collision", 1, true), b.error); eq(b.recheck, nil)
+		eq(g2.proposalDataCalls, 0)
+		truthy(b.errorStateRead:find("messages 1", 1, true), b.errorStateRead)
+		truthy(not g.crashed, g.crashed); truthy(not g2.crashed, g2.crashed)
+	end)
+
+	test("build refused: no message anywhere says which fields were read; infos; no errorState; asked again buildable", function()
+		local WET = function(x) return x > 2500 end
+		-- refused by the build only: asked again, makeProposalData says buildable; the fields read are named
+		local g = buildWorld({ landOnly = WET, landOnlyBuildOnly = true, silentCallback = true })
+		local a = buildRun(g, 2773, string.format('{ res = %q, at = "2600,3600" }', RAMP))
+		eq(a.ok, false)
+		truthy(a.error:find("refused it: no message (resultProposalData.errorState: critical true, messages 0, " ..
+			"warnings 0, infos 0)", 1, true), a.error)
+		eq(a.recheck.build.verdict, "buildable"); truthy(a.recheckNote:find("proposalLog", 1, true), a.recheckNote)
+		-- no errorState at all
+		g = buildWorld({ landOnly = WET, landOnlyBuildOnly = true, noErrorState = true })
+		a = buildRun(g, 2774, string.format('{ res = %q, at = "2600,3600" }', RAMP))
+		eq(a.ok, false); truthy(a.error:find("no message (resultProposalData.errorState: none)", 1, true), a.error)
+		-- the reason in infos only
+		g = buildWorld({ landOnly = WET, landOnlyBuildOnly = true, infosOnly = true })
+		a = buildRun(g, 2775, string.format('{ res = %q, at = "2600,3600" }', RAMP))
+		eq(a.ok, false); truthy(a.error:find("refused it: no message; infos: 陸上に配置", 1, true), a.error)
+		eq(a.infos[1], "陸上に配置"); eq(a.recheck, nil)
+		-- asking again raises (both forms): said, the answer still the refusal
+		g = buildWorld({ landOnly = WET, landOnlyBuildOnly = true, silentCallback = true, noSimpleProposalData = true })
+		a = buildRun(g, 2776, string.format('{ res = %q, at = "2600,3600" }', RAMP))
+		eq(a.ok, false); truthy(a.recheck.raised:find("Proposal expected", 1, true), tostring(a.recheck.raised))
+		truthy(a.error:find("no message (", 1, true), a.error)
+		-- reading the callback's data raises: nothing read, said so
+		g = buildWorld({ landOnly = WET, landOnlyBuildOnly = true, raiseInCallback = true, noSimpleProposalData = true })
+		a = buildRun(g, 2777, string.format('{ res = %q, at = "2600,3600" }', RAMP))
+		eq(a.ok, false); truthy(a.error:find("no message (resultProposalData: none)", 1, true), a.error)
+		truthy(not g.crashed, g.crashed)
+	end)
+
+	test("build --dry-run --engine-check: refused in the engine's own context only, the stricter verdict", function()
+		local g = buildWorld({ landOnly = function(x) return x > 2500 end, landOnlyOwnOnly = true })
+		local d = buildRun(g, 2778, string.format('{ res = %q, at = "2600,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.verdict, "refused"); eq(d.contextsDisagree, true)
+		eq(d.engineCheck, "makeProposalData (SimpleProposal)"); eq(d.engineContexts.build.verdict, "buildable")
+		eq(d.caution, nil)
+		-- the build (the build's context) goes through
+		local a = buildRun(g, 2779, string.format('{ res = %q, at = "2600,3600" }', RAMP))
+		truthy(a.ok, a.error)
+		truthy(not g.crashed, g.crashed)
+	end)
+
+	test("road refused with no message in the callback: asked again, the engine's reason", function()
+		local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end, silentCallback = true })
+		local a = roadRun(g, 2780, '{ from = "0,1500", to = "0,1600" }')
+		eq(a.ok, false); truthy(a.error:find("refused it: Collision (asked again", 1, true), a.error)
+		truthy(a.errorStateRead:find("messages 0", 1, true), a.errorStateRead); eq(a.collisions[1], 4343)
+		truthy(not g.crashed, g.crashed)
+	end)
+
+	test("build / road refused with no message, asked again: only a refusal is a reason; the engine's own named", function()
+		-- the build's context says buildable, the engine's own refuses: its message, named as the own context's
+		local g = buildWorld({ landOnly = function(x) return x > 2500 end, landOnlyOwnOnly = true, refuseBuild = true,
+			silentCallback = true })
+		local a = buildRun(g, 2781, string.format('{ res = %q, at = "2600,3600" }', RAMP))
+		eq(a.ok, false)
+		truthy(a.error:find("refused it: 陸上に配置 (asked again with makeProposalData, in the engine's own context", 1, true),
+			a.error)
+		-- a road whose recheck only warns (fields gathered): no reason taken from the warning, a note instead
+		local FIELDS = function(x, y) if y > 1000 and y < 1200 then return { 9594 } end end
+		local rg = roadWorld({ fields = FIELDS, refuseBuild = true, silentCallback = true })
+		local r = roadRun(rg, 2782, '{ from = "60,1000", to = "60,1129.5", removeFields = true }')
+		eq(r.ok, false); truthy(r.error:find("refused it: no message (", 1, true), r.error)
+		eq(r.recheck.build.verdict, "buildable with warnings"); truthy(r.recheckNote, "a note when asked again finds no refusal")
+		eq(rg.buildCmds[#rg.buildCmds].context.gatherFields, true)
+		truthy(not g.crashed, g.crashed); truthy(not rg.crashed, rg.crashed)
 	end)
 end
