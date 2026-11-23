@@ -432,7 +432,20 @@ return function(t)
 		local t = edgeGame({ edges = { [801] = { 850, 851 }, [807] = { 1, 2 } }, positions = { [807] = { 1000, 1000 } } })
 		local x = run(t, "reach", "{ from = 807, to = 801, mode = 'drive', radius = 300 }", true)
 		truthy(x.ok, x.error); eq(x.paths.drive.found, nil); truthy(x.paths.drive.why:find("no TRANSPORT_NETWORK on piece 807"), x.paths.drive.why)
-		for _, gg in ipairs({ g, n, t }) do truthy(not gg.crashed, gg.crashed); eq(#gg.commands, 0) end
+		-- a junction with lanes, none for the mode: no node for it (not its whole network)
+		local jg = edgeGame()
+		local jw = run(jg, "reach", "{ from = 850, to = 804, mode = 'walk' }", true)
+		truthy(jw.ok, jw.error); eq(jw.paths.walk.found, nil); eq(jw.paths.walk.fromNodes, 0)
+		truthy(jw.paths.walk.why:find("none of the 1 network edges of junction 850 carries walk", 1, true), jw.paths.walk.why)
+		-- the modes as numbers (as remote_lanes reads them), and as a map that does not read (taken, counted)
+		local nb = edgeGame({ modesAsNumbers = true })
+		local na = run(nb, "reach", "{ from = 801, to = 802, mode = 'walk' }", true)
+		truthy(na.ok, na.error); eq(na.paths.walk.fromNodes, 2, "801's PERSON lane only"); eq(na.from.modesUnread, nil)
+		local op = edgeGame({ modesOpaque = true, userdata = true })
+		local oa = run(op, "reach", "{ from = 801, to = 802, mode = 'drive', radius = 300 }", true)
+		truthy(oa.ok, oa.error); eq(oa.paths.drive.fromNodes, 4, "both lanes taken"); eq(oa.from.modesUnread, 2)
+		eq(oa.paths.drive.found, false, "still no road between them")
+		for _, gg in ipairs({ g, n, t, jg, nb, op }) do truthy(not gg.crashed, gg.crashed); eq(#gg.commands, 0) end
 	end)
 
 	test("reach --from --to: two circles holding the same node are trivial (no search); one end's own node is not", function()
@@ -447,10 +460,16 @@ return function(t)
 		-- small circles: each holds its own piece's node, and the search says there is no road
 		local b = run(g, "reach", "{ from = '1000,1000', to = '1100,1000', mode = 'drive', radius = 40 }")
 		truthy(b.ok, b.error); eq(b.paths.drive.found, false); eq(b.paths.drive.trivial, nil)
-		-- a point whose circle holds the piece's own node: that is where the piece is (as a point at a station)
-		local c = run(g, "reach", "{ from = '1000,1000', to = 801, mode = 'drive', radius = 300 }")
+		-- a point whose circle (the default radius) holds the piece's own node: that is where the piece is (as a point
+		-- at a station)
+		local c = run(g, "reach", "{ from = '1000,1000', to = 801, mode = 'drive', radius = 40 }")
 		truthy(c.ok, c.error); eq(c.paths.drive.found, true); eq(c.paths.drive.sameNode, true)
 		eq(c.paths.drive.sameNodeFrom, "circle"); eq(c.paths.drive.sameNodeTo, "edge")
+		-- a wider circle round a point by one road reaches the other piece's node (the bridge above it): trivial
+		local calls2 = g.reachCalls.path
+		local w = run(g, "reach", "{ from = '1050,1000', to = 802, mode = 'drive', radius = 300 }")
+		truthy(w.ok, w.error); eq(w.paths.drive.found, nil); eq(w.paths.drive.trivial, true); eq(w.paths.drive.sameNode, nil)
+		eq(g.reachCalls.path, calls2, "no search")
 		truthy(not g.crashed, g.crashed); eq(#g.commands, 0)
 	end)
 

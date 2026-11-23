@@ -1231,12 +1231,12 @@ python3 tools/tf3ctl.py persons --destination 51          # those with the indus
   building's own `PERSON_CAPACITY` `personNodes` (walking) / `vehicleNodes` (driving), a target's `edgeWalk` /
   `edgeDrive` nodes, a station's terminals (`personNodes` walking, `vehicleNodeId` driving), a road or track
   piece's (`BASE_EDGE`) own transport network edges that carry the mode (their `conns`; `from.edge` gives its
-  `node0` / `node1`), a junction's (`BASE_NODE`) the same (a junction with no lanes of its own: its network's
-  nodes, modes not checked: `modesUnread`), else the network nodes within `--radius` m (default 40, at most
+  `node0` / `node1`), a junction's (`BASE_NODE`) the same (a junction with no network edges of its own: its
+  network's nodes, modes not checked: `modesUnread`), else the network nodes within `--radius` m (default 40, at most
   500) of its position or the point (`findTransportNetworkNodesInCircle`); at most 32 nodes an end. A piece or a
   junction never takes the circle, so `--radius` does not change its answer (a piece without a lane for the
-  mode: `found` null and `why`). When both ends have a node only from their circles, the circles overlap: no
-  search, `found` null, `trivial: true`, `sharedNode`, `why` (try a smaller `--radius`). A node an end has of its
+  mode: `found` null and `why`). When both ends have a node only from their circles, or one end's circle wider than 40 m holds the other's node,
+  the circles overlap: no search, `found` null, `trivial: true`, `sharedNode`, `why` (try a smaller `--radius`). A node an end has of its
   own (a piece, a station, a target) that is also in the other end's circle or nodes is `found: true`,
   `sameNode: true`, with `sameNodeFrom` / `sameNodeTo` saying where each end had it (`circle`, `edge`, `node`,
   `terminal`, `target`, `personCapacity`). Per mode in `paths`: `found` (null when an end

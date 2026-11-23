@@ -14,7 +14,8 @@
 --   transportModes (none: an empty map); nodes: how many nodes its network has;
 -- spec.edges = { [e] = { node0, node1 } }: road pieces (BASE_EDGE); spec.baseNodes = { [n] = true }: junctions
 --   (BASE_NODE); give them a spec.tn entry for their networks and spec.positions for their places;
--- api.type.NodeId.new(entity, index) is there (spec.noNodeIdNew: not);
+-- api.type.NodeId.new(entity, index) is there (spec.noNodeIdNew: not); spec.modesAsNumbers: transportModes values
+--   1 instead of true; spec.modesOpaque: transportModes a userdata that does not read;
 -- spec.graph = { walk = { ["a:0"] = { "a:1", ... } }, drive = { ... } }: directed links per mode (PERSON: walk, CAR:
 --   drive); findPathNodeToNode does a breadth-first search and gives the edges as { { { entity = tn, index = k },
 --   true } ... } (the tn of the node it reached);
@@ -141,7 +142,12 @@ function M.install(g, spec)
 			local function at(x) return node(type(x) == "string" and x or (e .. ":" .. x)) end
 			for i, ed in ipairs(tn[e].edges or {}) do
 				local tm = {}
-				for _, m in ipairs(ed.modes or {}) do tm[TM[m]] = true end
+				for _, m in ipairs(ed.modes or {}) do tm[TM[m]] = spec.modesAsNumbers and 1 or true end
+				-- spec.modesOpaque: a map that neither pairs nor indexes (the engine's, should it be so)
+				if spec.modesOpaque then
+					tm = newproxy(true)
+					getmetatable(tm).__index = function() error("no index") end
+				end
 				edges[i] = wrap({ conns = wrap({ at(ed[1]), at(ed[2]) }), transportModes = tm })
 			end
 			local nodes = {}

@@ -22,8 +22,9 @@
 --     round its position or the point given (api.engine.util.octree.findTransportNetworkNodesInCircle).
 --   A piece or a junction never takes the circle: round a piece the circle holds the nodes of whatever is near,
 --     and two pieces with no road between them were found joined (2026-11-24, aom-ops: a ground road and a bridge
---     piece, --radius 200-300). Two ends that share a node only because both came from circles are not searched
---     (found null, trivial): that says the circles overlap, not that a path is there.
+--     piece, --radius 200-300). Two ends that share a node only because both came from circles, or because one
+--     end's circle wider than the default radius holds the other's node, are not searched (found null, trivial):
+--     that says the circles overlap, not that a path is there.
 -- Every engine call is in pcall and asked only about entities the engine says exist, and an engine vector is never
 -- read past its size (an unknown id or index may be the engine's assertion, which pcall does not catch).
 --
@@ -656,7 +657,8 @@ function M.new(ctx)
 		local ok = pcall(function()
 			for k, v in pairs(tm) do
 				any = true
-				if v == true then
+				-- (a number not 0 as well, as remote_lanes reads them: TF2 kept some maps as numbers)
+				if v == true or (type(v) == "number" and v ~= 0) then
 					for _, m in ipairs(modes) do if k == m then hit = true end end
 				end
 			end
@@ -683,8 +685,9 @@ function M.new(ctx)
 	-- a piece (BASE_EDGE) or a junction (BASE_NODE) as an end: its own network nodes, never a circle (see the top)
 	local function networkNodes(set, e, kind, mode)
 		local count, tn = ownEdgeNodes(set, e, M.MODES[mode] and modeSet(mode), kind)
-		if kind == "node" and #set.list == 0 then
-			-- a junction with no lanes of its own: the nodes of its network by index (their modes not known)
+		-- (only with no lanes at all: a junction whose lanes all lack the mode has no node for it, and says so)
+		if kind == "node" and count == 0 then
+			-- a junction with no network edges of its own: the nodes of its network by index (their modes not known)
 			local new = try(function() return api.type.NodeId.new end)
 			local n = core.size(tn and core.field(tn, "nodes"))
 			if new and n > 0 then
@@ -769,7 +772,9 @@ function M.new(ctx)
 		return set
 	end
 
-	local function searchPath(from, to, mode)
+	-- radius: the circle's (a node one end has of its own counts as met in the other end's circle only within the
+	-- default radius: a wider circle round a point by a road reaches a bridge above it with no road between them)
+	local function searchPath(from, to, mode, radius)
 		local res = { mode = mode, fromNodes = #from.list, toNodes = #to.list }
 		if #from.list == 0 or #to.list == 0 then
 			res.found = nil
@@ -782,7 +787,8 @@ function M.new(ctx)
 		for k, fw in pairs(from.seen) do
 			local tw = to.seen[k]
 			if tw then
-				if fw ~= "circle" or tw ~= "circle" then
+				local wide = (fw == "circle" or tw == "circle") and (radius or M.RADIUS_DEFAULT) > M.RADIUS_DEFAULT
+				if (fw ~= "circle" or tw ~= "circle") and not wide then
 					res.found, res.sameNode, res.edges = true, true, 0
 					res.sameNodeFrom, res.sameNodeTo = fw, tw
 					return res
@@ -792,8 +798,9 @@ function M.new(ctx)
 		end
 		if overlap then
 			res.found, res.trivial, res.sharedNode = nil, true, overlap
-			res.why = "the circles of from and to hold the same node (" .. overlap .. "): no path searched (trivial); " ..
-				"a smaller --radius, or entities with nodes of their own"
+			res.why = "the circle of one end holds a node of the other (" .. overlap .. "), the circle wider than " ..
+				M.RADIUS_DEFAULT .. " m or both ends circles: no path searched (trivial); a smaller --radius, or " ..
+				"entities with nodes of their own"
 			return res
 		end
 		local modes = modeSet(mode)
@@ -979,7 +986,7 @@ function M.new(ctx)
 			local to, terr = endNodes(a.to, mode, index, a.radius)
 			if not to then return fail(c.id, "to: " .. terr) end
 			firstFrom, firstTo = firstFrom or from, firstTo or to
-			local p = searchPath(from, to, mode)
+			local p = searchPath(from, to, mode, a.radius)
 			p.fromFrom, p.toFrom = from.from, to.from
 			res.paths[mode] = p
 		end
@@ -1016,7 +1023,7 @@ function M.new(ctx)
 		if not to then return { why = "to: " .. terr } end
 		local p = searchPath(from, to, "walk")
 		return { found = p.found, why = p.why, ms = p.ms, edges = p.edges, fromNodes = p.fromNodes, toNodes = p.toNodes,
-			unverified = p.unverified, sameNode = p.sameNode }
+			unverified = p.unverified, sameNode = p.sameNode, trivial = p.trivial, sharedNode = p.sharedNode }
 	end
 
 	function R.handle(c)

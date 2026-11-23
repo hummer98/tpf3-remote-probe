@@ -1143,10 +1143,10 @@ python3 tools/tf3ctl.py persons --destination 51          # その産業を行�
   `personNodes` (歩き) / `vehicleNodes` (車)、行き先なら `edgeWalk` / `edgeDrive` の node、
   駅なら terminal (歩きは `personNodes`、車は `vehicleNodeId`)、道路・線路の区間 (`BASE_EDGE`) なら、その区間自身の
   網の edge のうち、その mode が通るものの `conns` (`from.edge` に `node0` / `node1`)、交差点 (`BASE_NODE`) も同じ
-  (自分の車線が無い交差点は、その網の node。mode は見ていない: `modesUnread`)、ほかは位置または点から `--radius` m
+  (自分の網の edge が無い交差点は、その網の node。mode は見ていない: `modesUnread`)、ほかは位置または点から `--radius` m
   (初期設定 40、500 まで) の中の網の node (`findTransportNetworkNodesInCircle`)。端ごとに 32 node まで。区間と交差点は
   円を使わないので、`--radius` で答えは変わりません (その mode の車線が無い区間は `found` が null で `why`)。両方の端が
-  円からだけ同じ node を持つときは、円が重なっているだけなので探さず、`found` は null、`trivial: true`、`sharedNode`、
+  円からだけ同じ node を持つとき、または 40 m より大きい円が相手の端の node を含むときは、円が重なっているだけなので探さず、`found` は null、`trivial: true`、`sharedNode`、
   `why` を付けます (`--radius` を小さくして試す)。端が自分で持つ node (区間・駅・行き先) が相手の円か node にもあれば
   `found: true`・`sameNode: true` で、`sameNodeFrom` / `sameNodeTo` にそれぞれの端がどこから持ったか (`circle`・
   `edge`・`node`・`terminal`・`target`・`personCapacity`) が出ます。`paths` の mode ごとに:
