@@ -10129,6 +10129,45 @@ test("stockSet: an engine that puts the amount into another cargo is not answere
 	truthy(not g.crashed, g.crashed)
 end)
 
+test("stockSet: a mixed stock that takes nothing (stock -1 and the name, success) is not ok; a stock of one cargo and a vehicle stay ok", function()
+	-- as a game's warehouse answered 2026-11-23: success, and grain 0, everything else 0
+	local g = gameWarehouse({ minusOneDoesNothing = true })
+	local a = debugRun(g, 2301, "stockSet", string.format('{ entity = 46840, stock = 0, amount = 300, cargo = %q }', GRAIN))
+	eq(a.ok, false); eq(a.success, true); eq(a.sent, true); eq(a.before, 0); eq(a.after, 0); eq(a.sentStock, -1)
+	truthy(a.error:find("nothing went in", 1, true), a.error)
+	truthy(a.error:find("cannot be filled with a chosen cargo", 1, true), a.error)
+	truthy(a.error:find("2026-11-23", 1, true), a.error)
+	eq(a.elsewhere, nil)
+	-- the same amount as already there: nothing to change, ok
+	local same = debugRun(g, 2302, "stockSet", string.format('{ entity = 46841, stock = 0, amount = 0, cargo = %q }', GRAIN))
+	truthy(same.ok, same.error)
+	-- no cargo: the stock's own id fills its default cargo, ok as before (no warning about the stock -1 form)
+	local dflt = debugRun(g, 2307, "stockSet", "{ entity = 46841, stock = 0, amount = 40 }")
+	truthy(dflt.ok, dflt.error); eq(dflt.sentStock, 0); eq(dflt.after, 40); eq(dflt.warning, nil)
+	-- the dry run warns before anything is sent
+	local d = debugRun(g, 2303, "stockSet", string.format('{ entity = 46841, stock = 0, amount = 300, cargo = %q, dryRun = true }', GRAIN))
+	truthy(d.ok, d.error); eq(d.sent, false); truthy(d.warning and d.warning:find("took nothing", 1, true), d.warning)
+	-- an industry's stock of one cargo type and a vehicle's load: as before
+	local h = debugGame()
+	local i = debugRun(h, 2304, "stockSet", '{ entity = 51, stock = 0, amount = 120, cargo = "COAL" }')
+	truthy(i.ok, i.error); eq(i.after, 120); eq(i.warning, nil)
+	local v = debugRun(h, 2305, "stockSet", '{ entity = 601, stock = -1, amount = 30, cargo = "COAL" }')
+	truthy(v.ok, v.error); eq(v.after, 30)
+	truthy(not g.crashed, g.crashed); truthy(not h.crashed, h.crashed)
+end)
+
+test("stockSet: a stock of one cargo type the engine leaves as it was (success) is not ok either", function()
+	local g = debugGame()
+	-- the engine says success and changes nothing
+	local send0 = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb) if cb then cb({ kind = "debugStock" }, true) end end
+	local a = debugRun(g, 2306, "stockSet", "{ entity = 51, stock = 0, amount = 100 }")
+	api.cmd.sendCommand = send0
+	eq(a.ok, false); eq(a.before, 37); eq(a.after, 37); truthy(a.error:find("nothing went in", 1, true), a.error)
+	eq(a.error:find("mixed stock", 1, true), nil, "the mixed stock's words only for the stock -1 form")
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("stockSet: other counts that move meanwhile (a running game) are listed with a warning, not an error", function()
 	local g = debugGame()
 	-- the coal mine's output moves by itself while the stock set waits (as production does in a running game)

@@ -9,6 +9,7 @@ import glob
 import importlib.util
 import io
 import json
+import shlex
 import math
 import os
 import re
@@ -1706,20 +1707,33 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(res["candidates"], [])
         self.assertTrue(res["blockers"]); self.assertGreater(res["tried"], 0)
 
-    def test_fit_search_mouth_on_a_road_end_and_houses(self):
-        # a depot 10 x 20 with its mouth 10 m out along its -y: on the street's free end (100, 0)
+    def test_fit_search_mouth_kept_off_the_road_end_with_a_link_and_houses(self):
+        # a depot 10 x 20 with its mouth on its -y face: never on the street's free end (100, 0) (a mouth on a dead
+        # end's node was refused in a game, 2026-11-23), but a link's length straight out of its face from it
         box, mouth = (-5, -10, 5, 10), (0, -10)
         res = tf3ctl.fit_search(self.FIT_SCENE, box, (100, 15), 60, tf3ctl.FIT_ANGLES_JOIN, mouth=mouth)
         self.assertTrue(res["candidates"])
         c = res["candidates"][0]
+        self.assertNotIn("joinAt", c)
+        lk = c["link"]
+        self.assertEqual(lk["on"], "node"); self.assertEqual(lk["to"], [100, 0]); self.assertEqual(lk["pieces"], [501])
         mx, my = tf3ctl.fit_to_world(c["x"], c["y"], c["angle"], *mouth)
-        self.assertAlmostEqual(mx, c["joinAt"]["x"], places=2); self.assertAlmostEqual(my, c["joinAt"]["y"], places=2)
-        self.assertEqual(c["joinAt"]["pieces"], [501])
+        self.assertAlmostEqual(mx, lk["from"][0], places=2); self.assertAlmostEqual(my, lk["from"][1], places=2)
+        self.assertAlmostEqual(math.hypot(lk["to"][0] - mx, lk["to"][1] - my), lk["length"], places=2)
+        lo, hi = tf3ctl.FIT_LINK_DEFAULT
+        self.assertGreaterEqual(lk["length"], lo); self.assertLessEqual(lk["length"], hi)
+        # straight out of its face: the way from the mouth to the road is the face's way out, turned
+        ox, oy = tf3ctl.fit_to_world(0, 0, c["angle"], 0, -1)
+        self.assertAlmostEqual((lk["to"][0] - mx) / lk["length"], ox, places=6)
+        self.assertAlmostEqual((lk["to"][1] - my) / lk["length"], oy, places=6)
+        # the box clear of the whole street (no piece drawn back for a mouth on it)
         poly = tf3ctl.fit_rect(c["x"], c["y"], c["angle"], box)
-        self.assertEqual(tf3ctl.fit_poly_seg_dist(poly, (-100, 0), (100 - 7, 0)) >= 6, True,
-                         "the street stays out of the box but at its mouth")
-        # every 15 degrees tried; facing back over the street is refused, so not all angles are free
-        self.assertLess(len([x for x in res["candidates"] if abs(x["joinAt"]["x"] - 100) < 1e-9]), 24)
+        self.assertGreaterEqual(tf3ctl.fit_poly_seg_dist(poly, (-100, 0), (100, 0)), 6.5 - 1e-9)
+        # every candidate's link: off the node, at 30 degrees or more from the street at it
+        for x in res["candidates"]:
+            if x["link"]["on"] == "node" and x["link"]["to"] == [100, 0]:
+                d = (x["link"]["from"][0] - 100, x["link"]["from"][1])
+                self.assertGreaterEqual(tf3ctl._fit_angle_between(d, (-1, 0)), tf3ctl.FIT_LINK_NODE_ANGLE - 1e-4)
         # houses: at least 1 within 40 m of the centre of a 10 m square, wanted north of the street
         res = tf3ctl.fit_search(self.FIT_SCENE, (-5, -5, 5, 5), (0, 40), 30, (0.0,), step=2, houses=1, catchment=40)
         c = res["candidates"][0]
@@ -1727,6 +1741,75 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertLessEqual(math.hypot(c["centre"]["x"] - 27.5, c["centre"]["y"] - 17.5), 40)
         res = tf3ctl.fit_search(self.FIT_SCENE, (-5, -5, 5, 5), (0, 40), 30, (0.0,), step=2, houses=2, catchment=40)
         self.assertEqual(res["candidates"], [], "only one house there")
+
+    def test_fit_link_pure_functions(self):
+        self.assertEqual(tf3ctl.fit_mouth_normal((-5, -35, 5, 5), (0, -35)), (0.0, -1.0))
+        self.assertEqual(tf3ctl.fit_mouth_normal((-5, -35, 5, 5), (6, 0)), (1.0, 0.0))
+        # a box that stops short of its mouth (outside it, nearer a side's line): the side it is beyond
+        self.assertEqual(tf3ctl.fit_mouth_normal((-8, -25, 8, 10), (0, -35)), (0.0, -1.0))
+        self.assertEqual(tf3ctl.fit_mouth_normal((-8, -25, 8, 10), (-9, -40)), (0.0, -1.0), "farthest beyond")
+        self.assertAlmostEqual(tf3ctl.fit_seg_seg_dist((0, 0), (10, 0), (0, 3), (10, 3)), 3.0)
+        self.assertEqual(tf3ctl.fit_seg_seg_dist((0, 0), (10, 0), (5, -1), (5, 1)), 0.0, "crossing")
+        # a ray straight down from (50, 20) onto a street along y = 0 (x 0..100): 20 m, square to it
+        on = tf3ctl.fit_link_on_edge((50, 20), (0, -1), (0, 0), (100, 0), 8, 40)
+        self.assertEqual(on[0], (50.0, 0.0)); self.assertAlmostEqual(on[1], 20.0)
+        self.assertIsNone(tf3ctl.fit_link_on_edge((50, 5), (0, -1), (0, 0), (100, 0), 8, 40), "too short")
+        self.assertIsNone(tf3ctl.fit_link_on_edge((50, 60), (0, -1), (0, 0), (100, 0), 8, 40), "too far")
+        self.assertIsNone(tf3ctl.fit_link_on_edge((50, 20), (0, 1), (0, 0), (100, 0), 8, 40), "pointing away")
+        self.assertIsNone(tf3ctl.fit_link_on_edge((50, 20), (1, 0), (0, 0), (100, 0), 8, 40), "along it")
+        sh = (math.cos(math.radians(-20)), math.sin(math.radians(-20)))  # 20 degrees across: too shallow
+        self.assertIsNone(tf3ctl.fit_link_on_edge((10, 10 * math.tan(math.radians(20))), sh, (0, 0), (100, 0), 1, 80))
+        self.assertIsNone(tf3ctl.fit_link_on_edge((2, 20), (0, -1), (0, 0), (100, 0), 8, 40), "by its end: the node's")
+        self.assertIsNone(tf3ctl.fit_link_on_edge((0, 20), (0, -1), (0, 0), (0, 0), 8, 40), "a piece of no length")
+        # nodes: the pieces at each end, and the way along them out of it
+        t = tf3ctl.fit_link_targets(self.FIT_SCENE)
+        self.assertEqual(t["nodes"], [((-100, 0), [(501, (200, 0))]), ((100, 0), [(501, (-200, 0))])])
+        self.assertEqual(t["edges"], [(501, (-100, 0), (100, 0), 6.0)])
+        self.assertTrue(tf3ctl.fit_link_ok_at_node((1, 0), [(501, (-1, 0))]), "straight on from a dead end")
+        self.assertFalse(tf3ctl.fit_link_ok_at_node((-1, 0.2), [(501, (-1, 0))]), "back along the street")
+        self.assertTrue(tf3ctl.fit_link_ok_at_node((0, 1), [(501, (-1, 0)), (502, (1, 0))]), "square into a road")
+        sharp = (math.cos(math.radians(150)), math.sin(math.radians(150)))  # 30 degrees off the piece going west
+        self.assertFalse(tf3ctl.fit_link_ok_at_node(sharp, [(501, (-1, 0))]), "their widths would overlap")
+        # the link road kept clear: a house in its way, the piece it joins skipped
+        obs = tf3ctl.fit_obstacles(self.FIT_SCENE)
+        house = tf3ctl.fit_link_clear((27.5, 40), (27.5, 0), 3, obs, {501}, 0.5)
+        self.assertEqual(house["id"], 601)
+        self.assertIsNone(tf3ctl.fit_link_clear((-50, 30), (-50, 0), 3, obs, {501}, 0.5))
+        self.assertEqual(tf3ctl.fit_link_clear((-50, 30), (-50, 0), 3, obs, set(), 0.5)["id"], 501,
+                         "the street it joins is in the way when not skipped")
+        self.assertEqual(tf3ctl.fit_link_road({"from": [108.0, 0.0], "to": [100, 0]}),
+                         "road --from=108.0,0.0 --to=100,0 --snap 3")
+        self.assertEqual(tf3ctl.fit_link_road({"from": [-72.5, 1250.25], "to": [-80.123456, 1210]}),
+                         "road --from=-72.5,1250.25 --to=-80.123,1210 --snap 3")
+
+    def test_fit_link_onto_a_pieces_middle_when_no_node_will_do(self):
+        # a long street (x -300..300) with its nodes far off: the link ends on its middle, square to it
+        scene = [{"id": 801, "kind": "street", "from": {"x": -300, "y": 0}, "to": {"x": 300, "y": 0}, "halfWidth": 5,
+                  "x": 0, "y": 0}]
+        box, mouth = (-5, -35, 5, 5), (0, -35)
+        res = tf3ctl.fit_search(scene, box, (0, 60), 50, tf3ctl.FIT_ANGLES_JOIN, mouth=mouth)
+        self.assertEqual(res["candidates"], [], "a piece's middle only when asked (--link-edge)")
+        res = tf3ctl.fit_search(scene, box, (0, 60), 50, tf3ctl.FIT_ANGLES_JOIN, mouth=mouth, link_edges=True)
+        c = res["candidates"][0]
+        lk = c["link"]
+        self.assertEqual(lk["on"], "edge"); self.assertEqual(lk["pieces"], [801])
+        self.assertAlmostEqual(lk["to"][1], 0.0, places=6)
+        self.assertGreaterEqual(lk["length"], tf3ctl.FIT_LINK_DEFAULT[0])
+        self.assertTrue(all(x["link"]["on"] == "edge" for x in res["candidates"]))
+        # nodes before middles: a free dead end near makes the first candidates node links
+        scene.append({"id": 802, "kind": "street", "from": {"x": 40, "y": 0}, "to": {"x": 40, "y": 30}, "halfWidth": 5,
+                      "x": 40, "y": 15})
+        res = tf3ctl.fit_search(scene, box, (0, 60), 50, tf3ctl.FIT_ANGLES_JOIN, mouth=mouth, link_edges=True)
+        self.assertEqual(res["candidates"][0]["link"]["on"], "node")
+        # --link: shorter than its MIN never
+        res = tf3ctl.fit_search(scene, box, (0, 60), 50, tf3ctl.FIT_ANGLES_JOIN, mouth=mouth, link=(20, 25))
+        self.assertTrue(res["candidates"])
+        self.assertTrue(all(20 - 1e-9 <= x["link"]["length"] <= 25 + 1e-9 for x in res["candidates"]))
+        # a track's mouth: on its end, as before (no link)
+        rails = [dict(e, kind="track") for e in self.FIT_SCENE if e["kind"] == "street"]
+        res = tf3ctl.fit_search(rails, (-5, -10, 5, 10), (100, 15), 60, tf3ctl.FIT_ANGLES_JOIN, mouth=(0, -10),
+                                track=True)
+        self.assertIn("joinAt", res["candidates"][0]); self.assertNotIn("link", res["candidates"][0])
 
     def test_fit_command_flow(self):
         calls = []
@@ -1776,6 +1859,63 @@ class QuitLaunchTest(unittest.TestCase):
                 tf3ctl.fit_plan(p.parse_args(["fit", "--res", "x.con"] + bad))
         self.assertNotIn("fit", tf3ctl.CHANGES_GAME)
         self.assertTrue(tf3ctl.changes_game("build", {"res": "x", "dryRun": True, "engineCheck": True}))
+
+    def test_fit_command_with_a_mouth_answers_the_link_road(self):
+        p = tf3ctl.make_parser()
+        calls = []
+        depot = {"id": 32760, "kind": "depot", "fileName": "depots/road/road_depot.con", "x": -500, "y": -500,
+                 "box": {"x0": -505, "y0": -535, "x1": -495, "y1": -495},
+                 "mouths": [{"kind": "mouth", "node": 9, "track": False, "local": {"dx": 0, "dy": -35}}]}
+        scene = self.FIT_SCENE + [depot]
+
+        def sender(cmd, args=None, timeout=20, **kw):
+            calls.append((cmd, dict(args or {})))
+            if cmd == "around":
+                return {"ok": True, "entities": scene}
+            return {"ok": True, "buildable": True, "verdict": "buildable"}
+        ns = p.parse_args(["fit", "--res", "road_depot", "--at", "100,15", "--radius", "60", "--size", "10,20",
+                           "--mouth", "0,-10"])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertTrue(out["ok"], out)
+        lk = out["link"]
+        self.assertEqual(lk, out["place"]["link"]); self.assertEqual(lk["to"], [100, 0])
+        self.assertEqual(out["road"], tf3ctl.fit_link_road(lk))
+        self.assertIn("--snap 3", out["road"]); self.assertIn("build first", out["roadNote"])
+        rp = tf3ctl.road_args(p.parse_args(shlex.split(out["road"])))
+        self.assertEqual(rp["from"], lk["from"]); self.assertEqual(rp["to"], [100.0, 0.0]); self.assertEqual(rp["snap"], 3)
+        self.assertNotIn("mouthHint", out, "a mouth given: no hint")
+        # the link's length made the list around asked wider
+        self.assertGreaterEqual(calls[0][1]["radius"], 60 + tf3ctl.FIT_LINK_DEFAULT[1])
+        # no --mouth: as before (no link), with a hint from the same construction standing near
+        calls.clear()
+        ns = p.parse_args(["fit", "--res", "road_depot", "--at", "0,40", "--size", "10,10", "--angle", "0"])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertTrue(out["ok"], out); self.assertNotIn("link", out); self.assertNotIn("road", out)
+        self.assertEqual(out["mouthHint"]["mouth"], "0,-35"); self.assertEqual(out["mouthHint"]["from"], 32760)
+        self.assertIsNone(tf3ctl.fit_mouth_hint(scene, "::/depots/road/tram_depot.con"))
+        self.assertIsNotNone(tf3ctl.fit_mouth_hint(scene, "::/depots/road/road_depot.con"))
+        # an edge link: its note says the piece's middle is not checked
+        long_street = [{"id": 801, "kind": "street", "from": {"x": -300, "y": 0}, "to": {"x": 300, "y": 0},
+                        "halfWidth": 5, "x": 0, "y": 0}]
+        scene[:] = long_street
+        ns = p.parse_args(["fit", "--res", "road_depot", "--at", "0,60", "--radius", "50", "--size", "10,40,0,-15",
+                           "--mouth", "0,-35"])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertFalse(out["ok"], "no node near, and no --link-edge")
+        self.assertIn("no free place", out["error"])
+        ns = p.parse_args(["fit", "--res", "road_depot", "--at", "0,60", "--radius", "50", "--size", "10,40,0,-15",
+                           "--mouth", "0,-35", "--link-edge"])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertTrue(out["ok"], out); self.assertEqual(out["link"]["on"], "edge")
+        self.assertIn("middle of piece 801", out["roadNote"])
+        # bad --link
+        for bad in (["--link", "8,40"], ["--mouth", "0,-35", "--link", "1,40"], ["--mouth", "0,-35", "--link", "40,8"],
+                    ["--mouth", "0,-35", "--link", "8"], ["--mouth", "0,-35", "--track", "--link", "8,40"],
+                    ["--link-edge"], ["--mouth", "0,-35", "--track", "--link-edge"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.fit_plan(p.parse_args(["fit", "--res", "x.con", "--at", "0,0"] + bad))
+        self.assertEqual(tf3ctl.fit_plan(p.parse_args(["fit", "--res", "x.con", "--at", "0,0", "--mouth", "0,-35",
+                                                        "--link", "6,20"]))[-1], (6.0, 20.0))
 
     def test_fit_doubts_unchecked_cut_short_and_too_few_houses(self):
         p = tf3ctl.make_parser()
@@ -1836,7 +1976,8 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertIs(tf3ctl.fit_blocker(poly, [o], 0.5, ((100, 0), [502])), o, "its far end is still in the box")
         nodes = tf3ctl.fit_join_nodes(scene)
         self.assertEqual(nodes[(100, 0)], [501, 502])
-        res = tf3ctl.fit_search(scene, (-5, -10, 5, 10), (100, 50), 200, (0.0,), mouth=(0, -10))
+        rails = [dict(e, kind="track") if e["kind"] == "street" else e for e in scene]
+        res = tf3ctl.fit_search(rails, (-5, -10, 5, 10), (100, 50), 200, (0.0,), mouth=(0, -10), track=True)
         firsts = [c["joinAt"] for c in res["candidates"]]
         self.assertTrue(all(len(j["pieces"]) >= 1 for j in firsts))
 

@@ -2938,6 +2938,8 @@ function M.installDebug(g, spec)
 		-- spec.minusOneIgnoresName: the name not taken either, the stock's default cargo type gets it)
 		if cmd.stock == -1 and lists[cmd.entity] then
 			if spec.minusOneCrashes then crash("ASSERT: stock -1 at stock list " .. tostring(cmd.entity)) end
+			-- spec.minusOneDoesNothing: success, and nothing changes (a warehouse's mixed stock in a game, 2026-11-23)
+			if spec.minusOneDoesNothing then return true end
 			local id = cargoId[cmd.cargoType]
 			if id == nil then crash("ASSERT: no cargo type " .. tostring(cmd.cargoType)) end
 			for _, st in ipairs(lists[cmd.entity].stocks) do

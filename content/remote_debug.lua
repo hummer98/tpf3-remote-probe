@@ -364,7 +364,7 @@ function M.new(ctx)
 		local sendStock, byCargo = sendStockOf(h, r)
 		local out = { ok = true, cmd = "stockSet", dryRun = r.dryRun or nil, entity = r.entity, stockList = target,
 			holder = h.kind, via = h.via, owner = h.owner, construction = h.construction, stock = r.stock, amount = r.amount, cargo = r.cargo,
-			sentStock = sendStock, form = byCargo and "mixed stock: stock -1 with the cargo (not checked in a game yet)" or nil,
+			sentStock = sendStock, form = byCargo and "mixed stock: stock -1 with the cargo (a warehouse's took nothing so, 2026-11-23)" or nil,
 			before = countIn(h, r), functionPresent = core.debugFunction(path) ~= nil, note = NOTE }
 		if byCargo then
 			-- stock -1 names no stock: another stock that takes the cargo too may be the one the engine fills
@@ -376,8 +376,11 @@ function M.new(ctx)
 					end
 				end
 			end
+			-- said before it is sent too (a dry run cannot read it back): what a warehouse's mixed stock did in a game
+			out.warning = "a warehouse's mixed stock took nothing in this form in a game (2026-11-23): the answer "
+				.. "reads the stock back and is an error when nothing went in"
 			if #also > 0 then
-				out.warning = "stock " .. table.concat(also, ", ") .. " takes " .. r.cargo .. " too: the engine picks "
+				out.warning = out.warning .. "; stock " .. table.concat(also, ", ") .. " takes " .. r.cargo .. " too: the engine picks "
 					.. "the stock (the answer says which changed)"
 			end
 		end
@@ -515,6 +518,25 @@ function M.new(ctx)
 					say("stockSet (command " .. job.id .. "): changed what was not asked", 1)
 					return answer(job.id, out, "error")
 				end
+			end
+			-- nothing went in: the asked count reads as before (and the amount was another), with no other count that
+			-- took it. A warehouse's mixed stock so took nothing from stock -1 and the cargo's name, while the engine
+			-- said success (2026-11-23): not ok. A vehicle's load is left to the warning above (its read back after
+			-- a couple of frames is not measured)
+			if job.success == true and h and h.kind == "stockList" and out.before ~= nil and out.after ~= nil
+				and out.after == out.before and out.before ~= job.r.amount then
+				out.ok = false
+				out.error = "nothing went in: stock " .. job.r.stock .. (job.r.cargo and (" " .. job.r.cargo) or "")
+					.. " reads " .. tostring(out.after) .. " as before, not " .. job.r.amount
+					.. " (the engine said success)"
+				if out.sentStock == -1 then
+					out.error = out.error .. ". A mixed stock (cargoType -1) cannot be filled with a chosen cargo by the "
+						.. "debug command (measured 2026-11-23 at a warehouse: with the stock's own id the engine put in "
+						.. "its default cargo, with stock -1 and the cargo's name nothing). Without --cargo the stock's "
+						.. "own id fills its default cargo"
+				end
+				say("stockSet (command " .. job.id .. "): nothing went in", 1)
+				return answer(job.id, out, "error")
 			end
 		else
 			stepsDeltas(job, now)
