@@ -54,6 +54,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # ticket price multiplier) and what is missing
   tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's start event (initNewGameFromMap) sent
             # again when basePopulation is missing or 0 while towns have population (a start with no towns)
+  tf3ctl.py around --at x,y [--radius 100] [--kinds town_building,street,...|all] [--limit 200]   # read only: what
+            # stands near a point (kind, name, box, distance; constructions' road mouths in their own frame)
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
             # building parcels left and right of a road piece (count, built on, centre, area), whether the piece is in
             # a construction; a rect: each street piece with an end or its middle in it, and totals
@@ -1742,7 +1744,8 @@ def build_args(ns):
     """build: one construction at --at (x,y[,z]), or --remove / --remove-all; checked here as the mod checks them."""
     if ns.remove is not None or ns.remove_all:
         if ns.res or ns.at or ns.params or ns.name or ns.angle is not None or ns.seed is not None or ns.dry_run \
-                or getattr(ns, "no_owner", False) or getattr(ns, "no_fill_modules", False):
+                or getattr(ns, "no_owner", False) or getattr(ns, "no_fill_modules", False) \
+                or getattr(ns, "remove_buildings", False) or getattr(ns, "join_streets", False):
             raise ToolError("--remove / --remove-all go alone")
         if ns.remove_all:
             if ns.remove is not None:
@@ -1792,6 +1795,13 @@ def build_args(ns):
         args["noOwner"] = True
     if getattr(ns, "no_fill_modules", False):
         args["fillModules"] = False
+    if getattr(ns, "remove_buildings", False):
+        args["removeBuildings"] = True
+    if getattr(ns, "join_streets", False):
+        args["joinStreets"] = True
+    if ns.dry_run and (args.get("removeBuildings") or args.get("joinStreets")):
+        # (the dry run asks the engine nothing: the Context's flags would be dropped unseen)
+        raise ToolError("--remove-buildings and --join-streets go with a build, not with --dry-run")
     return args
 
 
@@ -2054,9 +2064,9 @@ def water_args(ns):
 def road_inspect_args(ns):
     """road --inspect-node ID (read only): the node alone; nothing else goes with it."""
     if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run \
-            or ns.engine_check or ns.remove_fields:
+            or ns.engine_check or ns.remove_fields or getattr(ns, "remove_buildings", False):
         raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run, "
-                        "--engine-check, --remove-fields)")
+                        "--engine-check, --remove-fields, --remove-buildings)")
     if ns.inspect_node < 0:
         raise ToolError("--inspect-node must be a node's entity id (0 or more)")
     return {"node": ns.inspect_node}
@@ -2092,6 +2102,8 @@ def road_args(ns):
         args["engineCheck"] = True
     if ns.remove_fields:
         args["removeFields"] = True
+    if getattr(ns, "remove_buildings", False):
+        args["removeBuildings"] = True
     return args
 
 
@@ -3219,6 +3231,39 @@ def parcels_args(ns):
     return args
 
 
+AROUND_RADIUS_MAX = 2000  # the mod's core.AROUND_RADIUS.max
+AROUND_LIMIT_MAX = 2000  # the mod's core.AROUND_LIMIT.max
+AROUND_KINDS = ("street", "track", "node", "town_building", "station", "depot", "industry", "construction", "field",
+                "asset", "town", "model", "moving", "other")  # the mod's core.AROUND_KINDS
+
+
+def around_args(ns):
+    """around: --at x,y, --radius, --kinds a,b (or all), --limit; checked as the mod checks them."""
+    try:
+        at = [float(x) for x in (ns.at or "").split(",")]
+    except ValueError:
+        raise ToolError("--at must be numbers: x,y (for a negative x write --at=-100,50)")
+    if len(at) != 2 or any(x != x or abs(x) == float("inf") for x in at):
+        raise ToolError("--at must be x,y (finite numbers)")
+    args = {"at": at}
+    if ns.radius is not None:
+        if not (0 < ns.radius <= AROUND_RADIUS_MAX):
+            raise ToolError("--radius must be more than 0 and at most %d m" % AROUND_RADIUS_MAX)
+        args["radius"] = ns.radius
+    if ns.kinds is not None:
+        kinds = [k.strip() for k in ns.kinds.split(",") if k.strip()]
+        bad = [k for k in kinds if k != "all" and k not in AROUND_KINDS]
+        if not kinds or bad:
+            raise ToolError("--kinds: one or more of all, %s%s" % (", ".join(AROUND_KINDS),
+                                                                  (" (not %s)" % ", ".join(bad)) if bad else ""))
+        args["kinds"] = ",".join(kinds)
+    if ns.limit is not None:
+        if not 1 <= ns.limit <= AROUND_LIMIT_MAX:
+            raise ToolError("--limit must be 1-%d" % AROUND_LIMIT_MAX)
+        args["limit"] = ns.limit
+    return args
+
+
 REACH_RADIUS_MAX = 500  # the mod's RADIUS_MAX (remote_reach.lua)
 REACH_LIMIT_MAX = 200  # the mod's TARGETS_LIST_MAX
 
@@ -3835,6 +3880,11 @@ def make_parser():
                     "strawberry farm); default the company's (--owner names the client, not this)")
     bd.add_argument("--no-fill-modules", action="store_true", help="with params.modules: send each module as given; "
                     "default: a module without metadata / updateScript gets moduleRep's own")
+    bd.add_argument("--remove-buildings", action="store_true", help="let it take the town buildings in its way (the "
+                    "Context's gatherBuildings, as the player's tools do; the answer's buildingsInWay). Test saves only")
+    bd.add_argument("--join-streets", action="store_true", help="the Context's cleanupStreetGraph: whether its road "
+                    "end put on an old road node becomes that node (the answer's joins: wasThere, nodesHere). Not "
+                    "checked in a game yet. Test saves only")
     rd = sub.add_parser("road", help="build one straight road piece between two points, as a mod's tool builds (no "
                                       "click; a SimpleStreetProposal). Test saves only")
     rd.add_argument("--from", dest="from_", metavar="X,Y[,Z]",
@@ -3854,6 +3904,8 @@ def make_parser():
     rd.add_argument("--remove-fields", action="store_true", help="let the road take farm fields in its way (the "
                     "context's gatherFields, as the base's tools: the engine warns that fields will be removed); "
                     "buildings, tracks and the rest still refuse it. Test saves only (changes the game)")
+    rd.add_argument("--remove-buildings", action="store_true", help="let the road take town buildings in its way "
+                    "(the Context's gatherBuildings). Test saves only (changes the game)")
     rd.add_argument("--inspect-node", type=int, metavar="ID", help="read only, alone: what road reads of one node "
                     "(the street system's pieces there, the construction it belongs to and whether it is frozen, its "
                     "junction set-up, the octree's pieces within 1, 5 and 20 m) and what road would do with it")
@@ -4117,6 +4169,14 @@ def make_parser():
     pl.add_argument("--list", dest="list", action="store_true", default=None,
                     help="each parcel too (the default for --edge; --rect gives counts only)")
     pl.add_argument("--no-list", dest="list", action="store_false", help="counts only")
+    ar = sub.add_parser("around", help="read only: what stands near a point, nearest first: id, kind (street, track, "
+                        "town_building, station, depot, industry, field, ...), name (a house's town), place, box (the "
+                        "octree's, axis aligned), distance; a construction's road ends and mouths in its own frame")
+    ar.add_argument("--at", required=True, metavar="X,Y", help="the point (for a negative x write --at=-100,50)")
+    ar.add_argument("--radius", type=float, help="metres (default 100, at most %d)" % AROUND_RADIUS_MAX)
+    ar.add_argument("--kinds", metavar="A,B", help="only these (all: every kind; default all but node and moving): "
+                    + ", ".join(AROUND_KINDS))
+    ar.add_argument("--limit", type=int, help="entries listed, nearest first (default 200, at most %d)" % AROUND_LIMIT_MAX)
     ps = sub.add_parser("persons", help="sim persons (read only) aboard a vehicle or on a line: happiness, expected "
                                         "arrival and the game time, line and stops; the engine's unhappy counts")
     pw = ps.add_mutually_exclusive_group(required=True)
@@ -4436,6 +4496,8 @@ def main(argv=None):
                 res = send("company")
         elif ns.cmd == "parcels":
             res = send("parcels", parcels_args(ns))
+        elif ns.cmd == "around":
+            res = send("around", around_args(ns), timeout=60)
         elif ns.cmd == "persons":
             if ns.every is not None:
                 return persons_every(ns)  # prints its own lines

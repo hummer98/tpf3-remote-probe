@@ -414,6 +414,22 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   the result's entities, or by its name near the point); otherwise `ok: false`, `error` says why, and tf3ctl exits
   with 1 and adds the game log's Main Thread errors written while the command ran (`logErrors`, the first 10). A
   construction that stands but cost nothing (cost and spent 0: a no-costs mod) is ok with a line in `warnings`.
+- A refusal for a collision also names what is in the way: `hits`, one entry per id in `collisions`, as `around`
+  gives it (`kind`, `name`, the town of a house, `x` / `y`, `box`, `sizeX` / `sizeY`, `dist` from `--at`; for a
+  construction its `mouths`). An id the engine no longer has is `kind: "gone"`.
+- `construction.at` is where it stands and its turn (`angle`, from its transf); each of its `ends` and
+  `connectable` entries has `local` (`dx`, `dy`, `dz`: the point in the construction's own frame, dx along its x
+  axis), so where its road leaves it is known wherever it is put. A `mouth` has `joined` (true when a piece that is
+  not one of the construction's frozen ones meets it: a road joined to it, or its own free arms) and
+  `joinedPieces`. `joins` (after a build): per road mouth its `node`, `wasThere` (the node was a road's before the
+  build: the construction took it) and `nodesHere` (other road nodes within 0.5 m: a node beside it, not one with
+  it). The nodes "there before" are those of the road pieces within 150 m of `--at`.
+- `--remove-buildings`: the Context's `gatherBuildings` on, so the town buildings in the way go, as with the
+  player's tools; `buildingsInWay` lists those the engine names (`CollisionInfo.buildingEntities`).
+  `--join-streets`: the Context's `cleanupStreetGraph` on, to see whether a road end put right on an old road node
+  becomes that node (`joins`). Test saves only (they change the game), and not with `--dry-run` (refused: a dry run
+  asks the engine nothing). **Not checked in a game yet** (written
+  2026-11-23): what the engine does with either; the answer's `contextNote` says so.
 - It changes the game (as `line` and `connect`), so other clients get the usual warning; one build at a time is
   enough (each waits up to 30 s for the engine's answer).
 - **Not checked in game yet** (written 2026-11-22): in particular whether the engine takes the default params, the
@@ -541,6 +557,10 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road read
   the forest's entities in the way were its fields, and that the engine's own context gathers fields (a guess from
   its warning); the answer says so (`removeFieldsNote`). With `--remove-fields` the dry run's `caution` says a
   warning of anything but fields may still be a collision in the build.
+- `--remove-buildings`: the Context's `gatherBuildings` on (town buildings in the way go, as with the player's
+  tools). Test saves only; not checked in a game yet. A dry run's engine check judged in the engine's own context
+  (`engineContext`) did not use it: `removeBuildingsNote` says town buildings among its `hits` may still go. A refusal for a collision (a build, or a dry run's engine
+  check) names what is in the way in `hits`, as `build` does.
 - `--inspect-node ID` (read only, alone): the node's position, `streetSegments` (each piece's `edge`, `node0` /
   `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
   (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,
@@ -804,6 +824,34 @@ python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # every street
   entities the engine says exist.
 - **Not checked in game yet** (written 2026-11-23): whether the map and the `PARCEL` component read in the GUI
   script, the field names, and the values.
+
+### What stands near a point (`around`, read only)
+
+```
+python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_building,street,field] [--limit 200]
+```
+
+- Reads only (no warning to others, nothing sent). One walk of the octree
+  (`octreeSystem.findIntersectingEntities`) over the square round the circle; each entity it gives, with the box
+  the octree hands over, is looked at once and kept when it is within `--radius` (to its box, or to a road or
+  track piece's line less half its width; `--radius` at most 2000 m). Nearest first, at most `--limit` (default 200, at most 2000:
+  `truncated`, `total`); `counts` per kind; `scanned` (what the octree gave, at most 10000: `scanTruncated`, and
+  `dropped`); `ms` (`octree`, `classify`, `total`: how long it took in the game). The look at the entities stops
+  after 2 s (it runs in one frame of the game's GUI): `timeTruncated`, and `looked` says how many were looked at.
+- Per entry: `id`, `kind`, `name`, `x` / `y` / `z` (the box's centre), `box` (`x0`, `y0`, `z0`, `x1`, `y1`, `z1`),
+  `sizeX` / `sizeY` / `height`, `dist`. Kinds, the first component found deciding: `street` / `track` (`BASE_EDGE`
+  by its roadType; `template`, `from` / `to`, `construction` it belongs to, `halfWidth`), `node`,
+  `town_building` (`TOWN_BUILDING`: `town`, `townName`, `construction`; its construction too, with `building`; a
+  construction of a `building/...` file), `station` / `depot` / `industry` / `construction` (`CONSTRUCTION` by its
+  stations, depots, industries; `fileName`; for each, up to 50 per answer: `place`, `ends` and `mouths` as `build`
+  answers them, with `local`), `field` (`FIELD`), `town` (`TOWN`: its box covers the town), `asset` (`ASSET_GROUP`:
+  trees, rocks), `model`, `moving` (vehicles, persons, animals) and `other`. `--kinds` takes some of them, or
+  `all`; the default is all but `node` and `moving`.
+- The boxes are the octree's bounding volumes: **axis aligned**, so a turned station or a slanting road reads
+  larger than it is. Road and track widths (`halfWidth`, 6 m and 3 m) are **a guess**. What the octree does not
+  hold is not listed (trees, if their asset groups are not in it).
+- **Not checked in game yet** (written 2026-11-23): which entities the octree has, whether a town building's box
+  is on its `TOWN_BUILDING` entity or its construction, the time it takes on a large map.
 
 ### Whether a place can be got to (`reach`, read only)
 
@@ -1172,6 +1220,8 @@ Not checked yet:
 - `company` and `company init`, entirely (see the new game's company progression under "Saves and new games").
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `parcels`, entirely (read only, see "Town building parcels along a road").
+- `around`, entirely (read only, see "What stands near a point"); `build` / `road` `hits`, `--remove-buildings`,
+  `--join-streets` and `joins`.
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `reach` and `persons --town` / `--destination`, entirely (read only, see "Whether a place can be got to").
 - `modhub publish` of an update (see "Uploading a mod"). `modhub status`, `validate` and a first upload were

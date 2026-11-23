@@ -53,6 +53,8 @@ M.MENU_ONLY = { modhubStatus = true, modhubValidate = true, modhubPublish = true
 
 -- reach (remote_reach.lua): read only, in a game (kept apart from the table above, which other branches change)
 M.COMMANDS.reach = true
+-- around (remote_around.lua): read only, in a game
+M.COMMANDS.around = true
 
 ---------------------------------------------------------------------------------------------------------------------
 -- mod settings (mod.json params): each arrives as a 1-based index into these lists
@@ -1039,12 +1041,16 @@ function M.buildRequest(args)
 		for k, v in pairs(params) do p[k] = v end
 		p.modules, params, modules = mods, p, true
 	end
-	for _, k in ipairs({ "fillModules", "noOwner" }) do
+	for _, k in ipairs({ "fillModules", "noOwner", "removeBuildings", "joinStreets" }) do
 		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
+	end
+	if args.dryRun == true and (args.removeBuildings == true or args.joinStreets == true) then
+		return nil, "removeBuildings and joinStreets go with a build, not with dryRun (a dry run asks the engine nothing)"
 	end
 	return { res = res, x = at[1], y = at[2], z = at[3], angle = angle, params = params, seed = seed, name = name,
 		dryRun = args.dryRun == true, modules = modules, fillModules = args.fillModules ~= false,
-		noOwner = args.noOwner == true }
+		noOwner = args.noOwner == true, removeBuildings = args.removeBuildings == true,
+		joinStreets = args.joinStreets == true }
 end
 
 -- A modular construction's params.modules (a harbour's, a station's): { [slot id] = { name, variant, metadata,
@@ -1158,11 +1164,12 @@ function M.roadRequest(args)
 	if args.engineCheck == true and args.dryRun ~= true then
 		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
 	end
-	if args.removeFields ~= nil and type(args.removeFields) ~= "boolean" then
-		return nil, "removeFields must be true or false"
+	for _, k in ipairs({ "removeFields", "removeBuildings" }) do
+		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
 	end
 	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true,
-		engineCheck = args.engineCheck == true, removeFields = args.removeFields == true }
+		engineCheck = args.engineCheck == true, removeFields = args.removeFields == true,
+		removeBuildings = args.removeBuildings == true }
 end
 
 -- road --inspect-node (read only): one node's id
@@ -3654,6 +3661,112 @@ function M.townConnectPlan(r, mapTowns, existing, defaults, base)
 	local conns = {}
 	for i, p in ipairs(wanted) do conns[i] = { newIndex[p[1]] - 1 + base, newIndex[p[2]] - 1 + base } end
 	return { townEntities = list, connections = conns, pairs = wanted, dropped = dropped }
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- around (read only, remote_around.lua): what stands near a point, one entry per entity with its kind and box
+
+M.AROUND_RADIUS = { default = 100, max = 2000 } -- m
+M.AROUND_LIMIT = { default = 200, max = 2000 } -- entries listed (nearest first); more are counted, not listed
+M.AROUND_SCAN_MAX = 10000 -- entities the octree gives that are looked at; more: truncated (dropped says how many)
+-- the time the entities are looked at for, in one frame of the GUI: past it the rest is left (timeTruncated)
+M.AROUND_TIME_MS = 2000
+-- every kind an entry can have; the default leaves out nodes (each road end: the pieces are listed) and what moves
+M.AROUND_KINDS = { "street", "track", "node", "town_building", "station", "depot", "industry", "construction",
+	"field", "asset", "town", "model", "moving", "other" }
+M.AROUND_DEFAULT_OFF = { node = true, moving = true }
+-- a road or track piece is a line with a width: half of these, a guess (not read from the street type)
+M.AROUND_HALF_WIDTH = { street = 6, track = 3 }
+
+-- at ("x,y" or a list), radius, kinds (a list or "a,b"; "all": every kind), limit. -> the request, or nil and why
+function M.aroundRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.at == nil then return nil, "give at (x,y in metres)" end
+	local p, err = M.numberList(args.at, 3)
+	if not p then return nil, "at: " .. err end
+	if #p < 2 then return nil, "at needs x,y (finite numbers)" end
+	local L = M.BUILD_LIMITS.xy
+	if math.abs(p[1]) > L or math.abs(p[2]) > L then return nil, "at: x and y must be within " .. L end
+	local r = M.AROUND_RADIUS.default
+	if args.radius ~= nil then
+		r = tonumber(args.radius)
+		if not finite(r) or r <= 0 or r > M.AROUND_RADIUS.max then
+			return nil, string.format("radius must be more than 0 and at most %g m", M.AROUND_RADIUS.max)
+		end
+	end
+	local limit = M.AROUND_LIMIT.default
+	if args.limit ~= nil then
+		limit = wholeNumber(args.limit)
+		if limit == nil or limit < 1 or limit > M.AROUND_LIMIT.max then
+			return nil, "limit must be a whole number 1-" .. M.AROUND_LIMIT.max
+		end
+	end
+	local known, kinds = {}, {}
+	for _, k in ipairs(M.AROUND_KINDS) do known[k] = true end
+	if args.kinds == nil then
+		for _, k in ipairs(M.AROUND_KINDS) do if not M.AROUND_DEFAULT_OFF[k] then kinds[k] = true end end
+	else
+		local list = args.kinds
+		if type(list) == "string" then
+			local t = {}
+			for part in (list .. ","):gmatch("([^,]*),") do t[#t + 1] = part end
+			list = t
+		end
+		if type(list) ~= "table" or #list == 0 then return nil, "kinds: give kind names separated by commas" end
+		for _, k in ipairs(list) do
+			k = type(k) == "string" and k:gsub("^%s+", ""):gsub("%s+$", "") or k
+			if k == "all" then
+				for _, a in ipairs(M.AROUND_KINDS) do kinds[a] = true end
+			elseif known[k] then
+				kinds[k] = true
+			else
+				return nil, "kinds: unknown kind " .. tostring(k) .. " (one of all, " .. table.concat(M.AROUND_KINDS, ", ") .. ")"
+			end
+		end
+	end
+	return { x = p[1], y = p[2], radius = r, limit = limit, kinds = kinds }
+end
+
+-- a transf's turn about the vertical (radians) from its first column (m11, m12: cos, sin); nil when not readable
+function M.transfAngle(m11, m12)
+	if not (finite(m11) and finite(m12)) or (m11 == 0 and m12 == 0) then return nil end
+	return math.atan2(m12, m11)
+end
+
+-- a point in a construction's own frame: place = { x, y, z, angle } -> { dx, dy, dz } (dx along its x axis)
+function M.toLocal(place, x, y, z)
+	local a = place.angle or 0
+	local ox, oy = x - place.x, y - place.y
+	local c, s = math.cos(a), math.sin(a)
+	local function r3(v) return math.floor(v * 1000 + 0.5) / 1000 end
+	return { dx = r3(c * ox + s * oy), dy = r3(-s * ox + c * oy),
+		dz = (z and place.z) and r3(z - place.z) or nil }
+end
+
+-- the distance in the plane from (px, py) to a box { x0, y0, x1, y1 } (0 inside it)
+function M.distToBox(px, py, b)
+	local dx = math.max(b.x0 - px, 0, px - b.x1)
+	local dy = math.max(b.y0 - py, 0, py - b.y1)
+	return math.sqrt(dx * dx + dy * dy)
+end
+
+-- the distance in the plane from (px, py) to the segment a-b ({ x, y } each)
+function M.distToSegment(px, py, a, b)
+	local vx, vy = b.x - a.x, b.y - a.y
+	local L2 = vx * vx + vy * vy
+	local t = L2 > 0 and ((px - a.x) * vx + (py - a.y) * vy) / L2 or 0
+	t = math.max(0, math.min(1, t))
+	local qx, qy = a.x + t * vx, a.y + t * vy
+	return math.sqrt((px - qx) ^ 2 + (py - qy) ^ 2)
+end
+
+-- a bounding volume's bbox (Box3 with min / max Vec3f, or the engine's userdata) -> { x0, y0, z0, x1, y1, z1 } or nil
+function M.boxOf(bb)
+	local lo, hi = bb and M.field(bb, "min"), bb and M.field(bb, "max")
+	local x0, y0, z0 = tonumber(lo and M.field(lo, "x")), tonumber(lo and M.field(lo, "y")), tonumber(lo and M.field(lo, "z"))
+	local x1, y1, z1 = tonumber(hi and M.field(hi, "x")), tonumber(hi and M.field(hi, "y")), tonumber(hi and M.field(hi, "z"))
+	if not (finite(x0) and finite(y0) and finite(x1) and finite(y1)) then return nil end
+	return { x0 = math.min(x0, x1), y0 = math.min(y0, y1), z0 = z0, x1 = math.max(x0, x1), y1 = math.max(y0, y1), z1 = z1 }
 end
 
 return M

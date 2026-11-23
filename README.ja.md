@@ -391,6 +391,21 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   それ以外は `ok: false` で `error` に理由を書きます。tf3ctl は終了コード 1 で終わり、命令の間にゲームのログに出た Main Thread
   のエラー (最初の 10 件) を `logErrors` に添えます。建っていて費用が 0 (cost も spent も 0、費用なしの MOD) のときは ok のまま、
   `warnings` に1行足します。
+- 衝突で断られたときは、邪魔をしている物も答えに入ります: `hits` に、`collisions` の id ごとに1件ずつ、`around` と
+  同じ形 (`kind`・`name`・家ならその町・`x` / `y`・`box`・`sizeX` / `sizeY`・`--at` からの `dist`。建造物なら `mouths`)
+  で入ります。エンジンにもう無い id は `kind: "gone"` です。
+- `construction.at` は、置いた位置と向き (`angle`、transf から) です。`ends` と `connectable` のそれぞれに `local`
+  (`dx`・`dy`・`dz`: 建造物の向きに合わせた座標。dx は建造物の x の向き) が付くので、どこに置いても、道路の出入り口が
+  建造物のどこにあるか分かります。`mouth` には `joined` (建造物の固定の区間でない道路がその node に付いている: つながった
+  道路、または自分の自由な腕) と `joinedPieces` が付きます。建てたあとの `joins` は、道路の出入り口ごとに `node`・
+  `wasThere` (その node が建てる前から道路のものだった: 建造物が既存の node を使った)・`nodesHere` (0.5 m 以内の別の道路の
+  node: 一つにならず横に並んだ node) です。「建てる前から」の node は、`--at` から 150 m 以内の道路の node です。
+- `--remove-buildings`: Context の `gatherBuildings` を有効にし、邪魔な町の建物を取り除いて建てます (プレイヤーの道具と
+  同じ)。エンジンが挙げたもの (`CollisionInfo.buildingEntities`) を `buildingsInWay` に出します。`--join-streets`:
+  Context の `cleanupStreetGraph` を有効にします。道路の端を既存の道路の node にちょうど重ねたとき、一つの node になるかを
+  見るためのものです (`joins`)。どちらもゲームを変えるので、試験用のセーブでだけ使ってください。`--dry-run` とは一緒に
+  使えません (dry-run はエンジンに何も聞かないので、断ります)。**ゲーム内では未確認**
+  (2026-11-23 に書いたもの): エンジンがどう扱うか。答えにも `contextNote` で書きます。
 - ゲームを変えるコマンドです (`line`・`connect` と同じ)。ほかのクライアントにはいつもの警告が出ます。1つずつ
   建ててください (それぞれエンジンの答えを 30 秒まで待ちます)。
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): とくに、初期設定の params・印・名前・`autoFillSlots` を送ったとおりに
@@ -511,6 +526,10 @@ python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの nod
   伐採場のそばで邪魔をしていた entity が畑だったか、エンジン自身の context が畑を集めるか (警告からの見立て)。答えにも
   `removeFieldsNote` で書きます。`--remove-fields` を付けた dry-run の `caution` は、畑以外の警告なら本番で衝突しうる、と
   言います。
+- `--remove-buildings`: Context の `gatherBuildings` を有効にします (邪魔な町の建物を取り除く。プレイヤーの道具と同じ)。
+  試験用のセーブでだけ。ゲーム内では未確認。dry-run の engine-check がエンジン自身の context で判定したとき
+  (`engineContext`) はこれが効いていないので、`removeBuildingsNote` で「hits の町の建物は本番では取り除かれうる」と言います。衝突で断られたとき (建てるとき、dry-run の engine-check) は、`build` と
+  同じく `hits` に邪魔な物が入ります。
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ
@@ -753,6 +772,32 @@ python3 tools/tf3ctl.py parcels --rect=-100,0,400,300 [--list]    # 範囲の中
   言った entity についてだけ聞きます。
 - **ゲーム内では未確認** (2026-11-23 に書いた): 表と `PARCEL` コンポーネントが GUI のスクリプトで読めるか、欄の名前、
   値。
+
+### ある点の周りにある物 (`around`、読むだけ)
+
+```sh
+python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_building,street,field] [--limit 200]
+```
+
+- 読むだけです (ほかのクライアントに警告は出ず、何も送りません)。円を囲む正方形で octree を1回たどり
+  (`octreeSystem.findIntersectingEntities`)、渡された entity と箱を1つずつ見て、`--radius` 以内 (箱まで、道路・線路は
+  線から幅の半分を引いた距離) のものを残します。近い順に `--limit` 件まで (初期設定 200、最大 2000。超えたら `truncated`、
+  全部の数は `total`)。種類ごとの数 `counts`、octree が渡した数 `scanned` (10000 まで。超えたら `scanTruncated` と
+  `dropped`)、かかった時間 `ms` (`octree`・`classify`・`total`、ゲームの中での時間)。ゲームの GUI の1フレームの中で
+  回るので、2 秒で打ち切ります (`timeTruncated`。見た数は `looked`)。`--radius` は 2000 m まで。
+- 1件ごと: `id`・`kind`・`name`・`x` / `y` / `z` (箱の中心)・`box` (`x0`・`y0`・`z0`・`x1`・`y1`・`z1`)・`sizeX` / `sizeY` /
+  `height`・`dist`。種類 (最初に見つかった component で決める): `street` / `track` (`BASE_EDGE` の roadType。`template`・
+  `from` / `to`・属する `construction`・`halfWidth`)、`node`、`town_building` (`TOWN_BUILDING`: `town`・`townName`・
+  `construction`。その construction も `building` 付きで。`building/...` のファイルの建造物も)、`station` / `depot` /
+  `industry` / `construction` (`CONSTRUCTION` の駅・車庫・産業で分ける。`fileName`。1回の答えで 50 件まで、`place`・
+  `ends`・`mouths` を `build` の答えと同じ形で、`local` 付きで)、`field` (`FIELD`)、`town` (`TOWN`: 箱は町全体)、`asset`
+  (`ASSET_GROUP`: 木・岩)、`model`、`moving` (車両・人・動物)、`other`。`--kinds` でいくつかに絞れます (`all` で全部)。
+  初期設定は `node` と `moving` 以外の全部です。
+- 箱は octree の bounding volume で、**軸にそろった箱**です。斜めに置いた駅や斜めの道路は、実物より大きく出ます。道路と
+  線路の幅 (`halfWidth`、6 m と 3 m) は**推測**です。octree に入っていない物は出ません (木の asset group が入っていなければ、
+  木も出ません)。
+- **ゲーム内では未確認** (2026-11-23 に書いたもの): octree にどの entity が入っているか、町の建物の箱が `TOWN_BUILDING`
+  の entity にあるか construction にあるか、大きな地図でかかる時間。
 
 ### その場所へ行けるか (`reach`、読むだけ)
 
@@ -1088,6 +1133,8 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - `company` と `company init` は全部 (「セーブと新しいゲーム」の会社の成長)。
 - `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
 - `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。
+- `around` は全部 (読むだけ、「ある点の周りにある物」を参照)。`build` / `road` の `hits`・`--remove-buildings`・
+  `--join-streets`・`joins`。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 - `reach` と `persons --town` / `--destination` は全部 (読むだけ、「その場所へ行けるか」を参照)。
 - `modhub publish` の更新 (「MOD を上げる」を参照)。`modhub status`・`validate`・最初のアップロードは 2026-11-22 に
