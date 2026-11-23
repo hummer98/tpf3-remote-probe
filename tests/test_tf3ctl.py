@@ -1999,6 +1999,35 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertTrue(tf3ctl.changes_game("build", b))
         self.assertTrue(tf3ctl.changes_game("road", r))
 
+    def test_road_tangent_and_align_args(self):
+        p = tf3ctl.make_parser()
+
+        def road(*a):
+            return tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "10,0"] + list(a)))
+        plain = road()
+        for k in ("tangentFrom", "tangentTo", "alignToEdge", "alignEdge"):
+            self.assertNotIn(k, plain, "no flag: nothing sent (a straight piece, as before)")
+        self.assertEqual(road("--tangent-to=-1,0")["tangentTo"], [-1.0, 0.0], "a negative dx written with =")
+        r = road("--tangent-from", "1,0.5", "--tangent-to=-0,1")
+        self.assertEqual((r["tangentFrom"], r["tangentTo"]), ([1.0, 0.5], [0.0, 1.0]))
+        r = road("--align-to-edge", "both", "--align-edge", "9010", "--align-edge", "9011")
+        self.assertEqual((r["alignToEdge"], r["alignEdge"]), ("both", [9010, 9011]))
+        self.assertEqual(road("--align-to-edge", "from", "--tangent-to", "0,1")["tangentTo"], [0.0, 1.0])
+        for bad in (["--tangent-from", "0,0"], ["--tangent-from", "1"], ["--tangent-to", "1,2,3"],
+                    ["--tangent-to", "a,1"], ["--tangent-from", "nan,1"], ["--tangent-from", "inf,0"],
+                    ["--align-to-edge", "from", "--tangent-from", "1,0"],
+                    ["--align-to-edge", "both", "--tangent-to", "1,0"], ["--align-edge", "5"],
+                    ["--align-to-edge", "to", "--align-edge", "-1"],
+                    ["--align-to-edge", "both", "--align-edge", "1", "--align-edge", "2", "--align-edge", "3"],
+                    ["--align-to-edge", "both", "--align-edge", "4", "--align-edge", "4"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                road(*bad)
+        with self.assertRaises(SystemExit):
+            road("--align-to-edge", "middle")
+        for flag in (["--tangent-from", "1,0"], ["--align-to-edge", "from"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=flag):
+                tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5"] + flag))
+
     def test_reach_args_and_main(self):
         parse = tf3ctl.make_parser().parse_args
 

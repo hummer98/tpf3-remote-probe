@@ -1134,6 +1134,19 @@ end
 -- WATER_MAX_POINTS points). -> { points = { { x, y } }, grid = { x0, y0, x1, y1, step, nx, ny } or nil }
 M.WATER_MAX_POINTS = 400
 M.WATER_MIN_STEP = 0.1 -- metres: a smaller step makes the point count overflow before the limit is checked
+-- a way on the map made one long: { x, y } or nil when it has no length (or is not finite). Scaled by its larger part first, so
+-- that a huge dx,dy (1e300) does not overflow into a way of length 0
+local function unitWay(x, y)
+	-- (NaN checked first: math.max(nan, 1) is 1 in LuaJIT)
+	if not (finite(x) and finite(y)) then return nil end
+	local m = math.max(math.abs(x), math.abs(y))
+	if not (m >= M.ROAD_MIN_DIR) then return nil end
+	x, y = x / m, y / m
+	local l = math.sqrt(x * x + y * y)
+	return { x = x / l, y = y / l }
+end
+M.unitWay = unitWay
+
 -- road: one straight road piece from one point to another (remote_build.lua B.road). snap: an end within this
 -- many metres of a road node joins it (0: never)
 M.ROAD_LIMITS = { snap = 20, defaultSnap = 5, minLength = 1, maxLength = 2000 }
@@ -1173,9 +1186,91 @@ function M.roadRequest(args)
 	for _, k in ipairs({ "removeFields", "removeBuildings" }) do
 		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
 	end
+	-- a curved piece: the way the road goes at either end (tangentFrom / tangentTo: dx,dy, a direction only, both
+	-- pointing the way from -> to), or the way of the road already at a joined end (alignToEdge: from, to or both;
+	-- alignEdge: the piece to follow where a node has more than one)
+	local dirs = {}
+	for _, k in ipairs({ "tangentFrom", "tangentTo" }) do
+		if args[k] ~= nil then
+			local v, verr = M.numberList(args[k], 2)
+			if not v then return nil, k .. ": " .. verr end
+			if #v ~= 2 then return nil, k .. " needs dx,dy" end
+			if not unitWay(v[1], v[2]) then
+				return nil, k .. ": a direction of length 0 (dx,dy both about 0) gives no way"
+			end
+			dirs[k] = v
+		end
+	end
+	local align = args.alignToEdge
+	if align ~= nil and align ~= "from" and align ~= "to" and align ~= "both" then
+		return nil, "alignToEdge must be from, to or both"
+	end
+	local alignFrom, alignTo = align == "from" or align == "both", align == "to" or align == "both"
+	if alignFrom and dirs.tangentFrom then return nil, "tangentFrom and alignToEdge " .. align .. " both set the from end's way: give one" end
+	if alignTo and dirs.tangentTo then return nil, "tangentTo and alignToEdge " .. align .. " both set the to end's way: give one" end
+	local alignEdge
+	if args.alignEdge ~= nil then
+		if align == nil then return nil, "alignEdge goes with alignToEdge only" end
+		local v, verr = M.numberList(type(args.alignEdge) == "number" and { args.alignEdge } or args.alignEdge, 2)
+		if not v then return nil, "alignEdge: " .. verr end
+		if #v == 0 then return nil, "alignEdge: give a piece's entity id" end
+		for _, id in ipairs(v) do
+			if id ~= math.floor(id) or id < 0 or id > 2 ^ 31 then return nil, "alignEdge must be pieces' entity ids (0 or more)" end
+		end
+		if v[2] == v[1] then return nil, "alignEdge names piece " .. v[1] .. " twice: give it once" end
+		alignEdge = v
+	end
 	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true,
 		engineCheck = args.engineCheck == true, removeFields = args.removeFields == true,
-		removeBuildings = args.removeBuildings == true }
+		removeBuildings = args.removeBuildings == true, tangentFrom = dirs.tangentFrom, tangentTo = dirs.tangentTo,
+		alignFrom = alignFrom, alignTo = alignTo, alignEdge = alignEdge }
+end
+
+-- a direction shorter than this is no direction (a tangent given as 0,0, or a piece's tangent that reads as 0)
+M.ROAD_MIN_DIR = 1e-6
+-- the most a curved piece's end may turn off its chord (degrees): past a right angle the curve runs back behind
+-- its own end (a loop or an S folded on itself), which nothing here has seen the engine take
+M.ROAD_MAX_TURN = 90
+
+-- the tangents of one road piece from a to b ({ x, y, z } each), as a cubic Hermite curve (BASE_EDGE tangent0 at
+-- node0, tangent1 at node1, both the way a -> b). dir0 / dir1: the way at each end on the map ({ dx, dy }, any
+-- length) or nil (the chord's). Each tangent is as long on the map as the chord is (the usual length for a
+-- Hermite piece; a straight piece's tangents are its chord), and climbs the chord's whole rise (dz): the height
+-- runs evenly from a to b as before. -> t0, t1, { turn0, turn1 } (degrees off the chord on the map), or nil and
+-- why: no chord on the map to measure a curve by, or an end turned more than ROAD_MAX_TURN.
+function M.roadTangents(a, b, dir0, dir1)
+	local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
+	local flat = math.sqrt(dx * dx + dy * dy)
+	if dir0 == nil and dir1 == nil then
+		return { x = dx, y = dy, z = dz }, { x = dx, y = dy, z = dz }, { 0, 0 }
+	end
+	if flat < 1 then return nil, string.format("the ends are %.2f m apart on the map: a curved piece needs at least 1 m", flat) end
+	local out, turns = {}, {}
+	for i, d in ipairs({ dir0 or false, dir1 or false }) do
+		if not d then
+			out[i], turns[i] = { x = dx, y = dy, z = dz }, 0
+		else
+			local u = unitWay(d[1], d[2])
+			if not u then return nil, (i == 1 and "from" or "to") .. ": a direction of length 0 (or not finite) gives no way" end
+			local ux, uy = u.x, u.y
+			local cos = math.max(-1, math.min(1, (ux * dx + uy * dy) / flat))
+			local turn = math.deg(math.acos(cos))
+			if turn > M.ROAD_MAX_TURN + 1e-9 then
+				return nil, string.format("%s: the way there (%.3f,%.3f) turns %.1f degrees off the line from -> to: at most %g " ..
+					"(further the curve runs back behind its end); %s", i == 1 and "from" or "to", ux, uy, turn,
+					M.ROAD_MAX_TURN, "tangents point the way from -> to at both ends")
+			end
+			out[i], turns[i] = { x = ux * flat, y = uy * flat, z = dz }, turn
+		end
+	end
+	return out[1], out[2], turns
+end
+
+-- the angle in degrees between two ways on the map ({ x, y } each, any length), or nil when one has no length
+function M.angleDeg(u, v)
+	u, v = unitWay(u.x, u.y), unitWay(v.x, v.y)
+	if not (u and v) then return nil end
+	return math.deg(math.acos(math.max(-1, math.min(1, u.x * v.x + u.y * v.y))))
 end
 
 -- road --inspect-node (read only): one node's id

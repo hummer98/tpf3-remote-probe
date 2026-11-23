@@ -487,6 +487,7 @@ python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner  
 ```
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # asks the engine (changes the game)
+python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
 python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lanes (see "A road's lanes")
 ```
@@ -536,7 +537,27 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   looked for under the base's town, country and highway roads; a track type, or one not to be had in the game's
   year, is refused. The default is the base medium town road of the year (old until 1940, new from then). The
   piece gets the template's `laneConfigs` and `streetStyle`, type NORMAL (`typeIndex` -1: no bridge or tunnel) and
-  the company's `PlayerOwned`; both tangents are the chord (a straight piece).
+  the company's `PlayerOwned`; both tangents are the chord (a straight piece) unless a way is given (next).
+- A curved piece: `--tangent-from DX,DY` / `--tangent-to DX,DY` give the way the road leaves the from end and
+  arrives at the to end (a direction only; both point the way from -> to, so a straight east piece is `1,0` at
+  both ends). `--align-to-edge from|to|both` follows the road at a joined end (a road node within `--snap`): the
+  way that road runs on out past the node (a dead end: straight on), read from its `BASE_EDGE` tangent there
+  (`tangent1` at its node1, `tangent0` turned round at its node0), else from its chord. A node with one road piece
+  is followed; with more than one the command refuses unless `--align-edge ID` names the piece (give it once per
+  end; each id is taken at the end it is at; an id at no aligned end is refused). An end on a new node has no road
+  to follow: refused. `--tangent-*` and `--align-to-edge` for the same end are refused; for different ends they go
+  together. The piece is sent as a cubic Hermite curve: each tangent as long on the map as the chord (the usual
+  length; a straight piece's tangents are its chord) and climbing the chord's whole rise, so the height still runs
+  evenly. A negative dx is written with `=` (`--tangent-to=-1,0`). Refused before sending (the dry run too): a way of length 0, ends under 1 m apart on the map, an end
+  turned more than 90 degrees off the line from -> to (the curve would run back behind its end).
+- Every answer (the dry run too) gives `tangent0` / `tangent1` (sent, rounded to mm), `curved`, and on a curve
+  `turnOffChord` (`from` / `to`, degrees). A joined end gives `kinks` (each road piece at the node: `edge`, `kinkDeg`:
+  the angle between the way it runs on out past the node and the way the new piece leaves it, 0 = straight on;
+  `wayFrom`: `tangent` or `chord`), `kinkDeg` (the followed piece's, or the only one's) and with `--align-to-edge`
+  `alignedTo` (`edge`, `from`). A straight piece's `kinkDeg` shows how bent the chord joins the road. `length` (and its 2000 m limit) stays the
+  chord's on a curve too; the curve itself is longer.
+  **Not checked in a game yet** (written 2026-11-23): whether the engine takes these curves (and refuses less
+  than the bent straight piece did), and how close the chord-long tangents keep it to a circle.
 - The answer: `from` / `to` (`node` and `snapped` when joined, else `zFrom`), `template`, `year`, `length`,
   `edges` / `nodes` (the result's new entities), `edge`, `node0` / `node1`, `cost`, `spent`, the engine's
   `errors`, `warnings` and `collisions` when refused. Without ids in the result, or with no callback in 30 s, the

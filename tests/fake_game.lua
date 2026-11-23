@@ -1924,7 +1924,7 @@ function M.installBuild(g, spec)
 
 	-- roads (the road command): spec.streets = { [resName] = { roadType = "STREET" / "TRACK", yearFrom, yearTo, cost
 	-- (per metre), style, noLanes, modesUnread, perSide (2: two road lanes each way) } } (streetTemplateRep); spec.year (api.engine.util.getYear); spec.roads = {
-	-- nodes = { [id] = { x, y, z } }, edges = { [id] = { node0, node1 } } }: a road network already there;
+	-- nodes = { [id] = { x, y, z } }, edges = { [id] = { node0, node1[, tangent0, tangent1 = { x, y, z }] } } }: a road network already there;
 	-- spec.noStreetResults: the callback names no entity of a built road. A street proposal whose piece names a
 	-- node that neither exists nor is added, or a template the rep does not know, is an assertion; a piece without
 	-- lanes is refused. g.streetCmds: every piece sent, as plain values.
@@ -2104,6 +2104,13 @@ function M.installBuild(g, spec)
 				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
+			-- a tangent not finite or of length 0 (the curve has no way there): taken for an assertion (a guess; the
+			-- engine's own check is not known). The tests' hand-made pieces send none
+			for _, k in ipairs({ "tangent0", "tangent1" }) do
+				local t = c[k]
+				local l = t and math.sqrt((t.x or 0) ^ 2 + (t.y or 0) ^ 2 + (t.z or 0) ^ 2)
+				if t and not (l == l and l ~= math.huge and l > 1e-9) then crash("street proposal: " .. k .. " of no length") end
+			end
 			if not dry then g.streetCmds[#g.streetCmds + 1] = copy(e) end
 			for _, k in ipairs({ "node0", "node1" }) do
 				if g.frozenNode[c[k]] then
@@ -2310,7 +2317,7 @@ function M.installBuild(g, spec)
 			local c = e.comp
 			g.edges[g.nextEntity] = { node0 = idOf[c.node0] or c.node0, node1 = idOf[c.node1] or c.node1,
 				roadTemplate = c.roadTemplate, roadType = c.roadType == 1 and "TRACK" or "STREET", player = e.playerOwned and e.playerOwned.player,
-				laneConfigs = copy(c.laneConfigs) }
+				laneConfigs = copy(c.laneConfigs), tangent0 = copy(c.tangent0), tangent1 = copy(c.tangent1) }
 			if not spec.noStreetResults then results[#results + 1] = { g.nextEntity, 1 } end
 		end
 		-- the set-ups, their pieces' new ids in place (g.nodeConns: plain connections)
