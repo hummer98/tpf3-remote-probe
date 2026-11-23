@@ -208,7 +208,8 @@ MOD の文が英語に落ちるかを見るためです。ゲームは言語を 
 ```
 python3 tools/tf3ctl.py log --grep remote_probe --tail 40   # ゲームの stdout.txt
 python3 tools/tf3ctl.py keep-log [--list]                   # stdout.txt を今 crash_dump/logs へ写す。写しの一覧
-python3 tools/tf3ctl.py entities --kind town --grep ems     # ID と名前: town・line・vehicle・station・industry
+python3 tools/tf3ctl.py entities --kind town --grep ems     # ID と名前: town・line・vehicle・station・industry・warehouse
+python3 tools/tf3ctl.py entities --kind warehouse           # 読むだけ: WAREHOUSE の entity ごとに construction・stockList・stocks・capacity
 python3 tools/tf3ctl.py industry-workers [--entity 51]      # 読むだけ: 定員・そこを行き先にする住民の数・直近の到着 (workers のスクリプト)・生産性・最寄りの町
 python3 tools/tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # 読むだけ: 在庫の口 (貨物・上限・量)・rules (ブースター)・生産性・construction の .con と params (hummer_aom_upg_*。--all-params は --entity と一緒に)
 python3 tools/tf3ctl.py window --town Emsworth --focus      # そのウィンドウを開き、カメラを寄せる (--close-all)
@@ -368,7 +369,8 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   (8 m なら `"rbr_height": 8`)、`numbers` の無い param は index を渡します (それがその値です)。`seed` は指定が無ければ 1
   (`--seed` か `--params` で変えられる) なので、同じ置き方は毎回同じ見た目になります。プローブは params に印
   `remote_probe_build = 1` を足します (`--remove` を参照)。建物の updateFn はこのキーを知らないので、使いません。
-- 答え: `entity` (できた建物)、`construction` (`fileName`、`name`、`depots`、`stations`、`industries`、`ends`: 建物自身の
+- 答え: `entity` (できた建物)、`construction` (`fileName`、`name`、`depots`、`stations`、`industries`、`stockLists`: その下の在庫の一覧
+  (`entity`・`kind`・`stockList`。倉庫なら WAREHOUSE を持つ subconstruction)、`ends`: 建物自身の
   道路・線路の空いた端と位置。`connect --from` の候補。`connectable`: `road` でつなげる所。`road` を参照)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
   `spent`、`errors`、`warnings`、`collisions` (邪魔をしている id)、送った `params`、`at` (使った z と `zFrom`)。断られた
   ときは `ok: false` で、エンジンの文言が `error` に入ります。
@@ -716,9 +718,19 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   0 から数える stock の番号 (`stock set --stock` に渡す番号)、stock ごとの `type`・`cargoType`・`cargo` (貨物の種類の
   名前)・`capacity`・`count` (`getStockCount`)・`cargoTypes` (その stock が受ける貨物の種類ごとの名前と `count`)。
   entity そのものに `STOCK_LIST` が無い産業・町の建物・倉庫は、その `stockList` の entity をたどります (`via`)。
+  construction (`build` が答える id。倉庫のものなど) は、その subconstruction のうち在庫の一覧を持つ倉庫・産業・町の
+  建物 1 つをたどります (`via` は `CONSTRUCTION>WAREHOUSE`、`owner`・`construction` も出す)。本体が倉庫の
+  construction から窓を開くときと同じく subconstruction からたどります (本体は最初の 1 つを取りますが、ここでは推し量らず、
+  2 つ以上あれば名前を挙げて断ります)。無ければエラーにします。倉庫
+  (`warehouse.con`) の在庫は全部 1 つの一覧にあります: 汎用のモジュールの分は混合の stock 1 つ (1 つ 500 を足したもの)、
+  専用のモジュール (bulk・liquid・flatbed・goods) は 1 つずつ stock になります。capacity が 0 の stock は入らないので、
+  stock 0 が混合になるのは汎用のモジュールがあるときだけです。番号は `stock list` で見てください。モジュールの無い倉庫には stock がありません。
   車両には在庫の一覧が無いので、`kind` が `vehicle` になり、積める貨物の種類ごとの `cargo` (`capacity`・`count`)
   が出ます (乗客は本体のパネルと同じく外し、断ります)。決めるのは `--stock -1 --cargo NAME`。`--cargo` には
-  `stock list` の `cargo` をそのまま渡します。id は `industry-stocks`・`stations`・`vehicles` で分かります。
+  `stock list` の `cargo` をそのまま渡します。id は `industry-stocks`・`stations`・`entities --kind warehouse`
+  (または `build` の答え)・`vehicles` で分かります。`window --warehouse NAME` は、`entities --kind warehouse` に出る名前で
+  倉庫の窓を開きます。**ゲーム内では未確認**: 倉庫の在庫の一覧 (本体のソースから読んだもの。計測はまだ)、倉庫の WAREHOUSE
+  の entity に選べる名前があるか。
 - `stock set` は `api.cmd.debug.makeStockSetCargoAmountCmd(在庫の一覧の entity, stock, amount[, cargo])` を送ります
   (cargo は指定したときだけ。本体のパネルも在庫の一覧の stock には付けない)。送る前に断るもの: 一覧に無い stock の
   番号、stock の capacity (車両ならその貨物の capacity、ほかは 100000。混合の stock ではほかの貨物と合わせて) を超える量、乗客、stock や車両が受けない貨物、

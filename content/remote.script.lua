@@ -477,11 +477,14 @@ function handlers.screenshot(c)
 	answer(c.id, { ok = true, scale = scale, unixTime = os.time and os.time() or nil })
 end
 
--- towns, lines, vehicles, stations, industries: { id, name } (vehicles, stations and lines: the player's own)
+-- towns, lines, vehicles, stations, industries, warehouses: { id, name } (vehicles, stations and lines: the
+-- player's own)
 local function entitiesOf(kind)
 	local CT = api.type.ComponentType
 	local player = try(function() return api.engine.util.getPlayer() end)
-	if player == nil and kind ~= "town" and kind ~= "industry" then error("the player's company is unknown") end
+	if player == nil and kind ~= "town" and kind ~= "industry" and kind ~= "warehouse" then
+		error("the player's company is unknown")
+	end
 	local ids
 	if kind == "town" then
 		ids = api.engine.getEntitiesWithComponent(CT.TOWN)
@@ -494,6 +497,10 @@ local function entitiesOf(kind)
 		ids = api.engine.getEntitiesWithComponent(CT.STATION_GROUP)
 	elseif kind == "industry" then
 		ids = api.engine.getEntitiesWithComponent(CT.INDUSTRY)
+	elseif kind == "warehouse" then
+		-- no owner filter, as industries: whose it is shows in its window, not here
+		if CT.WAREHOUSE == nil then error("this game has no ComponentType.WAREHOUSE") end
+		ids = api.engine.getEntitiesWithComponent(CT.WAREHOUSE)
 	end
 	local out = {}
 	for _, id in ipairs(core.toList(ids)) do
@@ -510,6 +517,25 @@ local function entitiesOf(kind)
 			end)
 			if type(e.construction) ~= "number" or e.construction < 0 then e.construction = nil end
 		end
+		-- warehouses: the construction build gives (WAREHOUSE.construction) and the stock list entity that stock
+		-- list / stock set use (WAREHOUSE.stockList; both take the construction too), with its stocks' count and
+		-- capacity in all (a warehouse's stocks come from its modules: none, no stocks)
+		if kind == "warehouse" then
+			local w = try(function() return api.engine.getComponent(id, CT.WAREHOUSE) end)
+			local con, sl = tonumber(core.field(w, "construction")), tonumber(core.field(w, "stockList"))
+			e.construction = con and con >= 0 and con or nil
+			if sl and sl >= 0 and try(function() return api.engine.entityExists(sl) end) == true then
+				e.stockList = sl
+				local list = try(function() return api.engine.getComponent(sl, CT.STOCK_LIST) end)
+				if list ~= nil then
+					local n, cap = 0, 0
+					for _, st in ipairs(core.toList(core.field(list, "stocks"))) do
+						n, cap = n + 1, cap + (tonumber(core.field(st, "capacity")) or 0)
+					end
+					e.stocks, e.capacity = n, cap
+				end
+			end
+		end
 		out[#out + 1] = e
 	end
 	table.sort(out, function(a, b) return a.name < b.name end)
@@ -519,7 +545,7 @@ end
 -- args: kind, grep (substring, any case), limit
 function handlers.entities(c)
 	local kind = c.args.kind
-	if not core.ENTITY_KINDS[kind] then return fail(c.id, "kind must be town, line, vehicle, station or industry") end
+	if not core.ENTITY_KINDS[kind] then return fail(c.id, "kind must be town, line, vehicle, station, industry or warehouse") end
 	local list, out = entitiesOf(kind), {}
 	local grep = type(c.args.grep) == "string" and c.args.grep:lower() or nil
 	local limit = tonumber(c.args.limit) or 200
@@ -573,7 +599,7 @@ function handlers.window(c)
 	local entity, name = tonumber(c.args.entity), nil
 	if not entity then
 		local kind = c.args.kind
-		if not core.ENTITY_KINDS[kind] then return fail(c.id, "give entity, or kind (town, line, vehicle, station, industry) and name") end
+		if not core.ENTITY_KINDS[kind] then return fail(c.id, "give entity, or kind (town, line, vehicle, station, industry, warehouse) and name") end
 		local hit, err = core.matchEntity(entitiesOf(kind), c.args.name)
 		if not hit then return fail(c.id, err) end
 		entity, name = hit.id, hit.name
