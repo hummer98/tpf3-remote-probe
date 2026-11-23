@@ -599,6 +599,15 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   つなぎません。`--dry-run` と一緒なら、エンジンに聞くだけで何も建てません
   (`--engine-check` が付いた扱い)。答えは強制しなかった場合の判定で、`ignoredErrors: false` です。**ゲーム内では未確認**
   (2026-11-24 に書いたもの): 衝突する道路をエンジンが建てるか、車が通るか、セーブとロードのあとも壊れないか。
+  **強制で建てたあとの保存**: 動いているゲームに強制の建設 (`--dry-run` でないもの) を1回でも送ると、起動の記録
+  (`launched.json`) に `"forced": true` と `"forcedCount"` が付き、それからの `save` は `probe-force-` で始まる名前
+  (例 `save probe-force-junction`) にだけ通ります。ほかの名前は断ります (終了コード 4、`"refused": "forced-save"`、何も
+  送らない)。`--other-owner-ok`・`--user-asked` を付けても同じです。エンジンの検査を外して建てた状態を、試験の土台や
+  ユーザーのセーブに残さないためです。`status` の `forced` (`text`・`textJa`) にも出ます。印はそのゲームの起動かぎりで、
+  次の `launch` / `restart` で書かれる記録には付きません。動いているゲームの起動の記録が無いとき (Steam から起動した
+  ゲーム) は、印を残せないので強制の建設を断ります。`probe-force-*` のセーブ (前の起動で強制して保存したもの) を読み込んだ
+  ときも、保存は `probe-force-*` の名前にだけ通ります。防げないこと: ゲーム自身のオートセーブ (10 分ごと) は、強制した
+  状態をオートセーブの枠に書きます。そのオートセーブを読み込むと、どの名前にも保存できます。
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ
