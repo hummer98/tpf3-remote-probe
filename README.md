@@ -395,7 +395,12 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   `connect --from`; and `connectable`: where a `road` can join it, see `road`), `cost` (the engine's), `balanceBefore` / `balanceAfter` / `spent`, `errors`, `warnings`,
   `collisions` (ids in the way), `params` as sent, `at` (with the z used, `zFrom`). A refusal is `ok: false` with
   the engine's messages in `error`.
-- `--dry-run` builds nothing and does **not** ask the engine (`road --dry-run --engine-check` does: `makeProposalData` takes a
+- `--dry-run --engine-check` asks the engine about the same proposal a build sends, building nothing
+  (`makeProposalData`, as `road`'s; it counts as changing the game): `buildable`, `verdict`, `errors`,
+  `collisions` with `hits`, `cost`, and `footprint`: the box the construction takes there (the engine's
+  `toAddData` bounding volume less the point: `x0`, `y0`, `x1`, `y1`, `height`, axis aligned in the world).
+  `fit` takes its box from it.
+- `--dry-run` alone builds nothing and does **not** ask the engine (`road --dry-run --engine-check` does: `makeProposalData` takes a
   `SimpleProposal` on the GUI thread, though `engine/util.d.tl:939` types it for a `Proposal`; a construction's is
   not asked yet). The probe checks the name, the params it
   would send and the height, and lists the constructions within 30 m of the point (`near`, a rough look by their
@@ -864,6 +869,40 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
 - **Not checked in game yet** (written 2026-11-23): which entities the octree has, whether a town building's box
   is on its `TOWN_BUILDING` entity or its construction, the time it takes on a large map.
 
+### Where a construction fits (`fit`)
+
+```
+python3 tools/tf3ctl.py fit --res ::/depots/road/road_depot.con --at 1200,800 [--radius 100] [--angle 1.5708]
+python3 tools/tf3ctl.py fit --res <station .con> --at 1200,800 --mouth 0,-12 [--track] --houses 5 [--catchment 150]
+python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0      # read only: no engine check
+```
+
+- Builds nothing. Its box: `--size W,D[,X,Y]` (in its own frame), else the engine's box for it at the point,
+  unturned (one `build --dry-run --engine-check`). Then one `around` over the circle and what may reach into it,
+  and the search here (tools/tf3ctl.py `fit_search`, plain functions tested without the game): places from the
+  point outwards (a grid every `--step`, default 4 m), each turn (`--angle`, else four quarter turns), kept when its
+  turned box keeps 0.5 m from every box around lists (not towns, trees, nodes or what moves) and from each road
+  and track piece's line by its half width. `--mouth DX,DY` (a road end in its own frame: the `local` of a trial
+  build's `connectable` mouth) tries instead only places that put that point right on the end of a road piece
+  of no construction (`--track`: a track's), every 15 degrees; the pieces at that end may meet the box there.
+  `--houses N`: at least N town buildings within `--catchment` (default 150 m) of the box's centre.
+- Then the best `--check` places (default 3, 0: none) are asked of the engine in turn (`build --dry-run
+  --engine-check`: this counts as changing the game, ask for it first); the first it would build is the answer:
+  `place` (`x`, `y`, `angle`, `offset` from the point, `centre`, `houses`, `roadDist`, `joinAt` with `--mouth`),
+  `build` (the command to build it), `refusedFirst` (the places the engine refused, with their `hits`). A place the
+  engine calls buildable only with warnings, or with town buildings it would take, is not taken: that verdict is
+  in the engine's own context, and the build gathers no fields or buildings (a road refused so, 2026-11-23). An
+  engine that cannot be asked stops it (`checked: false`), not counted as a refusal. None free: `ok: false`, "no
+  free place", and `blockers` (what stood in the way of most places: id, kind, name, place, count);
+  `tooFewHouses` counts free places with too few houses. At most 200000 places are tried (each against the
+  obstacles near it only; about 2 s for 85000 in a 1600-house town): `complete` false and `searched` (how far
+  out it went) when it stopped short, and the error names that distance. The grid has at most a million points
+  (`--radius` / `--step`). `--check 0` answers the search's best place unchecked (`checked: false`).
+- The boxes are the octree's (axis aligned: a turned thing reads larger) and the widths a guess, so the search
+  only narrows the places; the engine's check decides. Whether a mouth put on a road end joins that road (one node)
+  is not known yet: see `build --join-streets` and its `joins`. Water (a harbour) is not looked at.
+- **Not checked in game yet** (written 2026-11-23).
+
 ### Whether a place can be got to (`reach`, read only)
 
 ```
@@ -1232,7 +1271,7 @@ Not checked yet:
 - `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
 - `parcels`, entirely (read only, see "Town building parcels along a road").
 - `around`, entirely (read only, see "What stands near a point"); `build` / `road` `hits`, `--remove-buildings`,
-  `--join-streets` and `joins`.
+  `--join-streets` and `joins`; `build --dry-run --engine-check` and `fit`, entirely.
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `reach` and `persons --town` / `--destination`, entirely (read only, see "Whether a place can be got to").
 - `modhub publish` of an update (see "Uploading a mod"). `modhub status`, `validate` and a first upload were

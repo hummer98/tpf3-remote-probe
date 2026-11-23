@@ -9,6 +9,7 @@ import glob
 import importlib.util
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -1087,6 +1088,21 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("around", "--at", "0,7000", "--kinds", "field")
         self.assertEqual([e["id"] for e in res["entities"]], [9604])
 
+    def test_9xz_fit(self):
+        # the house at x 10..25, y 7010..7025 and the field at x 60..100 (around's fake): the fake's 20 m box fits
+        # between them, the engine's check takes it
+        code, res = self.ctl("fit", "--res", "road_bridge_ramp::/road_bridge_ramp/ramp.con", "--at", "40,7017",
+                             "--radius", "30", "--angle", "0", "--check", "1")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["boxFrom"], "the engine's check at the point, unturned")
+        self.assertEqual(res["box"], {"x0": -10, "y0": -10, "x1": 10, "y1": 10})
+        self.assertEqual(res["place"]["offset"], 0)
+        self.assertTrue(res["checked"])
+        code, res = self.ctl("build", "--res", "road_bridge_ramp::/road_bridge_ramp/ramp.con", "--at", "17,7017",
+                             "--dry-run", "--engine-check")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["footprint"]["x1"], 10)
+
     def test_9xy_parcels(self):
         code, res = self.ctl("parcels", "--edge", "9010")
         self.assertEqual(code, 0, res)
@@ -1559,6 +1575,204 @@ class QuitLaunchTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(tf3ctl.main(["around", "--at", "0,0", "--kinds", "nope"]), 2, "refused before sending")
         self.assertEqual(sent, [("around", {"at": [-5.0, 5.0], "radius": 30.0})])
+
+    # fit: a town's edge as around lists it: a street along y = 0 (x -100..100), a house of town 700 (its
+    # TOWN_BUILDING 601 and construction 602) at x 20..35, y 10..25, a field at x 60..140, y 30..90, the town's
+    # own box over all of it, and a person walking (moving: never in the way)
+    FIT_SCENE = [
+        {"id": 501, "kind": "street", "from": {"x": -100, "y": 0}, "to": {"x": 100, "y": 0}, "halfWidth": 6,
+         "box": {"x0": -100, "y0": -4, "x1": 100, "y1": 4}, "x": 0, "y": 0},
+        {"id": 601, "kind": "town_building", "construction": 602, "town": 700, "townName": "Chesham",
+         "box": {"x0": 20, "y0": 10, "x1": 35, "y1": 25}, "x": 27.5, "y": 17.5},
+        {"id": 602, "kind": "town_building", "fileName": "building/res.con", "building": 601,
+         "box": {"x0": 20, "y0": 10, "x1": 35, "y1": 25}, "x": 27.5, "y": 17.5},
+        {"id": 604, "kind": "field", "box": {"x0": 60, "y0": 30, "x1": 140, "y1": 90}, "x": 100, "y": 60},
+        {"id": 700, "kind": "town", "box": {"x0": -500, "y0": -500, "x1": 500, "y1": 500}, "x": 0, "y": 0},
+        {"id": 606, "kind": "moving", "box": {"x0": 0, "y0": 20, "x1": 1, "y1": 21}, "x": 0.5, "y": 20.5},
+    ]
+
+    def test_fit_geometry(self):
+        r = tf3ctl.fit_rect(10, 20, math.pi / 2, (-1, -2, 1, 2))
+        self.assertAlmostEqual(r[0][0], 12); self.assertAlmostEqual(r[0][1], 19)
+        sq = [(0, 0), (10, 0), (10, 10), (0, 10)]
+        self.assertTrue(tf3ctl.fit_polys_overlap(sq, [(5, 5), (15, 5), (15, 15), (5, 15)]))
+        self.assertFalse(tf3ctl.fit_polys_overlap(sq, [(10, 0), (20, 0), (20, 10), (10, 10)]), "touching")
+        self.assertTrue(tf3ctl.fit_polys_overlap(sq, [(10.2, 0), (20, 0), (20, 10), (10.2, 10)], margin=0.5),
+                        "closer than the room kept")
+        self.assertFalse(tf3ctl.fit_polys_overlap(sq, [(10.6, 0), (20, 0), (20, 10), (10.6, 10)], margin=0.5))
+        diamond = [(15, 5), (20, 0), (25, 5), (20, 10)]
+        self.assertFalse(tf3ctl.fit_polys_overlap(sq, diamond))
+        self.assertEqual(tf3ctl.fit_poly_seg_dist(sq, (5, 5), (50, 5)), 0.0, "an end inside")
+        self.assertEqual(tf3ctl.fit_poly_seg_dist(sq, (-5, 5), (15, 5)), 0.0, "through it")
+        self.assertAlmostEqual(tf3ctl.fit_poly_seg_dist(sq, (-5, 13), (15, 13)), 3.0)
+        self.assertAlmostEqual(tf3ctl.fit_seg_dist((5, 3), (0, 0), (10, 0)), 3.0)
+        x, y = tf3ctl.fit_to_world(0, 0, math.pi / 2, 0, -10)
+        self.assertAlmostEqual(x, 10); self.assertAlmostEqual(y, 0)
+
+    def test_fit_obstacles_houses_and_nodes(self):
+        obs = tf3ctl.fit_obstacles(self.FIT_SCENE)
+        self.assertEqual(sorted(o["id"] for o in obs), [501, 601, 604], "the town, the person and the house's "
+                         "construction (its TOWN_BUILDING is there) left out")
+        self.assertEqual(next(o for o in obs if o["id"] == 501)["line"][2], 6)
+        self.assertEqual(tf3ctl.fit_houses(self.FIT_SCENE), [(27.5, 17.5)])
+        self.assertEqual(tf3ctl.fit_join_nodes(self.FIT_SCENE), {(-100, 0): [501], (100, 0): [501]})
+        owned = [dict(self.FIT_SCENE[0], construction=900)]
+        self.assertEqual(tf3ctl.fit_join_nodes(owned), {}, "a construction's own piece is no road end to join")
+
+    def test_fit_search_grid_nearest_free_place(self):
+        box = (-5, -5, 5, 5)  # 10 m square round its origin
+        # wanted on the house: the nearest free place, never on the street or the house
+        res = tf3ctl.fit_search(self.FIT_SCENE, box, (27.5, 17.5), 40, (0.0,), step=1)
+        c = res["candidates"][0]
+        poly = tf3ctl.fit_rect(c["x"], c["y"], c["angle"], box)
+        self.assertFalse(tf3ctl.fit_polys_overlap(poly, [(20, 10), (35, 10), (35, 25), (20, 25)]))
+        self.assertGreaterEqual(min(p[1] for p in poly), 6 - 1e-9, "clear of the street's half width")
+        self.assertLessEqual(c["offset"], 14.0, "the house is 15 m a side: 7.5 + 0.5 + 5 m out at most a step more")
+        for a, b in zip(res["candidates"], res["candidates"][1:]):
+            self.assertLessEqual(a["offset"], b["offset"])
+        self.assertEqual(res["blockers"][0]["id"], 601, "the house is what stood in the way most")
+        self.assertIn("roadDist", c)
+        # a free point: itself, offset 0
+        res = tf3ctl.fit_search(self.FIT_SCENE, box, (0, 40), 10, (0.0,), step=2)
+        self.assertEqual(res["candidates"][0]["offset"], 0)
+        # nowhere: a box larger than the gap, in a small radius -> no candidate, and what is in the way
+        res = tf3ctl.fit_search(self.FIT_SCENE, (-60, -60, 60, 60), (27.5, 17.5), 10, (0.0,), step=2)
+        self.assertEqual(res["candidates"], [])
+        self.assertTrue(res["blockers"]); self.assertGreater(res["tried"], 0)
+
+    def test_fit_search_mouth_on_a_road_end_and_houses(self):
+        # a depot 10 x 20 with its mouth 10 m out along its -y: on the street's free end (100, 0)
+        box, mouth = (-5, -10, 5, 10), (0, -10)
+        res = tf3ctl.fit_search(self.FIT_SCENE, box, (100, 15), 60, tf3ctl.FIT_ANGLES_JOIN, mouth=mouth)
+        self.assertTrue(res["candidates"])
+        c = res["candidates"][0]
+        mx, my = tf3ctl.fit_to_world(c["x"], c["y"], c["angle"], *mouth)
+        self.assertAlmostEqual(mx, c["joinAt"]["x"], places=2); self.assertAlmostEqual(my, c["joinAt"]["y"], places=2)
+        self.assertEqual(c["joinAt"]["pieces"], [501])
+        poly = tf3ctl.fit_rect(c["x"], c["y"], c["angle"], box)
+        self.assertEqual(tf3ctl.fit_poly_seg_dist(poly, (-100, 0), (100 - 7, 0)) >= 6, True,
+                         "the street stays out of the box but at its mouth")
+        # every 15 degrees tried; facing back over the street is refused, so not all angles are free
+        self.assertLess(len([x for x in res["candidates"] if abs(x["joinAt"]["x"] - 100) < 1e-9]), 24)
+        # houses: at least 1 within 40 m of the centre of a 10 m square, wanted north of the street
+        res = tf3ctl.fit_search(self.FIT_SCENE, (-5, -5, 5, 5), (0, 40), 30, (0.0,), step=2, houses=1, catchment=40)
+        c = res["candidates"][0]
+        self.assertGreaterEqual(c["houses"], 1)
+        self.assertLessEqual(math.hypot(c["centre"]["x"] - 27.5, c["centre"]["y"] - 17.5), 40)
+        res = tf3ctl.fit_search(self.FIT_SCENE, (-5, -5, 5, 5), (0, 40), 30, (0.0,), step=2, houses=2, catchment=40)
+        self.assertEqual(res["candidates"], [], "only one house there")
+
+    def test_fit_command_flow(self):
+        calls = []
+        scene = self.FIT_SCENE
+
+        def sender(cmd, args=None, timeout=20, **kw):
+            calls.append((cmd, dict(args or {})))
+            if cmd == "around":
+                return {"ok": True, "entities": scene, "ms": {"total": 3}}
+            if not args.get("dryRun") or not args.get("engineCheck"):
+                raise AssertionError("fit only asks dry runs with the engine's check")
+            if "angle" in args and args["at"] == [27.5, 17.5] and args["angle"] == 0.0 and len(calls) == 1:
+                return {"ok": True, "footprint": {"x0": -5, "y0": -5, "x1": 5, "y1": 5}, "buildable": False}
+            # the engine refuses the first place offered, takes the second
+            n = sum(1 for c in calls if c[0] == "build")
+            if n == 2:
+                return {"ok": False, "error": "the engine would refuse it: Collision", "hits": [{"id": 9}]}
+            return {"ok": True, "buildable": True, "verdict": "buildable", "cost": 100}
+        p = tf3ctl.make_parser()
+        ns = p.parse_args(["fit", "--res", "::/depots/road/road_depot.con", "--at", "27.5,17.5", "--radius", "40",
+                           "--angle", "0", "--step", "1"])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["boxFrom"], "the engine's check at the point, unturned")
+        self.assertEqual([c[0] for c in calls], ["build", "around", "build", "build"])
+        self.assertEqual(out["refusedFirst"][0]["hits"], [{"id": 9}])
+        self.assertTrue(out["build"].startswith("build --res ::/depots/road/road_depot.con --at="))
+        self.assertEqual(calls[1][1]["at"], [27.5, 17.5])
+        # --size and --check 0: no engine at all (read only)
+        calls.clear()
+        ns = p.parse_args(["fit", "--res", "x.con", "--at", "0,40", "--size", "10,10", "--check", "0"])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertEqual([c[0] for c in calls], ["around"]); self.assertEqual(out["checked"], False)
+        self.assertEqual(out["place"]["offset"], 0)
+        # no place: ok false with what is in the way
+        calls.clear()
+        ns = p.parse_args(["fit", "--res", "x.con", "--at", "27.5,17.5", "--size", "120,120", "--radius", "10",
+                           "--angle", "0"])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertFalse(out["ok"]); self.assertIn("no free place", out["error"])
+        self.assertEqual([c[0] for c in calls], ["around"], "nothing asked of the engine for no place")
+        # bad arguments
+        for bad in (["--at", "1"], ["--at", "0,0", "--radius", "0"], ["--at", "0,0", "--size", "0,1"],
+                    ["--at", "0,0", "--check", "0"], ["--at", "0,0", "--houses", "0"], ["--at", "0,0", "--step", "0.1"],
+                    ["--at", "0,0", "--params", "[1]"], ["--at", "0,0", "--mouth", "1"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.fit_plan(p.parse_args(["fit", "--res", "x.con"] + bad))
+        self.assertNotIn("fit", tf3ctl.CHANGES_GAME)
+        self.assertTrue(tf3ctl.changes_game("build", {"res": "x", "dryRun": True, "engineCheck": True}))
+
+    def test_fit_doubts_unchecked_cut_short_and_too_few_houses(self):
+        p = tf3ctl.make_parser()
+        scene = self.FIT_SCENE
+
+        def make(answers):
+            calls = []
+
+            def sender(cmd, args=None, timeout=20, **kw):
+                calls.append(cmd)
+                if cmd == "around":
+                    return {"ok": True, "entities": scene}
+                return answers.pop(0)
+            return sender, calls
+        ns = p.parse_args(["fit", "--res", "x.con", "--at", "0,40", "--size", "10,10", "--angle", "0", "--check", "3"])
+        # a warning (in the engine's own context) or buildings it would take: not taken, the next place asked
+        sender, calls = make([{"ok": True, "buildable": True, "warnings": ["3 fields will be removed"]},
+                              {"ok": True, "buildable": True, "buildingsInWay": [601]},
+                              {"ok": True, "buildable": True, "verdict": "buildable"}])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(len(out["refusedFirst"]), 2)
+        self.assertIn("warnings", out["refusedFirst"][0]["error"])
+        self.assertEqual(out["refusedFirst"][1]["buildingsInWay"], [601])
+        # the engine could not be asked: said so, not "refused"
+        sender, calls = make([{"ok": True, "checked": False, "engineCheck": "not available: x"}])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertFalse(out["ok"]); self.assertIn("could not be asked", out["error"])
+        self.assertEqual(calls, ["around", "build"])
+        # cut short: the error names how far it went, not the radius
+        res = tf3ctl.fit_search(scene, (-60, -60, 60, 60), (27.5, 17.5), 100, (0.0,), step=1, most=50)
+        self.assertFalse(res["complete"]); self.assertEqual(res["tried"], 50); self.assertLess(res["searched"], 10)
+        self.assertEqual(res["candidates"], [])
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.fit_search(scene, (-1, -1, 1, 1), (0, 0), 1000, (0.0,), step=0.5)
+        # free but too few houses: said apart from "in the way"
+        ns = p.parse_args(["fit", "--res", "x.con", "--at", "0,40", "--size", "10,10", "--angle", "0", "--check", "0",
+                           "--radius", "20", "--houses", "3", "--catchment", "40"])
+        sender, calls = make([])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertFalse(out["ok"]); self.assertGreater(out["tooFewHouses"], 0)
+        self.assertIn("too few town buildings", out["error"])
+        # the build command quotes its params for a shell
+        ns = p.parse_args(["fit", "--res", "x.con", "--at", "0,40", "--size", "10,10", "--angle", "0", "--check", "1",
+                           "--params", '{"name": "it\'s"}'])
+        sender, calls = make([{"ok": True, "buildable": True}])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        import shlex
+        self.assertEqual(json.loads(shlex.split(out["build"])[-1]), {"name": "it's"})
+
+    def test_fit_join_dead_ends_first_and_short_pieces(self):
+        # a short piece (2 m) at the street's end: drawn back to its far end only, never skipped
+        scene = self.FIT_SCENE + [{"id": 502, "kind": "street", "from": {"x": 100, "y": 0}, "to": {"x": 100, "y": 2},
+                                   "halfWidth": 6, "x": 100, "y": 1}]
+        obs = tf3ctl.fit_obstacles(scene)
+        o = next(x for x in obs if x["id"] == 502)
+        poly = tf3ctl.fit_rect(100, 10, 0, (-5, -10, 5, 10))  # its box reaches down to the node (100, 0)
+        self.assertIs(tf3ctl.fit_blocker(poly, [o], 0.5, ((100, 0), [502])), o, "its far end is still in the box")
+        nodes = tf3ctl.fit_join_nodes(scene)
+        self.assertEqual(nodes[(100, 0)], [501, 502])
+        res = tf3ctl.fit_search(scene, (-5, -10, 5, 10), (100, 50), 200, (0.0,), mouth=(0, -10))
+        firsts = [c["joinAt"] for c in res["candidates"]]
+        self.assertTrue(all(len(j["pieces"]) >= 1 for j in firsts))
 
     def test_build_and_road_remove_buildings_join_streets_args(self):
         p = tf3ctl.make_parser()

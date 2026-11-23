@@ -1044,13 +1044,17 @@ function M.buildRequest(args)
 	for _, k in ipairs({ "fillModules", "noOwner", "removeBuildings", "joinStreets" }) do
 		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
 	end
+	if args.engineCheck ~= nil and type(args.engineCheck) ~= "boolean" then return nil, "engineCheck must be true or false" end
+	if args.engineCheck == true and args.dryRun ~= true then
+		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
+	end
 	if args.dryRun == true and (args.removeBuildings == true or args.joinStreets == true) then
 		return nil, "removeBuildings and joinStreets go with a build, not with dryRun (a dry run asks the engine nothing)"
 	end
 	return { res = res, x = at[1], y = at[2], z = at[3], angle = angle, params = params, seed = seed, name = name,
 		dryRun = args.dryRun == true, modules = modules, fillModules = args.fillModules ~= false,
 		noOwner = args.noOwner == true, removeBuildings = args.removeBuildings == true,
-		joinStreets = args.joinStreets == true }
+		joinStreets = args.joinStreets == true, engineCheck = args.engineCheck == true }
 end
 
 -- A modular construction's params.modules (a harbour's, a station's): { [slot id] = { name, variant, metadata,

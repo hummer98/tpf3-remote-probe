@@ -206,6 +206,38 @@ return function(t)
 		truthy(not rg.crashed, rg.crashed)
 	end)
 
+	test("build --dry-run --engine-check: the engine's verdict and the box it takes (footprint); nothing built", function()
+		eq(core.buildRequest({ res = "a.con", at = "0,0", dryRun = true, engineCheck = true }).engineCheck, true)
+		truthy(select(2, core.buildRequest({ res = "a.con", at = "0,0", engineCheck = true })):find("dryRun"))
+		truthy(select(2, core.buildRequest({ res = "a.con", at = "0,0", dryRun = true, engineCheck = 1 })):find("engineCheck"))
+		local g = buildWorld({ blocked = function(x) return x > 1000 and 601 or nil end })
+		fake.installAround(g, { things = THINGS })
+		local calls = g.proposalDataCalls
+		local a = buildRun(g, 2748, string.format('{ res = %q, at = "100,50", angle = %s, dryRun = true, engineCheck = true }',
+			RAMP, math.pi / 2))
+		truthy(a.ok, a.error); eq(a.buildable, true); eq(a.verdict, "buildable"); eq(a.checked, true)
+		eq(g.proposalDataCalls, calls + 1, "asked once"); eq(next(g.built), nil, "nothing built"); eq(#g.buildCmds, 0)
+		-- the fake's 20 m square, turned a quarter: the same square round the point
+		eq(a.footprint.x0, -10); eq(a.footprint.x1, 10); eq(a.footprint.y1, 10); eq(a.footprint.height, 10)
+		-- a 40 x 10 box turned 30 degrees: its world box from the four turned corners
+		local g3 = buildWorld({ cons = { [RAMP] = { cost = 1, box = { -20, -5, 20, 5, 8 } } } })
+		local r3 = buildRun(g3, 2750, string.format('{ res = %q, at = "0,0", angle = %s, dryRun = true, engineCheck = true }',
+			RAMP, math.pi / 6))
+		truthy(r3.ok, r3.error)
+		local hx = 20 * math.cos(math.pi / 6) + 5 * math.sin(math.pi / 6)
+		local hy = 20 * math.sin(math.pi / 6) + 5 * math.cos(math.pi / 6)
+		truthy(math.abs(r3.footprint.x1 - hx) < 1e-6 and math.abs(r3.footprint.y0 + hy) < 1e-6,
+			string.format("%g %g / %g %g", r3.footprint.x1, r3.footprint.y0, hx, -hy))
+		eq(r3.footprint.height, 8)
+		-- (a new fake game replaces the api: g again for what follows)
+		g = buildWorld({ blocked = function(x) return x > 1000 and 601 or nil end })
+		fake.installAround(g, { things = THINGS })
+		local b = buildRun(g, 2749, string.format('{ res = %q, at = "2000,0", dryRun = true, engineCheck = true }', RAMP))
+		eq(b.ok, false); eq(b.buildable, false); eq(b.collisions[1], 601); eq(b.hits[1].kind, "town_building")
+		truthy(b.error:find("dry run"), b.error)
+		truthy(not g.crashed, g.crashed)
+	end)
+
 	-- a depot with a stub: its inner end frozen, its mouth 10 m out along its y axis (local 0, -10)
 	local DEPOT = "::/depots/road/road_depot.con"
 	local function depotWorld()

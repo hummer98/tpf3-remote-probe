@@ -54,6 +54,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # ticket price multiplier) and what is missing
   tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's start event (initNewGameFromMap) sent
             # again when basePopulation is missing or 0 while towns have population (a start with no towns)
+  tf3ctl.py fit --res R --at x,y [--radius 100] [--size W,D] [--mouth DX,DY] [--houses N] [--check 3]   # where
+            # it fits: around's list searched here, the best few asked of the engine (dry runs); builds nothing
   tf3ctl.py around --at x,y [--radius 100] [--kinds town_building,street,...|all] [--limit 200]   # read only: what
             # stands near a point (kind, name, box, distance; constructions' road mouths in their own frame)
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
@@ -159,6 +161,7 @@ import math
 import os
 import re
 import signal
+import shlex
 import shutil
 import stat
 import subprocess
@@ -530,7 +533,7 @@ def changes_game(cmd, args):
     args = args or {}
     # road --dry-run --engine-check: the engine evaluates the proposal (makeProposalData), so it counts as changing
     # the game (ask for the game first), unlike a plain dry run
-    if cmd == "road" and args.get("engineCheck") is True:
+    if cmd in ("road", "build") and args.get("engineCheck") is True:
         return True
     if cmd not in DRY_RUN_CHANGES and (args.get("dryRun") is True or args.get("list") is True):
         return False
@@ -1746,7 +1749,7 @@ def build_args(ns):
     if ns.remove is not None or ns.remove_all:
         if ns.res or ns.at or ns.params or ns.name or ns.angle is not None or ns.seed is not None or ns.dry_run \
                 or getattr(ns, "no_owner", False) or getattr(ns, "no_fill_modules", False) \
-                or getattr(ns, "remove_buildings", False) or getattr(ns, "join_streets", False):
+                or getattr(ns, "remove_buildings", False) or getattr(ns, "join_streets", False) or getattr(ns, "engine_check", False):
             raise ToolError("--remove / --remove-all go alone")
         if ns.remove_all:
             if ns.remove is not None:
@@ -1800,6 +1803,10 @@ def build_args(ns):
         args["removeBuildings"] = True
     if getattr(ns, "join_streets", False):
         args["joinStreets"] = True
+    if getattr(ns, "engine_check", False):
+        if not ns.dry_run:
+            raise ToolError("--engine-check goes with --dry-run only")
+        args["engineCheck"] = True
     if ns.dry_run and (args.get("removeBuildings") or args.get("joinStreets")):
         # (the dry run asks the engine nothing: the Context's flags would be dropped unseen)
         raise ToolError("--remove-buildings and --join-streets go with a build, not with --dry-run")
@@ -2379,6 +2386,437 @@ def connect_args(ns):
         args["clear"] = True
     args["timeout"] = ns.timeout
     return args
+
+
+# fit: where a construction of a known size can go near a wanted point, searched here (pure functions, below) over
+# what `around` lists, and the best few asked of the engine (build --dry-run --engine-check) before one is answered.
+# The boxes are the octree's, axis aligned (a turned station reads larger), and road and track widths are a guess:
+# the search narrows the places, the engine's check decides.
+FIT_RADIUS_MAX = 1000
+FIT_STEP_MIN = 0.5
+FIT_CANDIDATES_MAX = 200000  # places tried at most (each against the obstacles near it only)
+FIT_GRID_MAX = 1000000  # grid points made at most
+FIT_CHECK_MAX = 10
+FIT_SKIP_KINDS = ("town", "moving", "node", "asset")  # a town's box is the whole town; trees go when one builds
+FIT_ANGLES_ANY = tuple(i * math.pi / 2 for i in range(4))
+FIT_ANGLES_JOIN = tuple(i * math.pi / 12 for i in range(24))
+
+
+def fit_rect(cx, cy, angle, box):
+    """The 4 corners of a box (x0, y0, x1, y1 in a construction's own frame) at cx, cy turned by angle."""
+    c, s = math.cos(angle), math.sin(angle)
+    x0, y0, x1, y1 = box
+    return [(cx + c * x - s * y, cy + s * x + c * y) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+
+
+def fit_to_world(cx, cy, angle, dx, dy):
+    c, s = math.cos(angle), math.sin(angle)
+    return cx + c * dx - s * dy, cy + s * dx + c * dy
+
+
+def _fit_axes(poly):
+    out = []
+    for i in range(len(poly)):
+        (ax, ay), (bx, by) = poly[i], poly[(i + 1) % len(poly)]
+        n = math.hypot(ay - by, bx - ax)
+        if n > 0:
+            out.append(((ay - by) / n, (bx - ax) / n))
+    return out
+
+
+def fit_polys_overlap(a, b, margin=0.0):
+    """Whether two convex polygons come closer than margin metres along some axis or overlap (separating axes):
+    with margin 0 touching is no overlap; with margin m a gap below m counts as one (room kept between them)."""
+    for ax in _fit_axes(a) + _fit_axes(b):
+        pa = [p[0] * ax[0] + p[1] * ax[1] for p in a]
+        pb = [p[0] * ax[0] + p[1] * ax[1] for p in b]
+        if max(pa) + margin <= min(pb) or max(pb) + margin <= min(pa):
+            return False
+    return True
+
+
+def fit_seg_dist(p, a, b):
+    """The distance from point p to the segment a-b."""
+    vx, vy = b[0] - a[0], b[1] - a[1]
+    l2 = vx * vx + vy * vy
+    t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / l2))
+    return math.hypot(p[0] - a[0] - t * vx, p[1] - a[1] - t * vy)
+
+
+def _fit_cross(a, b, c, d):
+    def orient(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    o1, o2, o3, o4 = orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b)
+    return ((o1 > 0) != (o2 > 0)) and ((o3 > 0) != (o4 > 0)) and 0 not in (o1, o2, o3, o4)
+
+
+def _fit_inside(poly, p):
+    sign = None
+    for i in range(len(poly)):
+        q, r = poly[i], poly[(i + 1) % len(poly)]
+        cr = (r[0] - q[0]) * (p[1] - q[1]) - (r[1] - q[1]) * (p[0] - q[0])
+        if cr != 0:
+            if sign is None:
+                sign = cr > 0
+            elif sign != (cr > 0):
+                return False
+    return True
+
+
+def fit_poly_seg_dist(poly, a, b):
+    """0 when the segment a-b meets the convex polygon, else the least distance between them."""
+    if _fit_inside(poly, a) or _fit_inside(poly, b):
+        return 0.0
+    best = float("inf")
+    for i in range(len(poly)):
+        q, r = poly[i], poly[(i + 1) % len(poly)]
+        if _fit_cross(a, b, q, r):
+            return 0.0
+        best = min(best, fit_seg_dist(q, a, b), fit_seg_dist(a, q, r), fit_seg_dist(b, q, r))
+    return best
+
+
+def fit_obstacles(entities, skip=FIT_SKIP_KINDS):
+    """around's entries -> obstacles: {"id", "kind", "name", "line": (a, b, halfWidth)} for a road or track piece,
+    {"id", "kind", "name", "poly": corners} for one with a box (a point: 1 m square). One entry per town building:
+    its construction (with building) is dropped when its TOWN_BUILDING entity (with construction) is there."""
+    houses = {e.get("construction") for e in entities if e.get("kind") == "town_building" and not e.get("fileName")}
+    out = []
+    for e in entities:
+        kind = e.get("kind")
+        if kind in skip:
+            continue
+        if kind == "town_building" and e.get("fileName") and e.get("id") in houses:
+            continue
+        base = {"id": e.get("id"), "kind": kind, "name": e.get("name") or e.get("townName"),
+                "x": e.get("x"), "y": e.get("y")}
+        f, t = e.get("from"), e.get("to")
+        if kind in ("street", "track") and f and t and f.get("x") is not None and t.get("x") is not None:
+            base["line"] = ((f["x"], f["y"]), (t["x"], t["y"]), float(e.get("halfWidth") or 0))
+            base["construction"] = e.get("construction")
+        else:
+            b = e.get("box")
+            if not b or b.get("x0") is None:
+                continue
+            x0, y0, x1, y1 = b["x0"], b["y0"], b["x1"], b["y1"]
+            if x1 - x0 < 1:
+                x0, x1 = (x0 + x1) / 2 - 0.5, (x0 + x1) / 2 + 0.5
+            if y1 - y0 < 1:
+                y0, y1 = (y0 + y1) / 2 - 0.5, (y0 + y1) / 2 + 0.5
+            base["poly"] = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        out.append(base)
+    return out
+
+
+def fit_houses(entities):
+    """The town buildings' centres, one per building (the TOWN_BUILDING entity's; its construction's only when that
+    is all there is)."""
+    tb = [e for e in entities if e.get("kind") == "town_building" and not e.get("fileName") and e.get("x") is not None]
+    if not tb:
+        tb = [e for e in entities if e.get("kind") == "town_building" and e.get("x") is not None]
+    return [(e["x"], e["y"]) for e in tb]
+
+
+def fit_join_nodes(entities, track=False):
+    """The ends of the road (or track) pieces that belong to no construction: {(x, y): [obstacle ids at it]}."""
+    want = "track" if track else "street"
+    nodes = {}
+    for e in entities:
+        if e.get("kind") != want or e.get("construction") is not None:
+            continue
+        for k in ("from", "to"):
+            p = e.get(k)
+            if p and p.get("x") is not None:
+                key = (round(p["x"], 3), round(p["y"], 3))
+                nodes.setdefault(key, []).append(e.get("id"))
+    return nodes
+
+
+FIT_CELL = 50.0  # m: the grid the obstacles are kept in, so each place is checked against those near it only
+
+
+def fit_index(obstacles, cell=FIT_CELL):
+    """obstacles -> {(i, j): [their positions in the list]} by the cells their box (a line's, with its width) meets."""
+    grid = {}
+    for k, o in enumerate(obstacles):
+        if "line" in o:
+            (ax, ay), (bx, by), hw = o["line"]
+            x0, y0, x1, y1 = min(ax, bx) - hw, min(ay, by) - hw, max(ax, bx) + hw, max(ay, by) + hw
+        else:
+            xs, ys = [p[0] for p in o["poly"]], [p[1] for p in o["poly"]]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+        o["aabb"] = (x0, y0, x1, y1)
+        for i in range(int(math.floor(x0 / cell)), int(math.floor(x1 / cell)) + 1):
+            for j in range(int(math.floor(y0 / cell)), int(math.floor(y1 / cell)) + 1):
+                grid.setdefault((i, j), []).append(k)
+    return grid
+
+
+def fit_near(poly, obstacles, grid, margin, cell=FIT_CELL):
+    """The obstacles whose box comes within margin of the box round poly, in list order."""
+    xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+    x0, y0, x1, y1 = min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin
+    ks = set()
+    for i in range(int(math.floor(x0 / cell)), int(math.floor(x1 / cell)) + 1):
+        for j in range(int(math.floor(y0 / cell)), int(math.floor(y1 / cell)) + 1):
+            ks.update(grid.get((i, j), ()))
+    out = []
+    for k in sorted(ks):
+        b = obstacles[k]["aabb"]
+        if b[0] <= x1 and b[2] >= x0 and b[1] <= y1 and b[3] >= y0:
+            out.append(obstacles[k])
+    return out
+
+
+def fit_blocker(poly, obstacles, margin, join=None):
+    """The first obstacle the footprint poly overlaps or comes closer than margin to, or None. join = ((x, y),
+    ids): the node a mouth is put on; the pieces at it are drawn back from it by their width and a metre, as the
+    mouth meets them there (a piece shorter than that: its far end only)."""
+    for o in obstacles:
+        if "line" in o:
+            a, b, hw = o["line"]
+            if join and o["id"] in join[1]:
+                (nx, ny) = join[0]
+                L = math.hypot(b[0] - a[0], b[1] - a[1])
+                cut = min(hw + 1.0, L)
+                if math.hypot(a[0] - nx, a[1] - ny) < 0.01 and L > 0:
+                    a = (a[0] + (b[0] - a[0]) * cut / L, a[1] + (b[1] - a[1]) * cut / L)
+                elif math.hypot(b[0] - nx, b[1] - ny) < 0.01 and L > 0:
+                    b = (b[0] + (a[0] - b[0]) * cut / L, b[1] + (a[1] - b[1]) * cut / L)
+            if fit_poly_seg_dist(poly, a, b) < hw + margin:
+                return o
+        elif fit_polys_overlap(poly, o["poly"], margin):
+            return o
+    return None
+
+
+def _fit_places(want, radius, step, angles, mouth, joins):
+    """The places to try, nearest to want first: (offset, x, y, angle, join), made as they are taken."""
+    if mouth is not None:
+        places = []
+        for (nx, ny), ids in joins:
+            for a in angles:
+                mx, my = fit_to_world(0, 0, a, mouth[0], mouth[1])
+                x, y = nx - mx, ny - my
+                d = math.hypot(x - want[0], y - want[1])
+                if d <= radius:
+                    # (a dead end, one piece at the node, before a node inside a road)
+                    places.append((d, 0 if len(ids) == 1 else 1, x, y, a, ((nx, ny), ids)))
+        places.sort(key=lambda p: (round(p[0], 6), p[1], p[4], p[2], p[3]))
+        for p in places:
+            yield (p[0], p[2], p[3], p[4], p[5])
+        return
+    n = int(radius // step)
+    pts = []
+    for i in range(-n, n + 1):
+        for j in range(-n, n + 1):
+            d = math.hypot(i * step, j * step)
+            if d <= radius:
+                pts.append((d, i, j))
+    pts.sort()
+    for d, i, j in pts:
+        for a in angles:
+            yield (d, want[0] + i * step, want[1] + j * step, a, None)
+
+
+def fit_search(entities, box, want, radius, angles, step=4.0, mouth=None, track=False, houses=0, catchment=None,
+               margin=0.5, limit=50, most=None):
+    """Places for a construction whose box (x0, y0, x1, y1, own frame) fits among around's entities, nearest to
+    want (x, y) first, within radius of it. angles: the turns tried. mouth (dx, dy, own frame): put that point
+    on the end of a road (track) piece that belongs to no construction; without it a grid every step metres. houses
+    / catchment: at least that many town buildings within catchment metres of the box's centre. At most `most`
+    places are tried (FIT_CANDIDATES_MAX): searched says how far out they went.
+    -> {"candidates": [...], "tried": n, "searched": m, "complete": bool, "tooFewHouses": n,
+        "blockers": [{"id", "kind", "name", "x", "y", "count"}]}"""
+    most = FIT_CANDIDATES_MAX if most is None else most
+    if (2 * radius / step + 1) ** 2 > FIT_GRID_MAX and mouth is None:
+        raise ToolError("--radius / --step: %d grid points, at most %d (a larger --step or a smaller --radius)"
+                        % ((2 * radius / step + 1) ** 2, FIT_GRID_MAX))
+    obstacles = fit_obstacles(entities)
+    grid = fit_index(obstacles)
+    homes = fit_houses(entities) if houses else []
+    bcx, bcy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    joins = list(fit_join_nodes(entities, track).items()) if mouth is not None else []
+    found, blocked, tried, searched, few, complete = [], {}, 0, 0.0, 0, True
+    for d, x, y, a, join in _fit_places(want, radius, step, angles, mouth, joins):
+        if tried >= most:
+            complete = False
+            break
+        tried += 1
+        searched = d
+        poly = fit_rect(x, y, a, box)
+        o = fit_blocker(poly, fit_near(poly, obstacles, grid, margin), margin, join)
+        if o is not None:
+            k = o["id"]
+            if k not in blocked:
+                blocked[k] = dict({key: o.get(key) for key in ("id", "kind", "name", "x", "y")}, count=0)
+            blocked[k]["count"] += 1
+            continue
+        cx, cy = fit_to_world(x, y, a, bcx, bcy)
+        near = sum(1 for hx, hy in homes if math.hypot(hx - cx, hy - cy) <= (catchment or 0)) if houses else None
+        if houses and near < houses:
+            few += 1
+            continue
+        cand = {"x": round(x, 3), "y": round(y, 3), "angle": round(a, 6), "offset": round(d, 3),
+                "centre": {"x": round(cx, 3), "y": round(cy, 3)}}
+        if near is not None:
+            cand["houses"] = near
+        roads = [fit_poly_seg_dist(poly, *o["line"][:2]) - o["line"][2] for o in obstacles
+                 if o.get("kind") == "street" and "line" in o]
+        if roads:
+            cand["roadDist"] = round(max(0.0, min(roads)), 3)
+        if join:
+            cand["joinAt"] = {"x": join[0][0], "y": join[0][1], "pieces": sorted(join[1])}
+        found.append(cand)
+        if len(found) >= limit:
+            break
+    blockers = sorted(blocked.values(), key=lambda b: -b["count"])[:5]
+    return {"candidates": found, "tried": tried, "searched": round(searched, 3), "complete": complete,
+            "tooFewHouses": few, "blockers": blockers}
+
+
+FIT_CATCHMENT_DEFAULT = 150  # m: a small rail station's main building (remote_catchment.lua's notes: 150 / 175 / 200)
+
+
+def fit_numbers(text, n, name):
+    try:
+        v = [float(x) for x in text.split(",")]
+    except (ValueError, AttributeError):
+        raise ToolError("%s must be numbers separated by commas" % name)
+    if len(v) not in n or any(x != x or abs(x) == float("inf") for x in v):
+        raise ToolError("%s must be %s finite numbers" % (name, " or ".join(map(str, n))))
+    return v
+
+
+def fit_plan(ns):
+    """fit's arguments checked: (want, radius, angles, box or None, mouth or None, params or None)."""
+    want = fit_numbers(ns.at, (2,), "--at")
+    radius = 100.0 if ns.radius is None else ns.radius
+    if not 0 < radius <= FIT_RADIUS_MAX:
+        raise ToolError("--radius must be more than 0 and at most %d m" % FIT_RADIUS_MAX)
+    step = 4.0 if ns.step is None else ns.step
+    if not step >= FIT_STEP_MIN:
+        raise ToolError("--step must be at least %g m" % FIT_STEP_MIN)
+    mouth = fit_numbers(ns.mouth, (2,), "--mouth") if ns.mouth else None
+    if ns.angle is not None:
+        if ns.angle != ns.angle or abs(ns.angle) == float("inf"):
+            raise ToolError("--angle must be a finite number of radians")
+        angles = (ns.angle,)
+    else:
+        angles = FIT_ANGLES_JOIN if mouth else FIT_ANGLES_ANY
+    box = None
+    if ns.size:
+        v = fit_numbers(ns.size, (2, 4), "--size")
+        if v[0] <= 0 or v[1] <= 0:
+            raise ToolError("--size: W and D must be above 0")
+        ox, oy = (v[2], v[3]) if len(v) == 4 else (0.0, 0.0)
+        box = (ox - v[0] / 2, oy - v[1] / 2, ox + v[0] / 2, oy + v[1] / 2)
+    if not ns.res or not ns.res.strip():
+        raise ToolError("give --res (the construction to place)")
+    params = None
+    if ns.params is not None:
+        try:
+            params = json.loads(ns.params)
+        except ValueError as e:
+            raise ToolError("--params must be a JSON object: %s" % e)
+        if not isinstance(params, dict):
+            raise ToolError("--params must be a JSON object")
+    if ns.houses is not None and ns.houses < 1:
+        raise ToolError("--houses must be 1 or more")
+    if ns.check is not None and not 0 <= ns.check <= FIT_CHECK_MAX:
+        raise ToolError("--check must be 0-%d" % FIT_CHECK_MAX)
+    if box is None and ns.check == 0:
+        raise ToolError("without --size the box comes from the engine's check: --check 0 needs --size")
+    return want, radius, step, angles, box, mouth, params
+
+
+def cmd_fit(ns, sender=None):
+    """fit: the box (--size, else one engine check at the point), around's list, the search here, then the best
+    few asked of the engine; the first it would build is the answer."""
+    sender = sender or send
+    want, radius, step, angles, box, mouth, params = fit_plan(ns)
+    checks = 3 if ns.check is None else ns.check
+    base = {"res": ns.res.strip(), "dryRun": True, "engineCheck": True}
+    if params is not None:
+        base["params"] = params
+    out = {"ok": True, "at": {"x": want[0], "y": want[1]}, "radius": radius}
+    if box is None:
+        first = sender("build", dict(base, at=want, angle=0.0), timeout=BUILD_TIMEOUT_SEC)
+        fp = isinstance(first, dict) and first.get("footprint")
+        if not fp:
+            return {"ok": False, "error": "the engine's check gave no box for the construction (footprint): give "
+                    "--size W,D", "check": first}
+        box = (fp["x0"], fp["y0"], fp["x1"], fp["y1"])
+        out["boxFrom"] = "the engine's check at the point, unturned"
+    else:
+        out["boxFrom"] = "--size"
+    out["box"] = {"x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3]}
+    reach = radius + math.hypot(box[2] - box[0], box[3] - box[1]) + ((ns.catchment or FIT_CATCHMENT_DEFAULT) if ns.houses else 0) + 10
+    seen = sender("around", {"at": want, "radius": min(reach, AROUND_RADIUS_MAX), "limit": AROUND_LIMIT_MAX},
+                  timeout=60)
+    if not isinstance(seen, dict) or not seen.get("ok"):
+        return {"ok": False, "error": "around failed: %s" % (seen.get("error") if isinstance(seen, dict) else seen)}
+    if seen.get("truncated") or seen.get("timeTruncated") or seen.get("scanTruncated"):
+        out["warning"] = "around's list was cut short (a smaller --radius): places may be taken that are not free"
+    found = fit_search(seen.get("entities") or [], box, want, radius, angles, step=step, mouth=mouth,
+                       track=ns.track, houses=ns.houses or 0,
+                       catchment=(ns.catchment or FIT_CATCHMENT_DEFAULT) if ns.houses else None)
+    out.update(tried=found["tried"], searched=found["searched"], complete=found["complete"],
+               free=len(found["candidates"]), blockers=found["blockers"],
+               aroundMs=(seen.get("ms") or {}).get("total"),
+               note="boxes are the octree's (axis aligned), road and track widths a guess: the search narrows, the "
+                    "engine's check decides")
+    if found["tooFewHouses"]:
+        out["tooFewHouses"] = found["tooFewHouses"]
+    if not found["candidates"]:
+        within = radius if found["complete"] else found["searched"]
+        why = ("; %d free places had too few town buildings near" % found["tooFewHouses"]) if found["tooFewHouses"] else ""
+        cut = "" if found["complete"] else " (the search stopped at %d places, %g m out: a larger --step)" % (
+            found["tried"], found["searched"])
+        out.update(ok=False, error="no free place within %g m of the point%s (the box %s, %d places tried)%s; most "
+                   "in the way: %s" % (within, cut, out["box"], found["tried"], why,
+                                    ", ".join("%s %s (%s) x%d" % (b["kind"], b["id"], b.get("name") or "-", b["count"])
+                                              for b in found["blockers"][:3]) or "nothing"))
+        return out
+    if checks == 0:
+        out["place"] = found["candidates"][0]
+        out["checked"] = False
+        out["candidates"] = found["candidates"][:10]
+        return out
+    refused = []
+    for cand in found["candidates"][:checks]:
+        res = sender("build", dict(base, at=[cand["x"], cand["y"]], angle=cand["angle"]), timeout=BUILD_TIMEOUT_SEC)
+        if isinstance(res, dict) and res.get("ok") and res.get("checked") is False:
+            # (the engine could not be asked: no verdict, not a refusal)
+            out.update(ok=False, error="the engine could not be asked (%s): nothing checked" % res.get("engineCheck"),
+                       place=cand, checked=False, candidates=found["candidates"][:10])
+            return out
+        # a warning or buildings it would take: judged in the engine's own context, where the build's (no fields
+        # or buildings gathered) may still refuse it (a road's dry run said buildable with "fields will be
+        # removed" and the build collided, 2026-11-23): not taken
+        doubt = isinstance(res, dict) and (res.get("warnings") or res.get("buildingsInWay"))
+        if isinstance(res, dict) and res.get("ok") and res.get("buildable") and not doubt:
+            out.update(place=cand, checked=True, engine={k: res.get(k) for k in ("verdict", "cost", "warnings",
+                                                                                  "engineContext")})
+            cmd = "build --res %s --at=%s,%s --angle %s" % (base["res"], cand["x"], cand["y"], cand["angle"])
+            if params is not None:
+                cmd += " --params " + shlex.quote(json.dumps(params))
+            out["build"] = cmd
+            if mouth and "joinAt" not in cand:
+                out["roadNote"] = "not put on a road end"
+            if refused:
+                out["refusedFirst"] = refused
+            return out
+        if doubt and res.get("buildable"):
+            refused.append({"place": cand, "error": "buildable only with warnings in the engine's own context: %s"
+                            % "; ".join(res.get("warnings") or ["town buildings in the way"]),
+                            "buildingsInWay": res.get("buildingsInWay")})
+            continue
+        refused.append({"place": cand, "error": res.get("error") if isinstance(res, dict) else str(res),
+                        "hits": res.get("hits") if isinstance(res, dict) else None})
+    out.update(ok=False, error="the engine refused (or doubted) the %d best places the search found" % len(refused),
+               refused=refused, candidates=found["candidates"][:10])
+    return out
 
 
 def cmd_connect(ns):
@@ -3882,6 +4320,9 @@ def make_parser():
                     "strawberry farm); default the company's (--owner names the client, not this)")
     bd.add_argument("--no-fill-modules", action="store_true", help="with params.modules: send each module as given; "
                     "default: a module without metadata / updateScript gets moduleRep's own")
+    bd.add_argument("--engine-check", action="store_true", help="with --dry-run only: also ask the engine about the "
+                    "same proposal a build sends (makeProposalData: errors, collisions with hits, cost, and the box it "
+                    "takes: footprint). Counts as changing the game: ask for the game first")
     bd.add_argument("--remove-buildings", action="store_true", help="let it take the town buildings in its way (the "
                     "Context's gatherBuildings, as the player's tools do; the answer's buildingsInWay). Test saves only")
     bd.add_argument("--join-streets", action="store_true", help="the Context's cleanupStreetGraph: whether its road "
@@ -4181,6 +4622,25 @@ def make_parser():
     ar.add_argument("--kinds", metavar="A,B", help="only these (all: every kind; default all but node and moving): "
                     + ", ".join(AROUND_KINDS))
     ar.add_argument("--limit", type=int, help="entries listed, nearest first (default 200, at most %d)" % AROUND_LIMIT_MAX)
+    fi = sub.add_parser("fit", help="where a construction fits near a point: around's list searched here (its box, "
+                        "turns, a road end for its mouth, town buildings near), the best few asked of the engine "
+                        "(build --dry-run --engine-check: counts as changing the game). Builds nothing")
+    fi.add_argument("--res", required=True, help="the construction's resName, as build takes it")
+    fi.add_argument("--params", help="a JSON object over its defaults, as build takes it")
+    fi.add_argument("--at", required=True, metavar="X,Y", help="the wanted point (for a negative x write --at=-100,50)")
+    fi.add_argument("--radius", type=float, help="how far from it it may go (default 100, at most %d m)" % FIT_RADIUS_MAX)
+    fi.add_argument("--step", type=float, help="the grid's step without --mouth (default 4 m)")
+    fi.add_argument("--angle", type=float, help="this turn only (radians); default: four quarter turns, with --mouth "
+                    "every 15 degrees")
+    fi.add_argument("--size", metavar="W,D[,X,Y]", help="its box in its own frame (W along its x; X,Y: the box's "
+                    "centre from its origin); default: from the engine's check at the point, unturned")
+    fi.add_argument("--mouth", metavar="DX,DY", help="the road end in its own frame (build's connectable[].local of a "
+                    "trial build): only places with it on the end of a road piece of no construction")
+    fi.add_argument("--track", action="store_true", help="with --mouth: on a track's end instead of a road's")
+    fi.add_argument("--houses", type=int, help="at least this many town buildings within --catchment of its centre")
+    fi.add_argument("--catchment", type=float, help="metres for --houses (default %d)" % FIT_CATCHMENT_DEFAULT)
+    fi.add_argument("--check", type=int, help="the best places asked of the engine, in turn (default 3, at most %d; "
+                    "0: none, read only, needs --size)" % FIT_CHECK_MAX)
     ps = sub.add_parser("persons", help="sim persons (read only) aboard a vehicle or on a line: happiness, expected "
                                         "arrival and the game time, line and stops; the engine's unhappy counts")
     pw = ps.add_mutually_exclusive_group(required=True)
@@ -4503,6 +4963,8 @@ def main(argv=None):
             res = send("parcels", parcels_args(ns))
         elif ns.cmd == "around":
             res = send("around", around_args(ns), timeout=60)
+        elif ns.cmd == "fit":
+            res = cmd_fit(ns)
         elif ns.cmd == "persons":
             if ns.every is not None:
                 return persons_every(ns)  # prints its own lines

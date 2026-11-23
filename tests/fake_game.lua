@@ -2134,6 +2134,21 @@ function M.installBuild(g, spec)
 			if not c then crash("no construction " .. tostring(ce.fileName)) end
 			if type(ce.transf) ~= "table" or not ce.transf.mat4f then crash("transf is no Mat4f") end
 			adds[#adds + 1] = ce
+			-- its box (c.box = { x0, y0, x1, y1, height } in its own frame, default 20 m square, 10 m high), turned and
+			-- put where it is asked, axis aligned (ProposalData.toAddData[i].boundingVolume)
+			do
+				local lb = c.box or { -10, -10, 10, 10, 10 }
+				local t = ce.transf
+				local xs, ys = {}, {}
+				for _, p in ipairs({ { lb[1], lb[2] }, { lb[3], lb[2] }, { lb[3], lb[4] }, { lb[1], lb[4] } }) do
+					xs[#xs + 1] = t[13] + t[1] * p[1] + t[5] * p[2]
+					ys[#ys + 1] = t[14] + t[2] * p[1] + t[6] * p[2]
+				end
+				data.toAddData = data.toAddData or {}
+				table.insert(data.toAddData, { boundingVolume = { bbox = {
+					min = { x = math.min(unpack(xs)), y = math.min(unpack(ys)), z = t[15] },
+					max = { x = math.max(unpack(xs)), y = math.max(unpack(ys)), z = t[15] + (lb[5] or 10) } } } })
+			end
 			data.costs = data.costs + (c.cost or 0)
 			local hit = spec.blocked and spec.blocked(ce.transf[13], ce.transf[14])
 			if hit then

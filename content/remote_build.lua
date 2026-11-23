@@ -24,6 +24,7 @@ function M.new(ctx)
 	local finishRoad, roadLost -- (the road command's, below)
 	local joinsOf -- (below, before finish)
 	local streetEdgesNear -- (below, after place: place and joinsOf call it)
+	local engineCheck -- (below, by the road command; place's dry run with engineCheck calls it too)
 	local describeHits -- (remote_around.lua's describe, set by the script: B.setDescribeHits)
 	local NODES_BEFORE_M = 150
 
@@ -220,6 +221,16 @@ function M.new(ctx)
 			errors = es and strings(try(function() return es.messages end)) or nil,
 			warnings = es and strings(try(function() return es.warnings end)) or nil,
 			collisions = #hit > 0 and core.array(hit) or nil,
+			-- the boxes of the constructions the proposal adds (ProposalData.toAddData[i].boundingVolume, type.d.tl):
+			-- how much room one takes where it was asked, before it is built (build --dry-run --engine-check)
+			newBoxes = (function()
+				local out = {}
+				for _, d in ipairs(core.toList(data and try(function() return data.toAddData end))) do
+					local b = core.boxOf(core.field(core.field(d, "boundingVolume"), "bbox"))
+					if b then out[#out + 1] = b end
+				end
+				return #out > 0 and core.array(out) or nil
+			end)(),
 			-- the town buildings the proposal takes away (CollisionInfo.buildingEntities, type.d.tl; with gatherBuildings)
 			buildingsInWay = (function()
 				local b = ids(data and try(function() return data.collisionInfo.buildingEntities end))
@@ -552,10 +563,52 @@ function M.new(ctx)
 		local out = { res = res, at = { x = r.x, y = r.y, z = z }, zFrom = zFrom, angle = r.angle, params = shown,
 			name = name, note = NOTE, autoFillSlots = ce.autoFillSlots, owner = r.noOwner and "none" or nil,
 			modulesNote = r.modules and NOTE_MODULES or nil, moduleWarnings = moduleWarnings }
+		if r.dryRun and r.engineCheck then
+			-- the same proposal a build sends, asked of the engine (makeProposalData) and not sent, as road's: its
+			-- verdict, and the box the construction takes (newBoxes; footprint: that box less the point, axis aligned
+			-- in the world)
+			out.dryRun = true
+			local v, form = engineCheck(sp)
+			if not v then
+				out.ok, out.checked = true, false
+				out.engineCheck = "not available: " .. tostring(form)
+				return answer(c.id, out)
+			end
+			for k, val in pairs(v) do out[k] = val end
+			out.checked, out.engineCheck = true, "makeProposalData (" .. form .. ")"
+			out.engineContext = form == "SimpleProposal" and "the engine's own (the proposal alone)" or "the build's"
+			if form == "SimpleProposal" and ((v.warnings and #v.warnings > 0) or v.buildingsInWay) then
+				-- (as road's: the build gathers no fields or buildings, so what a warning lets through here may be a
+				-- collision there)
+				out.caution = "judged in the engine's own context, not the build's (no fields or buildings gathered): " ..
+					"a warning or buildings in the way here may still refuse the build"
+			end
+			out.buildable = not v.critical
+			out.verdict = v.critical and "refused" or ((v.warnings and #v.warnings > 0) and "buildable with warnings" or "buildable")
+			if v.newBoxes and v.newBoxes[1] then
+				local b = v.newBoxes[1]
+				out.footprint = { x0 = b.x0 - r.x, y0 = b.y0 - r.y, x1 = b.x1 - r.x, y1 = b.y1 - r.y,
+					height = (b.z0 and b.z1) and b.z1 - b.z0 or nil, angle = r.angle,
+					note = "the engine's box at this point and angle, less the point (axis aligned in the world)" }
+			end
+			out.balance = balance()
+			if v.critical then
+				out.ok = false
+				local msgs = v.errors and #v.errors > 0 and table.concat(v.errors, "; ") or "no message"
+				out.error = "the engine would refuse it: " .. msgs .. " (dry run: nothing sent)"
+				if out.collisions and describeHits then
+					local okH, hits = pcall(describeHits, out.collisions, r.x, r.y)
+					if okH then out.hits = hits else out.hitsError = tostring(hits) end
+				end
+				return answer(c.id, out, "error")
+			end
+			out.ok = true
+			return answer(c.id, out)
+		end
 		if r.dryRun then
 			-- the probe's own checks only (no buildable: only a build says that). The engine's makeProposalData is
 			-- typed for a Proposal (engine/util.d.tl:939), but Overpass Builder hands it a SimpleProposal on the GUI
-			-- thread and the road's dry run does so too (engineCheck, below); a construction's is not asked yet
+			-- thread and the road's dry run does so too (engineCheck, below); this one asks nothing (--engine-check does)
 			out.ok, out.dryRun, out.checked = true, true, false
 			out.why = "checked here: the name, the params sent and the height; the engine's check (collisions, terrain, "
 				.. "money) only comes with a build"
@@ -1243,7 +1296,7 @@ function M.new(ctx)
 	-- Connector calls it in its game script with the proposal and a Context, tried second here). Never from a recipe's body (api.util /
 	-- api.gui there killed the game, BUG.md 2026-11-15). -> the verdict (as a build's) and the form taken, or nil and
 	-- why (not there, or it raised both ways)
-	local function engineCheck(sp, fields, buildings)
+	function engineCheck(sp, fields, buildings)
 		local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
 		if mpd == nil then return nil, "api.engine.util.proposal.makeProposalData is not there" end
 		-- (the proposal alone first: the form Overpass Builder uses on the GUI thread; with a Context only after)
