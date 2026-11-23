@@ -1182,25 +1182,55 @@ function M.ignoreErrorsMisplaced(cmd, args)
 	return nil
 end
 
-function M.roadRequest(args)
-	args = type(args) == "table" and args or {}
+-- one piece's own values (road's, and each element of road --batch): from and to, snap, type, bridge, the ways at
+-- its ends. nodes (batch only): an end may name a node instead of a point (fromNode / toNode): an existing road
+-- node's entity id (joined as it is, no snap), or a name "@a" for a new node the pieces of the batch share (no
+-- snap; its point given at one end at least, the same at every end that gives one: roadBatchRequest checks that)
+M.ROAD_NODE_NAME_MAX = 32
+local function roadPiece(args, nodes)
 	local L = M.BUILD_LIMITS
-	local ends = {}
+	local ends, named = {}, {}
 	for _, k in ipairs({ "from", "to" }) do
-		if args[k] == nil then return nil, "give " .. k .. ": x,y[,z] in metres (no z: the terrain's height there)" end
-		local p, err = M.numberList(args[k], 3)
-		if not p then return nil, k .. ": " .. err end
-		if #p < 2 then return nil, k .. " needs at least x,y" end
-		if math.abs(p[1]) > L.xy or math.abs(p[2]) > L.xy then return nil, k .. ": x and y must be within " .. L.xy end
-		if p[3] ~= nil and (p[3] < L.z[1] or p[3] > L.z[2]) then
-			return nil, string.format("%s: z must be %g-%g", k, L.z[1], L.z[2])
+		local nk = k .. "Node"
+		local nv = args[nk]
+		if nv ~= nil and not nodes then return nil, nk .. " goes with batch only (road --batch)" end
+		if type(nv) == "number" then
+			if nv ~= math.floor(nv) or nv < 0 or nv > 2 ^ 31 then
+				return nil, nk .. " must be a node's entity id (0 or more) or a name @a for a new node"
+			end
+			-- (an existing node is where it is: a point beside it could only disagree)
+			if args[k] ~= nil then return nil, "give " .. k .. " or " .. nk .. " " .. nv .. " (an existing node), not both" end
+			named[k] = nv
+		elseif nv ~= nil then
+			local name = type(nv) == "string" and nv:match("^%s*(.-)%s*$") or nil
+			if not name or #name > M.ROAD_NODE_NAME_MAX + 1 or not name:match("^@[%w_%-]+$") then
+				return nil, nk .. " must be a node's entity id (0 or more) or a name for a new node: @ and up to " ..
+					M.ROAD_NODE_NAME_MAX .. " letters, digits, _ or - (@a)"
+			end
+			named[k] = name
 		end
-		ends[k] = p
+		if args[k] == nil then
+			if named[k] == nil then
+				return nil, "give " .. k .. ": x,y[,z] in metres (no z: the terrain's height there)" ..
+					(nodes and (" (or " .. nk .. ")") or "")
+			end
+		else
+			local p, err = M.numberList(args[k], 3)
+			if not p then return nil, k .. ": " .. err end
+			if #p < 2 then return nil, k .. " needs at least x,y" end
+			if math.abs(p[1]) > L.xy or math.abs(p[2]) > L.xy then return nil, k .. ": x and y must be within " .. L.xy end
+			if p[3] ~= nil and (p[3] < L.z[1] or p[3] > L.z[2]) then
+				return nil, string.format("%s: z must be %g-%g", k, L.z[1], L.z[2])
+			end
+			ends[k] = p
+		end
 	end
 	local R = M.ROAD_LIMITS
-	local flat = math.sqrt((ends.to[1] - ends.from[1]) ^ 2 + (ends.to[2] - ends.from[2]) ^ 2)
-	if flat > R.maxLength then
-		return nil, string.format("from and to are %.0f m apart: at most %g m for one straight piece", flat, R.maxLength)
+	if ends.from and ends.to then
+		local flat = math.sqrt((ends.to[1] - ends.from[1]) ^ 2 + (ends.to[2] - ends.from[2]) ^ 2)
+		if flat > R.maxLength then
+			return nil, string.format("from and to are %.0f m apart: at most %g m for one straight piece", flat, R.maxLength)
+		end
 	end
 	local snap = args.snap == nil and R.defaultSnap or tonumber(args.snap)
 	if not finite(snap) or snap < 0 or snap > R.snap then return nil, "snap must be 0-" .. R.snap .. " metres" end
@@ -1220,27 +1250,11 @@ function M.roadRequest(args)
 		end
 		bridge = bridge:match("^%s*(.-)%s*$")
 	end
-	-- engineCheck: the dry run asks the engine (makeProposalData); only with a dry run (a build is the engine's own)
-	if args.engineCheck == true and args.dryRun ~= true then
-		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
-	end
-	for _, k in ipairs({ "removeFields", "removeBuildings", "ignoreErrors" }) do
-		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
-	end
-	-- ignoreErrors (road --ignore-errors): the build sent with the engine's ignoreErrors on, for test saves only.
-	-- tf3ctl decides whether the loaded save is a test save (the mod cannot read the save's name) and names it in
-	-- _testSave; without one that reads as a test save's name it is refused here too, so an older tf3ctl (or a
-	-- command written without it) does not force a build. The name is tf3ctl's word: a command written by hand can
-	-- name any save, so this is a second fence, not a check of the save itself
-	if args.ignoreErrors == true then
-		if not M.isTestSaveName(args._testSave) then
-			return nil, "ignoreErrors is for test saves only (tf3ctl names the loaded save; " ..
-				tostring(args._testSave) .. " is no test save's name): nothing sent"
-		end
-		if args.dryRun == true and args.engineCheck ~= true then
-			return nil, "ignoreErrors with dryRun goes with engineCheck (the dry run asks the engine; nothing is built)"
-		end
-	end
+	return { from = ends.from, to = ends.to, fromNode = named.from, toNode = named.to, snap = snap, type = t, bridge = bridge }
+end
+
+-- the ways at a piece's ends (tangentFrom / tangentTo, alignToEdge, alignEdge) into p, or nil and why
+local function roadWays(args, p)
 	-- a curved piece: the way the road goes at either end (tangentFrom / tangentTo: dx,dy, a direction only, both
 	-- pointing the way from -> to), or the way of the road already at a joined end (alignToEdge: from, to or both;
 	-- alignEdge: the piece to follow where a node has more than one)
@@ -1275,11 +1289,162 @@ function M.roadRequest(args)
 		if v[2] == v[1] then return nil, "alignEdge names piece " .. v[1] .. " twice: give it once" end
 		alignEdge = v
 	end
-	return { from = ends.from, to = ends.to, snap = snap, type = t, bridge = bridge, dryRun = args.dryRun == true,
-		engineCheck = args.engineCheck == true, removeFields = args.removeFields == true,
-		removeBuildings = args.removeBuildings == true, ignoreErrors = args.ignoreErrors == true,
-		testSave = args.ignoreErrors == true and args._testSave or nil, tangentFrom = dirs.tangentFrom, tangentTo = dirs.tangentTo,
-		alignFrom = alignFrom, alignTo = alignTo, alignEdge = alignEdge }
+	p.tangentFrom, p.tangentTo, p.alignFrom, p.alignTo, p.alignEdge = dirs.tangentFrom, dirs.tangentTo, alignFrom, alignTo, alignEdge
+	return p
+end
+
+-- what goes for the whole proposal (one piece's, or a batch's): the dry run, the engine's check, the Context's
+-- gathering, ignoreErrors and its fences, into p; or nil and why
+local function roadOptions(args, p)
+	-- engineCheck: the dry run asks the engine (makeProposalData); only with a dry run (a build is the engine's own)
+	if args.engineCheck == true and args.dryRun ~= true then
+		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
+	end
+	for _, k in ipairs({ "removeFields", "removeBuildings", "ignoreErrors" }) do
+		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
+	end
+	-- ignoreErrors (road --ignore-errors): the build sent with the engine's ignoreErrors on, for test saves only.
+	-- tf3ctl decides whether the loaded save is a test save (the mod cannot read the save's name) and names it in
+	-- _testSave; without one that reads as a test save's name it is refused here too, so an older tf3ctl (or a
+	-- command written without it) does not force a build. The name is tf3ctl's word: a command written by hand can
+	-- name any save, so this is a second fence, not a check of the save itself
+	if args.ignoreErrors == true then
+		if not M.isTestSaveName(args._testSave) then
+			return nil, "ignoreErrors is for test saves only (tf3ctl names the loaded save; " ..
+				tostring(args._testSave) .. " is no test save's name): nothing sent"
+		end
+		if args.dryRun == true and args.engineCheck ~= true then
+			return nil, "ignoreErrors with dryRun goes with engineCheck (the dry run asks the engine; nothing is built)"
+		end
+	end
+	p.dryRun, p.engineCheck = args.dryRun == true, args.engineCheck == true
+	p.removeFields, p.removeBuildings = args.removeFields == true, args.removeBuildings == true
+	p.ignoreErrors = args.ignoreErrors == true
+	p.testSave = args.ignoreErrors == true and args._testSave or nil
+	return p
+end
+
+function M.roadRequest(args)
+	args = type(args) == "table" and args or {}
+	local p, err = roadPiece(args, false)
+	if not p then return nil, err end
+	p, err = roadOptions(args, p)
+	if not p then return nil, err end
+	return roadWays(args, p)
+end
+
+-- road --batch: several pieces in one SimpleProposal, so that the engine judges them together (one piece sent
+-- after another was refused where the two together may not be: two one-way roads out of one end of a four-lane
+-- street, mod-keeper 2026-11-24). batch: a list of pieces, each with road's own values (from, to, type, bridge,
+-- snap, tangentFrom, tangentTo, alignToEdge, alignEdge) and fromNode / toNode (roadPiece); the dry run,
+-- engineCheck, removeFields, removeBuildings and ignoreErrors (with its fences) go for the whole batch, beside it.
+-- -> { batch = true, pieces, named = { [name] = { x, y, z (nil: the terrain's), at } }, and the options }
+M.ROAD_BATCH_MAX = 16
+M.ROAD_NAMED_SAME_M = 0.01 -- the ends that give a named node's point: this near each other (on the map, and in z)
+local PIECE_KEYS = { from = true, to = true, fromNode = true, toNode = true, type = true, bridge = true, snap = true,
+	tangentFrom = true, tangentTo = true, alignToEdge = true, alignEdge = true }
+local BATCH_KEYS = { dryRun = true, engineCheck = true, removeFields = true, removeBuildings = true, ignoreErrors = true,
+	_testSave = true }
+function M.roadBatchRequest(args)
+	args = type(args) == "table" and args or {}
+	local list = args.batch
+	if type(list) ~= "table" then return nil, "batch must be a list of pieces (each as road's from, to, ...): nothing sent" end
+	local n = 0
+	for _ in pairs(list) do n = n + 1 end
+	if n ~= #list then return nil, "batch must be a list of pieces (1, 2, ... in order), not a table with other keys: nothing sent" end
+	if n == 0 then return nil, "batch is empty: give at least one piece: nothing sent" end
+	if n > M.ROAD_BATCH_MAX then
+		return nil, string.format("batch has %d pieces: at most %d in one proposal: nothing sent", n, M.ROAD_BATCH_MAX)
+	end
+	for k in pairs(args) do
+		if PIECE_KEYS[k] then return nil, tostring(k) .. " goes in each piece of batch, not beside it: nothing sent" end
+	end
+	local out, err = roadOptions(args, { batch = true })
+	if not out then return nil, err end
+	local pieces, named, order = {}, {}, {}
+	for i, el in ipairs(list) do
+		local head = "piece " .. i .. ": "
+		if type(el) ~= "table" then return nil, head .. "not a table of from, to, ...: nothing sent" end
+		for k in pairs(el) do
+			if BATCH_KEYS[k] then return nil, head .. tostring(k) .. " goes for the whole batch, beside it: nothing sent" end
+			if not PIECE_KEYS[k] then
+				return nil, head .. "unknown key " .. tostring(k) .. " (from, to, fromNode, toNode, type, bridge, snap, " ..
+					"tangentFrom, tangentTo, alignToEdge, alignEdge): nothing sent"
+			end
+		end
+		local p, perr = roadPiece(el, true)
+		if p then p, perr = roadWays(el, p) end
+		if not p then return nil, head .. perr .. ": nothing sent" end
+		if p.fromNode ~= nil and p.fromNode == p.toNode then
+			return nil, head .. "both ends are node " .. tostring(p.fromNode) .. ": nothing sent"
+		end
+		-- a named node: one point, wherever its ends give it (z: the one given, else the terrain's)
+		for _, k in ipairs({ "from", "to" }) do
+			local name = p[k .. "Node"]
+			if type(name) == "string" then
+				local q = named[name]
+				if not q then
+					q = { mentions = 0 }
+					named[name] = q
+					order[#order + 1] = name
+				end
+				q.mentions = q.mentions + 1
+				local pt, at = p[k], "piece " .. i .. " " .. k
+				if pt then
+					if q.x == nil then
+						q.x, q.y, q.at = pt[1], pt[2], at
+					else
+						local d = math.sqrt((pt[1] - q.x) ^ 2 + (pt[2] - q.y) ^ 2)
+						if d > M.ROAD_NAMED_SAME_M then
+							return nil, string.format("node %s: %s (%g,%g) is %.3f m from %s (%g,%g): a named node is one " ..
+								"point (at most %g m apart): nothing sent", name, at, pt[1], pt[2], d, q.at, q.x, q.y,
+								M.ROAD_NAMED_SAME_M)
+						end
+					end
+					if pt[3] ~= nil then
+						if q.z == nil then
+							q.z, q.zAt = pt[3], at
+						elseif math.abs(pt[3] - q.z) > M.ROAD_NAMED_SAME_M then
+							return nil, string.format("node %s: %s gives z %g, %s z %g: a named node is one point: nothing sent",
+								name, at, pt[3], q.zAt, q.z)
+						end
+					end
+				end
+			end
+		end
+		pieces[i] = p
+	end
+	for _, name in ipairs(order) do
+		local q = named[name]
+		if q.x == nil then
+			return nil, "node " .. name .. ": no end gives its point: give from / to x,y[,z] at one of its ends at least: nothing sent"
+		end
+		if q.mentions < 2 then
+			-- (a name is for sharing: one end alone is a new node anyway, and a name used once may be a typo)
+			return nil, "node " .. name .. " is named at one end only (" .. q.at .. "): a name is for a node pieces " ..
+				"share; give the other end too, or leave the name out: nothing sent"
+		end
+		q.mentions = nil
+	end
+	-- the lengths where an end was a name without its point
+	local R = M.ROAD_LIMITS
+	for i, p in ipairs(pieces) do
+		local function pointOf(k)
+			if p[k] then return p[k] end
+			local q = type(p[k .. "Node"]) == "string" and named[p[k .. "Node"]]
+			return q and { q.x, q.y } or nil
+		end
+		local a, b = pointOf("from"), pointOf("to")
+		if a and b then
+			local flat = math.sqrt((b[1] - a[1]) ^ 2 + (b[2] - a[2]) ^ 2)
+			if flat > R.maxLength then
+				return nil, string.format("piece %d: from and to are %.0f m apart: at most %g m for one straight piece: " ..
+					"nothing sent", i, flat, R.maxLength)
+			end
+		end
+	end
+	out.pieces, out.named = pieces, named
+	return out
 end
 
 -- a direction shorter than this is no direction (a tangent given as 0,0, or a piece's tangent that reads as 0)

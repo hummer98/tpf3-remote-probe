@@ -664,6 +664,32 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   Steam). A loaded `probe-force-*` save (saved forced in an earlier run) saves only to `probe-force-*` names too.
 Not covered: the game's own autosave (every 10 minutes) still writes the forced state to its autosave slot, and an
 autosave loaded again saves under any name.
+- `--batch FILE` (several pieces in **one** proposal, written 2026-11-24, **not checked in a game yet**): the pieces
+  go in one SimpleProposal, so the engine judges and builds them together (one piece sent after another may be
+  refused where the two together are not: two one-way roads out of one end of a four-lane street). FILE is a JSON
+  list of at most 16 pieces; each is an object with this command's own values by their flags' names (`from`, `to`,
+  `type`, `bridge`, `snap`, `tangent-from`, `tangent-to`, `align-to-edge`, `align-edge`; the mod's names
+  `tangentFrom`, ... are read too; points as `"x,y[,z]"` or `[x, y, z]`) and, for sharing a node, `from-node` /
+  `to-node`: an existing road node's entity id (joined as it is, no snap; `from` / `to` not given with it), or a
+  name `"@a"` for a new node the pieces share (never snapped; its point given at one of its ends at least and the
+  same, within 0.01 m, at each end that gives one; a name used at one end only is refused). `--dry-run`,
+  `--engine-check`, `--remove-fields`, `--remove-buildings` and `--ignore-errors` go on the command line for the
+  whole proposal, with the same meaning and the same fences as for one piece (it goes as the command `road`:
+  `--ignore-errors` on test saves only and never in coop, the force mark, the probe's own set-up checks). `--from`,
+  `--to` and the other per-piece flags are refused beside `--batch`. An empty list, more than 16 pieces, a file that
+  is not JSON, an unknown key or a bad value is refused with nothing sent; so are two new ends on one point left
+  unnamed (give them one name), two pieces between the same two nodes, a named node on an old node, and an end
+  given by an id that is no road node. Pieces of one batch that cross or overlap (two ways out of one node at
+  about 0 degrees) are not checked here: try such a batch with `--dry-run --engine-check` first.
+  New entities are numbered as for one piece: the new nodes -1, -2, ... in the order the ends name them (piece 1
+  from, piece 1 to, piece 2 from, ...), then the pieces; a batch of one piece sends the very proposal `road` sends.
+  A node several pieces share gets one junction set-up: a joined node its old connections plus the new pieces'
+  (to its pieces and to each other), a new node those among the new pieces (two: lane for lane; more: a
+  junction's). The answer: `batch: true`, the one proposal's `errors`, `critical`, `warnings`, `collisions` and
+  `hits`, `pieces` (each piece's `from` / `to`, `template`, `length`, tangents and kinks, and, built, its `edge`,
+  `node0`, `node1`; a shared end has `sharedBy`), `proposal` (its `nodes` by id, with `name` and the `ends` that
+  name each, and its `edges`), `edges` / `nodes` as built, `pieceEdges` (each piece's edge, in order) and
+  `namedNodes` (each name's node as built).
 - `--inspect-node ID` (read only, alone): the node's position, `streetSegments` (each piece's `edge`, `node0` /
   `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
   (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,

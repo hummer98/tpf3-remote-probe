@@ -889,7 +889,7 @@ function M.new(ctx)
 			if out.collisions and describeHits then
 				-- what is in the way, one by one: its kind, name, place and box (remote_around.lua)
 				local ref = job.kind == "place" and out.at or (out.from and out.to and
-					{ x = (out.from.x + out.to.x) / 2, y = (out.from.y + out.to.y) / 2 }) or nil
+					{ x = (out.from.x + out.to.x) / 2, y = (out.from.y + out.to.y) / 2 }) or out.centre or nil
 				local okH, hits = pcall(describeHits, out.collisions, ref and ref.x, ref and ref.y)
 				if okH then out.hits = hits else out.hitsError = tostring(hits) end
 			end
@@ -1277,14 +1277,15 @@ function M.new(ctx)
 	end
 
 	-- the connections a new piece adds at a node: piece = { entity, node0, node1, lanes } (lanes: lanesOf), others:
-	-- the node's other pieces the same way. nil when a lane list is missing.
-	local function newLaneRules(node, piece, others)
+	-- the node's other pieces the same way. straight: whether the node is a seam (two pieces, lane for lane; nil:
+	-- one other piece of as many lanes, as when one piece is added). nil when a lane list is missing.
+	local function newLaneRules(node, piece, others, straight)
 		local function number(p, k) if p.node0 == node then return k - 1 end return #p.lanes - k end
 		local function arrives(p, l) return (l.forward and p.node1 == node) or (not l.forward and p.node0 == node) end
 		if piece.lanes == nil then return nil end
 		for _, o in ipairs(others) do if o.lanes == nil then return nil end end
 		local out = {}
-		local straight = #others == 1 and #others[1].lanes == #piece.lanes
+		if straight == nil then straight = #others == 1 and #others[1].lanes == #piece.lanes end
 		for _, o in ipairs(others) do
 			for _, pair in ipairs({ { piece, o }, { o, piece } }) do
 				local from, to = pair[1], pair[2]
@@ -1301,6 +1302,25 @@ function M.new(ctx)
 					end
 				end
 			end
+		end
+		return out
+	end
+
+	-- the connections the new pieces (news, in the proposal's order) add at a node where the pieces others were
+	-- (none at a new node): each new piece joined to those before it, so that every pair is joined once. The node is
+	-- a seam when two pieces meet there in all (lane for lane, as newLaneRules does for one new piece), a junction
+	-- when more do; one piece alone is a dead end (no connections). nil when a lane list is missing.
+	local function nodeRules(node, others, news)
+		local total = #others + #news
+		local before, out = {}, {}
+		for _, o in ipairs(others) do before[#before + 1] = o end
+		for _, piece in ipairs(news) do
+			local straight = total == 2 and #before == 1 and before[1].lanes ~= nil and piece.lanes ~= nil
+				and #before[1].lanes == #piece.lanes
+			local rules = newLaneRules(node, piece, before, straight)
+			if rules == nil then return nil end
+			for _, lc in ipairs(rules) do out[#out + 1] = lc end
+			before[#before + 1] = piece
 		end
 		return out
 	end
@@ -1353,7 +1373,8 @@ function M.new(ctx)
 	-- refuses before sending any proposal that takes a construction's node set-up off (overpass_probe.script.tl,
 	-- "construction-owned"); whether the engine joins the new piece's lanes there itself is not checked in a game.
 	-- A construction's frozen node (the stub's inner end) is refused: the engine refused a road joined there.
-	local function planJoin(endp, piece)
+	-- news: the new pieces at the node (one for road; a batch's every piece that ends there)
+	local function planJoin(endp, news)
 		local node = endp.node
 		local others, via, segs = piecesAt(node, endp)
 		if #others == 0 then
@@ -1377,7 +1398,7 @@ function M.new(ctx)
 			return nil, "whether node " .. node .. " is a construction's could not be read (" .. conUnread .. "); its " ..
 				"set-up is not to be remade if it is"
 		end
-		local rules = newLaneRules(node, piece, others)
+		local rules = nodeRules(node, others, news)
 		if rules == nil then return nil, "the lanes of the pieces at node " .. node .. " could not be read" end
 		local ok, old = pcall(function() return api.engine.getComponent(node, CT().BASE_NODE_CONFIG) end)
 		if not ok or old == nil then return nil, "the junction set-up of node " .. node .. " could not be read" end
@@ -1534,139 +1555,319 @@ function M.new(ctx)
 				a.verdict, why(a), b.verdict, why(b))
 		end
 	end
+	local NOTE_BATCH = "several pieces in one SimpleProposal (road --batch), judged and built together; not checked in a " ..
+		"game yet: look at it (frame) before trusting the answer"
 
+	-- an end given as an existing node's id (road --batch fromNode / toNode): that node as it is, never a snap.
+	-- Refused as a snap passes over or stops at a node: none there, no road piece at it, or its junction set-up
+	-- missing or unread. Whether the entity exists is asked first, as road --inspect-node and lights do before
+	-- getComponent (Overpass Builder's way); a node with no road piece (a track node) is not asked of its set-up,
+	-- as the snap never asks a track node (streetNodeNear)
+	local function nodeEnd(n)
+		local exists = try(function() return api.engine.entityExists(n) end)
+		if exists == false then return nil, string.format("node %d: no such entity: nothing sent", n) end
+		local p = nodePos(n)
+		if not p then return nil, string.format("node %d: no such node (no BASE_NODE position): nothing sent", n) end
+		local segs = streetSegmentsAt(n)
+		if segs and #segs == 0 then
+			return nil, string.format("node %d has no road piece (the street system lists none; a track node?): nothing sent", n)
+		end
+		local s = nodeConfigState(n)
+		if s == nil then
+			return nil, string.format("whether node %d has its junction set-up (BaseNodeConfig) could not be read; " ..
+				"joining a node without one killed the game: nothing sent", n)
+		end
+		if s == false then
+			return nil, string.format("node %d has no junction set-up (BaseNodeConfig): joining one killed the game " ..
+				"(Engine.h GetComponentDataIndex): nothing sent", n)
+		end
+		return { node = n, x = p.x, y = p.y, z = p.z, byId = true, nodeConfig = true, pieces = segs and #segs or nil }
+	end
+
+	-- road: one piece (core.roadRequest), or road --batch: several in one SimpleProposal (core.roadBatchRequest),
+	-- so that the engine judges them together. Both go the same way here: a batch of one is the proposal road sends.
+	-- New entities are numbered -1, -2, ... over nodes and pieces alike (type.d.tl SimpleStreetProposal.nodesToAdd:
+	-- "entity id will be decreasing starting from -1 for all new entities"): the new nodes first, in the order the
+	-- pieces' ends name them (piece 1 from, piece 1 to, piece 2 from, ...), then the pieces in their order (Track
+	-- Connector numbers its pieces first, then its nodes, in one run from -1). An end that names a node shares it:
+	-- an existing one (its id, or a snap to it), or a new one by its name (@a)
 	function B.road(c)
-		local r, err = core.roadRequest(c.args)
+		local batch = type(c.args) == "table" and c.args.batch ~= nil
+		local r, err
+		if batch then r, err = core.roadBatchRequest(c.args) else r, err = core.roadRequest(c.args) end
 		if not r then return fail(c.id, err) end
+		local specs = batch and r.pieces or { r }
+		-- a piece's end (or the piece) in a message: from / to for road, "piece 2 from" for a batch
+		local function at(i, key)
+			if not batch then return key end
+			return key and ("piece " .. i .. " " .. key) or ("piece " .. i)
+		end
+		local function head(i) return batch and ("piece " .. i .. ": ") or "" end
 		local year = gameYear()
-		local tpl, terr = roadTemplate(r.type, year)
-		if not tpl then return fail(c.id, terr) end
-		local a, aerr = roadEnd(r.from, r.snap)
-		if not a then return fail(c.id, "from: " .. aerr) end
-		local b, berr = roadEnd(r.to, r.snap)
-		if not b then return fail(c.id, "to: " .. berr) end
-		if a.node and a.node == b.node then
-			return fail(c.id, string.format("both ends are node %d: give points further apart (or a smaller snap)", a.node))
+		local namedEnds = {}
+		local function endOf(spec, key)
+			local nv = spec[key .. "Node"]
+			if type(nv) == "number" then return nodeEnd(nv) end
+			if type(nv) == "string" then
+				local base = namedEnds[nv]
+				if not base then
+					local q = r.named[nv]
+					-- (a named node is a new node: never snapped; one on an old node is refused as any new end)
+					local e, nerr = roadEnd({ q.x, q.y, q.z }, 0)
+					if not e then return nil, "node " .. nv .. ": " .. nerr end
+					e.name = nv
+					base = e
+					namedEnds[nv] = base
+				end
+				-- (each end a table of its own: what is said of it, its bend, is its piece's)
+				local own = {}
+				for k, v in pairs(base) do own[k] = v end
+				return own
+			end
+			return roadEnd(spec[key], spec.snap)
 		end
-		local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
-		local length = math.sqrt(dx * dx + dy * dy + dz * dz)
-		if length < core.ROAD_LIMITS.minLength then
-			return fail(c.id, string.format("the piece would be %.2f m long: at least %g m", length, core.ROAD_LIMITS.minLength))
+		local P = {}
+		for i, spec in ipairs(specs) do
+			local tpl, terr = roadTemplate(spec.type, year)
+			if not tpl then return fail(c.id, head(i) .. terr) end
+			local a, aerr = endOf(spec, "from")
+			if not a then return fail(c.id, at(i, "from") .. ": " .. aerr) end
+			local b, berr = endOf(spec, "to")
+			if not b then return fail(c.id, at(i, "to") .. ": " .. berr) end
+			if a.node and a.node == b.node then
+				return fail(c.id, head(i) .. string.format("both ends are node %d: give points further apart (or a smaller snap)", a.node))
+			end
+			local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
+			local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+			if length < core.ROAD_LIMITS.minLength then
+				return fail(c.id, head(i) .. string.format("the piece would be %.2f m long: at least %g m", length, core.ROAD_LIMITS.minLength))
+			end
+			-- (core checks it where both points are given; an end given by a node's id is only known here)
+			local flatLen = math.sqrt(dx * dx + dy * dy)
+			if flatLen > core.ROAD_LIMITS.maxLength then
+				return fail(c.id, head(i) .. string.format("from and to are %.0f m apart: at most %g m for one straight " ..
+					"piece: nothing sent", flatLen, core.ROAD_LIMITS.maxLength))
+			end
+			P[i] = { spec = spec, tpl = tpl, a = a, b = b, length = length }
 		end
+		-- the proposal's nodes, in the order the ends name them: an existing node by its id, a named new node by its
+		-- name, any other new end its own
+		local nodeList, nodeBy = {}, {}
+		local function nodeOf(endp, i, key)
+			local k = endp.node or endp.name or endp
+			local nd = nodeBy[k]
+			if not nd then
+				nd = { endp = endp, node = endp.node, name = endp.name, ends = {} }
+				nodeBy[k] = nd
+				nodeList[#nodeList + 1] = nd
+			end
+			nd.ends[#nd.ends + 1] = { i, key }
+			return nd
+		end
+		for i, p in ipairs(P) do
+			p.n0, p.n1 = nodeOf(p.a, i, "from"), nodeOf(p.b, i, "to")
+		end
+		if batch then
+			-- two new nodes on one point (two ends left unnamed, or two names): the engine refuses a node on another
+			-- (as a new node on an old one, roadEnd); one name makes them one node
+			for j = 1, #nodeList do
+				for k = j + 1, #nodeList do
+					local u, v = nodeList[j], nodeList[k]
+					if not u.node and not v.node then
+						local d = math.sqrt((u.endp.x - v.endp.x) ^ 2 + (u.endp.y - v.endp.y) ^ 2 + (u.endp.z - v.endp.z) ^ 2)
+						if d <= SAME_M then
+							return fail(c.id, string.format("%s and %s would be two new nodes %.2f m apart: the engine refuses " ..
+								"a node on another (Construction Not Possible). Give both ends one name (fromNode / toNode " ..
+								"\"@a\") to share one node: nothing sent", at(u.ends[1][1], u.ends[1][2]), at(v.ends[1][1], v.ends[1][2]), d))
+						end
+					end
+				end
+			end
+			-- two pieces between the same two nodes: one would lie on the other
+			for j = 1, #P do
+				for k = j + 1, #P do
+					local u, v = P[j], P[k]
+					if (u.n0 == v.n0 and u.n1 == v.n1) or (u.n0 == v.n1 and u.n1 == v.n0) then
+						return fail(c.id, string.format("pieces %d and %d join the same two nodes: give one: nothing sent", j, k))
+					end
+				end
+			end
+		end
+		local newCount = 0
+		for _, nd in ipairs(nodeList) do
+			if nd.node then
+				nd.id = nd.node
+			else
+				newCount = newCount + 1
+				nd.id = -newCount
+			end
+		end
+		for i, p in ipairs(P) do p.id = -(newCount + i) end
 		local normal, streetType = enumOf("BaseEdgeType", "NORMAL"), enumOf("RoadType", "STREET")
 		if normal == nil or streetType == nil then
 			return fail(c.id, "api.type.enum.BaseEdgeType.NORMAL or RoadType.STREET could not be read: nothing sent")
 		end
-		-- --bridge: the piece's edge type BRIDGE and its typeIndex the type's id (else NORMAL and -1, as before)
-		local edgeType, typeIndex, bridge = normal, -1, nil
-		if r.bridge then
-			local berr2
-			bridge, berr2 = bridgeType(r.bridge, year)
-			if not bridge then return fail(c.id, "bridge: " .. berr2) end
-			local be = enumOf("BaseEdgeType", "BRIDGE")
-			if be == nil then return fail(c.id, "api.type.enum.BaseEdgeType.BRIDGE could not be read: nothing sent") end
-			edgeType, typeIndex = be, bridge.id
-			bridge.note = NOTE_BRIDGE
+		for i, p in ipairs(P) do
+			-- --bridge: the piece's edge type BRIDGE and its typeIndex the type's id (else NORMAL and -1, as before)
+			p.edgeType, p.typeIndex = normal, -1
+			local bridge
+			if p.spec.bridge then
+				local berr2
+				bridge, berr2 = bridgeType(p.spec.bridge, year)
+				if not bridge then return fail(c.id, at(i, "bridge") .. ": " .. berr2) end
+				local be = enumOf("BaseEdgeType", "BRIDGE")
+				if be == nil then return fail(c.id, "api.type.enum.BaseEdgeType.BRIDGE could not be read: nothing sent") end
+				p.edgeType, p.typeIndex = be, bridge.id
+				bridge.note = NOTE_BRIDGE
+			end
+			p.out = { from = p.a, to = p.b, template = p.tpl.name, length = p.length, year = year, snap = p.spec.snap,
+				note = NOTE_ROAD, bridge = bridge }
+			p.piece = { entity = p.id, node0 = p.n0.id, node1 = p.n1.id, lanes = lanesOf(p.tpl.lanes) }
+			if p.piece.lanes == nil then return fail(c.id, head(i) .. p.tpl.name .. ": its lanes could not be read: nothing sent") end
 		end
-		local out = { from = a, to = b, template = tpl.name, length = length, year = year, snap = r.snap, note = NOTE_ROAD,
-			bridge = bridge }
-		-- the ids the proposal will give (endNode below: the new nodes from -1 in the order from, to; then the piece)
-		local n0 = a.node or -1
-		local n1 = b.node or (a.node and -1 or -2)
-		local pieceId = -((a.node and 0 or 1) + (b.node and 0 or 1) + 1)
-		local piece = { entity = pieceId, node0 = n0, node1 = n1, lanes = lanesOf(tpl.lanes) }
-		if piece.lanes == nil then return fail(c.id, tpl.name .. ": its lanes could not be read: nothing sent") end
-		-- each joined node: its connections planned now, so that a dry run refuses what a build would
-		local plans = {}
-		for _, q in ipairs({ { "from", a }, { "to", b } }) do
-			if q[2].node then
-				local plan, perr = planJoin(q[2], piece)
-				if not plan then return fail(c.id, q[1] .. ": " .. perr .. ": nothing sent") end
-				plans[q[1]] = plan
-				q[2].piecesFrom = plan.via
-				if plan.keep then
-					q[2].construction, q[2].constructionFile = plan.keep.construction, plan.keep.fileName
-					q[2].pieces, q[2].nodeConfigKept = plan.pieces, true
-					out.caution = NOTE_KEEP
-				else
-					q[2].laneRules = #plan.rules
+		local out
+		if batch then
+			out = { batch = true, year = year, note = NOTE_BATCH }
+		else
+			out = P[1].out
+		end
+		local function endOfPiece(e) local p = P[e[1]] return e[2] == "from" and p.a or p.b end
+		-- each node: its connections planned now, so that a dry run refuses what a build would. A joined node gets
+		-- the new pieces' connections to its pieces and to each other (planJoin), a new node those among the new
+		-- pieces at it (none: a dead end; two: lane for lane; more: a junction's)
+		for _, nd in ipairs(nodeList) do
+			local news = {}
+			for _, e in ipairs(nd.ends) do news[#news + 1] = P[e[1]].piece end
+			local first = nd.ends[1]
+			if nd.node then
+				local plan, perr = planJoin(nd.endp, news)
+				if not plan then return fail(c.id, at(first[1], first[2]) .. ": " .. perr .. ": nothing sent") end
+				nd.plan = plan
+				for _, e in ipairs(nd.ends) do
+					local endp = endOfPiece(e)
+					endp.piecesFrom = plan.via
+					if plan.keep then
+						endp.construction, endp.constructionFile = plan.keep.construction, plan.keep.fileName
+						endp.pieces, endp.nodeConfigKept = plan.pieces, true
+						P[e[1]].out.caution = NOTE_KEEP
+					else
+						endp.laneRules = #plan.rules
+					end
+					if #nd.ends > 1 then endp.sharedBy = #nd.ends end
+				end
+			else
+				local rules = nodeRules(nd.id, {}, news)
+				if rules == nil then
+					return fail(c.id, at(first[1], first[2]) .. ": the lanes of the pieces at the new node could not be read: nothing sent")
+				end
+				nd.rules = rules
+				if #nd.ends > 1 then
+					for _, e in ipairs(nd.ends) do
+						local endp = endOfPiece(e)
+						endp.laneRules, endp.sharedBy = #rules, #nd.ends
+					end
 				end
 			end
 		end
-		-- the tangents: the way given at an end (tangentFrom / tangentTo), the road's way there (alignToEdge), else
-		-- the chord's (a straight piece, as before)
-		local aligned, used = {}, {}
-		for _, q in ipairs({ { "from", a, r.alignFrom }, { "to", b, r.alignTo } }) do
-			local key, endp = q[1], q[2]
-			if endp.node then endp.ways = waysAt(endp.node, endp) end
-			if q[3] then
-				if not endp.node then
-					return fail(c.id, key .. ": alignToEdge needs a road node at this end (none within snap: a new node " ..
-						"has no road to follow): nothing sent")
-				end
-				local ways, pick = endp.ways, nil
-				for _, w in ipairs(ways) do
-					for _, id in ipairs(r.alignEdge or {}) do
-						if w.edge == id then
-							if pick then return fail(c.id, key .. ": alignEdge names two pieces at node " .. endp.node .. ": give one") end
-							pick, used[id] = w, true
+		local function r3(v) return math.floor(v * 1000 + 0.5) / 1000 end
+		for i, p in ipairs(P) do
+			local a, b, ps, po = p.a, p.b, p.spec, p.out
+			-- the tangents: the way given at an end (tangentFrom / tangentTo), the road's way there (alignToEdge), else
+			-- the chord's (a straight piece, as before)
+			local aligned, used = {}, {}
+			for _, q in ipairs({ { "from", a, ps.alignFrom }, { "to", b, ps.alignTo } }) do
+				local key, endp = q[1], q[2]
+				-- (the pieces there before: a batch's other new pieces at a shared node are not followed)
+				if endp.node then endp.ways = waysAt(endp.node, endp) end
+				if q[3] then
+					if not endp.node then
+						return fail(c.id, at(i, key) .. ": alignToEdge needs a road node at this end (none within snap: a new node " ..
+							"has no road to follow): nothing sent")
+					end
+					local ways, pick = endp.ways, nil
+					for _, w in ipairs(ways) do
+						for _, id in ipairs(ps.alignEdge or {}) do
+							if w.edge == id then
+								if pick then return fail(c.id, at(i, key) .. ": alignEdge names two pieces at node " .. endp.node .. ": give one") end
+								pick, used[id] = w, true
+							end
 						end
 					end
-				end
-				if not pick then
-					if #ways == 1 then
-						pick = ways[1]
-					else
-						local names = {}
-						for _, w in ipairs(ways) do names[#names + 1] = tostring(w.edge) end
-						return fail(c.id, string.format("%s: node %d has %d road pieces (%s): which one to follow is not " ..
-							"guessed; give it with alignEdge (--align-edge ID): nothing sent", key, endp.node, #ways,
-							#names > 0 and table.concat(names, ", ") or "none read"))
+					if not pick then
+						if #ways == 1 then
+							pick = ways[1]
+						else
+							local names = {}
+							for _, w in ipairs(ways) do names[#names + 1] = tostring(w.edge) end
+							return fail(c.id, string.format("%s: node %d has %d road pieces (%s): which one to follow is not " ..
+								"guessed; give it with alignEdge (--align-edge ID): nothing sent", at(i, key), endp.node, #ways,
+								#names > 0 and table.concat(names, ", ") or "none read"))
+						end
 					end
-				end
-				if pick.x == nil then
-					return fail(c.id, string.format("%s: the way of piece %d at node %d could not be read (no tangent, no " ..
-						"node positions): nothing sent", key, pick.edge, endp.node))
-				end
-				aligned[key] = pick
-				endp.alignedTo = { edge = pick.edge, from = pick.from }
-			end
-		end
-		for _, id in ipairs(r.alignEdge or {}) do
-			if not used[id] then
-				return fail(c.id, string.format("alignEdge %d is not one of the road pieces at the end%s aligned: nothing sent",
-					id, (r.alignFrom and r.alignTo) and "s" or ""))
-			end
-		end
-		local dir0 = r.tangentFrom or (aligned.from and { aligned.from.x, aligned.from.y })
-		-- (at the to end the road there runs on out past it, so the new piece comes in against that way)
-		local dir1 = r.tangentTo or (aligned.to and { -aligned.to.x, -aligned.to.y })
-		local t0, t1, turns = core.roadTangents(a, b, dir0, dir1)
-		if not t0 then return fail(c.id, tostring(t1) .. ": nothing sent") end
-		local function r3(v) return math.floor(v * 1000 + 0.5) / 1000 end
-		out.tangent0 = { x = r3(t0.x), y = r3(t0.y), z = r3(t0.z) }
-		out.tangent1 = { x = r3(t1.x), y = r3(t1.y), z = r3(t1.z) }
-		out.curved = dir0 ~= nil or dir1 ~= nil
-		if out.curved then
-			out.note = NOTE_CURVE
-			out.turnOffChord = { from = r3(turns[1]), to = r3(turns[2]) }
-		end
-		-- the bend at each joined end: the angle between the way each piece there runs on out past the node and the
-		-- way the new piece leaves the node (0: straight on). The followed piece's (or the only one's) is kinkDeg
-		for _, q in ipairs({ { "from", a, { x = t0.x, y = t0.y } }, { "to", b, { x = -t1.x, y = -t1.y } } }) do
-			local key, endp, leave = q[1], q[2], q[3]
-			if endp.ways then
-				local kinks = {}
-				for _, w in ipairs(endp.ways) do
-					local k = w.x and core.angleDeg(w, leave)
-					kinks[#kinks + 1] = { edge = w.edge, kinkDeg = k and r3(k) or nil, wayFrom = w.from }
-					if (aligned[key] and aligned[key].edge == w.edge) or (not aligned[key] and #endp.ways == 1) then
-						endp.kinkDeg = k and r3(k) or nil
+					if pick.x == nil then
+						return fail(c.id, string.format("%s: the way of piece %d at node %d could not be read (no tangent, no " ..
+							"node positions): nothing sent", at(i, key), pick.edge, endp.node))
 					end
+					aligned[key] = pick
+					endp.alignedTo = { edge = pick.edge, from = pick.from }
 				end
-				endp.kinks = kinks
 			end
-			endp.ways = nil
+			for _, id in ipairs(ps.alignEdge or {}) do
+				if not used[id] then
+					return fail(c.id, string.format("%salignEdge %d is not one of the road pieces at the end%s aligned: nothing sent",
+						head(i), id, (ps.alignFrom and ps.alignTo) and "s" or ""))
+				end
+			end
+			local dir0 = ps.tangentFrom or (aligned.from and { aligned.from.x, aligned.from.y })
+			-- (at the to end the road there runs on out past it, so the new piece comes in against that way)
+			local dir1 = ps.tangentTo or (aligned.to and { -aligned.to.x, -aligned.to.y })
+			local t0, t1, turns = core.roadTangents(a, b, dir0, dir1)
+			if not t0 then return fail(c.id, head(i) .. tostring(t1) .. ": nothing sent") end
+			p.t0, p.t1 = t0, t1
+			po.tangent0 = { x = r3(t0.x), y = r3(t0.y), z = r3(t0.z) }
+			po.tangent1 = { x = r3(t1.x), y = r3(t1.y), z = r3(t1.z) }
+			po.curved = dir0 ~= nil or dir1 ~= nil
+			if po.curved then
+				po.note = NOTE_CURVE
+				po.turnOffChord = { from = r3(turns[1]), to = r3(turns[2]) }
+			end
+			-- the bend at each joined end: the angle between the way each piece there runs on out past the node and the
+			-- way the new piece leaves the node (0: straight on). The followed piece's (or the only one's) is kinkDeg
+			for _, q in ipairs({ { "from", a, { x = t0.x, y = t0.y } }, { "to", b, { x = -t1.x, y = -t1.y } } }) do
+				local key, endp, leave = q[1], q[2], q[3]
+				if endp.ways then
+					local kinks = {}
+					for _, w in ipairs(endp.ways) do
+						local k = w.x and core.angleDeg(w, leave)
+						kinks[#kinks + 1] = { edge = w.edge, kinkDeg = k and r3(k) or nil, wayFrom = w.from }
+						if (aligned[key] and aligned[key].edge == w.edge) or (not aligned[key] and #endp.ways == 1) then
+							endp.kinkDeg = k and r3(k) or nil
+						end
+					end
+					endp.kinks = kinks
+				end
+				endp.ways = nil
+			end
+		end
+		-- where the hits are described from: the piece's middle (road), the middle of the pieces' middles (a batch)
+		local cx, cy = 0, 0
+		for _, p in ipairs(P) do cx, cy = cx + (p.a.x + p.b.x) / 2 / #P, cy + (p.a.y + p.b.y) / 2 / #P end
+		if batch then
+			local list = {}
+			for _, p in ipairs(P) do list[#list + 1] = p.out end
+			out.pieces = core.array(list)
+			out.centre = { x = cx, y = cy }
+			-- what the proposal holds, by its ids: each node (an existing one's id, a new one's -n with its name or the
+			-- end that made it) and each piece between them
+			local pn, pe = {}, {}
+			for _, nd in ipairs(nodeList) do
+				local ends = {}
+				for _, e in ipairs(nd.ends) do ends[#ends + 1] = at(e[1], e[2]) end
+				pn[#pn + 1] = { id = nd.id, existing = nd.node ~= nil, name = nd.name, x = nd.endp.x, y = nd.endp.y,
+					z = nd.endp.z, ends = core.array(ends) }
+			end
+			for i, p in ipairs(P) do pe[#pe + 1] = { id = p.id, piece = i, node0 = p.n0.id, node1 = p.n1.id } end
+			out.proposal = { nodes = core.array(pn), edges = core.array(pe) }
 		end
 		if r.dryRun and not r.engineCheck then
 			-- the probe's own checks only, nothing made for the engine: a dry run is to be safe to run without asking
@@ -1679,52 +1880,57 @@ function M.new(ctx)
 			return answer(c.id, out)
 		end
 		local sp = api.type.SimpleProposal.new()
-		local nodes, nextId = {}, -1
-		local function endNode(e)
-			if e.node then return e.node end
-			local n = newRecord("NodeAndEntity")
-			n.entity = nextId
-			n.comp.position = api.type.Vec3f.new(e.x, e.y, e.z)
-			nodes[#nodes + 1] = n
-			nextId = nextId - 1
-			return n.entity
+		local nodes = {}
+		for _, nd in ipairs(nodeList) do
+			if not nd.node then
+				local n = newRecord("NodeAndEntity")
+				n.entity = nd.id
+				n.comp.position = api.type.Vec3f.new(nd.endp.x, nd.endp.y, nd.endp.z)
+				nodes[#nodes + 1] = n
+			end
 		end
-		local en0, en1 = endNode(a), endNode(b)
-		if en0 ~= n0 or en1 ~= n1 or nextId ~= pieceId then return fail(c.id, "the ids planned are not the ones given: nothing sent") end
-		local e = newRecord("SegmentAndEntity")
-		e.entity = nextId
-		e.type = 0 -- 0 street, 1 track
-		e.comp.node0, e.comp.node1 = n0, n1
-		e.comp.position0 = api.type.Vec3f.new(a.x, a.y, a.z)
-		e.comp.position1 = api.type.Vec3f.new(b.x, b.y, b.z)
-		-- (core.roadTangents: the chord at both ends unless a way was given or followed)
-		e.comp.tangent0 = api.type.Vec3f.new(t0.x, t0.y, t0.z)
-		e.comp.tangent1 = api.type.Vec3f.new(t1.x, t1.y, t1.z)
-		e.comp.type = edgeType
-		e.comp.typeIndex = typeIndex
-		e.comp.roadType = streetType
-		e.comp.roadTemplate = tpl.name
-		if tpl.style ~= nil then e.comp.roadStyle = tpl.style end
-		if tpl.lanes ~= nil then e.comp.laneConfigs = tpl.lanes end
-		-- the company's (as a player's road): its PlayerOwned, where the type can be made
-		pcall(function()
-			local po = newRecord("PlayerOwned")
-			po.player = player()
-			e.playerOwned = po
-		end)
-		-- junction set-ups: each new node its own (a dead end), each joined node its old one plus the new piece's
-		-- connections (straight on where it makes two pieces, a junction's where more), a construction's node none
-		-- (its set-up is left as it is). One that cannot be made refuses the command: nothing is sent (a node left
-		-- without one, or without the new piece, is what killed the game or keeps vehicles off the piece)
+		local edges = {}
+		for _, p in ipairs(P) do
+			local a, b, t0, t1 = p.a, p.b, p.t0, p.t1
+			local e = newRecord("SegmentAndEntity")
+			e.entity = p.id
+			e.type = 0 -- 0 street, 1 track
+			e.comp.node0, e.comp.node1 = p.n0.id, p.n1.id
+			e.comp.position0 = api.type.Vec3f.new(a.x, a.y, a.z)
+			e.comp.position1 = api.type.Vec3f.new(b.x, b.y, b.z)
+			-- (core.roadTangents: the chord at both ends unless a way was given or followed; both the way node0 ->
+			-- node1, as Track Connector's pieces that share a new node: each piece's own way, whichever way the
+			-- other piece at the node runs)
+			e.comp.tangent0 = api.type.Vec3f.new(t0.x, t0.y, t0.z)
+			e.comp.tangent1 = api.type.Vec3f.new(t1.x, t1.y, t1.z)
+			e.comp.type = p.edgeType
+			e.comp.typeIndex = p.typeIndex
+			e.comp.roadType = streetType
+			e.comp.roadTemplate = p.tpl.name
+			if p.tpl.style ~= nil then e.comp.roadStyle = p.tpl.style end
+			if p.tpl.lanes ~= nil then e.comp.laneConfigs = p.tpl.lanes end
+			-- the company's (as a player's road): its PlayerOwned, where the type can be made
+			pcall(function()
+				local po = newRecord("PlayerOwned")
+				po.player = player()
+				e.playerOwned = po
+			end)
+			edges[#edges + 1] = e
+		end
+		-- junction set-ups: each new node its own (a dead end, or the batch's pieces there joined), each joined node
+		-- its old one plus the new pieces' connections (straight on where it makes two pieces, a junction's where
+		-- more), a construction's node none (its set-up is left as it is). One that cannot be made refuses the
+		-- command: nothing is sent (a node left without one, or without the new piece, is what killed the game or
+		-- keeps vehicles off the piece)
 		local cfgAdd, cfgRemove = {}, {}
-		for _, q in ipairs({ { "from", a, n0 }, { "to", b, n1 } }) do
-			local key, endp, id = q[1], q[2], q[3]
+		for _, nd in ipairs(nodeList) do
+			local first = nd.ends[1]
 			local ok, cerr = pcall(function()
-				if not endp.node then
-					cfgAdd[#cfgAdd + 1] = configEntry(id, nil, {})
+				if not nd.node then
+					cfgAdd[#cfgAdd + 1] = configEntry(nd.id, nil, nd.rules)
 					return
 				end
-				local plan = plans[key]
+				local plan = nd.plan
 				if plan.keep then return end
 				-- (the old connections anew: those read from the engine are not to be written, Smart Lanes' notes)
 				local conns = {}
@@ -1732,19 +1938,21 @@ function M.new(ctx)
 					conns[#conns + 1] = laneConnection(lc.segment0, lc.lane0, lc.segment1, lc.lane1, lc.withRoad, lc.withTram)
 				end
 				for _, lc in ipairs(plan.rules) do conns[#conns + 1] = lc end
-				cfgAdd[#cfgAdd + 1] = configEntry(endp.node, plan.old, conns)
-				cfgRemove[#cfgRemove + 1] = endp.node
+				cfgAdd[#cfgAdd + 1] = configEntry(nd.node, plan.old, conns)
+				cfgRemove[#cfgRemove + 1] = nd.node
 			end)
 			if not ok then
-				return fail(c.id, string.format("%s: the junction set-up could not be made (%s): nothing sent", key, tostring(cerr)))
+				return fail(c.id, string.format("%s: the junction set-up could not be made (%s): nothing sent",
+					at(first[1], first[2]), tostring(cerr)))
 			end
 		end
 		-- whole lists, never an element written into the engine's list (see place)
 		sp.streetProposal.nodesToAdd = nodes
-		sp.streetProposal.edgesToAdd = { e }
+		sp.streetProposal.edgesToAdd = edges
 		if #cfgAdd > 0 then sp.streetProposal.nodeConfigsToAdd = cfgAdd end
 		if #cfgRemove > 0 then sp.streetProposal.nodeConfigsToRemove = cfgRemove end
 		out.newNodes, out.nodeConfigs = #nodes, #cfgAdd
+		if batch then out.edgesSent = #edges end
 		if r.ignoreErrors then
 			out.ignoreErrors, out.testSave, out.ignoreErrorsNote = true, r.testSave, NOTE_FORCE
 		end
@@ -1797,7 +2005,7 @@ function M.new(ctx)
 				out.ok = false
 				out.error = "the engine would refuse it: " .. dryReason(v) .. " (dry run: nothing sent)"
 				if out.collisions and describeHits then
-					local okH, hits = pcall(describeHits, out.collisions, (a.x + b.x) / 2, (a.y + b.y) / 2)
+					local okH, hits = pcall(describeHits, out.collisions, cx, cy)
 					if okH then out.hits = hits else out.hitsError = tostring(hits) end
 				end
 				return answer(c.id, out, "error")
@@ -1819,12 +2027,13 @@ function M.new(ctx)
 			-- lanes there is not checked in a game, and an error it gives there may be what stands between the
 			-- game and a node without lanes for the new piece (as the node without a set-up that killed it): not
 			-- forced (review 2026-11-24)
-			for _, key in ipairs({ "from", "to" }) do
-				if plans[key] and plans[key].keep then
+			for _, nd in ipairs(nodeList) do
+				if nd.plan and nd.plan.keep then
+					local first = nd.ends[1]
 					return fail(c.id, string.format("%s: node %d is construction %d's (its junction set-up is left as " ..
 						"it is): ignoreErrors does not join a construction's node (not checked in a game what the " ..
-						"engine makes of it); build it without --ignore-errors: nothing sent", key,
-						(key == "from" and a or b).node, plans[key].keep.construction))
+						"engine makes of it); build it without --ignore-errors: nothing sent", at(first[1], first[2]),
+						nd.node, nd.plan.keep.construction))
 				end
 			end
 			local okV, v, form, both = pcall(engineCheck, sp, r.removeFields, r.removeBuildings)
@@ -1841,7 +2050,7 @@ function M.new(ctx)
 						"builds past non-critical errors only (api/tealdef/api/cmd.d.tl), so the build may be refused all the same"
 				end
 				if v.collisions and describeHits then
-					local okH, hits = pcall(describeHits, v.collisions, (a.x + b.x) / 2, (a.y + b.y) / 2)
+					local okH, hits = pcall(describeHits, v.collisions, cx, cy)
 					if okH then out.unforced.hits = hits else out.unforced.hitsError = tostring(hits) end
 				end
 			else
@@ -1849,8 +2058,16 @@ function M.new(ctx)
 			end
 			out.ignoredErrors = true
 		end
+		local before = {}
+		for _, p in ipairs(P) do
+			for e in pairs(piecesAround(p.a, p.b)) do before[e] = true end
+		end
 		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
-			piecesBefore = piecesAround(a, b), sp = sp, ctxArgs = { r.removeFields, r.removeBuildings } }
+			piecesBefore = before, sp = sp, ctxArgs = { r.removeFields, r.removeBuildings }, batch = batch }
+		if batch then
+			job.pieces = {}
+			for _, p in ipairs(P) do job.pieces[#job.pieces + 1] = p.out end
+		end
 		out.removeBuildings = r.removeBuildings or nil
 		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields, r.removeBuildings), force, true), function(data, success, entities)
 			local ok, cerr = pcall(function()
@@ -1986,19 +2203,95 @@ function M.new(ctx)
 		answer(c.id, out)
 	end
 
+	-- a built piece's own nodes, and for a bridge its edge type and typeIndex read back (whether the engine kept it
+	-- a bridge of that type; "unread" where they cannot be read), into po
+	local function readBack(po, e)
+		local be = comp(e, "BASE_EDGE")
+		po.node0, po.node1 = tonumber(core.field(be, "node0")), tonumber(core.field(be, "node1"))
+		if po.bridge then
+			local t, i = be and core.field(be, "type"), be and tonumber(core.field(be, "typeIndex"))
+			local names = {}
+			for _, k in ipairs({ "NORMAL", "BRIDGE", "TUNNEL" }) do
+				local v = enumOf("BaseEdgeType", k)
+				if v ~= nil then names[v] = k end
+			end
+			po.bridge.built = { edgeType = t ~= nil and (names[t] or tostring(t)) or "unread", typeIndex = i or "unread",
+				asSent = t ~= nil and names[t] == "BRIDGE" and i == po.bridge.id }
+		end
+	end
+
+	-- a batch's result: each piece's edge among the result's (its two ends at the piece's, either way round), else
+	-- found between its ends; the named nodes' ids as built
+	local function finishBatch(job, out, res, edges)
+		local function near(p, q) return p and math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2) <= MATCH_M end
+		local used, missing, named = {}, 0, {}
+		for _, po in ipairs(job.pieces) do
+			local found
+			for _, e in ipairs(edges) do
+				if not used[e] then
+					local be = comp(e, "BASE_EDGE")
+					local p0, p1 = nodePos(core.field(be, "node0")), nodePos(core.field(be, "node1"))
+					if (near(p0, po.from) and near(p1, po.to)) or (near(p0, po.to) and near(p1, po.from)) then found = e; break end
+				end
+			end
+			if not found and res.success then
+				local e = pieceBetween(po.from, po.to, job.piecesBefore)
+				if e and not used[e] then
+					found = e
+					po.why = "the result named no piece between its ends: found between the ends"
+				end
+			end
+			if found then
+				used[found] = true
+				po.edge = found
+				readBack(po, found)
+				-- (node0 was sent at from, node1 at to: a piece the engine turned round would say so here)
+				for _, q in ipairs({ { po.from, po.node0, po.node1 }, { po.to, po.node1, po.node0 } }) do
+					local endp, n, other = q[1], q[2], q[3]
+					if endp.name and n then
+						local pos = nodePos(n)
+						if not near(pos, endp) then n = other end
+						if named[endp.name] and named[endp.name] ~= n then
+							out.namedNodesNote = "a named node came back as more than one node: look at the map"
+						end
+						named[endp.name] = named[endp.name] or n
+					end
+				end
+			elseif res.success then
+				missing = missing + 1
+			end
+		end
+		if res.success and missing > 0 then
+			out.warning = string.format("the engine said built, but %d of the %d pieces were not found between their ends " ..
+				"(look at the map)", missing, #job.pieces)
+		end
+		local list = {}
+		for _, po in ipairs(job.pieces) do list[#list + 1] = po.edge or false end
+		out.pieceEdges = core.array(list)
+		if next(named) then out.namedNodes = named end
+	end
+
 	-- a road's result: the new piece and nodes among the result's entities, else the piece found between the ends
 	finishRoad = function(job, out, res)
 		local edges, nodes = {}, {}
 		for _, e in ipairs(res.entities) do
 			if comp(e, "BASE_EDGE") then edges[#edges + 1] = e elseif comp(e, "BASE_NODE") then nodes[#nodes + 1] = e end
 		end
-		if res.success and #edges == 0 then
+		if not job.batch and res.success and #edges == 0 then
 			local e = pieceBetween(out.from, out.to, job.piecesBefore)
 			if e then
 				edges[1] = e
 				out.why = "the result named no piece: found between the ends"
 			else
 				out.warning = "the engine said built, but no new piece between the ends was found (look at the map)"
+			end
+		end
+		if job.batch then
+			finishBatch(job, out, res, edges)
+			-- (a piece found between its ends that the result did not name is among the edges too)
+			local have = setOf(edges)
+			for _, po in ipairs(job.pieces) do
+				if po.edge and not have[po.edge] then edges[#edges + 1] = po.edge; have[po.edge] = true end
 			end
 		end
 		out.edges, out.nodes = core.array(edges), core.array(nodes)
@@ -2012,28 +2305,26 @@ function M.new(ctx)
 			end
 			out.newNodeConfigs = core.array(cfg)
 		end
+		if job.batch then return end
 		out.edge = edges[1]
-		if res.success and edges[1] then
-			local be = comp(edges[1], "BASE_EDGE")
-			out.node0, out.node1 = tonumber(core.field(be, "node0")), tonumber(core.field(be, "node1"))
-			-- --bridge: the built piece's own edge type and typeIndex read back (whether the engine kept it a bridge
-			-- of that type); "unread" where they cannot be read
-			if out.bridge then
-				local t, i = be and core.field(be, "type"), be and tonumber(core.field(be, "typeIndex"))
-				local names = {}
-				for _, k in ipairs({ "NORMAL", "BRIDGE", "TUNNEL" }) do
-					local v = enumOf("BaseEdgeType", k)
-					if v ~= nil then names[v] = k end
-				end
-				out.bridge.built = { edgeType = t ~= nil and (names[t] or tostring(t)) or "unread", typeIndex = i or "unread",
-					asSent = t ~= nil and names[t] == "BRIDGE" and i == out.bridge.id }
-			end
-		end
+		if res.success and edges[1] then readBack(out, edges[1]) end
 	end
 
-	-- no callback in RESULT_SEC: the piece may still have been built; it is looked for between its ends
+	-- no callback in RESULT_SEC: the piece may still have been built; it is looked for between its ends (a batch's
+	-- every piece: the proposal is built whole or not at all, so one found says it was built)
 	roadLost = function(job, why)
 		local o = job.out
+		if job.batch then
+			local list = {}
+			for _, po in ipairs(job.pieces) do
+				local e = pieceBetween(po.from, po.to, job.piecesBefore)
+				if e then list[#list + 1] = e end
+			end
+			if #list == 0 then return fail(job.id, why .. "; no piece between the ends of any of the batch's pieces (look at the map)") end
+			job.result = { success = true, verdict = {}, entities = list }
+			o.why = string.format("%s; %d of the %d pieces found between their ends", why, #list, #job.pieces)
+			return finish(job)
+		end
 		local e = pieceBetween(o.from, o.to, job.piecesBefore)
 		if e then
 			job.result = { success = true, verdict = {}, entities = { e } }

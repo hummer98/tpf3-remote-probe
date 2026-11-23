@@ -621,6 +621,30 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   ゲーム) は、印を残せないので強制の建設を断ります。`probe-force-*` のセーブ (前の起動で強制して保存したもの) を読み込んだ
   ときも、保存は `probe-force-*` の名前にだけ通ります。防げないこと: ゲーム自身のオートセーブ (10 分ごと) は、強制した
   状態をオートセーブの枠に書きます。そのオートセーブを読み込むと、どの名前にも保存できます。
+- `--batch FILE` (複数の道路を **1 つの** 提案で送る。2026-11-24 に書いたもの、**ゲーム内では未確認**): 全部の道路を
+  1 つの SimpleProposal に入れ、エンジンにまとめて判定させ、まとめて建てます (1 本ずつ送ると 2 本目だけ断られる形が、
+  まとめると通るかもしれない: 4 車線の道路の端から一方通行の道路を 2 本出すとき)。FILE は JSON の配列で、16 本まで。
+  それぞれはこの命令の引数の名前で書いた object です (`from`・`to`・`type`・`bridge`・`snap`・`tangent-from`・
+  `tangent-to`・`align-to-edge`・`align-edge`。MOD の名前 `tangentFrom` なども読みます。点は `"x,y[,z]"` か
+  `[x, y, z]`)。node を共有するには `from-node` / `to-node` を使います: 既存の道路の node の entity id (そのまま
+  つなぐ。snap しない。同じ端に `from` / `to` は書かない)、または新しい node の名前 `"@a"` (複数の道路で共有する
+  新しい node。snap しない。点は少なくとも 1 つの端で書き、書いた端どうしは 0.01 m 以内で同じであること。1 つの端に
+  しか出てこない名前は断ります)。`--dry-run`・`--engine-check`・`--remove-fields`・`--remove-buildings`・
+  `--ignore-errors` は提案全体のものとしてコマンドラインに書き、1 本のときと同じ意味・同じ柵です (命令の名前は
+  `road` のまま送るので、`--ignore-errors` は試験用のセーブだけで coop の間は断る、強制の印、probe 自身の交差点の
+  設定の検査、が同じく効きます)。`--batch` と一緒の `--from`・`--to` など 1 本ぶんの引数は断ります。空の配列・17 本
+  以上・JSON でないファイル・知らない key・誤った値は、何も送らずに断ります。名前を付けずに同じ点に置いた 2 つの新しい
+  端 (1 つの名前を付けてください)、同じ 2 つの node の間の 2 本、既存の node の上の名前つきの node、道路の node でない
+  id の端も断ります。同じ batch の道路どうしが交わる・重なる形 (1 つの node から 0° 近くで 2 本出すなど) はここでは
+  確認しないので、先に `--dry-run --engine-check` で試してください。
+  新しい entity の番号は 1 本のときと同じ決め方です: 新しい node が -1, -2, ... (端の順: 1 本目の from、1 本目の to、
+  2 本目の from、...)、そのあとに道路。1 本だけの batch は `road` とまったく同じ提案になります。複数の道路が共有する
+  node には、交差点の設定を 1 つだけ付けます: 既存の node は元の接続に新しい道路の接続 (既存の道路へ・新しい道路
+  どうし) を足したもの、新しい node は新しい道路どうしの接続 (2 本なら車線ごとにまっすぐ、3 本以上なら交差点)。
+  答え: `batch: true`、1 つの提案の `errors`・`critical`・`warnings`・`collisions`・`hits`、`pieces` (道路ごとの
+  `from` / `to`・`template`・`length`・tangent と曲がりの角、建てば `edge`・`node0`・`node1`。共有した端には
+  `sharedBy`)、`proposal` (提案の `nodes` を id で。`name` と、その node を書いた端 `ends`。それと `edges`)、建てた
+  `edges` / `nodes`、`pieceEdges` (道路ごとの edge、順に)、`namedNodes` (名前ごとの、建った node)。
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ
