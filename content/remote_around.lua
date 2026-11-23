@@ -12,7 +12,8 @@
 --     roadTemplate, position0 / 1; streetConnectorSystem.getConstructionEntityForEdge), BASE_NODE, TOWN_BUILDING
 --     (town, construction), CONSTRUCTION (fileName; stations, depots, industries; a building/... file: a town's
 --     building), INDUSTRY, SUBCONSTRUCTION, FIELD, TOWN, ASSET_GROUP (trees, rocks), the moving kinds (vehicles,
---     persons, animals), MODEL_INSTANCE_LIST; none of them: other
+--     persons, animals), MODEL_INSTANCE_LIST, TERRAIN (terrain), WORLD / EMISSION_GRID (map); none of them: other,
+--     or map when its box spans core.AROUND_MAP_SIZE both ways (terrain and map are off unless asked for)
 --   for describe: BOUNDING_VOLUME of each id (no octree)
 -- Every engine call is in pcall and asked only about entities the engine says exist. Nothing is sent.
 --
@@ -134,6 +135,8 @@ function M.new(ctx)
 			if comp(e, k) ~= nil then return { kind = "moving", component = k } end
 		end
 		if comp(e, "MODEL_INSTANCE_LIST") ~= nil then return { kind = "model" } end
+		if comp(e, "TERRAIN") ~= nil then return { kind = "terrain" } end
+		if comp(e, "WORLD") ~= nil or comp(e, "EMISSION_GRID") ~= nil then return { kind = "map" } end
 		return { kind = "other" }
 	end
 
@@ -170,6 +173,11 @@ function M.new(ctx)
 			d.x, d.y = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
 			if box.z0 and box.z1 then d.z = (box.z0 + box.z1) / 2; d.height = box.z1 - box.z0 end
 			d.sizeX, d.sizeY = box.x1 - box.x0, box.y1 - box.y0
+			-- a box the size of the map (entity 2 in a game, 14,336 m square, kind other): the map's own, whatever
+			-- its components; what it was read as is kept in mapOf
+			if d.kind == "other" and d.sizeX >= core.AROUND_MAP_SIZE and d.sizeY >= core.AROUND_MAP_SIZE then
+				d.mapOf, d.kind = d.kind, "map"
+			end
 		end
 		if px then
 			if d.from and d.to then

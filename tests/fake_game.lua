@@ -1199,6 +1199,16 @@ function M.new(dir, opts)
 			config = { getModParams = function() inGame("getModParams"); return g.modParams end },
 		},
 		type = {
+			-- a clock that moves within a frame (getApplicationTime stays the same all through one, as the game's):
+			-- each getTime moves it on by g.clockStepUs (0 unless a test sets it), from g.time when made
+			Clock = { new = function()
+				local t0 = (g.time or 0) * 1e6
+				local us = 0
+				return { getTime = function(self)
+					us = us + (g.clockStepUs or 0)
+					return math.floor((g.time or 0) * 1e6 - t0 + us)
+				end }
+			end },
 			enum = { Carrier = { ROAD = 0, RAIL = 1, TRAM = 2, AIR = 3, WATER = 4, OTHER = 5 },
 				TransportMode = { PERSON = 0, CARGO = 1, CAR = 2, BUS = 3, TRUCK = 4, TRAM = 5, ELECTRIC_TRAM = 6, TRAIN = 7,
 					ELECTRIC_TRAIN = 8, AIRCRAFT = 9, SHIP = 10, SMALL_AIRCRAFT = 11, SMALL_SHIP = 12, HELICOPTER = 13 },
@@ -2922,6 +2932,52 @@ function M.installDebug(g, spec)
 			return true
 		end
 		if (spec.refuse or {}).stockSet then return false end
+		-- stock -1 at a stock list (a mixed stock's cargo, by its name): the first of its stocks that takes the
+		-- cargo gets it (which one the engine takes is not known; spec.minusOneCrashes: the engine's assertion;
+		-- spec.minusOneIgnoresName: the name not taken either, the stock's default cargo type gets it)
+		if cmd.stock == -1 and lists[cmd.entity] then
+			if spec.minusOneCrashes then crash("ASSERT: stock -1 at stock list " .. tostring(cmd.entity)) end
+			local id = cargoId[cmd.cargoType]
+			if id == nil then crash("ASSERT: no cargo type " .. tostring(cmd.cargoType)) end
+			for _, st in ipairs(lists[cmd.entity].stocks) do
+				local takes = st.cargoTypes or (st.cargoType and st.cargoType >= 0 and { st.cargoType }) or {}
+				for _, c in ipairs(takes) do
+					if c == id then
+						st.byCargo = st.byCargo or {}
+						if spec.minusOneIgnoresName then id = st.default or takes[#takes] end
+						st.byCargo[id] = cmd.amount
+						local sum = 0
+						for _, n in pairs(st.byCargo) do sum = sum + n end
+						st.count = sum
+						return true
+					end
+				end
+			end
+			return true -- (nothing takes it: nothing changes)
+		end
+		-- stock -1 at an industry of the base fake: its first stock that takes the cargo
+		if cmd.stock == -1 and g.industries[cmd.entity] and not g.fleet[cmd.entity] then
+			local id = cargoId[cmd.cargoType]
+			if id == nil then crash("ASSERT: no cargo type " .. tostring(cmd.cargoType)) end
+			for _, st in ipairs(g.industries[cmd.entity].stocks or {}) do
+				for _, c in ipairs(st.cargoTypes or { st.cargoType }) do
+					if c == id then
+						-- per cargo type from now on (a mixed input holds each apart)
+						if not st.byCargo then
+							st.byCargo = {}
+							for _, o in ipairs(st.cargoTypes or {}) do st.byCargo[o] = 0 end
+							st.byCargo[st.cargoTypes and st.cargoTypes[1] or id] = st.count or 0
+						end
+						st.byCargo[id] = cmd.amount
+						local sum = 0
+						for _, n in pairs(st.byCargo) do sum = sum + n end
+						st.count = sum
+						return true
+					end
+				end
+			end
+			return true
+		end
 		if cmd.stock == -1 then
 			local c = g.fleet[cmd.entity]
 			if not c then crash("ASSERT: no transport vehicle " .. tostring(cmd.entity)) end
@@ -2943,7 +2999,13 @@ function M.installDebug(g, spec)
 		if cmd.cargoType ~= nil then
 			if cargoId[cmd.cargoType] == nil then crash("ASSERT: no cargo type " .. tostring(cmd.cargoType)) end
 			st.byCargo = st.byCargo or {}
-			st.byCargo[cargoId[cmd.cargoType]] = cmd.amount
+			-- a mixed stock by its stock id: the name is not taken, the amount goes to its default cargo type (st.default,
+			-- else its last; as a game's warehouse put grain asked as bricks, 2026-11-23)
+			local into = cargoId[cmd.cargoType]
+			if (st.cargoType == nil or st.cargoType < 0) and st.cargoTypes and #st.cargoTypes > 0 then
+				into = st.default or st.cargoTypes[#st.cargoTypes]
+			end
+			st.byCargo[into] = cmd.amount
 			local sum = 0
 			for _, n in pairs(st.byCargo) do sum = sum + n end
 			st.count = sum
@@ -3027,7 +3089,10 @@ function M.installDebug(g, spec)
 	sys.getStockCountForCargoType = function(e, id, cargo)
 		local st = stockOf(e, id)
 		if st then return (st.byCargo or {})[cargo] or 0 end
-		-- an industry's (the base fake's): its whole count for a cargo type the stock takes, else 0
+		-- an industry's (the base fake's): its count per cargo type once one was set by name, else its whole count
+		-- for a cargo type the stock takes, else 0
+		local ist = g.industries[e] and (g.industries[e].stocks or {})[id + 1]
+		if ist and ist.byCargo then return ist.byCargo[cargo] or 0 end
 		local n = count(e, id)
 		for _, c in ipairs(api.engine.util.stock.getStockCargoTypes(e, id)) do if c == cargo then return n end end
 		return 0
@@ -3055,7 +3120,7 @@ function M.installAround(g, spec)
 	-- that takes a path by whether a type is there goes the path the game's own types give)
 	for _, k in ipairs({ "BASE_EDGE", "BASE_NODE", "BASE_EDGE_STREET", "CONSTRUCTION", "TOWN_BUILDING", "INDUSTRY",
 		"SUBCONSTRUCTION", "FIELD", "TOWN", "ASSET_GROUP", "TRANSPORT_VEHICLE", "SIM_PERSON", "ANIMAL",
-		"MODEL_INSTANCE_LIST", "BOUNDING_VOLUME" }) do CT[k] = CT[k] or k end
+		"MODEL_INSTANCE_LIST", "BOUNDING_VOLUME", "TERRAIN", "WORLD", "EMISSION_GRID" }) do CT[k] = CT[k] or k end
 	api.type.enum = api.type.enum or {}
 	api.type.enum.RoadType = api.type.enum.RoadType or { STREET = 0, TRACK = 1 }
 	api.type.Box3 = api.type.Box3 or { new = function(lo, hi) return { min = lo, max = hi } end }

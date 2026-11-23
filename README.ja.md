@@ -721,11 +721,13 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
 - `stock list` は、本体の debug パネルと同じ読み方で在庫の一覧を読みます: entity の `STOCK_LIST` コンポーネント、
   0 から数える stock の番号 (`stock set --stock` に渡す番号)、stock ごとの `type`・`cargoType`・`cargo` (貨物の種類の
   名前)・`capacity`・`count` (`getStockCount`)・`cargoTypes` (その stock が受ける貨物の種類ごとの名前と `count`)。
-  entity そのものに `STOCK_LIST` が無い産業・町の建物・倉庫は、その `stockList` の entity をたどります (`via`)。
+  entity そのものに `STOCK_LIST` が無い産業・町の建物・倉庫は、その `stockList` の entity をたどります (`via`)。その
+  entity が持ち主そのものでもかまいません (ゲームでは、倉庫の WAREHOUSE の entity が自分の在庫の一覧だった。2026-11-23 に計測)。
   construction (`build` が答える id。倉庫のものなど) は、その subconstruction のうち在庫の一覧を持つ倉庫・産業・町の
   建物 1 つをたどります (`via` は `CONSTRUCTION>WAREHOUSE`、`owner`・`construction` も出す)。本体が倉庫の
   construction から窓を開くときと同じく subconstruction からたどります (本体は最初の 1 つを取りますが、ここでは推し量らず、
-  2 つ以上あれば名前を挙げて断ります)。無ければエラーにします。倉庫
+  2 つ以上あれば名前を挙げて断ります)。subconstruction に無ければ、`WAREHOUSE.construction` がその construction を指す倉庫を
+  探します (ゲームでは、倉庫の construction の subconstructions に倉庫が入っていなかった。2026-11-23)。それでも無ければエラーにします。倉庫
   (`warehouse.con`) の在庫は全部 1 つの一覧にあります: 汎用のモジュールの分は混合の stock 1 つ (1 つ 500 を足したもの)、
   専用のモジュール (bulk・liquid・flatbed・goods) は 1 つずつ stock になります。capacity が 0 の stock は入らないので、
   stock 0 が混合になるのは汎用のモジュールがあるときだけです。番号は `stock list` で見てください。モジュールの無い倉庫には stock がありません。
@@ -736,7 +738,12 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   倉庫の窓を開きます。**ゲーム内では未確認**: 倉庫の在庫の一覧 (本体のソースから読んだもの。計測はまだ)、倉庫の WAREHOUSE
   の entity に選べる名前があるか。
 - `stock set` は `api.cmd.debug.makeStockSetCargoAmountCmd(在庫の一覧の entity, stock, amount[, cargo])` を送ります
-  (cargo は指定したときだけ。本体のパネルも在庫の一覧の stock には付けない)。送る前に断るもの: 一覧に無い stock の
+  (cargo は指定したときだけ。本体のパネルも在庫の一覧の stock には付けない)。**混合の stock** (`cargoType` が -1。倉庫の
+  汎用の stock など) に貨物を指定したときは、stock を **-1** にして貨物の名前と組で送ります (`sentStock` が -1、`form`)。
+  本体のパネルが車両の積み荷を貨物ごとに決めるときと同じ形です。stock の番号のまま送ると、エンジンは名前を見ませんでした
+  (穀物を指定してレンガが入った。2026-11-23)。貨物が1種類の stock と、`--cargo` なしの混合の stock は、これまでどおり
+  stock の番号で送ります。**ゲーム内では未確認**: 在庫の一覧への stock -1 の形 (試験用のセーブでだけ)。送る前と後に一覧の
+  数を全部読み、頼んだのと別の貨物・stock が変わっていたら、ok にせず、変わったものを挙げてエラーにします (`elsewhere`)。送る前に断るもの: 一覧に無い stock の
   番号、stock の capacity (車両ならその貨物の capacity、ほかは 100000。混合の stock ではほかの貨物と合わせて) を超える量、乗客、stock や車両が受けない貨物、
   エンジンに無い entity。答え: `before`、`after` (callback の数フレーム後に読む)、`success`、`engineResult` (callback が
   返したもの)、`stockList` (送った先の entity)。`--dry-run` は何も送らず、`before` と `functionPresent` を答えます。
@@ -799,7 +806,8 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
   (`octreeSystem.findIntersectingEntities`)、渡された entity と箱を1つずつ見て、`--radius` 以内 (箱まで、道路・線路は
   線から幅の半分を引いた距離) のものを残します。近い順に `--limit` 件まで (初期設定 200、最大 2000。超えたら `truncated`、
   全部の数は `total`)。種類ごとの数 `counts`、octree が渡した数 `scanned` (10000 まで。超えたら `scanTruncated` と
-  `dropped`)、かかった時間 `ms` (`octree`・`classify`・`total`、ゲームの中での時間)。ゲームの GUI の1フレームの中で
+  `dropped`)、かかった時間 `ms` (`octree`・`classify`・`total`、ゲームの中での時間。`api.type.Clock` で測る。アプリの時間は
+  1フレームの間ずっと同じなので、前はいつも 0 だった)。ゲームの GUI の1フレームの中で
   回るので、2 秒で打ち切ります (`timeTruncated`。見た数は `looked`)。`--radius` は 2000 m まで。
 - 1件ごと: `id`・`kind`・`name`・`x` / `y` / `z` (箱の中心)・`box` (`x0`・`y0`・`z0`・`x1`・`y1`・`z1`)・`sizeX` / `sizeY` /
   `height`・`dist`。種類 (最初に見つかった component で決める): `street` / `track` (`BASE_EDGE` の roadType。`template`・
@@ -807,8 +815,9 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
   `construction`。その construction も `building` 付きで。`building/...` のファイルの建造物も)、`station` / `depot` /
   `industry` / `construction` (`CONSTRUCTION` の駅・車庫・産業で分ける。`fileName`。1回の答えで 50 件まで、`place`・
   `ends`・`mouths` を `build` の答えと同じ形で、`local` 付きで)、`field` (`FIELD`)、`town` (`TOWN`: 箱は町全体)、`asset`
-  (`ASSET_GROUP`: 木・岩)、`model`、`moving` (車両・人・動物)、`other`。`--kinds` でいくつかに絞れます (`all` で全部)。
-  初期設定は `node` と `moving` 以外の全部です。
+  (`ASSET_GROUP`: 木・岩)、`model`、`moving` (車両・人・動物)、`terrain` (`TERRAIN`)、`map` (`WORLD`・`EMISSION_GRID`、
+  または `other` になるはずの、縦横とも 2000 m 以上の箱。`mapOf` 付き。ゲームでは entity 2 が 14,336 m 四方だった。2026-11-23)、
+  `other`。`--kinds` でいくつかに絞れます (`all` で全部)。初期設定は `node`・`moving`・`terrain`・`map` 以外の全部です。
 - 箱は octree の bounding volume で、**軸にそろった箱**です。斜めに置いた駅や斜めの道路は、実物より大きく出ます。道路と
   線路の幅 (`halfWidth`、6 m と 3 m) は**推測**です。octree に入っていない物は出ません (木の asset group が入っていなければ、
   木も出ません)。
@@ -827,7 +836,7 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   エンジンの箱を使います (`build --dry-run --engine-check` を1回)。次に、円とそこへ届きうる範囲で `around` を1回読み、
   ここで探します (tools/tf3ctl.py の `fit_search`。ゲームなしでテストする純粋な関数)。点から外へ候補を並べ
   (`--step` ごとの格子、初期設定 4 m)、向きごとに (`--angle`、無ければ 4 方向)、回した箱が、around の箱 (町・木・node・
-  動く物は除く) から 0.5 m、道路と線路の線から幅の半分だけ離れていれば残します。`--mouth DX,DY` (建造物の向きでの
+  動く物・terrain・map と、縦横とも 2000 m 以上の箱は除く。地図そのものの箱が、前は全部の候補の邪魔をしていた。2026-11-23) から 0.5 m、道路と線路の線から幅の半分だけ離れていれば残します。`--mouth DX,DY` (建造物の向きでの
   道路の出入り口。試しに建てた build の `connectable` の mouth の `local`) を付けると、その点が、建造物に属さない道路の
   区間の端にちょうど重なる位置だけを、15 度ごとに試します (`--track` なら線路の端)。その端の区間は、そこで箱に触れて
   かまいません。`--houses N`: 箱の中心から `--catchment` (初期設定 150 m) 以内に町の建物が N 戸以上。
@@ -1454,7 +1463,7 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
     小さな停留所 160。港の旅客の桟橋 150 (25x25) と 250 (50x50・100x50)。港の貨物の桟橋は本体のファイルに値が
     ありません。
   - `near`: 駅にいちばん近い `TOWNS_READ` (4) の町の建物 (位置の読めない町が1つでもあれば全部の町。
-    `townsUnplaced`)、最大 1500 棟 (`buildingsRead`・`truncated`・`townsTotal`・`distance` 付きの `towns`・`readMs`・
+    `townsUnplaced`)、最大 1500 棟 (`buildingsRead`・`truncated`・`townsTotal`・`distance` 付きの `towns`・`readMs` (`around` の `ms` と同じく `api.type.Clock` で測る)・
     `buildingsError`・`positionError`)。種類ごとの `nearest` (`building`・`town`・`townName`・円の中心までの `distance`・`outside`: 円の縁から
     外へ何 m か、中ならマイナス)。`inCircle` (`total`・種類ごと・`caught` / `notCaught`: エンジンの旅客の
     catchables に入っているか・`nearRim`: 縁から 10 m 以内)。`notCaught` (建物。円の奥のものから。`rim`: 縁から何 m 内側か・

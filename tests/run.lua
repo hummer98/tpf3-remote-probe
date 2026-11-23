@@ -9904,9 +9904,10 @@ test("stockSet: sent with the stock list's entity, 0-based stock and the amount;
 	-- an owner: the command goes to its stock list's entity
 	local o = debugRun(g, 2212, "stockSet", "{ entity = 55, stock = 0, amount = 60 }")
 	truthy(o.ok, o.error); eq(g.debugCmds[2].entity, 56); eq(o.stockList, 56); eq(o.before, 5); eq(o.after, 60)
-	-- a station's mixed stock, one cargo type
+	-- a station's mixed stock, one cargo type: stock -1 and the cargo's name (the stock's own id would not take it)
 	local s = debugRun(g, 2213, "stockSet", '{ entity = 411, stock = 0, amount = 100, cargo = "COAL" }')
 	truthy(s.ok, s.error); eq(g.debugCmds[3].cargoType, "COAL"); eq(g.debugCmds[3].nargs, 4); eq(s.before, 0); eq(s.after, 100)
+	eq(g.debugCmds[3].stock, -1); eq(s.sentStock, -1); eq(s.stock, 0); truthy(s.form)
 	-- a vehicle's load: stock -1 and the cargo name
 	local v = debugRun(g, 2214, "stockSet", '{ entity = 601, stock = -1, amount = 30, cargo = "COAL" }')
 	truthy(v.ok, v.error); eq(v.holder, "vehicle"); eq(g.debugCmds[4].stock, -1); eq(v.before, 3); eq(v.after, 30)
@@ -10031,7 +10032,7 @@ test("stockSet: a warehouse by its construction goes to its stock list entity; c
 	local a = debugRun(g, 2271, "stockSet", '{ entity = 46840, stock = 0, amount = 300, cargo = "COAL" }')
 	truthy(a.ok, a.error); eq(a.sent, true); eq(a.stockList, 46842); eq(a.via, "CONSTRUCTION>WAREHOUSE")
 	eq(a.owner, 46841); eq(a.construction, 46840)
-	eq(g.debugCmds[1].entity, 46842); eq(g.debugCmds[1].stock, 0); eq(g.debugCmds[1].cargoType, "COAL")
+	eq(g.debugCmds[1].entity, 46842); eq(g.debugCmds[1].stock, -1); eq(g.debugCmds[1].cargoType, "COAL")
 	eq(a.before, 0); eq(a.after, 300)
 	local b = debugRun(g, 2272, "stockSet", "{ entity = 46840, stock = 1, amount = 500 }")
 	truthy(b.ok, b.error); eq(g.debugCmds[2].entity, 46842); eq(g.debugCmds[2].nargs, 3); eq(b.after, 500)
@@ -10048,6 +10049,93 @@ test("stockSet: a warehouse by its construction goes to its stock list entity; c
 		eq(r.ok, false, case[1]); truthy(tostring(r.error):find(case[2], 1, true), tostring(r.error) .. " / " .. case[2])
 	end
 	eq(#g.debugCmds, 2, "nothing more sent")
+	truthy(not g.crashed, g.crashed)
+end)
+
+-- a game's warehouse as measured 2026-11-23 (remote_probe bf84930): its WAREHOUSE entity 46841 is its own stock
+-- list (stockList 46841), its construction 46840 does not list it among its subconstructions, and the cargo ids the
+-- mixed stock takes skip 4; the names are resource names (URIs). Bricks (7) is where the engine put a mixed stock's
+-- amount when it was sent with the stock's own id.
+local GRAIN, BRICKS = "::/cargos/grain/grain.cargo", "::/cargos/bricks/bricks.cargo"
+local function gameWarehouse(spec)
+	spec = spec or {}
+	spec.strictIds = true
+	spec.constructions = { [46840] = { subconstructions = {} } }
+	spec.owners = { [46841] = { kind = "WAREHOUSE", stockList = 46841, construction = 46840 } }
+	spec.stockLists = { [46841] = { stocks = {
+		{ type = 2, cargoType = -1, cargoTypes = { 1, 2, 3, 5, 6, 7 }, default = 7, capacity = 500, count = 0, byCargo = {} } } } }
+	-- (the owner and the stock list are one entity: its WAREHOUSE and its STOCK_LIST both read)
+	local g = debugGame(spec, { cargoTypes = { [0] = { name = "PASSENGERS", label = "Passengers" },
+		[1] = { name = GRAIN, label = "Grain" }, [2] = { name = "::/cargos/dyes/dyes.cargo", label = "Dyes" },
+		[3] = { name = "::/cargos/fertilizer/fertilizer.cargo", label = "Fertilizer" },
+		[5] = { name = "::/cargos/sand/sand.cargo", label = "Sand" }, [6] = { name = "::/cargos/fish/fish.cargo", label = "Fish" },
+		[7] = { name = BRICKS, label = "Bricks" } } })
+	return g
+end
+local function cargoCount(list, stockId, cargo)
+	for _, st in ipairs(list.stocks) do
+		if st.stockId == stockId then
+			for _, c in ipairs(st.cargoTypes) do if c.cargo == cargo then return c.count end end
+		end
+	end
+end
+
+test("core.warehousesOf: the warehouses that name a construction, by their WAREHOUSE component", function()
+	local comps = { [1] = { stockList = 1, construction = 40 }, [2] = { stockList = 9, construction = 41 },
+		[3] = { stockList = -1, construction = 40 }, [4] = { construction = 40 } }
+	local o = core.warehousesOf(40, { 2, 1, 3, 4, 1, -5 }, function(v, k) eq(k, "WAREHOUSE"); return comps[v] end)
+	eq(#o, 1); eq(o[1].entity, 1); eq(o[1].stockList, 1); eq(o[1].kind, "WAREHOUSE")
+	eq(#core.warehousesOf(40, nil, function() end), 0)
+end)
+
+test("stockList: a warehouse by its construction when the construction does not list it, its own stock list", function()
+	local g = gameWarehouse()
+	local a = debugRun(g, 2291, "stockList", "{ entity = 46840 }")
+	truthy(a.ok, a.error); eq(a.stockList, 46841); eq(a.owner, 46841); eq(a.construction, 46840)
+	eq(a.via, "CONSTRUCTION>WAREHOUSE"); eq(#a.stocks, 1)
+	-- the cargo types by their ids, not by their place in the list (4 is missing: sand is the 4th, id 5)
+	local per = a.stocks[1].cargoTypes
+	eq(#per, 6); eq(per[1].cargoType, 1); eq(per[1].cargo, GRAIN); eq(per[4].cargoType, 5)
+	eq(per[4].cargo, "::/cargos/sand/sand.cargo"); eq(per[6].cargo, BRICKS)
+	local w = debugRun(g, 2292, "stockList", "{ entity = 46841 }")
+	truthy(w.ok, w.error); eq(w.stockList, 46841)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("stockSet: a warehouse's mixed stock gets the cargo asked (stock -1 and its name), by construction or entity", function()
+	local g = gameWarehouse()
+	local a = debugRun(g, 2293, "stockSet", string.format('{ entity = 46841, stock = 0, amount = 300, cargo = %q }', GRAIN))
+	truthy(a.ok, a.error); eq(a.sent, true); eq(a.stockList, 46841)
+	local c = g.debugCmds[1]
+	eq(c.entity, 46841); eq(c.stock, -1); eq(c.cargoType, GRAIN); eq(c.amount, 300); eq(c.nargs, 4)
+	eq(a.before, 0); eq(a.after, 300); eq(a.elsewhere, nil)
+	local l = debugRun(g, 2294, "stockList", "{ entity = 46841 }")
+	eq(cargoCount(l, 0, GRAIN), 300); eq(cargoCount(l, 0, BRICKS), 0, "no bricks")
+	-- by the construction's id: the same stock list
+	local b = debugRun(g, 2295, "stockSet", '{ entity = 46840, stock = 0, amount = 100, cargo = "::/cargos/fish/fish.cargo" }')
+	truthy(b.ok, b.error); eq(g.debugCmds[2].entity, 46841); eq(g.debugCmds[2].stock, -1); eq(b.after, 100)
+	-- no cargo: the stock's own id, as the base's slider sends it
+	local n = debugRun(g, 2296, "stockSet", "{ entity = 46841, stock = 0, amount = 0, dryRun = true }")
+	truthy(n.ok, n.error); eq(n.sentStock, 0); eq(n.form, nil)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("stockSet: an engine that puts the amount into another cargo is not answered ok (what changed is named)", function()
+	local g = gameWarehouse({ minusOneIgnoresName = true })
+	local a = debugRun(g, 2297, "stockSet", string.format('{ entity = 46841, stock = 0, amount = 300, cargo = %q }', GRAIN))
+	eq(a.ok, false); eq(a.success, true); truthy(a.error:find("changed what was not asked", 1, true), a.error)
+	truthy(a.error:find(BRICKS, 1, true), a.error)
+	eq(#a.elsewhere, 1); eq(a.elsewhere[1].cargo, BRICKS); eq(a.elsewhere[1].after, 300); eq(a.after, 0)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("stockSet: an industry's stock of one cargo type keeps its stock id; its mixed input takes stock -1", function()
+	local g = debugGame()
+	local a = debugRun(g, 2298, "stockSet", '{ entity = 51, stock = 0, amount = 120, cargo = "COAL" }')
+	truthy(a.ok, a.error); eq(g.debugCmds[1].stock, 0); eq(g.debugCmds[1].cargoType, "COAL"); eq(a.after, 120)
+	eq(a.sentStock, 0); eq(a.form, nil)
+	local b = debugRun(g, 2299, "stockSet", '{ entity = 51, stock = 1, amount = 20, cargo = "GRAIN" }')
+	truthy(b.ok, b.error); eq(g.debugCmds[2].stock, -1); eq(g.debugCmds[2].entity, 51); eq(b.after, 20)
 	truthy(not g.crashed, g.crashed)
 end)
 

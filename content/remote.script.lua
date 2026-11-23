@@ -50,6 +50,23 @@ local function appTime()
 	return os.clock()
 end
 
+-- seconds on a clock that moves within a frame, for how long a read took (around's ms, catchment's readMs, a
+-- search's time budget): getApplicationTime stays the same all through one frame (around and catchment read 0 ms
+-- every time, 2026-11-23), and os.clock is the process's CPU time on Linux. api.type.Clock counts microseconds
+-- from when it was made (api/type.d.tl); appTime when it cannot be made or read.
+local fineClock = nil
+local function fineTime()
+	if fineClock == nil then
+		local ok, c = pcall(function() return api.type.Clock.new() end)
+		fineClock = (ok and c ~= nil) and c or false
+	end
+	if fineClock then
+		local ok, us = pcall(function() return fineClock:getTime() end)
+		if ok and tonumber(us) then return tonumber(us) / 1e6 end
+	end
+	return appTime()
+end
+
 local function try(fn)
 	local ok, v = pcall(fn)
 	if ok then return v end
@@ -1176,7 +1193,7 @@ local vehicles = (ug_require or require)(MOD .. "::/remote_vehicles.lua").new({ 
 for k, fn in pairs(vehicles.handlers) do handlers[k] = fn end
 -- lines (remote_lines.lua): stations, lines and line, the same way
 local lines = (ug_require or require)(MOD .. "::/remote_lines.lua").new({ core = core, answer = answer, fail = fail,
-	appTime = appTime, try = try, say = say, publishUi = publishUi, mod = MOD })
+	appTime = appTime, fineTime = fineTime, try = try, say = say, publishUi = publishUi, mod = MOD })
 for k, fn in pairs(lines.handlers) do handlers[k] = fn end
 -- connect (remote_connect.lua): a track or road between two ends, through the Track Connector mod
 local connect = (ug_require or require)(MOD .. "::/remote_connect.lua").new({ core = core, answer = answer, fail = fail,
@@ -1192,7 +1209,7 @@ handlers.roadInspect = build.roadInspect -- (read only)
 -- around (remote_around.lua): read only, what stands near a point (kinds, names, boxes; constructions' mouths);
 -- its describe also names what a refused build or road collided with
 local around = (ug_require or require)(MOD .. "::/remote_around.lua").new({ core = core, answer = answer, fail = fail,
-	try = try, appTime = appTime, construction = build.describe })
+	try = try, appTime = fineTime, construction = build.describe })
 for k, fn in pairs(around.handlers) do handlers[k] = fn end
 build.setDescribeHits(around.describe)
 -- terrain (remote_terrain.lua, terrain_work.lua): a rectangle made flat or a slope; terrainApi looks at the functions
@@ -1240,7 +1257,7 @@ modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = cor
 for k, fn in pairs(modhub.handlers) do handlers[k] = fn end
 -- reach (remote_reach.lua): read only, whether a place can be got to (the engine's targets, town problems, a path)
 local reach = (ug_require or require)(MOD .. "::/remote_reach.lua").new({ core = core, answer = answer, fail = fail,
-	try = try, appTime = appTime, say = say, posOf = function(e) return lines.posOf(e) end })
+	try = try, appTime = fineTime, say = say, posOf = function(e) return lines.posOf(e) end })
 handlers.reach = reach.handle
 lines.walkBetween = reach.walkBetween -- (stations --catchment: whether a building can be walked to its station)
 

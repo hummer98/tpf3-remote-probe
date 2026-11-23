@@ -1619,6 +1619,26 @@ class QuitLaunchTest(unittest.TestCase):
         owned = [dict(self.FIT_SCENE[0], construction=900)]
         self.assertEqual(tf3ctl.fit_join_nodes(owned), {}, "a construction's own piece is no road end to join")
 
+    def test_fit_ignores_the_maps_own_boxes_and_the_town(self):
+        # as a game's around answered 2026-11-23: entity 2 (kind other, 14,336 m square) met every place, and the
+        # town 4835 (180 m square) was listed too; terrain / map from a mod that names them
+        huge = {"x0": -7168, "y0": -7168, "x1": 7168, "y1": 7168}
+        scene = self.FIT_SCENE + [
+            {"id": 2, "kind": "other", "box": dict(huge), "x": 0, "y": 0},
+            {"id": 3, "kind": "terrain", "box": dict(huge), "x": 0, "y": 0},
+            {"id": 4, "kind": "map", "box": dict(huge), "x": 0, "y": 0},
+            {"id": 4835, "kind": "town", "box": {"x0": -90, "y0": -90, "x1": 90, "y1": 90}, "x": 0, "y": 0},
+            # large, but no map (an airport): still in the way
+            {"id": 9, "kind": "construction", "box": {"x0": 500, "y0": 500, "x1": 2300, "y1": 1900}, "x": 1400, "y": 1200},
+        ]
+        ids = sorted(o["id"] for o in tf3ctl.fit_obstacles(scene))
+        self.assertEqual(ids, [9, 501, 601, 604])
+        res = tf3ctl.fit_search(scene, (-5, -5, 5, 5), (0, 40), 10, (0.0,), step=2)
+        self.assertEqual(res["candidates"][0]["offset"], 0, "the free point itself, as without them")
+        self.assertNotIn(2, [b["id"] for b in res["blockers"]])
+        self.assertNotIn(4835, [b["id"] for b in res["blockers"]])
+        self.assertIn("terrain", tf3ctl.AROUND_KINDS); self.assertIn("map", tf3ctl.AROUND_KINDS)
+
     def test_fit_search_grid_nearest_free_place(self):
         box = (-5, -5, 5, 5)  # 10 m square round its origin
         # wanted on the house: the nearest free place, never on the street or the house

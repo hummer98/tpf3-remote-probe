@@ -768,11 +768,14 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   0-based (the ids `stock set --stock` takes), each stock's `type`, `cargoType` and `cargo` (the cargo type's
   name), `capacity`, `count` (`getStockCount`) and `cargoTypes` (per cargo type the stock takes: its name and
   `count`). An industry, town building or warehouse whose own entity has no `STOCK_LIST` is followed to its
-  `stockList` entity (`via`). A construction (the id `build` answers, e.g. a warehouse's) is followed to the one
+  `stockList` entity (`via`), which may be the owner itself (a warehouse's WAREHOUSE entity is its own stock list in
+  a game, measured 2026-11-23). A construction (the id `build` answers, e.g. a warehouse's) is followed to the one
   warehouse, industry or town building with a stock list among its subconstructions (`via`
   `CONSTRUCTION>WAREHOUSE`, `owner`, `construction`), through the subconstructions as the base finds a
   warehouse's window from its construction (the base takes the first; here two or more are refused, naming them,
-  so that nothing is guessed), and none is an error. A warehouse (`warehouse.con`) keeps all its stocks
+  so that nothing is guessed); with none there, a warehouse whose `WAREHOUSE.construction` is that construction
+  (in a game, a warehouse's construction did not list its warehouse among its subconstructions, 2026-11-23); and
+  none is an error. A warehouse (`warehouse.con`) keeps all its stocks
   in one stock list: one mixed stock for its universal modules (500 each, summed) and one stock per specialized
   module (bulk, liquid, flatbed, goods). A stock of capacity 0 is left out, so stock 0 is the mixed one only when
   there is a universal module: read the ids with `stock list`. A warehouse without modules has no stocks. A vehicle has no stock list: `kind` is `vehicle`, with `cargo` per cargo type it has
@@ -782,7 +785,13 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   window by the name `entities --kind warehouse` shows. **Not checked in game yet**: a warehouse's stock list
   (read from the base's sources, not measured), and whether its WAREHOUSE entity has a name to pick it by.
 - `stock set` sends `api.cmd.debug.makeStockSetCargoAmountCmd(stock list entity, stock, amount[, cargo])` (the cargo
-  only when given, as the base panel leaves it out for a stock list's stock). Refused before anything is sent: a
+  only when given, as the base panel leaves it out for a stock list's stock). A cargo for a **mixed stock**
+  (`cargoType` -1, e.g. a warehouse's universal one) is sent with stock **-1** and the cargo's name, as the base
+  panel sets a vehicle's load per cargo type (`sentStock` -1, `form`): sent with the stock's own id, the engine did
+  not take the name (grain asked, bricks set, 2026-11-23). A stock of one cargo type, and a mixed stock without
+  `--cargo`, go with their stock id, as before. **Not checked in game yet**: the stock -1 form at a stock list
+  (test saves only). Every count of the stock list is read before and after: when the engine changed another
+  cargo or stock than the one asked, the answer is an error naming them (`elsewhere`), not ok. Refused before anything is sent: a
   stock id the list does not have, an amount over the stock's capacity (or the vehicle's for that cargo, or
   100000; in a mixed stock with the other cargo there counted), passengers, a cargo the stock or vehicle does not
   take, an entity the engine does not have. The answer: `before`,
@@ -852,7 +861,8 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
   the octree hands over, is looked at once and kept when it is within `--radius` (to its box, or to a road or
   track piece's line less half its width; `--radius` at most 2000 m). Nearest first, at most `--limit` (default 200, at most 2000:
   `truncated`, `total`); `counts` per kind; `scanned` (what the octree gave, at most 10000: `scanTruncated`, and
-  `dropped`); `ms` (`octree`, `classify`, `total`: how long it took in the game). The look at the entities stops
+  `dropped`); `ms` (`octree`, `classify`, `total`: how long it took in the game, on `api.type.Clock`: the
+  application time stays the same all through a frame, so it read 0 every time). The look at the entities stops
   after 2 s (it runs in one frame of the game's GUI): `timeTruncated`, and `looked` says how many were looked at.
 - Per entry: `id`, `kind`, `name`, `x` / `y` / `z` (the box's centre), `box` (`x0`, `y0`, `z0`, `x1`, `y1`, `z1`),
   `sizeX` / `sizeY` / `height`, `dist`. Kinds, the first component found deciding: `street` / `track` (`BASE_EDGE`
@@ -861,8 +871,10 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
   construction of a `building/...` file), `station` / `depot` / `industry` / `construction` (`CONSTRUCTION` by its
   stations, depots, industries; `fileName`; for each, up to 50 per answer: `place`, `ends` and `mouths` as `build`
   answers them, with `local`), `field` (`FIELD`), `town` (`TOWN`: its box covers the town), `asset` (`ASSET_GROUP`:
-  trees, rocks), `model`, `moving` (vehicles, persons, animals) and `other`. `--kinds` takes some of them, or
-  `all`; the default is all but `node` and `moving`.
+  trees, rocks), `model`, `moving` (vehicles, persons, animals), `terrain` (`TERRAIN`), `map` (`WORLD`,
+  `EMISSION_GRID`, or a box of 2000 m or more both ways that would be `other`: `mapOf`; a game's entity 2 was a
+  14,336 m square, 2026-11-23) and `other`. `--kinds` takes some of them, or `all`; the default is all but `node`,
+  `moving`, `terrain` and `map`.
 - The boxes are the octree's bounding volumes: **axis aligned**, so a turned station or a slanting road reads
   larger than it is. Road and track widths (`halfWidth`, 6 m and 3 m) are **a guess**. What the octree does not
   hold is not listed (trees, if their asset groups are not in it).
@@ -881,7 +893,8 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   unturned (one `build --dry-run --engine-check`). Then one `around` over the circle and what may reach into it,
   and the search here (tools/tf3ctl.py `fit_search`, plain functions tested without the game): places from the
   point outwards (a grid every `--step`, default 4 m), each turn (`--angle`, else four quarter turns), kept when its
-  turned box keeps 0.5 m from every box around lists (not towns, trees, nodes or what moves) and from each road
+  turned box keeps 0.5 m from every box around lists (not towns, trees, nodes, what moves, terrain or map, nor
+  any box of 2000 m or more both ways: the map's own, which stood in the way of every place before, 2026-11-23) and from each road
   and track piece's line by its half width. `--mouth DX,DY` (a road end in its own frame: the `local` of a trial
   build's `connectable` mouth) tries instead only places that put that point right on the end of a road piece
   of no construction (`--track`: a track's), every 15 degrees; the pieces at that end may meet the box there.
@@ -1563,7 +1576,7 @@ All unchecked in game. There is no command to build stations.
     the harbour's cargo docks have none in the base's files.
   - `near`: the town buildings of the `TOWNS_READ` (4) towns nearest the station (every town when one has no
     position: `townsUnplaced`), at most 1500 of them (`buildingsRead`, `truncated`, `townsTotal`, `towns` with
-    their `distance`, `readMs`, `buildingsError`, `positionError`); `nearest` per kind (`building`, `town`, `townName`,
+    their `distance`, `readMs` (on `api.type.Clock`, as `around`'s `ms`), `buildingsError`, `positionError`); `nearest` per kind (`building`, `town`, `townName`,
     `distance` to the circle's centre, `outside`: metres past its rim, negative inside); `inCircle` (`total`, per
     kind, `caught` / `notCaught`: in the engine's passenger catchables or not, `nearRim`: within 10 m of the rim);
     `notCaught` (the buildings, deepest in the circle first: `rim` metres inside, `walk`: `path`, `none` or
