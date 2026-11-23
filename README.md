@@ -1229,9 +1229,17 @@ python3 tools/tf3ctl.py persons --destination 51          # those with the indus
 - `--from A --to B`: whether there is a path, by `api.engine.util.pathfinding.findPathNodeToNode` with
   `TransportMode.PERSON` (`walk`) and `CAR` (`drive`), one search per mode. An end is an entity or a point: the
   building's own `PERSON_CAPACITY` `personNodes` (walking) / `vehicleNodes` (driving), a target's `edgeWalk` /
-  `edgeDrive` nodes, a station's terminals (`personNodes` walking, `vehicleNodeId` driving),
-  else the network nodes within `--radius` m (default 40, at most 500) of its position or the point
-  (`findTransportNetworkNodesInCircle`); at most 32 nodes an end. Per mode in `paths`: `found` (null when an end
+  `edgeDrive` nodes, a station's terminals (`personNodes` walking, `vehicleNodeId` driving), a road or track
+  piece's (`BASE_EDGE`) own transport network edges that carry the mode (their `conns`; `from.edge` gives its
+  `node0` / `node1`), a junction's (`BASE_NODE`) the same (a junction with no lanes of its own: its network's
+  nodes, modes not checked: `modesUnread`), else the network nodes within `--radius` m (default 40, at most
+  500) of its position or the point (`findTransportNetworkNodesInCircle`); at most 32 nodes an end. A piece or a
+  junction never takes the circle, so `--radius` does not change its answer (a piece without a lane for the
+  mode: `found` null and `why`). When both ends have a node only from their circles, the circles overlap: no
+  search, `found` null, `trivial: true`, `sharedNode`, `why` (try a smaller `--radius`). A node an end has of its
+  own (a piece, a station, a target) that is also in the other end's circle or nodes is `found: true`,
+  `sameNode: true`, with `sameNodeFrom` / `sameNodeTo` saying where each end had it (`circle`, `edge`, `node`,
+  `terminal`, `target`, `personCapacity`). Per mode in `paths`: `found` (null when an end
   has no nodes: `why`), `edges`, `pieces` (network entities on the path; the first 50 in `pieceIds`), `ms`, and
   where the nodes came from (`fromFrom` / `toFrom`); a miss has `unverified: true` until a game shows the search
   finds such paths at all (first try two places known to connect); a search of 100 ms or more is logged. The
@@ -1247,7 +1255,10 @@ python3 tools/tf3ctl.py persons --destination 51          # those with the indus
   in the GUI script (`reach --api` tells), the shape of `getTargetsByLandUse`'s answer, which land use each of its
   lists is (two lists: guessed commercial, industrial) and the same for the two numbers of `reachable`, whether
   `findPathNodeToNode` finds walking paths between these nodes (another mod's notes say it gave nothing between
-  station terminal nodes), how long a search takes on a large map.
+  station terminal nodes), how long a search takes on a large map; for a piece or a junction (written
+  2026-11-24), what its network's edges and their `conns` are in a game (whether a piece's lanes end in its
+  junctions' networks, so two joined pieces share a node, or only meet through the search) and whether
+  `transportModes` reads by `pairs`.
 
 ### My Mods from the main menu (`modhub`)
 

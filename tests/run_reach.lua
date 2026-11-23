@@ -351,4 +351,122 @@ return function(t)
 		truthy(ua.ok, ua.error); eq(ua.total, 4); eq(#ua.persons, 2); eq(ua.summary.reach.persons, 2)
 		for _, gg in ipairs({ g, u }) do truthy(not gg.crashed, gg.crashed); eq(#gg.commands, 0) end
 	end)
+
+	-- Road pieces and junctions as ends (2026-11-24, aom-ops: a ground road and a bridge piece with no road between
+	-- them read as joined with --radius 200-300, the circles round them holding the same nodes). 801 (ground: a CAR
+	-- lane 801:0 -> 801:1, a PERSON lane 801:2 -> 801:3) and 802 (bridge: CAR only), 100 m apart, not joined; 900:0
+	-- a node of something else between them. 803 and 804 meet at junction 850 (their CAR lanes end in 850:0). 805
+	-- leads into 806 by the search (805:1 -> 806:0); junction 851 has no lanes of its own, its node 851:0 leads into
+	-- 805:0.
+	local function edgeSpec(extra)
+		local s = {
+			edges = { [801] = { 850, 851 }, [802] = { 852, 853 }, [803] = { 854, 850 }, [804] = { 850, 855 },
+				[805] = { 851, 856 }, [806] = { 856, 857 } },
+			baseNodes = { [850] = true, [851] = true },
+			tn = { [801] = { edges = { { 0, 1, modes = { "CAR" } }, { 2, 3, modes = { "PERSON" } } } },
+				[802] = { edges = { { 0, 1, modes = { "CAR" } } } },
+				[803] = { edges = { { 0, "850:0", modes = { "CAR" } } } },
+				[804] = { edges = { { "850:0", 1, modes = { "CAR" } } } },
+				[805] = { edges = { { 0, 1, modes = { "CAR" } } } }, [806] = { edges = { { 0, 1, modes = { "CAR" } } } },
+				[850] = { edges = { { 0, 1, modes = { "CAR" } } }, nodes = 2 }, [851] = { nodes = 1 } },
+			graph = { walk = {}, drive = { ["801:0"] = { "801:1" }, ["802:0"] = { "802:1" }, ["805:0"] = { "805:1" },
+				["805:1"] = { "806:0" }, ["851:0"] = { "805:0" } } },
+			positions = { [801] = { 1000, 1000 }, [802] = { 1100, 1000 }, [803] = { 2000, 0 }, [804] = { 2050, 0 } },
+			circle = { { 1000, 1000, node = "801:0" }, { 1050, 1000, node = "900:0" }, { 1100, 1000, node = "802:0" } },
+		}
+		for k, v in pairs(extra or {}) do s[k] = v end
+		-- the pieces next to reachSpec's places: its networks, links and circle kept
+		local base = reachSpec()
+		for _, k in ipairs({ "tn", "positions" }) do
+			for e, v in pairs(base[k] or {}) do if s[k][e] == nil then s[k][e] = v end end
+		end
+		for m, links in pairs(base.graph) do for n, l in pairs(links) do s.graph[m][n] = s.graph[m][n] or l end end
+		for _, c in ipairs(base.circle) do s.circle[#s.circle + 1] = c end
+		return reachSpec(s)
+	end
+	local function edgeGame(extra)
+		local g = newGame({ saves = SAVES })
+		fakeReach.install(g, edgeSpec(extra))
+		frames(g, 1)
+		return g
+	end
+
+	test("reach --from --to pieces: two pieces not joined are not found joined, whatever the radius", function()
+		local g = edgeGame()
+		for _, r in ipairs({ 40, 300 }) do
+			local a = run(g, "reach", "{ from = 801, to = 802, mode = 'drive', radius = " .. r .. " }", r == 40)
+			truthy(a.ok, a.error)
+			local d = a.paths.drive
+			eq(d.found, false, "radius " .. r .. ": no road between them"); eq(d.sameNode, nil); eq(d.trivial, nil)
+			eq(d.fromFrom.edge, 2, "the two nodes of the piece's own CAR lane"); eq(d.fromNodes, 2)
+			eq(d.fromFrom.circle, nil, "no circle round a piece"); eq(d.toFrom.edge, 2); eq(a.from.circle, nil)
+			eq(a.from.kinds[1], "edge"); eq(a.from.edge.node0, 850); eq(a.from.edge.node1, 851)
+		end
+		eq(g.reachCalls.circle, 0, "no circle asked for")
+		-- walking: 801 has a footway lane, 802 none
+		local w = run(g, "reach", "{ from = 801, to = 802, mode = 'walk', radius = 300 }")
+		truthy(w.ok, w.error); eq(w.paths.walk.found, nil); eq(w.paths.walk.fromNodes, 2, "801's PERSON lane")
+		truthy(w.paths.walk.why:find("carries walk", 1, true), w.paths.walk.why)
+		truthy(not g.crashed, g.crashed); eq(#g.commands, 0)
+	end)
+
+	test("reach --from --to pieces: joined at a junction (a shared node), by the search, and from a junction", function()
+		local g = edgeGame()
+		local a = run(g, "reach", "{ from = 803, to = 804, mode = 'drive' }", true)
+		truthy(a.ok, a.error); eq(a.paths.drive.found, true); eq(a.paths.drive.sameNode, true)
+		eq(a.paths.drive.trivial, nil); eq(a.paths.drive.sameNodeFrom, "edge"); eq(a.paths.drive.sameNodeTo, "edge")
+		local b = run(g, "reach", "{ from = 805, to = 806, mode = 'drive' }")
+		truthy(b.ok, b.error); eq(b.paths.drive.found, true); eq(b.paths.drive.sameNode, nil); eq(b.paths.drive.edges, 1)
+		-- a junction: its own lanes' nodes
+		local j = run(g, "reach", "{ from = 850, to = 804, mode = 'drive' }")
+		truthy(j.ok, j.error); eq(j.from.kinds[1], "node"); eq(j.paths.drive.fromFrom.node, 2)
+		eq(j.paths.drive.found, true); eq(j.paths.drive.sameNode, true, "850:0 is where 804 starts")
+		-- a junction without lanes: its network's nodes by NodeId.new, not checked for the mode
+		local k = run(g, "reach", "{ from = 851, to = 806, mode = 'drive' }")
+		truthy(k.ok, k.error); eq(k.paths.drive.fromFrom.node, 1); eq(k.paths.drive.found, true); eq(k.paths.drive.edges, 3)
+		eq(k.from.modesUnread, 1)
+		local n = edgeGame({ noNodeIdNew = true })
+		local m = run(n, "reach", "{ from = 851, to = 806, mode = 'drive' }", true)
+		truthy(m.ok, m.error); eq(m.paths.drive.found, nil); truthy(m.paths.drive.why:find("no network nodes on junction 851"), m.paths.drive.why)
+		-- a piece without a transport network
+		local t = edgeGame({ edges = { [801] = { 850, 851 }, [807] = { 1, 2 } }, positions = { [807] = { 1000, 1000 } } })
+		local x = run(t, "reach", "{ from = 807, to = 801, mode = 'drive', radius = 300 }", true)
+		truthy(x.ok, x.error); eq(x.paths.drive.found, nil); truthy(x.paths.drive.why:find("no TRANSPORT_NETWORK on piece 807"), x.paths.drive.why)
+		for _, gg in ipairs({ g, n, t }) do truthy(not gg.crashed, gg.crashed); eq(#gg.commands, 0) end
+	end)
+
+	test("reach --from --to: two circles holding the same node are trivial (no search); one end's own node is not", function()
+		local g = edgeGame()
+		local calls = g.reachCalls.path
+		local a = run(g, "reach", "{ from = '1000,1000', to = '1100,1000', mode = 'drive', radius = 300 }", true)
+		truthy(a.ok, a.error)
+		local d = a.paths.drive
+		eq(d.found, nil, "overlapping circles say nothing about a path"); eq(d.trivial, true); eq(d.sameNode, nil)
+		truthy(d.why:find("trivial", 1, true), d.why); truthy(d.sharedNode)
+		eq(g.reachCalls.path, calls, "no search")
+		-- small circles: each holds its own piece's node, and the search says there is no road
+		local b = run(g, "reach", "{ from = '1000,1000', to = '1100,1000', mode = 'drive', radius = 40 }")
+		truthy(b.ok, b.error); eq(b.paths.drive.found, false); eq(b.paths.drive.trivial, nil)
+		-- a point whose circle holds the piece's own node: that is where the piece is (as a point at a station)
+		local c = run(g, "reach", "{ from = '1000,1000', to = 801, mode = 'drive', radius = 300 }")
+		truthy(c.ok, c.error); eq(c.paths.drive.found, true); eq(c.paths.drive.sameNode, true)
+		eq(c.paths.drive.sameNodeFrom, "circle"); eq(c.paths.drive.sameNodeTo, "edge")
+		truthy(not g.crashed, g.crashed); eq(#g.commands, 0)
+	end)
+
+	test("reach --from --to: buildings, stations and points as before, next to pieces (userdata too)", function()
+		for _, ud in ipairs({ false, true }) do
+			local g = edgeGame({ userdata = ud })
+			local a = run(g, "reach", "{ from = 4100, to = 51 }", true)
+			truthy(a.ok, a.error); eq(a.paths.walk.found, false); eq(a.paths.drive.found, true); eq(a.paths.drive.pieceIds[1], 702)
+			eq(a.paths.walk.fromFrom.terminal, 1); eq(a.paths.walk.toFrom.target, 2)
+			local p = run(g, "reach", "{ from = '0,0', to = 4100, mode = 'walk' }")
+			truthy(p.ok, p.error); eq(p.paths.walk.found, true); eq(p.paths.walk.sameNode, true)
+			eq(p.paths.walk.sameNodeFrom, "circle"); eq(p.paths.walk.sameNodeTo, "terminal")
+			local h = run(g, "reach", "{ from = 1103, to = 4100, mode = 'walk' }")
+			truthy(h.ok, h.error); eq(h.paths.walk.found, true, "the shop's edgeWalk 701:0 is the station's waiting node")
+			eq(h.paths.walk.sameNodeFrom, "target"); eq(h.from.edge, nil, "a building is no piece")
+			truthy(not g.crashed, g.crashed); eq(#g.commands, 0)
+		end
+	end)
 end

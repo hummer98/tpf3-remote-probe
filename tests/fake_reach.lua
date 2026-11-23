@@ -8,8 +8,13 @@
 -- spec.targets = { { entries = { { entity, capacity, walk, drive, lines, edgeWalk = { tn, index }, edgeDrive } } },
 --   ... }: getTargetsByLandUse's lists in order (spec.targetsShape = "list": the lists without the targets field;
 --   spec.noTargets: the function is not there; spec.targetsError: it raises);
--- spec.tn = { [tnEntity] = { edges = { { n0, n1 } ... } } }: transport network entities; a node is { entity, index }
---   written "tn:index" in spec.graph;
+-- spec.tn = { [tnEntity] = { edges = { { n0, n1, modes = { "CAR", "PERSON" } } ... }, nodes = N } }: transport
+--   network entities; a node is { entity, index } written "tn:index" in spec.graph; n0 / n1 an index within the
+--   entity, or "e:i" for a node of another (a piece's lane ending in its junction's network); modes: the edge's
+--   transportModes (none: an empty map); nodes: how many nodes its network has;
+-- spec.edges = { [e] = { node0, node1 } }: road pieces (BASE_EDGE); spec.baseNodes = { [n] = true }: junctions
+--   (BASE_NODE); give them a spec.tn entry for their networks and spec.positions for their places;
+-- api.type.NodeId.new(entity, index) is there (spec.noNodeIdNew: not);
 -- spec.graph = { walk = { ["a:0"] = { "a:1", ... } }, drive = { ... } }: directed links per mode (PERSON: walk, CAR:
 --   drive); findPathNodeToNode does a breadth-first search and gives the edges as { { { entity = tn, index = k },
 --   true } ... } (the tn of the node it reached);
@@ -56,7 +61,8 @@ function M.install(g, spec)
 	api.type.enum.TownProblem = { Disconnected = 0, Overlength = 1 }
 	local CT = api.type.ComponentType
 	for _, k in ipairs({ "TOWN", "TOWN_BUILDING", "PERSON_CAPACITY", "CONSTRUCTION", "INDUSTRY", "STATION",
-		"STATION_GROUP", "TRANSPORT_NETWORK", "BOUNDING_VOLUME" }) do CT[k] = CT[k] or k end
+		"STATION_GROUP", "TRANSPORT_NETWORK", "BOUNDING_VOLUME", "BASE_EDGE", "BASE_NODE" }) do CT[k] = CT[k] or k end
+	local edgesB, baseNodes = spec.edges or {}, spec.baseNodes or {}
 	api.type.Vec2f = api.type.Vec2f or { new = function(x, y) return { x = x, y = y } end }
 	local function node(s)
 		local e, i = s:match("^(%d+):(%d+)$")
@@ -65,8 +71,13 @@ function M.install(g, spec)
 	local function key(n) return tostring(n.entity) .. ":" .. tostring(n.index) end
 	local function known(e)
 		return towns[e] ~= nil or buildings[e] ~= nil or pcOwner[e] ~= nil or industries[e] ~= nil or cons[e] ~= nil
-			or tn[e] ~= nil or stations[e] ~= nil or persons[e] ~= nil
+			or tn[e] ~= nil or stations[e] ~= nil or persons[e] ~= nil or edgesB[e] ~= nil or baseNodes[e] ~= nil
 	end
+	api.type.NodeId = api.type.NodeId or {}
+	api.type.NodeId.new = not spec.noNodeIdNew and function(e, i)
+		if type(e) ~= "number" or type(i) ~= "number" then crash("NodeId.new: not (entity, index)") end
+		return wrap({ entity = e, index = i })
+	end or nil
 
 	local exists, getComponent, getEntities = api.engine.entityExists, api.engine.getComponent,
 		api.engine.getEntitiesWithComponent
@@ -127,11 +138,20 @@ function M.install(g, spec)
 		end
 		if kind == "TRANSPORT_NETWORK" and tn[e] then
 			local edges = {}
+			local function at(x) return node(type(x) == "string" and x or (e .. ":" .. x)) end
 			for i, ed in ipairs(tn[e].edges or {}) do
-				edges[i] = wrap({ conns = wrap({ node(e .. ":" .. ed[1]), node(e .. ":" .. ed[2]) }), transportModes = {} })
+				local tm = {}
+				for _, m in ipairs(ed.modes or {}) do tm[TM[m]] = true end
+				edges[i] = wrap({ conns = wrap({ at(ed[1]), at(ed[2]) }), transportModes = tm })
 			end
-			return wrap({ nodes = wrap({}), edges = wrap(edges) })
+			local nodes = {}
+			for i = 1, tn[e].nodes or 0 do nodes[i] = wrap({ position = { x = 0, y = 0, z = 0 } }) end
+			return wrap({ nodes = wrap(nodes), edges = wrap(edges) })
 		end
+		if kind == "BASE_EDGE" and edgesB[e] then
+			return wrap({ node0 = edgesB[e][1], node1 = edgesB[e][2], type = 0 })
+		end
+		if kind == "BASE_NODE" and baseNodes[e] then return wrap({ position = { x = 0, y = 0, z = 0 } }) end
 		if kind == "BOUNDING_VOLUME" and positions[e] then
 			local p = positions[e]
 			return { bbox = { min = { x = p[1] - 5, y = p[2] - 5, z = 0 }, max = { x = p[1] + 5, y = p[2] + 5, z = 0 } } }
