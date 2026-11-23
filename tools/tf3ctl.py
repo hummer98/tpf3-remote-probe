@@ -2402,7 +2402,8 @@ def build_args(ns):
     if ns.remove is not None or ns.remove_all:
         if ns.res or ns.at or ns.params or ns.name or ns.angle is not None or ns.seed is not None or ns.dry_run \
                 or getattr(ns, "no_owner", False) or getattr(ns, "no_fill_modules", False) \
-                or getattr(ns, "remove_buildings", False) or getattr(ns, "join_streets", False) or getattr(ns, "engine_check", False):
+                or getattr(ns, "remove_buildings", False) or getattr(ns, "join_streets", False) or getattr(ns, "engine_check", False) \
+                or getattr(ns, "collision_detail", False):
             raise ToolError("--remove / --remove-all go alone")
         if ns.remove_all:
             if ns.remove is not None:
@@ -2463,7 +2464,19 @@ def build_args(ns):
     if ns.dry_run and (args.get("removeBuildings") or args.get("joinStreets")):
         # (the dry run asks the engine nothing: the Context's flags would be dropped unseen)
         raise ToolError("--remove-buildings and --join-streets go with a build, not with --dry-run")
+    collision_detail_arg(ns, args)
     return args
+
+
+def collision_detail_arg(ns, args):
+    """--collision-detail (build, road): the engine's ProposalData copied out whole into the answer
+    (collisionDetail). Only where the engine is asked: a build, or --dry-run with --engine-check."""
+    if not getattr(ns, "collision_detail", False):
+        return
+    if args.get("dryRun") and not args.get("engineCheck"):
+        raise ToolError("--collision-detail goes with a build or with --dry-run --engine-check (a dry run alone asks "
+                        "the engine nothing)")
+    args["collisionDetail"] = True
 
 
 def check_modules(mods):
@@ -2727,9 +2740,10 @@ def road_inspect_args(ns):
     if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run \
             or ns.engine_check or ns.remove_fields or getattr(ns, "remove_buildings", False) \
             or getattr(ns, "ignore_errors", False) or getattr(ns, "bridge", None) is not None \
-            or getattr(ns, "batch", None) is not None:
+            or getattr(ns, "batch", None) is not None or getattr(ns, "collision_detail", False):
         raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run, "
-                        "--engine-check, --remove-fields, --remove-buildings, --ignore-errors, --bridge, --batch)")
+                        "--engine-check, --remove-fields, --remove-buildings, --ignore-errors, --bridge, --batch, "
+                        "--collision-detail)")
     if getattr(ns, "tangent_from", None) is not None or getattr(ns, "tangent_to", None) is not None \
             or getattr(ns, "align_to_edge", None) is not None or getattr(ns, "align_edge", None):
         raise ToolError("--inspect-node takes nothing else (no --tangent-from, --tangent-to, --align-to-edge, "
@@ -2795,6 +2809,7 @@ def road_args(ns):
         args["ignoreErrors"] = True
         if ns.dry_run:
             args["engineCheck"] = True  # a forced dry run asks the engine what it would have refused; builds nothing
+    collision_detail_arg(ns, args)
     for key, text in (("tangentFrom", getattr(ns, "tangent_from", None)), ("tangentTo", getattr(ns, "tangent_to", None))):
         if text is None:
             continue
@@ -2838,7 +2853,7 @@ ROAD_BATCH_KEYS.update({v: v for v in list(ROAD_BATCH_KEYS.values())})
 def road_batch_args(ns):
     """road --batch FILE: the pieces of one proposal from a JSON list (each as road's flags, from-node / to-node
     besides), with the options that go for the whole proposal (--dry-run, --engine-check, --remove-fields,
-    --remove-buildings, --ignore-errors) beside them. Each piece is checked as road_args checks road's flags; the
+    --remove-buildings, --ignore-errors, --collision-detail) beside them. Each piece is checked as road_args checks road's flags; the
     mod checks them all again (the named nodes' points among them). Nothing is sent when the file does not read."""
     for flag, v in (("--from", ns.from_), ("--to", ns.to), ("--type", ns.type), ("--snap", ns.snap),
                     ("--bridge", getattr(ns, "bridge", None)), ("--tangent-from", getattr(ns, "tangent_from", None)),
@@ -2955,7 +2970,8 @@ def road_batch_args(ns):
     whole = argparse.Namespace(from_="0,0", to="0,0", type=None, snap=None, dry_run=ns.dry_run,
                                engine_check=ns.engine_check, remove_fields=ns.remove_fields,
                                remove_buildings=getattr(ns, "remove_buildings", False),
-                               ignore_errors=getattr(ns, "ignore_errors", False))
+                               ignore_errors=getattr(ns, "ignore_errors", False),
+                               collision_detail=getattr(ns, "collision_detail", False))
     args = road_args(whole)
     args.pop("from")
     args.pop("to")
@@ -5608,6 +5624,11 @@ def make_parser():
     bd.add_argument("--engine-check", action="store_true", help="with --dry-run only: also ask the engine about the "
                     "same proposal a build sends (makeProposalData: errors, collisions with hits, cost, and the box it "
                     "takes: footprint). Counts as changing the game: ask for the game first")
+    bd.add_argument("--collision-detail", action="store_true", help="with a build, or with --dry-run --engine-check: also copy the "
+                    "engine's whole ProposalData into the answer (collisionDetail: collisionInfo, errorState, the new "
+                    "boxes and the rest, field by field; lists cut at 40, fields that raise or read nil named), and how "
+                    "each box in the way meets the proposal's own (collisionDetail.overlaps: x, y, z). Off by default "
+                    "(the answer grows)")
     bd.add_argument("--remove-buildings", action="store_true", help="let it take the town buildings in its way (the "
                     "Context's gatherBuildings, as the player's tools do; the answer's buildingsInWay). Test saves only")
     bd.add_argument("--join-streets", action="store_true", help="the Context's cleanupStreetGraph: whether its road "
@@ -5634,6 +5655,11 @@ def make_parser():
     rd.add_argument("--engine-check", action="store_true", help="with --dry-run only: also ask the engine about the "
                     "same proposal a build sends (makeProposalData: errors, collisions, cost). Counts as changing "
                     "the game: ask for the game first")
+    rd.add_argument("--collision-detail", action="store_true", help="with a build, or with --dry-run --engine-check: also copy the "
+                    "engine's whole ProposalData into the answer (collisionDetail: collisionInfo, errorState, the new "
+                    "boxes and the rest, field by field; lists cut at 40, fields that raise or read nil named), and how "
+                    "each box in the way meets the proposal's own (collisionDetail.overlaps: x, y, z). Off by default "
+                    "(the answer grows)")
     rd.add_argument("--remove-fields", action="store_true", help="let the road take farm fields in its way (the "
                     "context's gatherFields, as the base's tools: the engine warns that fields will be removed); "
                     "buildings, tracks and the rest still refuse it. Test saves only (changes the game)")
@@ -5660,8 +5686,8 @@ def make_parser():
                     "values by their flags' names (from, to, type, bridge, snap, tangent-from, tangent-to, "
                     "align-to-edge, align-edge) and from-node / to-node: an existing road node's entity id (joined as "
                     "it is, no snap), or a name \"@a\" for a new node the pieces share (its point given at one of its "
-                    "ends at least, the same at each). --dry-run, --engine-check, --remove-fields, --remove-buildings "
-                    "and --ignore-errors go for the whole proposal, as for one piece; the answer is the one proposal's "
+                    "ends at least, the same at each). --dry-run, --engine-check, --remove-fields, --remove-buildings, "
+                    "--ignore-errors and --collision-detail go for the whole proposal, as for one piece; the answer is the one proposal's "
                     "(errors, critical, hits) with each piece's ends and edge" % ROAD_BATCH_MAX)
     rd.add_argument("--inspect-node", type=int, metavar="ID", help="read only, alone: what road reads of one node "
                     "(the street system's pieces there, the construction it belongs to and whether it is frozen, its "

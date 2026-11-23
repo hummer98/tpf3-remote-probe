@@ -368,6 +368,7 @@ python3 tools/tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con
     --params '{"rbr_height": 8, "rbr_length": 120}' [--name "Ramp A"] [--seed 3] [--dry-run]
 python3 tools/tf3ctl.py build --remove 51234[,51240]      # take away constructions the probe built
 python3 tools/tf3ctl.py build --remove-all                # all it built since this load
+python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engine-check --collision-detail   # the whole ProposalData
 ```
 
 **For test saves.** `build` puts one construction (a `.con`: a depot, a station, an asset, an industry, another
@@ -429,6 +430,25 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   run had `海岸線に配置` ("place on the coastline") the same way. Infos that do not refuse a build are not seen yet: if
   one turns up, the check says refused where the build would go. `fit` also skips a place whose check is buildable
   with infos (an older mod's answer).
+- `--collision-detail` (`build` and `road`; with a build, or with `--dry-run --engine-check`; off by default, the
+  answer grows): the engine's whole `ProposalData` copied out into `collisionDetail`, field by field as the game's
+  types name them (`api/tealdef/api/type.d.tl` `ProposalData`): `collisionInfo` (`collisionEntities[].entity`,
+  `autoRemovalEntity2models`, `buildingEntities`, `removableModules`), `errorState`, `old2new`, `toAddData`
+  (`boundingVolume.bbox` as `x0`..`z1`, `subconstructionDatas`), `parallelProposal`, `terrainPreviewHeightMod*`,
+  `entity2tn` (each network's list lengths only), `tpNetLinkProposal`, `costs`. Maps come as `[{key, value}]`
+  (their keys are entity ids). `from` says which ProposalData (`resultProposalData` of the build's callback, or
+  the check's form). A field that raises is in `unread` with its error, one that reads nil in `absent`; lists
+  longer than 40 items, nesting deeper than 10 and more than 4000 values are cut and named in `truncated` /
+  `valuesCut`; keys the types leave out are in `unlisted` (a table's own keys, a userdata's metatable keys) and a
+  few guessed names that read something on the collision records in `guessed`. With hits, `overlaps` says how
+  each box in the way meets the proposal's own (`build`: the new construction's box; `road`: the piece's ends,
+  no width): `overlap` per axis as `[lo, hi]`, or `gap` in metres, `meet`, and `noZ` when a height is unknown.
+  The boxes are axis aligned: a T pier's box runs from its foot to its beam, so `meet` says the boxes meet, not
+  which model does. With the option a dry run that is buildable but names collisions also gets `hits`, and a
+  forced `road --ignore-errors` has the unforced check's detail in `unforced.collisionDetail`. Without the option
+  the answers are as before. The game's types give `CollisionInfo.EntityData`
+  only an `entity`: which part of the proposal collides, and at what height, is not in them; what the engine
+  really hands back is **not checked in a game yet** (written 2026-11-24).
 - `--dry-run` alone builds nothing and does **not** ask the engine (`road --dry-run --engine-check` does: `makeProposalData` takes a
   `SimpleProposal` on the GUI thread, though `engine/util.d.tl:939` types it for a `Proposal`; a construction's is
   not asked yet). The probe checks the name, the params it
@@ -673,8 +693,8 @@ autosave loaded again saves under any name.
   `to-node`: an existing road node's entity id (joined as it is, no snap; `from` / `to` not given with it), or a
   name `"@a"` for a new node the pieces share (never snapped; its point given at one of its ends at least and the
   same, within 0.01 m, at each end that gives one; a name used at one end only is refused). `--dry-run`,
-  `--engine-check`, `--remove-fields`, `--remove-buildings` and `--ignore-errors` go on the command line for the
-  whole proposal, with the same meaning and the same fences as for one piece (it goes as the command `road`:
+  `--engine-check`, `--remove-fields`, `--remove-buildings`, `--ignore-errors` and `--collision-detail` go on the
+  command line for the whole proposal, with the same meaning and the same fences as for one piece (it goes as the command `road`:
   `--ignore-errors` on test saves only and never in coop, the force mark, the probe's own set-up checks). `--from`,
   `--to` and the other per-piece flags are refused beside `--batch`. An empty list, more than 16 pieces, a file that
   is not JSON, an unknown key or a bad value is refused with nothing sent; so are two new ends on one point left
@@ -689,7 +709,8 @@ autosave loaded again saves under any name.
   `hits`, `pieces` (each piece's `from` / `to`, `template`, `length`, tangents and kinks, and, built, its `edge`,
   `node0`, `node1`; a shared end has `sharedBy`), `proposal` (its `nodes` by id, with `name` and the `ends` that
   name each, and its `edges`), `edges` / `nodes` as built, `pieceEdges` (each piece's edge, in order) and
-  `namedNodes` (each name's node as built).
+  `namedNodes` (each name's node as built). With `--collision-detail`, `collisionDetail` is the one proposal's
+  (as for one piece), and its `overlaps` meet each piece's box from its ends: `mine` is the piece's number.
 - `--inspect-node ID` (read only, alone): the node's position, `streetSegments` (each piece's `edge`, `node0` /
   `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
   (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,

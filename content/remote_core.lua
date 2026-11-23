@@ -988,6 +988,19 @@ end
 -- name is given.
 M.BUILD_NAME_PREFIX = "probe-build"
 M.BUILD_LIMITS = { xy = 100000, z = { -1000, 5000 }, remove = 50 }
+-- collisionDetail (build / road --collision-detail): the engine's ProposalData copied out whole (collisionDetail,
+-- below). Only where the engine is asked: a build, or a dry run with engineCheck (a plain dry run asks it nothing,
+-- so there would be nothing to copy). -> true or nil, or nil and why
+function M.collisionDetailArg(args)
+	local v = args.collisionDetail
+	if v == nil or v == false then return nil end
+	if v ~= true then return nil, "collisionDetail must be true or false" end
+	if args.dryRun == true and args.engineCheck ~= true then
+		return nil, "collisionDetail goes with a build or with dryRun and engineCheck (a dry run alone asks the engine nothing)"
+	end
+	return true
+end
+
 function M.buildRequest(args)
 	args = type(args) == "table" and args or {}
 	if args.remove ~= nil or args.removeAll then
@@ -1061,10 +1074,12 @@ function M.buildRequest(args)
 	if args.dryRun == true and (args.removeBuildings == true or args.joinStreets == true) then
 		return nil, "removeBuildings and joinStreets go with a build, not with dryRun (a dry run asks the engine nothing)"
 	end
+	local detail, derr = M.collisionDetailArg(args)
+	if derr then return nil, derr end
 	return { res = res, x = at[1], y = at[2], z = at[3], angle = angle, params = params, seed = seed, name = name,
 		dryRun = args.dryRun == true, modules = modules, fillModules = args.fillModules ~= false,
 		noOwner = args.noOwner == true, removeBuildings = args.removeBuildings == true,
-		joinStreets = args.joinStreets == true, engineCheck = args.engineCheck == true }
+		joinStreets = args.joinStreets == true, engineCheck = args.engineCheck == true, collisionDetail = detail }
 end
 
 -- A modular construction's params.modules (a harbour's, a station's): { [slot id] = { name, variant, metadata,
@@ -1321,6 +1336,11 @@ local function roadOptions(args, p)
 	p.removeFields, p.removeBuildings = args.removeFields == true, args.removeBuildings == true
 	p.ignoreErrors = args.ignoreErrors == true
 	p.testSave = args.ignoreErrors == true and args._testSave or nil
+	-- collisionDetail (--collision-detail): the engine's ProposalData copied out whole, for one piece or the batch's
+	-- one proposal; only where the engine is asked (collisionDetailArg's fence)
+	local detail, derr = M.collisionDetailArg(args)
+	if derr then return nil, derr end
+	p.collisionDetail = detail
 	return p
 end
 
@@ -1337,14 +1357,14 @@ end
 -- after another was refused where the two together may not be: two one-way roads out of one end of a four-lane
 -- street, mod-keeper 2026-11-24). batch: a list of pieces, each with road's own values (from, to, type, bridge,
 -- snap, tangentFrom, tangentTo, alignToEdge, alignEdge) and fromNode / toNode (roadPiece); the dry run,
--- engineCheck, removeFields, removeBuildings and ignoreErrors (with its fences) go for the whole batch, beside it.
+-- engineCheck, removeFields, removeBuildings, ignoreErrors and collisionDetail (with their fences) go for the whole batch, beside it.
 -- -> { batch = true, pieces, named = { [name] = { x, y, z (nil: the terrain's), at } }, and the options }
 M.ROAD_BATCH_MAX = 16
 M.ROAD_NAMED_SAME_M = 0.01 -- the ends that give a named node's point: this near each other (on the map, and in z)
 local PIECE_KEYS = { from = true, to = true, fromNode = true, toNode = true, type = true, bridge = true, snap = true,
 	tangentFrom = true, tangentTo = true, alignToEdge = true, alignEdge = true }
 local BATCH_KEYS = { dryRun = true, engineCheck = true, removeFields = true, removeBuildings = true, ignoreErrors = true,
-	_testSave = true }
+	collisionDetail = true, _testSave = true }
 function M.roadBatchRequest(args)
 	args = type(args) == "table" and args or {}
 	local list = args.batch
@@ -4407,6 +4427,315 @@ function M.writeRunningCosts(rep, id, targets)
 			stuck = ok and okR and M.closeTo(tonumber(back), t.to) or false }
 	end
 	return out
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- collision detail (build / road --collision-detail): every field ProposalData has by the API's types
+-- (api/tealdef/api/type.d.tl:2722-2784, ProposalData and its records; Box3f 868, Vec3f 583, Vec2f 500, EdgePos 1203,
+-- EdgeId 1188, TpNetLinkProposal 2474; engine.d.tl BoundingVolume 225, BaseParallelStrip 210, TransportNetwork 1363),
+-- copied out of the engine's object as plain JSON. Why: the answer's collisions / hits name what is in the way, not
+-- which part of it or how high (a T pier refused at 20 m where 15 m of room was thought enough, 2026-11-24); what
+-- the engine hands back beyond that is only known by reading all of it. Read field by field under pcall: a field
+-- that raises is named with its error (unread), one that reads nil is named (absent), lists and maps longer than
+-- the limit are cut and say so (truncated); keys the types do not name are listed where they can be seen (a plain
+-- table's own keys, a userdata's metatable keys: unlisted), and a few guessed names are tried on the collision's
+-- records (guessed: only those that read something). Read only: nothing is called but # and indexing.
+M.COLLISION_DETAIL_LIMITS = { items = 40, depth = 10, values = 4000, unlisted = 24 }
+
+local SH = {} -- the shapes, by the types' names
+SH.vec3 = { vec = { "x", "y", "z" } }
+SH.vec2 = { vec = { "x", "y" } }
+SH.box3 = { box = true }
+SH.entity = { entity = true }
+SH.scalar = { scalar = true }
+SH.edgeId = { record = { { "entity", SH.entity }, { "index", SH.scalar } } }
+SH.edgePos = { record = { { "edgeId", SH.edgeId }, { "param", SH.scalar } } }
+SH.proposalData = { record = {
+	{ "collisionInfo", { record = {
+		-- (EntityData: entity only in the types; the guesses are tried on it, see guessed)
+		{ "collisionEntities", { list = { record = { { "entity", SH.entity } }, guess = true } } },
+		-- (trees and rocks taken away on their own, util.d.tl getAutoRemovalEntityImpact: entity -> pairs of ints)
+		{ "autoRemovalEntity2models", { map = { list = { list = SH.scalar } } } },
+		{ "buildingEntities", { list = SH.entity } },
+		{ "removableModules", { list = SH.entity } },
+	}, guess = true } },
+	{ "errorState", { record = {
+		{ "critical", SH.scalar }, { "messages", { list = SH.scalar } }, { "warnings", { list = SH.scalar } },
+		{ "infos", { list = SH.scalar } },
+	} } },
+	{ "old2new", { map = SH.scalar } },
+	{ "toAddData", { list = { record = {
+		{ "boundingVolume", { record = { { "bbox", SH.box3 } } } },
+		-- (Station component: no fields in the types worth copying here; its text and size)
+		{ "subconstructionDatas", { list = { record = { { "station", { any = true } } } } } },
+	} } } },
+	{ "parallelProposal", { record = {
+		{ "toAdd", { list = { record = { { "rangeGroups", { list = { list = { record = {
+			{ "edge", SH.entity }, { "bounds", { list = SH.scalar } } } } } } } } } } },
+		{ "toRemove", { list = SH.entity } },
+	} } },
+	{ "terrainPreviewHeightModLocations", { list = SH.vec3 } },
+	{ "terrainPreviewHeightModCutFill", { list = SH.vec2 } },
+	-- (a transport network's lists by their lengths only: the whole graph is not about the collision)
+	{ "entity2tn", { map = { record = { { "nodes", { size = true } }, { "edges", { size = true } },
+		{ "turnaroundEdges", { size = true } } } } } },
+	{ "tpNetLinkProposal", { record = {
+		{ "toRemove", { list = { record = { { "link", { list = SH.edgePos } } } } } },
+		{ "toAdd", { list = { record = { { "link", { list = SH.edgePos } } } } } },
+	} } },
+	{ "costs", SH.scalar },
+} }
+M.COLLISION_DETAIL_SHAPE = SH.proposalData
+-- names not in the types, tried on the collision's records: a field the engine binds that its types leave out
+-- would read here (guesses: none of them is known to be there)
+M.COLLISION_DETAIL_GUESSES = { "type", "kind", "position", "pos", "model", "models", "modelIndex", "modelId",
+	"boundingVolume", "bbox", "box", "part", "edge", "node", "height", "flags", "reason", "entity0", "entity1",
+	"other", "point", "data" }
+
+-- one value out: a number, boolean or string as it is; anything else its text
+local function scalarOf(v)
+	local t = type(v)
+	if t == "number" then return finite(v) and v or tostring(v) end
+	if t == "boolean" or t == "string" then return v end
+	return tostring(v)
+end
+
+function M.collisionDetail(data, where, limits)
+	local L = {}
+	for k, v in pairs(M.COLLISION_DETAIL_LIMITS) do L[k] = v end
+	for k, v in pairs(limits or {}) do L[k] = v end
+	local st = { values = 0, absent = {}, unread = {}, truncated = {}, unlisted = {}, guessed = {} }
+	local function get(v, k)
+		local ok, x = pcall(function() return v[k] end)
+		return ok, x
+	end
+	local function count()
+		st.values = st.values + 1
+		return st.values <= L.values
+	end
+	-- the keys of v the shape does not name: a plain table's own (pairs), a userdata's metatable's and its
+	-- __index table's (getmetatable may not be there: then none)
+	local function unlisted(v, known, path)
+		if #st.unlisted >= L.unlisted then return end
+		local keys, seen = {}, {}
+		local function take(k)
+			if type(k) == "string" and not k:find("^__") and not known[k] and not seen[k] then
+				seen[k] = true
+				keys[#keys + 1] = k
+			end
+		end
+		if type(v) == "table" then
+			pcall(function() for k in pairs(v) do take(k) end end)
+		else
+			local okM, mt = pcall(function() return getmetatable(v) end)
+			if okM and type(mt) == "table" then
+				pcall(function() for k in pairs(mt) do take(k) end end)
+				local okI, idx = pcall(function() return mt.__index end)
+				if okI and type(idx) == "table" then pcall(function() for k in pairs(idx) do take(k) end end) end
+			end
+		end
+		if #keys > 0 then
+			table.sort(keys)
+			st.unlisted[#st.unlisted + 1] = { path = path, keys = M.array(keys) }
+		end
+	end
+	local read
+	-- a list: by # and [i] (an engine vector or a table), the first L.items
+	local function list(v, shape, path, depth)
+		local okN, n = pcall(function() return #v end)
+		if not okN or type(n) ~= "number" then
+			st.unread[#st.unread + 1] = { path = path, error = "not a list (#: " .. tostring(okN and n or n) .. ")",
+				text = tostring(v) }
+			return nil
+		end
+		local out = {}
+		local keep = math.min(n, L.items)
+		for i = 1, keep do
+			if st.values > L.values then keep = i - 1; break end
+			local ok, x = get(v, i)
+			local p = path .. "[" .. i .. "]"
+			if not ok then
+				st.unread[#st.unread + 1] = { path = p, error = tostring(x) }
+				out[#out + 1] = false
+			else
+				local r = read(x, shape, p, depth + 1)
+				if r == nil then r = false end -- (a hole would end the JSON list: false for nil)
+				out[#out + 1] = r
+			end
+		end
+		if keep < n then st.truncated[#st.truncated + 1] = { path = path, total = n, kept = keep } end
+		return M.array(out)
+	end
+	-- a map: pairs (a Lua table or an engine map that walks), else its asTable; -> { { key, value } } by key, as the
+	-- keys are entities (numbers), which JSON keys are not
+	local function map(v, shape, path, depth)
+		local keys, vals = {}, {}
+		local ok, err = pcall(function() for k, x in pairs(v) do keys[#keys + 1] = k; vals[k] = x end end)
+		if not ok then
+			local at = select(2, get(v, "asTable"))
+			local okT, t = false, nil
+			if type(at) == "function" then okT, t = pcall(at, v) end
+			if okT and type(t) == "table" then
+				keys, vals = {}, {}
+				for k, x in pairs(t) do keys[#keys + 1] = k; vals[k] = x end
+			else
+				st.unread[#st.unread + 1] = { path = path, error = "not a map (pairs: " .. tostring(err) .. ")",
+					text = tostring(v) }
+				return nil
+			end
+		end
+		table.sort(keys, function(a, b)
+			if type(a) == type(b) and (type(a) == "number" or type(a) == "string") then return a < b end
+			return tostring(a) < tostring(b)
+		end)
+		local out = {}
+		local keep = math.min(#keys, L.items)
+		for i = 1, keep do
+			if st.values > L.values then keep = i - 1; break end
+			local k = keys[i]
+			local r = read(vals[k], shape, path .. "[" .. tostring(k) .. "]", depth + 1)
+			out[#out + 1] = { key = scalarOf(k), value = r }
+		end
+		if keep < #keys then st.truncated[#st.truncated + 1] = { path = path, total = #keys, kept = keep } end
+		return M.array(out)
+	end
+	-- anything the types do not shape: a scalar, a table walked, a userdata by its text and length
+	-- (counted in the value budget, and a table met again on the way down is not walked again: a cycle, or a
+	-- large tree, would hold the GUI thread)
+	local function any(v, path, depth, seen)
+		local t = type(v)
+		if t ~= "table" and t ~= "userdata" then return scalarOf(v) end
+		if not count() then return nil end
+		seen = seen or {}
+		if seen[v] then return { text = tostring(v), again = true } end
+		seen[v] = true
+		local out = { text = tostring(v) }
+		local okN, n = pcall(function() return #v end)
+		if okN and type(n) == "number" then out.size = n end
+		if t == "table" and depth < L.depth then
+			local fields, cut = {}, false
+			pcall(function()
+				local i = 0
+				for k, x in pairs(v) do
+					i = i + 1
+					if i > L.items or st.values > L.values then cut = true; break end
+					fields[tostring(k)] = any(x, path .. "." .. tostring(k), depth + 1, seen)
+				end
+			end)
+			out.fields = fields
+			if cut then st.truncated[#st.truncated + 1] = { path = path, kept = L.items } end
+		end
+		return out
+	end
+	function read(v, shape, path, depth)
+		if v == nil then return nil end
+		if not count() then return nil end
+		if depth > L.depth then
+			st.truncated[#st.truncated + 1] = { path = path, reason = "depth " .. L.depth }
+			return nil
+		end
+		if shape.scalar then return scalarOf(v) end
+		if shape.entity then return tonumber(v) or scalarOf(v) end
+		if shape.size then
+			local ok, n = pcall(function() return #v end)
+			return { size = ok and tonumber(n) or nil, error = not ok and tostring(n) or nil }
+		end
+		if shape.vec then
+			local out = {}
+			for _, k in ipairs(shape.vec) do
+				local ok, x = get(v, k)
+				if ok then out[k] = tonumber(x) else st.unread[#st.unread + 1] = { path = path .. "." .. k, error = tostring(x) } end
+			end
+			return out
+		end
+		if shape.box then
+			local b = M.boxOf(v)
+			if not b then st.unread[#st.unread + 1] = { path = path, error = "no min / max x, y read", text = tostring(v) } end
+			return b
+		end
+		if shape.list then return list(v, shape.list, path, depth) end
+		if shape.map then return map(v, shape.map, path, depth) end
+		if shape.any then return any(v, path, depth) end
+		local out, known = {}, {}
+		for _, f in ipairs(shape.record) do
+			local name, sub = f[1], f[2]
+			known[name] = true
+			known[name .. "_native"] = true -- (the same list as a native vector: not read twice)
+			local p = path == "" and name or (path .. "." .. name)
+			local ok, x = get(v, name)
+			if not ok then
+				st.unread[#st.unread + 1] = { path = p, error = tostring(x) }
+			elseif x == nil then
+				st.absent[#st.absent + 1] = p
+			else
+				local r = read(x, sub, p, depth + 1)
+				if r ~= nil then out[name] = r end
+			end
+		end
+		unlisted(v, known, path == "" and "(ProposalData)" or path)
+		if shape.guess and type(v) == "userdata" then
+			for _, g in ipairs(M.COLLISION_DETAIL_GUESSES) do
+				if not known[g] then
+					local ok, x = get(v, g)
+					if ok and x ~= nil and #st.guessed < L.unlisted then
+						st.guessed[#st.guessed + 1] = { path = path .. "." .. g, value = any(x, path .. "." .. g, depth + 1) }
+					end
+				end
+			end
+		end
+		return out
+	end
+	local out = { from = where, types = "api/tealdef/api/type.d.tl ProposalData (2722-2784)",
+		limits = { items = L.items, depth = L.depth, values = L.values } }
+	if data == nil then
+		out.none = true
+		return out
+	end
+	local okR, fields = pcall(read, data, SH.proposalData, "", 0)
+	if okR then out.fields = fields else out.error = tostring(fields) end
+	if st.values > L.values then out.valuesCut = string.format("more than %d values: the rest not read", L.values) end
+	out.absent = #st.absent > 0 and M.array(st.absent) or nil
+	out.unread = #st.unread > 0 and M.array(st.unread) or nil
+	out.truncated = #st.truncated > 0 and M.array(st.truncated) or nil
+	out.unlisted = #st.unlisted > 0 and M.array(st.unlisted) or nil
+	out.guessed = #st.guessed > 0 and M.array(st.guessed) or nil
+	return out
+end
+
+-- how each box in the way (hits[i].box, remote_around.lua) meets each box of the proposal's own (mine: the new
+-- constructions' boxes, or a road piece's from its ends): the overlap in x, y and z, or how far apart they are on
+-- each axis (gap > 0: apart; a height unknown on either side: no z). Boxes are axis aligned: a T pier's box runs from
+-- its foot to its beam, so an overlap here says the boxes meet, not which model does
+function M.collisionOverlaps(mine, hits)
+	local out = {}
+	for _, h in ipairs(hits or {}) do
+		local hb = h.box
+		for i, m in ipairs(mine or {}) do
+			if hb and m then
+				local o = { entity = h.id, kind = h.kind, name = h.name, mine = i, box = hb }
+				local axes = { { "x", hb.x0, hb.x1, m.x0, m.x1 }, { "y", hb.y0, hb.y1, m.y0, m.y1 },
+					{ "z", hb.z0, hb.z1, m.z0, m.z1 } }
+				local all = true
+				o.overlap, o.gap = {}, {}
+				for _, a in ipairs(axes) do
+					local k, a0, a1, b0, b1 = a[1], a[2], a[3], a[4], a[5]
+					if finite(a0) and finite(a1) and finite(b0) and finite(b1) then
+						-- (a box from a piece's ends may run downhill: z0 above z1, remote_around.lua)
+						a0, a1 = math.min(a0, a1), math.max(a0, a1)
+						b0, b1 = math.min(b0, b1), math.max(b0, b1)
+						local lo, hi = math.max(a0, b0), math.min(a1, b1)
+						if hi >= lo then o.overlap[k] = M.array({ lo, hi }) else o.gap[k] = lo - hi; all = false end
+					elseif k == "z" then
+						o.noZ = true
+					end
+				end
+				o.meet = all
+				if next(o.gap) == nil then o.gap = nil end
+				out[#out + 1] = o
+			end
+		end
+	end
+	return #out > 0 and M.array(out) or nil
 end
 
 return M

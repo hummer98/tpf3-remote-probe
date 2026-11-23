@@ -1992,6 +1992,37 @@ class QuitLaunchTest(unittest.TestCase):
         firsts = [c["joinAt"] for c in res["candidates"]]
         self.assertTrue(all(len(j["pieces"]) >= 1 for j in firsts))
 
+    def test_build_and_road_collision_detail_args(self):
+        """--collision-detail: with a build or --dry-run --engine-check; not with a plain dry run, --remove or
+        --inspect-node; absent unless given (the answers as before)."""
+        p = tf3ctl.make_parser()
+        b = tf3ctl.build_args(p.parse_args(["build", "--res", "x.con", "--at", "1,2", "--collision-detail"]))
+        self.assertEqual(b["collisionDetail"], True)
+        d = tf3ctl.build_args(p.parse_args(["build", "--res", "x.con", "--at", "1,2", "--dry-run", "--engine-check",
+                                            "--collision-detail"]))
+        self.assertEqual((d["dryRun"], d["engineCheck"], d["collisionDetail"]), (True, True, True))
+        self.assertTrue(tf3ctl.changes_game("build", d))
+        self.assertNotIn("collisionDetail", tf3ctl.build_args(p.parse_args(["build", "--res", "x.con", "--at", "1,2"])))
+        for argv in (["build", "--res", "x.con", "--at", "1,2", "--dry-run", "--collision-detail"],
+                     ["build", "--remove", "5", "--collision-detail"],
+                     ["build", "--remove-all", "--collision-detail"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=argv):
+                tf3ctl.build_args(p.parse_args(argv))
+        r = tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--engine-check",
+                                           "--collision-detail"]))
+        self.assertEqual(r["collisionDetail"], True)
+        self.assertEqual(tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1",
+                                                        "--collision-detail"]))["collisionDetail"], True)
+        self.assertNotIn("collisionDetail", tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1"])))
+        # (--ignore-errors --dry-run implies the engine check: the detail goes with it)
+        f = tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--ignore-errors", "--dry-run",
+                                           "--collision-detail"]))
+        self.assertEqual((f["engineCheck"], f["collisionDetail"]), (True, True))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--collision-detail"]))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--collision-detail"]))
+
     def test_build_and_road_remove_buildings_join_streets_args(self):
         p = tf3ctl.make_parser()
         b = tf3ctl.build_args(p.parse_args(["build", "--res", "x.con", "--at", "1,2", "--remove-buildings",
@@ -6242,6 +6273,20 @@ class RoadBatchTest(_ForceBase):
             tf3ctl.road_inspect_args(self.p.parse_args(["road", "--inspect-node", "5", "--batch", "x.json"]))
         with self.assertRaises(tf3ctl.ToolError):
             self.batch(self.TWO, "--engine-check")  # without --dry-run, as road
+
+    def test_collision_detail_for_the_whole_batch(self):
+        """--collision-detail beside --batch: for the one proposal, with road's fence (a build, or --dry-run
+        --engine-check; not a plain dry run); not a piece's key in the file."""
+        self.assertEqual(self.batch(self.TWO, "--collision-detail")["collisionDetail"], True)
+        a = self.batch(self.TWO, "--dry-run", "--engine-check", "--collision-detail")
+        self.assertEqual((a["dryRun"], a["engineCheck"], a["collisionDetail"]), (True, True, True))
+        a = self.batch(self.TWO, "--ignore-errors", "--dry-run", "--collision-detail")
+        self.assertEqual((a["engineCheck"], a["collisionDetail"]), (True, True), "a forced dry run asks the engine")
+        self.assertNotIn("collisionDetail", self.batch(self.TWO), "absent unless given")
+        self.bad("--collision-detail goes with a build or with --dry-run --engine-check", self.TWO, "--dry-run",
+                 "--collision-detail")
+        self.bad("unknown key 'collision-detail'", [dict(self.TWO[0], **{"collision-detail": True})])
+        self.bad("unknown key 'collisionDetail'", [dict(self.TWO[0], collisionDetail=True)])
 
     def test_main_sends_nothing_for_a_bad_file(self):
         path = os.path.join(self.files, "pieces.json")

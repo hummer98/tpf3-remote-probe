@@ -94,6 +94,8 @@ local function vector(list)
 	return u
 end
 
+M.object, M.vector = object, vector
+
 -- an enum: each name a distinct userdata, compared with ==, as the engine's
 local function enum(names, prefix)
 	local e = {}
@@ -2334,6 +2336,9 @@ function M.installBuild(g, spec)
 			data.errorState.critical = true
 			table.insert(data.errorState.messages, "Not enough money")
 		end
+		-- spec.proposalData(data, dry, ctx) -> the ProposalData handed out instead (the engine's userdata shapes for
+		-- collisionDetail: vectors, maps, fields that raise; M.object / M.vector make them)
+		if spec.proposalData then data = spec.proposalData(data, dry, ctx) or data end
 		return data, adds, removes
 	end
 

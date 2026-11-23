@@ -349,6 +349,7 @@ python3 tools/tf3ctl.py build --res road_bridge_ramp::/road_bridge_ramp/ramp.con
     --params '{"rbr_height": 8, "rbr_length": 120}' [--name "Ramp A"] [--seed 3] [--dry-run]
 python3 tools/tf3ctl.py build --remove 51234[,51240]      # プローブが建てたものを取り除く
 python3 tools/tf3ctl.py build --remove-all                # この読み込みのあとに建てたもの全部
+python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engine-check --collision-detail   # ProposalData を丸ごと
 ```
 
 **テスト用のセーブで使います。** `build` は建物 (`.con`: 車庫、駅、アセット、産業、別の MOD の建物) を1つ、クリックも
@@ -404,6 +405,23 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   `ProposalData error: 陸上に配置`)。前の回では `海岸線に配置` も同じでした。建てられるのに infos が付く例はまだ見ていません。
   もし出たら、建てられる所を断ると答えることになります。`fit` は、確認の答えが buildable でも infos があれば (前の版の
   MOD の答え)、その場所を採りません。
+- `--collision-detail` (`build` と `road`。建てるときか、`--dry-run --engine-check` と一緒に。初期設定では出しません。
+  答えが大きくなるため): エンジンの `ProposalData` を丸ごと `collisionDetail` に写します。欄はゲームの型
+  (`api/tealdef/api/type.d.tl` の `ProposalData`) が名前を挙げるとおり: `collisionInfo` (`collisionEntities[].entity`・
+  `autoRemovalEntity2models`・`buildingEntities`・`removableModules`)、`errorState`、`old2new`、`toAddData`
+  (`boundingVolume.bbox` を `x0`..`z1` で、`subconstructionDatas`)、`parallelProposal`、`terrainPreviewHeightMod*`、`entity2tn`
+  (網ごとのリストの長さだけ)、`tpNetLinkProposal`、`costs`。map は `[{key, value}]` の形です (キーが entity の id のため)。
+  `from` はどの ProposalData か (建てたときのコールバックの `resultProposalData`、または確認の形)。読むとエラーになる欄は
+  `unread` にエラーつきで、nil の欄は `absent` に入ります。40 個を超えるリスト、10 段を超える入れ子、4000 個を超える値は
+  切り、`truncated`・`valuesCut` に書きます。型に無いキーは `unlisted` (表のキー、userdata の metatable のキー) に、衝突の
+  記録の上で読めた推測の名前は `guessed` に入ります。hits があるときは `overlaps` に、邪魔をしている箱とこちらの箱
+  (`build`: 新しい建造物の箱、`road`: 区間の両端。幅なし) の重なりを書きます: 軸ごとの `overlap` (`[lo, hi]`)、または離れて
+  いる距離 `gap` (m)、`meet`、高さが分からないときは `noZ`。箱は世界の軸にそろった箱です: T 型の橋脚の箱は足元から梁まで
+  あるので、`meet` は箱が重なることで、どの模型が当たるかではありません。旗を付けると、建てられるが衝突の相手を挙げる
+  dry-run にも `hits` が付き、`road --ignore-errors` の本番では、検査を外さなかった場合の詳しい情報が `unforced.collisionDetail`
+  に入ります。旗を付けないときの答えは前と同じです。ゲームの型では
+  `CollisionInfo.EntityData` は `entity` だけで、こちらのどの部品が、どの高さで当たるかはありません。エンジンが本当に何を
+  返すかは**ゲーム内では未確認**です (2026-11-24 に書いた)。
 - `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は
   `engine/util.d.tl:939` では `Proposal` 用ですが、GUI のスレッドでは `SimpleProposal` を受けます。建物のほうはまだ
   聞いていません)。プローブが確認するのは、名前・送る params・高さと、
@@ -630,7 +648,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   つなぐ。snap しない。同じ端に `from` / `to` は書かない)、または新しい node の名前 `"@a"` (複数の道路で共有する
   新しい node。snap しない。点は少なくとも 1 つの端で書き、書いた端どうしは 0.01 m 以内で同じであること。1 つの端に
   しか出てこない名前は断ります)。`--dry-run`・`--engine-check`・`--remove-fields`・`--remove-buildings`・
-  `--ignore-errors` は提案全体のものとしてコマンドラインに書き、1 本のときと同じ意味・同じ柵です (命令の名前は
+  `--ignore-errors`・`--collision-detail` は提案全体のものとしてコマンドラインに書き、1 本のときと同じ意味・同じ柵です (命令の名前は
   `road` のまま送るので、`--ignore-errors` は試験用のセーブだけで coop の間は断る、強制の印、probe 自身の交差点の
   設定の検査、が同じく効きます)。`--batch` と一緒の `--from`・`--to` など 1 本ぶんの引数は断ります。空の配列・17 本
   以上・JSON でないファイル・知らない key・誤った値は、何も送らずに断ります。名前を付けずに同じ点に置いた 2 つの新しい
@@ -644,7 +662,8 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   答え: `batch: true`、1 つの提案の `errors`・`critical`・`warnings`・`collisions`・`hits`、`pieces` (道路ごとの
   `from` / `to`・`template`・`length`・tangent と曲がりの角、建てば `edge`・`node0`・`node1`。共有した端には
   `sharedBy`)、`proposal` (提案の `nodes` を id で。`name` と、その node を書いた端 `ends`。それと `edges`)、建てた
-  `edges` / `nodes`、`pieceEdges` (道路ごとの edge、順に)、`namedNodes` (名前ごとの、建った node)。
+  `edges` / `nodes`、`pieceEdges` (道路ごとの edge、順に)、`namedNodes` (名前ごとの、建った node)。`--collision-detail` を付けると、`collisionDetail` は 1 つの
+  提案のもの (1 本のときと同じ形) で、その `overlaps` は道路ごとの両端の箱と比べます: `mine` が道路の番号です。
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ
