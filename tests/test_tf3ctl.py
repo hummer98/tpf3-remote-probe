@@ -4984,7 +4984,8 @@ class ModFilesTest(unittest.TestCase):
     def test_settings_keep_their_meaning_for_saved_choices(self):
         # a save stores each setting as an index: the keys, the number of values and the defaults must not move
         got = [(p["key"], len(p["values"]), p["defaultIndex"]) for p in self.mod["params"]]
-        self.assertEqual(got, [("pollIdle", 4, 1), ("pollActive", 4, 1), ("logLevel", 3, 1), ("speedLabel", 2, 0), ("speedButtons", 2, 0)])
+        self.assertEqual(got, [("pollIdle", 4, 1), ("pollActive", 4, 1), ("logLevel", 3, 1), ("speedLabel", 2, 0), ("speedButtons", 2, 0),
+                               ("gameScript", 2, 0)])
 
     def test_mod_list_info_has_a_name_authors_and_the_repository(self):
         # the game's mod list reads these, not strings.json: without them it shows the folder name and empty fields
@@ -6300,6 +6301,105 @@ class ForcedSaveTest(_ForceBase):
         self.assertEqual(code, 4)
         res = json.loads(out.getvalue())
         self.assertEqual((res["ok"], res["refused"]), (False, "forced-save"))
+
+
+class RunningCostsTest(_ForceBase):
+    """running-costs (2026-11-24): read only without --set-* / --scale-*; a write (runningCostsSet) only on a test
+    save, not in coop, as road --ignore-errors, and through the owner check; finance only reads."""
+
+    def rc(self, *a):
+        return tf3ctl.running_costs_args(self.p.parse_args(["running-costs", "--model", "bus_1900"] + list(a)))
+
+    def test_args(self):
+        self.assertEqual(self.rc(), ("runningCosts", {"model": "bus_1900"}))
+        self.assertEqual(self.rc("--limit", "3"), ("runningCosts", {"model": "bus_1900", "limit": 3}))
+        cmd, a = self.rc("--scale-running", "2", "--set-maintenance", "1.5")
+        self.assertEqual(cmd, "runningCostsSet")
+        self.assertEqual(a["ops"], [{"field": "runningCosts", "scale": 2.0}, {"field": "maintenanceScale", "set": 1.5}])
+        self.assertEqual(a["where"], "script")
+        self.assertEqual(self.rc("--set", "runningCostScale=3", "--where", "gui")[1],
+                         {"model": "bus_1900", "ops": [{"field": "runningCostScale", "set": 3.0}], "where": "gui"})
+        self.assertEqual(self.rc("--set-running", "500")[1]["ops"], [{"field": "runningCosts", "set": 500.0}])
+        for bad in (["--set-running", "1", "--scale-running", "2"], ["--set", "price=1"], ["--set", "runningCosts"],
+                    ["--scale", "runningCosts=x"], ["--where", "gui"], ["--set-running", "nan"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                self.rc(*bad)
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.running_costs_args(self.p.parse_args(["running-costs", "--model", " "]))
+        f = tf3ctl.finance_args(self.p.parse_args(["finance", "--since", "120", "--vehicles", "601,602", "--columns", "2"]))
+        self.assertEqual(f, {"since": 120.0, "vehicles": [601, 602], "columns": 2})
+        self.assertEqual(tf3ctl.finance_args(self.p.parse_args(["finance"])), {})
+        for bad in (["--vehicles", "a"], ["--vehicles", "-1"], ["--since", "-5"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                tf3ctl.finance_args(self.p.parse_args(["finance"] + bad))
+
+    def test_reads_change_nothing_and_go_anywhere(self):
+        self.assertFalse(tf3ctl.changes_game("runningCosts", {"model": "x"}))
+        self.assertFalse(tf3ctl.changes_game("finance", {}))
+        self.assertTrue(tf3ctl.changes_game("runningCostsSet", {"model": "x"}))
+        self.loaded("aom-eu-1900")
+        self.assertNotIn("_testSave", self.sent("runningCosts", {"model": "x", "_testSave": "probe-x"}))
+        tf3ctl.coop_start(60, "look together")
+        self.sent("runningCosts", {"model": "x"})
+        self.sent("finance", {})
+        # another owner's game: reads still go, without --other-owner-ok
+        tf3ctl.OWNER = "bob"
+        self.sent("runningCosts", {"model": "x"})
+
+    def test_a_write_on_a_test_save_names_it(self):
+        for save in ("probe-flat-base", "3-probe", "aom-ops-x"):
+            self.loaded(save)
+            a = self.sent("runningCostsSet", self.rc("--scale-running", "2")[1])
+            self.assertEqual(a["_testSave"], save)
+            self.assertEqual(a["_owner"], "alice")
+
+    def test_a_write_refused_on_a_persons_save_a_new_game_or_an_unknown_one(self):
+        args = self.rc("--scale-running", "2")[1]
+        self.loaded("aom-eu-1900")
+        e = self.refused("runningCostsSet", args, "'aom-eu-1900' is not a test save's")
+        self.assertEqual(e.refused, "running-costs")
+        self.assertIsInstance(e, tf3ctl.RunningCostsRefused)
+        self.loaded("")
+        self.refused("runningCostsSet", args, "save probe-NAME), then load that")
+        self.loaded(None)
+        self.refused("runningCostsSet", args, "is not known")
+        # a _testSave written by hand is dropped and named again from the log
+        self.loaded("aom-eu-1900")
+        self.refused("runningCostsSet", dict(args, _testSave="probe-x"), "is not a test save's")
+
+    def test_a_write_refused_in_coop_and_by_the_owner_check(self):
+        args = self.rc("--scale-running", "2")[1]
+        tf3ctl.coop_start(60, "look together")
+        self.refused("runningCostsSet", args, "during coop")  # the coop client: coop_check refuses it
+        # another client with --other-owner-ok: the test-save rule refuses any coop mark
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True
+        e = self.refused("runningCostsSet", args, "coop mark")
+        self.assertEqual(e.refused, "running-costs")
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "alice", False
+        tf3ctl.coop_end()
+        # another owner's game: the owner check refuses it before anything
+        tf3ctl.OWNER = "bob"
+        e = self.refused("runningCostsSet", args, "not by bob")
+        self.assertNotIsInstance(e, tf3ctl.RunningCostsRefused)
+        # --other-owner-ok passes the owner check, but not the test-save rule
+        tf3ctl.OTHER_OWNER_OK = True
+        self.loaded("aom-eu-1900")
+        self.refused("runningCostsSet", args, "is not a test save's")
+        self.loaded("probe-x")
+        self.assertEqual(self.sent("runningCostsSet", args)["_testSave"], "probe-x")
+
+    def test_main_routes_reads_and_writes(self):
+        got = []
+
+        def fake_send(cmd, args=None, **kw):
+            got.append((cmd, args, kw.get("timeout")))
+            return {"ok": True}
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["--owner", "alice", "running-costs", "--model", "101"]), 0)
+            self.assertEqual(tf3ctl.main(["--owner", "alice", "running-costs", "--model", "101", "--scale-running", "2"]), 0)
+            self.assertEqual(tf3ctl.main(["--owner", "alice", "finance", "--since", "5"]), 0)
+        self.assertEqual([g[0] for g in got], ["runningCosts", "runningCostsSet", "finance"])
+        self.assertEqual(got[1][2], tf3ctl.RUNNING_COSTS_TIMEOUT_SEC)
 
 
 if __name__ == "__main__":

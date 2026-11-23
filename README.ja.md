@@ -844,6 +844,48 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   (`steps 1` / `10` で 200 / 2000、update count 1 / 10)。1000 歩は、早い callback のあと約 15 秒かけて進みました。
   **ゲーム内では未確認**: 待つようにした答えそのもの、`stock set`、駅が自分の在庫の一覧を持つか。
 
+### 車両の型の運行経費 (`running-costs`) と財務の行 (`finance`)
+
+```sh
+python3 tools/tf3ctl.py running-costs --model bus_1900                 # 読むだけ
+python3 tools/tf3ctl.py running-costs --model bus_1900 --scale-running 2 [--set-maintenance 1.5] [--where gui]
+python3 tools/tf3ctl.py running-costs --model 101 --set runningCostScale=2 --scale maintenanceScale=3
+python3 tools/tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--columns 4]   # 読むだけ
+```
+
+ゲームの途中で書き換えた運行経費を、エンジンが請求に使うかを測るためのものです (同じ道で書き換えた購入価格は、
+支払い・店の表示・売却額に効いた。2026-11-16 に試験用の MOD で計測)。
+
+- 書かない `running-costs` は、型の `metadata.cost` (`price`・`priceScale`) と `metadata.maintenance`
+  (`lifespan`・`runningCosts`・`runningCostScale`・`maintenanceScale`・`topSpeedMaintenanceFactorPenaltyPerLevel`)
+  を GUI の Lua の状態から読み (`view`)、その型の部品を持つ会社の車両 (`vehicles`、`--limit` 台まで、初期設定 20。
+  `vehicleCount` は全部の数) と、車両ごとにエンジンが出す年あたりの運行費 (`getRunningCost`、車両の窓の表示と同じ)
+  を返します。`--model` は id かファイル名の一部 (`models --grep` で一覧)。読む命令なので、いつでも通ります。
+- **書く形 (`--set-running X`・`--scale-running K`・`--set-maintenance Y`・`--scale-maintenance K`・`--set
+  FIELD=X`・`--scale FIELD=K`。FIELD は `runningCosts`・`runningCostScale`・`maintenanceScale`) は試験用のセーブだけ**
+  で、`road --ignore-errors` と同じ決まりです: 読み込んだセーブが試験用の名前であること (名前の無い新しいゲームは
+  `save probe-NAME` のあと `load probe-NAME`)、動いているゲームに coop の印が無いこと、owner の検査 (ゲームを変える
+  命令)。MOD の側でもセーブの名前をもう一度確認します。型には整備費の額そのものは無く `maintenanceScale` だけなので、
+  `--*-maintenance` はそれを書きます。
+- 欄はその場で書き (`modelRep.get(id).metadata.maintenance.<欄> = 値`)、読み直します。`--where script` (初期設定)
+  はゲームスクリプトで書きます (試験用の MOD が価格を書いたのと同じ)。MOD の設定 **ゲームスクリプトの命令** をオンに
+  する必要があります: `launch` / `load` に `--param hummer_remote_probe:gameScript=2`。オフ (初期設定) のとき、
+  この MOD のゲームスクリプトはどのイベントにも登録せず、状態も持たないので、人のセーブにはどちらも残りません。
+  `--where gui` は GUI の Lua の状態で書き、(設定がオンなら) ゲームスクリプトがその型を読み直します。
+- 答えには `before` (`gui`、ゲームスクリプトで書いたときは `script` も)、`writes` (欄ごとに `from`・`to`・`ok`・
+  エンジンのエラーの文言そのままの `error`・`readBack`・`stuck`)、`after` (`script`・`gui`)、`vehiclesBefore` と
+  `vehiclesAfter` (車両ごとの `runningCostPerYear`)、`wroteIn`・`testSave`・`gameTime` が入ります。値が入らなかった
+  欄があれば `ok` は false。ゲームスクリプトは 15 秒以内に自分の状態で答えます。答えが無ければそう書きます
+  (ゲームスクリプトで書いたときは、ログを見る: `log --grep "game script"`)。
+- 書いた値はその起動のあいだだけ続きます。読み込むたびに型は読み直されます。
+- `finance` は、本体の財務の窓と同じ読み方で財務の表を読みます (`computeFinanceTable`、`--columns` 列、年は
+  `header`)。輸送手段ごとの行 (`type`・`maintenance`・`construction`・`values`) と、列ごとの合計 `vehicleRunning`
+  (`MAINTENANCE` / `VEHICLE` の行: 車両の運行費) と `vehicleMaintenance` (`MAINTENANCE` / `VEHICLE_MAINTENANCE`)。
+  `sameAs` は、行が前の輸送手段のものと同じもの (ゲームでは TRAM が ROAD の行を返した)。`fleet` は会社の全車両の
+  `[since, gameTime]` の `calculateBalance` (運行と収入の記帳。`running` は `Maintenance.VEHICLE` だけ、`maintenance`
+  は `VEHICLE_MAINTENANCE`、`all`)。`--vehicles` で車両ごとにも出します。`--since` が無ければ 1 年の 12 分の 1 前
+  から。額はエンジンの記帳のまま (費用は負)。ゲームではまだ確認していません。
+
 ### 道路の脇の町の建物の区画 (`parcels`、読むだけ)
 
 ```sh
@@ -1273,6 +1315,7 @@ tf3ctl.py --owner bob coop end
 | コマンド直後と run 中の確認間隔 | 0.1 / **0.25** / 0.5 / 1 秒 | コマンドを受けてから 2 分間と `run` の実行中 |
 | ログの量 | 最小 / **コマンドごと** / 詳細 | ゲームのログの `[remote_probe]` の行 |
 | 速度ボタンの横に表示 | **表示する** / 表示しない | 速度ボタンにない速度と `run` の実行中に、例えば `×16 実測×3.2 →2045-07-03` |
+| ゲームスクリプトの命令（試験用のセーブ） | **オフ** / オン | オン: この MOD のゲームスクリプトが `running-costs` の書き込みを受ける (`--param hummer_remote_probe:gameScript=2`) |
 
 設定の文言と速度の表示は、英語と日本語です (`strings.json`)。ゲームの言語で切り替わり、ほかの言語では英語になります。
 ゲームの MOD 一覧に出る名前・概要・説明・表紙は `_metadata/modinfo.json` と `_metadata/0.png` から読まれます。そこは

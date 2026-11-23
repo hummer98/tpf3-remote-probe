@@ -1397,6 +1397,7 @@ function M.new(ctx)
 	end
 
 	V.handlers = handlers
+	V.findModel = findModel -- (running costs, remote_runcost.lua: the same model argument)
 	return V
 end
 

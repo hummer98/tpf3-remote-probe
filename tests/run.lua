@@ -11506,6 +11506,9 @@ dofile(root .. "/tests/run_lanes.lua")({ test = test, eq = eq, truthy = truthy, 
 -- the diagnosis of stations --catchment (tests/run_catchment.lua)
 dofile(root .. "/tests/run_catchment.lua")({ test = test, eq = eq, truthy = truthy, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
+-- running-costs and finance (tests/run_runcost.lua)
+dofile(root .. "/tests/run_runcost.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core,
+	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
 
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it

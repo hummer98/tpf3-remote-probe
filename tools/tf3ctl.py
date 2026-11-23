@@ -52,6 +52,14 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # test saves only: the map editor's Auto-detect connections / Generate (streets to all industries)
   tf3ctl.py company                         # read only: the base's company progression (basePopulation, level,
             # ticket price multiplier) and what is missing
+  tf3ctl.py running-costs --model bus_1900        # read only: metadata.cost / .maintenance (runningCosts,
+            # runningCostScale, maintenanceScale, ...) and the model's vehicles with getRunningCost per year
+  tf3ctl.py running-costs --model bus_1900 --scale-running 2 [--set-maintenance 1.5] [--where gui]   # test saves
+            # only (as road --ignore-errors), not in coop: the fields written in place, in the game script (needs the
+            # mod setting gameScript: --param hummer_remote_probe:gameScript=2 at launch / load) or the GUI; the
+            # answer has before, the writes (the engine's error word for word) and after, in both Lua states
+  tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--columns 4]   # read only: the finance table's rows
+            # per carrier (MAINTENANCE / VEHICLE = the running costs), and calculateBalance of the fleet and vehicles
   tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's start event (initNewGameFromMap) sent
             # again when basePopulation is missing or 0 while towns have population (a start with no towns)
   tf3ctl.py fit --res R --at x,y [--radius 100] [--size W,D] [--mouth DX,DY [--link 8,40]] [--houses N] [--check 3]   # where
@@ -207,7 +215,7 @@ RECENT_SEC = 600  # another owner's game-changing command this recent gets a war
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
-                "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect"}  # window: what the player sees  # poll: only the mod's file reads
+                "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect", "runningCostsSet"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -637,22 +645,46 @@ def ignore_errors_check(cmd, args):
     if args["ignoreErrors"] is not True:
         raise IgnoreErrorsRefused("refused 'road', nothing sent: ignoreErrors must be true (or left out)")
     head = "refused 'road --ignore-errors', nothing sent (for test saves only: skips the engine's checks): "
+    return loaded_test_save_or_refuse(head, IgnoreErrorsRefused)
+
+
+def loaded_test_save_or_refuse(head, refusal):
+    """The loaded save's name when it is a test save's and the running game carries no coop mark (active, expired or
+    malformed: a person may be playing); else refusal(head + why) is raised, nothing sent. A new game with no save
+    name yet, or a save not known from the log, is refused too."""
     pids = game_pids()
     rec, _ = read_launched()
     if pids and rec is not None and coop_mark(rec, pids)[0] is not None:
-        raise IgnoreErrorsRefused(head + "the running game carries a coop mark, so the user may be playing it "
-                                  "(coop end first)")
+        raise refusal(head + "the running game carries a coop mark, so the user may be playing it (coop end first)")
     save = loaded_save()
     if save == "":
-        raise IgnoreErrorsRefused(head + "the running game is a new game with no save name yet. Save it under a test "
-                                  "save's name (save probe-NAME), then load that (load probe-NAME): the loaded "
-                                  "save's name is read from the game's log")
+        raise refusal(head + "the running game is a new game with no save name yet. Save it under a test "
+                      "save's name (save probe-NAME), then load that (load probe-NAME): the loaded "
+                      "save's name is read from the game's log")
     if save is None:
-        raise IgnoreErrorsRefused(head + "which save the game loaded is not known (no game log, or the main menu)")
+        raise refusal(head + "which save the game loaded is not known (no game log, or the main menu)")
     if not is_test_save(save):
-        raise IgnoreErrorsRefused(head + "the loaded save %r is not a test save's (%s, or one digit first)"
-                                  % (save, ", ".join(p + "*" for p in TEST_SAVE_PREFIXES)))
+        raise refusal(head + "the loaded save %r is not a test save's (%s, or one digit first)"
+                      % (save, ", ".join(p + "*" for p in TEST_SAVE_PREFIXES)))
     return save
+
+
+class RunningCostsRefused(OwnerRefused):
+    """running-costs --set-* / --scale-* on a game that is not a test save's, or during coop; nothing was sent.
+    Exit code 4."""
+    refused = "running-costs"
+
+
+def running_costs_check(cmd, args):
+    """Before runningCostsSet (running-costs --set-* / --scale-*): the loaded save's name, which the mod checks
+    again (_testSave), when it is a test save's and no coop mark is on the running game; else RunningCostsRefused,
+    nothing sent (the same rules as road --ignore-errors). None for any other command: the read-only running-costs
+    and finance go anywhere."""
+    if cmd != "runningCostsSet":
+        return None
+    head = ("refused 'running-costs' (a write), nothing sent (for test saves only: it rewrites a vehicle model's "
+            "running costs for the rest of the session): ")
+    return loaded_test_save_or_refuse(head, RunningCostsRefused)
 
 
 # The force mark (2026-11-24): once road --ignore-errors went to the running game (a build, not --dry-run), its
@@ -970,11 +1002,12 @@ def check_game_owner(cmd, args=None):
 def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
     other = check_game_owner(cmd, args)  # before anything is written to the exchange folder
     forced_on = ignore_errors_check(cmd, args)  # (road --ignore-errors: a test save, no coop)
+    test_save = forced_on if forced_on is not None else running_costs_check(cmd, args)  # (running-costs writes too)
     folder = folder or exchange_dir()
     args = dict(args or {})
-    args.pop("_testSave", None)  # only ignore_errors_check names it
-    if forced_on is not None:
-        args["_testSave"] = forced_on
+    args.pop("_testSave", None)  # only ignore_errors_check and running_costs_check name it
+    if test_save is not None:
+        args["_testSave"] = test_save
     if OWNER:
         args["_owner"] = OWNER
     if other and other.get("launchedBy"):
@@ -1274,6 +1307,9 @@ WAIT_FOR_START_SLOW = ("most likely the loading screen is waiting at the Start G
 
 
 COMPANY_INIT_TIMEOUT_SEC = 45  # the mod waits 15 s for company.gs's state
+RUNNING_COSTS_TIMEOUT_SEC = 45  # the mod waits 15 s for the game script's answer
+# running-costs: the fields that may be written (metadata.maintenance), and the shorthand flags for them
+RUNNING_COST_FIELDS = ("runningCosts", "runningCostScale", "maintenanceScale")
 
 
 def company_init_after_newgame():
@@ -4597,6 +4633,68 @@ def models_args(ns):
     return args
 
 
+def running_costs_args(ns):
+    """(cmd, args): runningCosts (read only) without a --set-* / --scale-*, else runningCostsSet with its ops."""
+    if not ns.model or not ns.model.strip():
+        raise ToolError("--model needs an id or a part of the file name (models --grep lists them)")
+    args = {"model": ns.model}
+    if ns.limit is not None:
+        args["limit"] = ns.limit
+    ops = {}
+
+    def add(field, kind, value, flag):
+        if field not in RUNNING_COST_FIELDS:
+            raise ToolError("%s: the field must be one of %s" % (flag, ", ".join(RUNNING_COST_FIELDS)))
+        if field in ops:
+            raise ToolError("%s: %s is given twice" % (flag, field))
+        if not math.isfinite(value):
+            raise ToolError("%s: a number is needed" % flag)
+        ops[field] = {"field": field, kind: value}
+
+    for flag, field, kind in (("--set-running", "runningCosts", "set"), ("--scale-running", "runningCosts", "scale"),
+                              ("--set-maintenance", "maintenanceScale", "set"),
+                              ("--scale-maintenance", "maintenanceScale", "scale")):
+        v = getattr(ns, flag[2:].replace("-", "_"))
+        if v is not None:
+            add(field, kind, v, flag)
+    for flag, kind in (("--set", "set"), ("--scale", "scale")):
+        for item in getattr(ns, kind + "_fields") or []:
+            name, sep, value = item.partition("=")
+            try:
+                num = float(value)
+            except ValueError:
+                num = None
+            if not sep or num is None:
+                raise ToolError("%s takes FIELD=NUMBER (%s)" % (flag, ", ".join(RUNNING_COST_FIELDS)))
+            add(name.strip(), kind, num, flag)
+    if not ops:
+        if ns.where is not None:
+            raise ToolError("--where goes with a write (--set-* / --scale-*)")
+        return "runningCosts", args
+    args["ops"] = [ops[f] for f in RUNNING_COST_FIELDS if f in ops]
+    args["where"] = ns.where or "script"
+    return "runningCostsSet", args
+
+
+def finance_args(ns):
+    args = {}
+    if ns.columns is not None:
+        args["columns"] = ns.columns
+    if ns.since is not None:
+        if not math.isfinite(ns.since) or ns.since < 0:
+            raise ToolError("--since needs a game time (a number >= 0; status / finance give gameTime)")
+        args["since"] = ns.since
+    if ns.vehicles is not None:
+        try:
+            ids = [int(x) for x in ns.vehicles.split(",") if x.strip()]
+        except ValueError:
+            ids = []
+        if not ids or any(i < 0 for i in ids):
+            raise ToolError("--vehicles takes vehicle ids, comma-separated")
+        args["vehicles"] = ids
+    return args
+
+
 def industry_stocks_args(ns):
     args = industry_workers_args(ns)
     if ns.grep is not None:
@@ -5614,6 +5712,30 @@ def make_parser():
     ci.add_argument("--dry-run", dest="company_dry_run", action="store_true", help="the states, nothing sent")
     ci.add_argument("--force", dest="company_force", action="store_true", help="send in any case (also after a send "
                     "that timed out, whose event may still run): it resets the company's progression")
+    rc = sub.add_parser("running-costs", help="a vehicle model's running-cost fields (metadata.cost and "
+                        ".maintenance) and its vehicles' running cost per year; read only, unless a --set-* / "
+                        "--scale-* writes (test saves only, not in coop: it rewrites the model for the rest of the "
+                        "session, to see whether the engine bills the new value)")
+    rc.add_argument("--model", required=True, help="an id, a file name or a part of it (models --grep lists them)")
+    rc.add_argument("--set-running", type=float, metavar="X", help="write maintenance.runningCosts = X")
+    rc.add_argument("--scale-running", type=float, metavar="K", help="write maintenance.runningCosts x K")
+    rc.add_argument("--set-maintenance", type=float, metavar="Y", help="write maintenance.maintenanceScale = Y "
+                    "(the model has no maintenance amount of its own, only this scale)")
+    rc.add_argument("--scale-maintenance", type=float, metavar="K", help="write maintenance.maintenanceScale x K")
+    rc.add_argument("--set", dest="set_fields", action="append", metavar="FIELD=X",
+                    help="write any of %s (repeatable)" % ", ".join(RUNNING_COST_FIELDS))
+    rc.add_argument("--scale", dest="scale_fields", action="append", metavar="FIELD=K", help="the same, x K")
+    rc.add_argument("--where", choices=["script", "gui"], help="the Lua state that writes: script (default; the game "
+                    "script, as price_probe wrote prices; needs the mod setting gameScript, --param "
+                    "hummer_remote_probe:gameScript=2 at launch / load) or gui")
+    rc.add_argument("--limit", type=int, help="list this many of the model's vehicles (default 20, 0-50)")
+    fi = sub.add_parser("finance", help="read only: the finance table's rows per carrier (MAINTENANCE / VEHICLE: the "
+                        "vehicles' running costs; VEHICLE_MAINTENANCE), and calculateBalance of the fleet and of "
+                        "vehicles from --since to now")
+    fi.add_argument("--since", type=float, metavar="GAMETIME", help="from this game time (an answer's gameTime); "
+                    "default: a twelfth of a year back")
+    fi.add_argument("--vehicles", metavar="E1,E2", help="these vehicles each (at most 50)")
+    fi.add_argument("--columns", type=int, help="columns of the finance table, 1-8 (default 4: the years)")
     pa = sub.add_parser("parcels", help="read only: the town building parcels on the left and right of a road "
                                         "piece (count, built on, centre, area), from the engine's parcel system; "
                                         "not checked in a game yet")
@@ -6003,6 +6125,11 @@ def main(argv=None):
                 res = send("companyInit", cargs, timeout=COMPANY_INIT_TIMEOUT_SEC)
             else:
                 res = send("company")
+        elif ns.cmd == "running-costs":
+            rcmd, rargs = running_costs_args(ns)
+            res = send(rcmd, rargs, timeout=RUNNING_COSTS_TIMEOUT_SEC)
+        elif ns.cmd == "finance":
+            res = send("finance", finance_args(ns))
         elif ns.cmd == "parcels":
             res = send("parcels", parcels_args(ns))
         elif ns.cmd == "around":
