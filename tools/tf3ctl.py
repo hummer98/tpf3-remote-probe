@@ -103,6 +103,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
   tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
             # a curved piece: the from end follows the road there, the to end arrives heading east
+  tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 \
+            --bridge hummer_pier_spike::/infrastructure/bridge/hps_pillarless.bridge [--dry-run --engine-check]
+            # the piece as a bridge of that type (edge type BRIDGE); ends in the air by their z (or a node there)
   tf3ctl.py road --inspect-node 4077   # read only: the node's pieces, construction, set-up, octree hits
             # one straight road piece, no click: test saves only; an end within --snap m of a road node joins it
   tf3ctl.py road --from 1500,-300 --to 1620,-300 --ignore-errors [--dry-run]   # for test saves only: skips the
@@ -2690,9 +2693,9 @@ def road_inspect_args(ns):
     """road --inspect-node ID (read only): the node alone; nothing else goes with it."""
     if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run \
             or ns.engine_check or ns.remove_fields or getattr(ns, "remove_buildings", False) \
-            or getattr(ns, "ignore_errors", False):
+            or getattr(ns, "ignore_errors", False) or getattr(ns, "bridge", None) is not None:
         raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run, "
-                        "--engine-check, --remove-fields, --remove-buildings, --ignore-errors)")
+                        "--engine-check, --remove-fields, --remove-buildings, --ignore-errors, --bridge)")
     if getattr(ns, "tangent_from", None) is not None or getattr(ns, "tangent_to", None) is not None \
             or getattr(ns, "align_to_edge", None) is not None or getattr(ns, "align_edge", None):
         raise ToolError("--inspect-node takes nothing else (no --tangent-from, --tangent-to, --align-to-edge, "
@@ -2720,6 +2723,12 @@ def road_args(ns):
         if not ns.type.strip():
             raise ToolError("--type is empty")
         args["type"] = ns.type.strip()
+    bridge = getattr(ns, "bridge", None)
+    if bridge is not None:
+        # (the mod looks the type up in bridgeTypeRep and refuses one it does not know: nothing sent)
+        if not bridge.strip():
+            raise ToolError("--bridge is empty")
+        args["bridge"] = bridge.strip()
     if ns.snap is not None:
         if ns.snap != ns.snap or not 0 <= ns.snap <= ROAD_MAX_SNAP:
             raise ToolError("--snap must be 0-%g metres" % ROAD_MAX_SNAP)
@@ -5431,6 +5440,11 @@ def make_parser():
     rd.add_argument("--type", help="the street template's resName, or a base road's file name (town_new_small, "
                     "country_old_medium; looked for under the base's town, country and highway roads); default the "
                     "base medium town road of the game's year")
+    rd.add_argument("--bridge", metavar="RES", help="build the piece as a bridge of this type: a bridge type's "
+                    "resName (hummer_pier_spike::/infrastructure/bridge/hps_pillarless.bridge), or a base bridge's file "
+                    "name (concrete: ::/infrastructure/bridge/concrete.bridge). Sent as the piece's edge type BRIDGE "
+                    "with the type's id; an unknown type, or one that carries no roads, is refused (nothing sent). "
+                    "Give the ends' heights (X,Y,Z) for a piece in the air")
     rd.add_argument("--snap", type=float, help="an end within this many metres of a node with road pieces joins that "
                     "node (default 5, 0: never); never a node without a junction set-up (BaseNodeConfig; this "
                     "command gives its new nodes one): the next one, else refused")

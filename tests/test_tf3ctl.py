@@ -2391,6 +2391,18 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertTrue(tf3ctl.changes_game("road", tf3ctl.road_args(rd)))
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--remove-fields"]))
+        # --bridge: sent as bridge (trimmed), only when given; a dry run with it still changes nothing
+        res = "hummer_pier_spike::/infrastructure/bridge/hps_pillarless.bridge"
+        rd = p.parse_args(["road", "--from", "0,0,10", "--to", "70,0,10", "--bridge", " %s " % res, "--dry-run"])
+        args = tf3ctl.road_args(rd)
+        self.assertEqual(args, {"from": [0.0, 0.0, 10.0], "to": [70.0, 0.0, 10.0], "bridge": res, "dryRun": True})
+        self.assertFalse(tf3ctl.changes_game("road", args))
+        self.assertTrue(tf3ctl.changes_game("road", tf3ctl.road_args(p.parse_args(
+            ["road", "--from", "0,0", "--to", "1,1", "--bridge", "concrete"]))))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--bridge", " "]))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--bridge", "concrete"]))
         # --engine-check: with --dry-run only; it counts as changing the game, a plain dry run does not
         rd = p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--dry-run", "--engine-check"])
         args = tf3ctl.road_args(rd)

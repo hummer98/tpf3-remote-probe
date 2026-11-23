@@ -1211,6 +1211,15 @@ function M.roadRequest(args)
 		end
 		t = t:match("^%s*(.-)%s*$")
 	end
+	-- bridge (road --bridge): a bridge type's resName (bridgeTypeRep), or a base bridge's file name (concrete): the
+	-- piece is sent as a bridge of that type; nil: a plain piece, as before
+	local bridge = args.bridge
+	if bridge ~= nil then
+		if type(bridge) ~= "string" or not bridge:find("%S") or bridge:find("[%c@]") or #bridge > 512 then
+			return nil, "bridge must be a bridge type's resName (or a base bridge's file name, e.g. concrete)"
+		end
+		bridge = bridge:match("^%s*(.-)%s*$")
+	end
 	-- engineCheck: the dry run asks the engine (makeProposalData); only with a dry run (a build is the engine's own)
 	if args.engineCheck == true and args.dryRun ~= true then
 		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
@@ -1266,7 +1275,7 @@ function M.roadRequest(args)
 		if v[2] == v[1] then return nil, "alignEdge names piece " .. v[1] .. " twice: give it once" end
 		alignEdge = v
 	end
-	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true,
+	return { from = ends.from, to = ends.to, snap = snap, type = t, bridge = bridge, dryRun = args.dryRun == true,
 		engineCheck = args.engineCheck == true, removeFields = args.removeFields == true,
 		removeBuildings = args.removeBuildings == true, ignoreErrors = args.ignoreErrors == true,
 		testSave = args.ignoreErrors == true and args._testSave or nil, tangentFrom = dirs.tangentFrom, tangentTo = dirs.tangentTo,
