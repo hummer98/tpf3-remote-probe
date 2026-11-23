@@ -374,6 +374,10 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
   道路・線路の空いた端と位置。`connect --from` の候補。`connectable`: `road` でつなげる所。`road` を参照)、`cost` (エンジンの値)、`balanceBefore` / `balanceAfter` /
   `spent`、`errors`、`warnings`、`collisions` (邪魔をしている id)、送った `params`、`at` (使った z と `zFrom`)。断られた
   ときは `ok: false` で、エンジンの文言が `error` に入ります。
+- `--dry-run --engine-check` は、建てるときと同じ提案をエンジンに聞き、何も建てません (`makeProposalData`。`road` と
+  同じ。ゲームを変える側に数えます)。`buildable`・`verdict`・`errors`・`collisions` と `hits`・`cost`、それに `footprint`:
+  その場所で建造物が占める箱 (エンジンの `toAddData` の bounding volume から点を引いたもの: `x0`・`y0`・`x1`・`y1`・
+  `height`。世界の軸にそろった箱) を返します。`fit` はこの箱を使います。
 - `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は
   `engine/util.d.tl:939` では `Proposal` 用ですが、GUI のスレッドでは `SimpleProposal` を受けます。建物のほうはまだ
   聞いていません)。プローブが確認するのは、名前・送る params・高さと、
@@ -811,6 +815,38 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): octree にどの entity が入っているか、町の建物の箱が `TOWN_BUILDING`
   の entity にあるか construction にあるか、大きな地図でかかる時間。
 
+### 建造物を置ける場所 (`fit`)
+
+```sh
+python3 tools/tf3ctl.py fit --res ::/depots/road/road_depot.con --at 1200,800 [--radius 100] [--angle 1.5708]
+python3 tools/tf3ctl.py fit --res <駅の .con> --at 1200,800 --mouth 0,-12 [--track] --houses 5 [--catchment 150]
+python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0      # 読むだけ: エンジンに聞かない
+```
+
+- 何も建てません。大きさは `--size W,D[,X,Y]` (建造物の向きでの箱)。無ければ、その点に向きを付けずに置いたときの
+  エンジンの箱を使います (`build --dry-run --engine-check` を1回)。次に、円とそこへ届きうる範囲で `around` を1回読み、
+  ここで探します (tools/tf3ctl.py の `fit_search`。ゲームなしでテストする純粋な関数)。点から外へ候補を並べ
+  (`--step` ごとの格子、初期設定 4 m)、向きごとに (`--angle`、無ければ 4 方向)、回した箱が、around の箱 (町・木・node・
+  動く物は除く) から 0.5 m、道路と線路の線から幅の半分だけ離れていれば残します。`--mouth DX,DY` (建造物の向きでの
+  道路の出入り口。試しに建てた build の `connectable` の mouth の `local`) を付けると、その点が、建造物に属さない道路の
+  区間の端にちょうど重なる位置だけを、15 度ごとに試します (`--track` なら線路の端)。その端の区間は、そこで箱に触れて
+  かまいません。`--houses N`: 箱の中心から `--catchment` (初期設定 150 m) 以内に町の建物が N 戸以上。
+- そのあと、よい順に `--check` 件 (初期設定 3、0 なら聞かない) をエンジンに聞きます (`build --dry-run --engine-check`。
+  ゲームを変える側に数えるので、先にゲームの時間をもらってください)。最初に建てられると言われたものが答えです:
+  `place` (`x`・`y`・`angle`・点からの `offset`・`centre`・`houses`・`roadDist`・`--mouth` なら `joinAt`)、`build` (建てる
+  コマンド)、`refusedFirst` (エンジンが断った候補と `hits`)。エンジンが警告つきで建てられると言った候補と、町の建物を
+  取り除くと言った候補は採りません。その答えはエンジン自身の context でのもので、本番の build は畑も建物も集めない
+  ためです (道路で 2026-11-23 にそうして断られた)。エンジンに聞けなかったときは、断られたとは数えずに止まります
+  (`checked: false`)。空きが無ければ `ok: false`・「no free place」と、`blockers` (いちばん多くの候補を邪魔した物:
+  id・種類・名前・位置・数)。空いていても家が足りなかった候補の数は `tooFewHouses` です。試す候補は 200000 個までです
+  (それぞれ近くの物とだけ比べます。家 1600 戸の町で 85000 個がおよそ 2 秒)。途中で止まったときは `complete` が false
+  になり、`searched` (どこまで外へ探したか) が付き、誤りの文もその距離で書きます。格子の点は 100 万個まで
+  (`--radius` / `--step`)。`--check 0` は、探した一番の候補を確かめずに返します (`checked: false`)。
+- 箱は octree のもの (軸にそろった箱。斜めの物は大きく出る) で、幅は推測です。探すのは候補を絞るためで、決めるのは
+  エンジンの確認です。出入り口を道路の端に重ねたとき、その道路とつながる (一つの node になる) かはまだ分かりません
+  (`build --join-streets` と `joins` で確かめます)。水際 (港) は見ていません。
+- **ゲーム内では未確認** (2026-11-23 に書いたもの)。
+
 ### その場所へ行けるか (`reach`、読むだけ)
 
 ```sh
@@ -1146,7 +1182,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
 - `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。
 - `around` は全部 (読むだけ、「ある点の周りにある物」を参照)。`build` / `road` の `hits`・`--remove-buildings`・
-  `--join-streets`・`joins`。
+  `--join-streets`・`joins`。`build --dry-run --engine-check` と `fit` は全部。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 - `reach` と `persons --town` / `--destination` は全部 (読むだけ、「その場所へ行けるか」を参照)。
 - `modhub publish` の更新 (「MOD を上げる」を参照)。`modhub status`・`validate`・最初のアップロードは 2026-11-22 に
