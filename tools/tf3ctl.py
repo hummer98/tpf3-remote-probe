@@ -154,6 +154,10 @@ stock set, money and steps (fit too); speed, run and pause only with --user-aske
 name (probe-*, aom-ops-*, aom-shot-*, aom-bgm-check-*, one digit first), and with a person's save loaded only with
 --user-asked; nothing else (quit, load, newgame, restart, ...): exit 4, "refused": "coop". A game-changing command
 on a person's save sets "modified" and counts "changes"; status and coop end say so. coop end removes the mark.
+A mark whose until has passed, or a malformed one (no client, until not a finite number or more than 7 days ahead),
+on the running game is the strict side: the user may still be playing, so its launcher and client send no
+game-changing command (exit 4, "refused": "coop-expired" / "coop-invalid"; not with --other-owner-ok either) until
+coop start extends or rewrites it, or coop end removes it. Its time running out never removes it; status says so.
 
 Several tool processes may run at once (e.g. a long run plus status calls): a lock makes them write the single
 command file one after another, each waiting until the mod has picked its command up.
@@ -219,6 +223,7 @@ class ToolError(Exception):
 
 class OwnerRefused(ToolError):
     """A game-changing command for a game this --owner did not start; nothing was sent. Exit code 4."""
+    refused = "owner"  # the answer's "refused"
 
 
 class GameNotReady(ToolError):
@@ -581,7 +586,8 @@ def read_launched():
     owner, pid = rec.get("owner"), rec.get("pid")
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return None, "the launch record %s has no owner and pid" % path
-    if owner is None and (isinstance(rec.get("coop"), dict) or isinstance(rec.get("coopChanges"), int)):
+    # any coop key counts here, a malformed one too: coop_mark then makes it the strict side, and coop end removes it
+    if owner is None and ("coop" in rec or isinstance(rec.get("coopChanges"), int)):
         return dict(rec, owner=None), None
     if not isinstance(owner, str) or not owner:
         return None, "the launch record %s has no owner and pid" % path
@@ -611,6 +617,18 @@ USER_ASKED = False  # set by main from --user-asked
 
 class CoopRefused(OwnerRefused):
     """A command the coop client may not send while a person shares the game; nothing was sent. Exit code 4."""
+    refused = "coop"
+
+
+class CoopMarkRefused(OwnerRefused):
+    """A game-changing command from the launcher or the client of a coop mark that does not count any more (its
+    until is past: "coop-expired") or that is malformed ("coop-invalid"), on the running game; nothing was sent.
+    Exit code 4. The strict side, like the guard outside: the person may still be playing, so the mark only ends
+    by coop end (or the game ending), never by its time running out."""
+
+    def __init__(self, msg, refused):
+        super().__init__(msg)
+        self.refused = refused
 
 
 def is_test_save(name, path_ok=True):
@@ -654,18 +672,56 @@ def coop_with(coop):
     return []
 
 
-def active_coop(rec, pids, now=None):
-    """The record's coop mark while it counts: until ahead, the record's pid among the running game's. Else None."""
-    c = rec.get("coop") if isinstance(rec, dict) else None
-    if not isinstance(c, dict) or not coop_with(c):
-        return None
+def coop_mark(rec, pids, now=None):
+    """(state, why) of the record's coop mark on the running game: state "active" (with named, until ahead, at
+    most COOP_UNTIL_MAX_SEC), "expired" (well formed, until past) or "invalid" (no or empty with; until not a
+    finite number or too far ahead; the mark not an object), with why for "invalid". (None, None) when the record
+    has no coop key or its pid is not the running game's (the shared game ended)."""
+    if not isinstance(rec, dict) or "coop" not in rec or rec.get("pid") not in pids:
+        return None, None
+    c = rec["coop"]
+    if not isinstance(c, dict):
+        return "invalid", "the mark is not an object"
+    if not coop_with(c):
+        return "invalid", "it names no client (with)"
     until = c.get("until")
     if isinstance(until, bool) or not isinstance(until, (int, float)) or not math.isfinite(until):
-        return None
+        return "invalid", "its until %r is not a finite number" % (until,)
     now = time.time() if now is None else now
-    if until <= now or until > now + COOP_UNTIL_MAX_SEC or rec.get("pid") not in pids:
+    if until > now + COOP_UNTIL_MAX_SEC:
+        return "invalid", "its until is more than %d days ahead" % (COOP_UNTIL_MAX_SEC // 86400)
+    if until <= now:
+        return "expired", None
+    return "active", None
+
+
+def active_coop(rec, pids, now=None):
+    """The record's coop mark while it counts: until ahead, the record's pid among the running game's. Else None."""
+    state, _ = coop_mark(rec, pids, now)
+    return rec["coop"] if state == "active" else None
+
+
+def coop_mark_refusal(cmd, rec, pids, now=None):
+    """CoopMarkRefused for this --owner when the running game's coop mark is expired or malformed and this owner
+    is its launcher or one of its clients: the person is taken to be playing. Else None (other owners are checked
+    as before)."""
+    state, why = coop_mark(rec, pids, now)
+    if state not in ("expired", "invalid") or not OWNER:
         return None
-    return c
+    c = rec["coop"]
+    if OWNER != rec.get("owner") and OWNER not in coop_with(c):
+        # a person's game whose mark names no client that can be read: whose coop it is is not known, so no
+        # client changes it (not with --other-owner-ok either)
+        if not (rec.get("owner") is None and not coop_with(c)):
+            return None
+    if state == "expired":
+        return CoopMarkRefused(
+            "refused '%s', nothing sent: the coop (%s with the user) expired at %s, and the user may still be "
+            "playing. To go on, extend it with coop start; to finish, coop end"
+            % (cmd, ", ".join(coop_with(c)), _clock(c["until"])), "coop-expired")
+    return CoopMarkRefused(
+        "refused '%s', nothing sent: the coop mark on the running game is malformed (%s), so the user is taken to "
+        "be playing. Remove it with coop end, or write it anew with coop start" % (cmd, why), "coop-invalid")
 
 
 def coop_check(cmd, args, coop):
@@ -711,6 +767,9 @@ def check_game_owner(cmd, args=None):
     coop = active_coop(rec, pids) if rec else None
     if coop is not None and OWNER and OWNER in coop_with(coop):
         return coop_check(cmd, args, coop)
+    refusal = coop_mark_refusal(cmd, rec, pids) if rec else None
+    if refusal is not None:
+        raise refusal  # --other-owner-ok does not send it either
     if rec is None:
         problem = ("%s: the running game (pid %s) was not started by tf3ctl with an --owner (started from Steam "
                    "by a person?)" % (why, ", ".join(map(str, pids))))
@@ -721,8 +780,10 @@ def check_game_owner(cmd, args=None):
                                                                ", ".join(map(str, pids))))
         whose = "none"
     elif rec["owner"] is None:
+        state, _ = coop_mark(rec, pids)
         problem = ("the running game (pid %d) was started by a person, and its coop mark %s"
-                   % (rec["pid"], "names %s" % ", ".join(coop_with(coop)) if coop else "has ended"))
+                   % (rec["pid"], "names %s" % ", ".join(coop_with(coop)) if coop else
+                      "is %s, so the user may still be playing" % state if state else "has ended"))
         whose = "none"
     elif not OWNER:
         problem = "the running game was started by %s, and this command has no --owner" % rec["owner"]
@@ -1279,19 +1340,35 @@ def coop_summary(rec, pids, now=None, ending=False):
     """status / coop start / coop end: the coop mark of the running game as one line (text, and textJa for the
     person), or None when the record has none for this game."""
     now = time.time() if now is None else now
-    c = rec.get("coop") if isinstance(rec, dict) else None
-    if not isinstance(c, dict) or rec.get("pid") not in pids:
+    state, why = coop_mark(rec, pids, now)
+    if state is None:
         return None
-    active = active_coop(rec, pids, now) is not None and not ending
+    c = rec["coop"] if isinstance(rec["coop"], dict) else {}
+    active = state == "active" and not ending
     who = ", ".join(coop_with(c)) or "?"
-    until = c.get("until") if isinstance(c.get("until"), (int, float)) else now
+    until = c.get("until") if state != "invalid" else now
     save = loaded_save()
-    out = {"active": active, "with": who, "reason": c.get("reason"), "since": c.get("since"), "until": until,
+    since = c.get("since")
+    since = since if isinstance(since, (int, float)) and not isinstance(since, bool) and math.isfinite(since) else None
+    reason = c.get("reason") if isinstance(c.get("reason"), str) else None
+    # strict JSON out: a malformed mark's values written by another tool (NaN) are not passed on
+    out = {"active": active, "with": who, "reason": reason, "since": since, "until": until,
            "minutesLeft": max(0, int((until - now) // 60)) if active else 0, "save": save,
            "testSave": is_test_save(save)}
     if active:
-        text = "coop with %s until %s (%d min left): %s" % (who, _clock(until), out["minutesLeft"], c.get("reason"))
-        ja = "共同作業中（%s、%s まで、残り %d 分）: %s" % (who, _clock(until), out["minutesLeft"], c.get("reason"))
+        text = "coop with %s until %s (%d min left): %s" % (who, _clock(until), out["minutesLeft"], reason)
+        ja = "共同作業中（%s、%s まで、残り %d 分）: %s" % (who, _clock(until), out["minutesLeft"], reason)
+    elif state == "expired" and not ending:
+        out["expired"] = True
+        text = ("coop with %s expired at %s: its game-changing commands are refused (the user may still be "
+                "playing); coop start extends it, coop end finishes it" % (who, _clock(until)))
+        ja = ("共同作業（%s）の期限（%s）が切れました。ゲームを変える命令は断ります。続けるなら coop start で延ばし、"
+              "終えるなら coop end" % (who, _clock(until)))
+    elif state == "invalid" and not ending:
+        out.update(invalid=True, why=why)
+        text = ("the coop mark is malformed (%s): game-changing commands of its launcher and client are refused; "
+                "coop end removes it, coop start writes it anew" % why)
+        ja = "共同作業の印の形が壊れています（%s）。ゲームを変える命令は断ります。coop end で消すか、coop start で書き直してください" % why
     else:
         text = "coop with %s %s" % (who, "ended now" if ending else "ended at %s" % _clock(until))
         ja = "共同作業（%s）は%s" % (who, "終わりました" if ending else " %s に終わりました" % _clock(until))
@@ -1366,11 +1443,11 @@ def coop_end(now=None):
     try:
         with launched_lock():
             rec, why = read_launched()
-            if rec is None or not isinstance(rec.get("coop"), dict):
+            if rec is None or "coop" not in rec:
                 return {"ok": True, "note": "no coop mark (%s)" % (why or "the record has none")}
             summary = coop_summary(rec, game_pids(), now, ending=True)
             record = {k: v for k, v in rec.items() if k != "coop" and not (k == "owner" and v is None)}
-            c = rec["coop"]
+            c = rec["coop"] if isinstance(rec["coop"], dict) else {}  # a malformed mark goes too
             if c.get("modified") and isinstance(c.get("changes"), int):
                 # the game stays changed: a later coop start on it says so again
                 record["coopChanges"] = c["changes"]
@@ -5766,7 +5843,7 @@ def main(argv=None):
             res = cmd_coop(ns)
     except OwnerRefused as e:
         print("error: " + str(e), file=sys.stderr)
-        show({"ok": False, "error": str(e), "refused": "coop" if isinstance(e, CoopRefused) else "owner"})
+        show({"ok": False, "error": str(e), "refused": e.refused})
         return 4
     except GameNotReady as e:
         print("error: " + str(e), file=sys.stderr)
