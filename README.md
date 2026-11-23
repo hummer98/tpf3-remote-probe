@@ -620,6 +620,26 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   tools). Test saves only; not checked in a game yet. A dry run's engine check judged in the engine's own context
   (`engineContext`) did not use it: `removeBuildingsNote` says town buildings among its `hits` may still go. A refusal for a collision (a build, or a dry run's engine
   check) names what is in the way in `hits`, as `build` does.
+- `--ignore-errors` (**for test saves only: skips the engine's checks**): the build is sent with
+  `makeWorldBuildProposalCmd`'s `ignoreErrors` on, so the engine builds past its errors. The game's API
+  (`api/tealdef/api/cmd.d.tl`) says it passes non-critical errors only, so a `critical` one may still refuse it.
+  Before sending, the same proposal is asked of the engine (`makeProposalData`, as `--dry-run --engine-check`):
+  the answer's `unforced` holds what a build without it would be refused for (`refused`, `verdict`, `critical`, `errors`,
+  `warnings`, `infos`, `collisions`, `collisionEntities`, `hits`), `unforcedContexts` both contexts, and
+  `unforcedCritical` a note when the check says critical. The answer also has `ignoreErrors: true`,
+  `ignoredErrors: true` (it was sent forced, whether or not there was an error to pass: `unforced.refused` says
+  that), `testSave` and `ignoreErrorsNote`; built, it has `edge`, `edges` and `nodes` as any road.
+  tf3ctl refuses it (exit 4, `"refused": "ignore-errors"`, nothing sent) unless the loaded save (read from the
+  game's log) has a test save's name (`probe-*`, `aom-ops-*`, `aom-shot-*`, `aom-bgm-check-*`, one digit first),
+  and whenever the running game carries a coop mark (active, expired or malformed). A new game has no save name
+  yet: save it under a test save's name and load that save first. The mod checks the save's name again (tf3ctl
+  sends it), and refuses `ignoreErrors` on every command but `road`. The probe's own checks are not skipped: an end
+  at a node without a junction set-up, with traffic lights, or whose set-up does not read is refused as before
+  (a road joined at a node without one once ended the game), and an end at a construction's node (its set-up left
+  as it is) is not forced at all. With `--dry-run` the engine is asked
+  (`--engine-check` is implied) and nothing is built: the answer is the unforced verdict, with `ignoredErrors:
+  false`. **Not checked in a game yet** (written 2026-11-24): whether the engine builds a colliding piece, whether
+  vehicles take it, and whether it survives a save and a load.
 - `--inspect-node ID` (read only, alone): the node's position, `streetSegments` (each piece's `edge`, `node0` /
   `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
   (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,

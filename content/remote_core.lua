@@ -1150,6 +1150,30 @@ M.unitWay = unitWay
 -- road: one straight road piece from one point to another (remote_build.lua B.road). snap: an end within this
 -- many metres of a road node joins it (0: never)
 M.ROAD_LIMITS = { snap = 20, defaultSnap = 5, minLength = 1, maxLength = 2000 }
+-- the names of test saves (tf3ctl's TEST_SAVE_PREFIXES and one digit first, then no digit: "3-probe"), the shared
+-- rules' saves that tools may change freely; every other name is a person's own save. A path counts by its file name
+M.TEST_SAVE_PREFIXES = { "probe-", "aom-ops-", "aom-shot-", "aom-bgm-check-" }
+function M.isTestSaveName(name)
+	if type(name) ~= "string" then return false end
+	name = name:match("^%s*(.-)%s*$")
+	name = name:match("([^/\\]*)$") or ""
+	name = name:gsub("%.sav$", "")
+	if name == "" then return false end
+	for _, p in ipairs(M.TEST_SAVE_PREFIXES) do
+		if name:sub(1, #p) == p then return true end
+	end
+	return name:match("^%d") ~= nil and name:match("^%d%d") == nil
+end
+
+-- ignoreErrors is the road command's only: a command of any other name that carries it is refused before its
+-- handler runs (build, connect and the rest send their proposals with ignoreErrors off, whatever they are given)
+function M.ignoreErrorsMisplaced(cmd, args)
+	if type(args) == "table" and args.ignoreErrors ~= nil and cmd ~= "road" then
+		return "ignoreErrors goes with road only, not with " .. tostring(cmd) .. ": nothing sent"
+	end
+	return nil
+end
+
 function M.roadRequest(args)
 	args = type(args) == "table" and args or {}
 	local L = M.BUILD_LIMITS
@@ -1183,8 +1207,22 @@ function M.roadRequest(args)
 	if args.engineCheck == true and args.dryRun ~= true then
 		return nil, "engineCheck goes with dryRun only (--engine-check with --dry-run)"
 	end
-	for _, k in ipairs({ "removeFields", "removeBuildings" }) do
+	for _, k in ipairs({ "removeFields", "removeBuildings", "ignoreErrors" }) do
 		if args[k] ~= nil and type(args[k]) ~= "boolean" then return nil, k .. " must be true or false" end
+	end
+	-- ignoreErrors (road --ignore-errors): the build sent with the engine's ignoreErrors on, for test saves only.
+	-- tf3ctl decides whether the loaded save is a test save (the mod cannot read the save's name) and names it in
+	-- _testSave; without one that reads as a test save's name it is refused here too, so an older tf3ctl (or a
+	-- command written without it) does not force a build. The name is tf3ctl's word: a command written by hand can
+	-- name any save, so this is a second fence, not a check of the save itself
+	if args.ignoreErrors == true then
+		if not M.isTestSaveName(args._testSave) then
+			return nil, "ignoreErrors is for test saves only (tf3ctl names the loaded save; " ..
+				tostring(args._testSave) .. " is no test save's name): nothing sent"
+		end
+		if args.dryRun == true and args.engineCheck ~= true then
+			return nil, "ignoreErrors with dryRun goes with engineCheck (the dry run asks the engine; nothing is built)"
+		end
 	end
 	-- a curved piece: the way the road goes at either end (tangentFrom / tangentTo: dx,dy, a direction only, both
 	-- pointing the way from -> to), or the way of the road already at a joined end (alignToEdge: from, to or both;
@@ -1222,7 +1260,8 @@ function M.roadRequest(args)
 	end
 	return { from = ends.from, to = ends.to, snap = snap, type = t, dryRun = args.dryRun == true,
 		engineCheck = args.engineCheck == true, removeFields = args.removeFields == true,
-		removeBuildings = args.removeBuildings == true, tangentFrom = dirs.tangentFrom, tangentTo = dirs.tangentTo,
+		removeBuildings = args.removeBuildings == true, ignoreErrors = args.ignoreErrors == true,
+		testSave = args.ignoreErrors == true and args._testSave or nil, tangentFrom = dirs.tangentFrom, tangentTo = dirs.tangentTo,
 		alignFrom = alignFrom, alignTo = alignTo, alignEdge = alignEdge }
 end
 

@@ -8787,6 +8787,147 @@ test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on 
 	eq(#g.buildCmds, 0); truthy(not g.crashed, g.crashed)
 end)
 
+-- road --ignore-errors (2026-11-24, mod-keeper's ask): a one-way road drawn both ways off one end of a four-lane road
+-- is refused the second time ("collision"); the build sent with the engine's ignoreErrors on, on test saves only,
+-- to see whether it stands, carries vehicles and survives a save and a load
+test("core.roadRequest ignoreErrors: a test save named (_testSave), boolean only, a dry run with engineCheck; isTestSaveName", function()
+	local r = core.roadRequest({ from = "0,0", to = "30,0" })
+	eq(r.ignoreErrors, false, "off unless asked"); eq(r.testSave, nil)
+	r = core.roadRequest({ from = "0,0", to = "30,0", ignoreErrors = true, _testSave = "probe-flat-base" })
+	eq(r.ignoreErrors, true); eq(r.testSave, "probe-flat-base")
+	r = core.roadRequest({ from = "0,0", to = "30,0", ignoreErrors = false, _testSave = "probe-x" })
+	eq(r.ignoreErrors, false); eq(r.testSave, nil)
+	r = core.roadRequest({ from = "0,0", to = "30,0", ignoreErrors = true, _testSave = "3-probe", dryRun = true, engineCheck = true })
+	eq(r.ignoreErrors, true); eq(r.dryRun, true)
+	for _, bad in ipairs({
+		{ { ignoreErrors = true }, "test saves only" },
+		{ { ignoreErrors = true, _testSave = "aom-eu-1900" }, "test saves only" },
+		{ { ignoreErrors = true, _testSave = "" }, "test saves only" },
+		{ { ignoreErrors = true, _testSave = 5 }, "test saves only" },
+		{ { ignoreErrors = true, _testSave = "12-a" }, "test saves only" },
+		{ { ignoreErrors = "yes", _testSave = "probe-x" }, "ignoreErrors must be true or false" },
+		{ { ignoreErrors = true, _testSave = "probe-x", dryRun = true }, "goes with engineCheck" },
+	}) do
+		local args = bad[1]
+		args.from, args.to = "0,0", "30,0"
+		local ok, err = core.roadRequest(args)
+		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
+	end
+	for _, yes in ipairs({ "probe-a", "aom-ops-1", "aom-shot-x", "aom-bgm-check-2", "3-probe", "7", " probe-a ",
+		"/saves/probe-a.sav", "probe-a.sav" }) do
+		truthy(core.isTestSaveName(yes), yes)
+	end
+	for _, no in ipairs({ "aom-eu-1900", "aom-long-12m", "12-probe", "", "  ", "Probe-a", "my probe-a", "/probe-a/x", nil, 3 }) do
+		truthy(not core.isTestSaveName(no), tostring(no))
+	end
+	eq(core.ignoreErrorsMisplaced("road", { ignoreErrors = true }), nil)
+	eq(core.ignoreErrorsMisplaced("build", { res = "x" }), nil)
+	for _, cmd in ipairs({ "build", "connect", "terrain", "town", "line" }) do
+		truthy(core.ignoreErrorsMisplaced(cmd, { ignoreErrors = false }):find("road only", 1, true), cmd)
+	end
+end)
+
+test("road --ignore-errors: sent with ignoreErrors on, built past a non-critical collision; the unforced errors in the answer", function()
+	local g = roadWorld({ softBlocked = function(x, y) return y > 1000 and 4343 or nil end })
+	-- unforced: refused, as before
+	local a = roadRun(g, 1060, '{ from = "0,1500", to = "0,1600" }')
+	eq(a.ok, false); truthy(a.error:find("Collision", 1, true), a.error); eq(g.buildCmds[1].ignoreErrors, false)
+	eq(a.ignoredErrors, nil); eq(a.ignoreErrors, nil); eq(a.unforced, nil)
+	-- forced
+	local a2, n = roadRun(g, 1061, '{ from = "0,1500", to = "0,1600", ignoreErrors = true, _testSave = "probe-flat-base" }')
+	eq(n, 1); truthy(a2.ok, a2.error)
+	local cmd = g.buildCmds[2]
+	eq(cmd.ignoreErrors, true, "sent with ignoreErrors on"); eq(cmd.playerInitiated, true)
+	eq(a2.ignoredErrors, true); eq(a2.ignoreErrors, true); eq(a2.testSave, "probe-flat-base")
+	truthy(a2.ignoreErrorsNote:find("for test saves only: skips the engine's checks", 1, true), a2.ignoreErrorsNote)
+	eq(a2.unforced.errors[1], "Collision", "what the build without --ignore-errors was refused for")
+	eq(a2.unforced.collisionEntities[1], 4343); eq(a2.unforced.collisions, 1); eq(a2.unforcedCritical, nil)
+	eq(a2.unforced.refused, true, "a message, critical or not: the unforced build was refused")
+	truthy(a2.unforcedContexts.own and a2.unforcedContexts.build, "both contexts")
+	truthy(a2.edge and g.edges[a2.edge], "the piece stands"); eq(#a2.nodes, 2)
+	eq(#g.buildCmds, 2, "asked of the engine (makeProposalData), sent once")
+	-- forced where nothing is in the way: built, sent forced, unforced not refused
+	local a4 = roadRun(g, 1064, '{ from = "0,500", to = "0,600", ignoreErrors = true, _testSave = "probe-x" }')
+	truthy(a4.ok, a4.error); eq(a4.ignoredErrors, true); eq(a4.unforced.refused, false); eq(a4.unforced.verdict, "buildable")
+	table.remove(g.buildCmds) -- (out of the count below)
+	-- the next road without it: off again (nothing kept from the forced one)
+	local a3 = roadRun(g, 1062, '{ from = "0,1700", to = "0,1800" }')
+	eq(a3.ok, false); eq(g.buildCmds[3].ignoreErrors, false); eq(a3.ignoredErrors, nil); eq(a3.unforced, nil)
+	-- a build afterwards: ignoreErrors off as ever
+	local b = buildRun(g, 1063, string.format('{ res = %q, at = "500,500" }', RAMP))
+	truthy(b.ok, b.error); eq(g.buildCmds[4].ignoreErrors, false)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --ignore-errors: a critical error still refuses it (the API's word), said in the answer; spec.ignoreCritical builds", function()
+	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end })
+	local a = roadRun(g, 1065, '{ from = "0,1500", to = "0,1600", ignoreErrors = true, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("Collision", 1, true), a.error)
+	eq(g.buildCmds[1].ignoreErrors, true); eq(a.ignoredErrors, true)
+	eq(a.unforced.critical, true); eq(a.unforced.verdict, "refused")
+	truthy(a.unforcedCritical:find("non-critical errors only", 1, true), a.unforcedCritical)
+	eq(g.edges[5001], nil)
+	g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end, ignoreCritical = true })
+	a = roadRun(g, 1066, '{ from = "0,1500", to = "0,1600", ignoreErrors = true, _testSave = "probe-x" }')
+	truthy(a.ok, a.error); truthy(a.edge); eq(a.unforced.critical, true)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --ignore-errors: refused without a test save named, and on other commands; nothing sent", function()
+	local g = roadWorld({ softBlocked = function(x, y) return y > 1000 and 4343 or nil end })
+	for i, save in ipairs({ "nil", '"aom-eu-1900"', '""' }) do
+		local a = roadRun(g, 1070 + i, '{ from = "0,1500", to = "0,1600", ignoreErrors = true, _testSave = ' .. save .. ' }')
+		eq(a.ok, false, save); truthy(a.error:find("test saves only", 1, true), a.error)
+	end
+	-- build (and every command but road) carrying it: refused before its handler runs
+	local b = buildRun(g, 1075, string.format('{ res = %q, at = "500,500", ignoreErrors = true, _testSave = "probe-x" }', RAMP))
+	eq(b.ok, false); truthy(b.error:find("road only", 1, true), b.error)
+	b = buildRun(g, 1076, string.format('{ res = %q, at = "500,500", ignoreErrors = false }', RAMP))
+	eq(b.ok, false); truthy(b.error:find("road only", 1, true), b.error)
+	-- roadInspect (read only) carrying it: refused all the same
+	send(g, 1077, "roadInspect", '{ node = 8001, ignoreErrors = true }')
+	frames(g, FIRST + 5)
+	local ri = final(g, 1077)
+	eq(ri.ok, false); truthy(ri.error:find("road only", 1, true), ri.error)
+	eq(#g.buildCmds, 0, "nothing sent"); eq(g.proposalDataCalls, 0, "nothing asked either")
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --ignore-errors: the junction set-up checks still refuse before sending (BUG.md 2026-11-23 01:03)", function()
+	-- a node without a junction set-up within snap: refused, nothing sent, forced or not
+	local g = roadWorld({ roads = { nodes = { [8001] = { x = 100, y = 0, z = 0 }, [8002] = { x = 0, y = 0, z = 0 } },
+		edges = { [8100] = { node0 = 8002, node1 = 8001 } }, noConfig = { [8001] = true } }, height = function() return 0 end })
+	local a = roadRun(g, 1080, '{ from = "102,0", to = "102,80", ignoreErrors = true, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("have no junction set-up", 1, true), tostring(a.error))
+	eq(#g.buildCmds, 0, "nothing sent"); eq(g.proposalDataCalls, 0)
+	-- a set-up that cannot be read: refused, nothing sent
+	for _, spec in ipairs({ { nodeConfigRaises = true }, { noNodeConfigType = true } }) do
+		spec.height = function() return 2 end
+		g = roadWorld(spec)
+		a = roadRun(g, 1081, '{ from = "102,1", to = "200,0", ignoreErrors = true, _testSave = "probe-x" }')
+		eq(a.ok, false); truthy(tostring(a.error):find("has its junction set-up", 1, true), tostring(a.error))
+		eq(#g.buildCmds, 0)
+	end
+	-- traffic lights at the node: refused, nothing sent
+	g = roadWorld({ roads = { nodes = { [8001] = { x = 100, y = 0, z = 2 }, [8002] = { x = 0, y = 0, z = 2 } },
+		edges = { [8100] = { node0 = 8002, node1 = 8001 } }, lights = { [8001] = true } }, height = function() return 2 end })
+	a = roadRun(g, 1082, '{ from = "102,1", to = "200,0", ignoreErrors = true, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("traffic lights", 1, true), tostring(a.error)); eq(#g.buildCmds, 0)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --ignore-errors --dry-run --engine-check: asked, never sent; the unforced verdict; ignoredErrors false", function()
+	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end })
+	local a = roadRun(g, 1085, '{ from = "0,1500", to = "0,1600", dryRun = true, engineCheck = true, ignoreErrors = true, _testSave = "probe-x" }')
+	eq(a.ok, false); eq(a.dryRun, true); eq(a.buildable, false); eq(a.ignoredErrors, false); eq(a.ignoreErrors, true)
+	truthy(a.error:find("nothing sent", 1, true), a.error); eq(a.collisions[1], 4343)
+	truthy(a.ignoreErrorsNote:find("for test saves only", 1, true))
+	a = roadRun(g, 1086, '{ from = "102,1", to = "200,0", dryRun = true, engineCheck = true, ignoreErrors = true, _testSave = "probe-x" }')
+	truthy(a.ok, a.error); eq(a.buildable, true); eq(a.ignoredErrors, false)
+	eq(#g.buildCmds, 0, "nothing sent"); eq(#g.streetCmds, 0)
+	truthy(not g.crashed, g.crashed)
+end)
+
 -- 2026-11-23: a road joined to a construction's road end went in bent 6-12 degrees and was refused;
 -- road sent the chord as both tangents. Now a way can be given at either end or followed from the road there
 test("core.roadRequest / roadTangents: tangentFrom, tangentTo, alignToEdge, alignEdge; ways of length 0 and turns past 90 refused", function()
@@ -9077,6 +9218,19 @@ test("road to an industry: an arm's far end joins; the mouth joins with its set-
 		truthy(a.error:find("connectable", 1, true) and a.error:find("nothing sent", 1, true), a.error)
 	end
 	eq(g.proposalDataCalls, calls); eq(#g.buildCmds, sent)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --ignore-errors: a construction's node (its set-up left as it is) is not forced; unforced it joins as before", function()
+	local g, b = forestWorld()
+	local mouth = nodeAt(b.construction.connectable, "mouth")
+	local before, asked = #g.buildCmds, g.proposalDataCalls
+	local a = roadRun(g, 1090, '{ from = "212.1,159.5", to = "212.1,259.5", ignoreErrors = true, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("does not join a construction's node", 1, true), tostring(a.error))
+	truthy(a.error:find("node " .. mouth.node, 1, true), a.error)
+	eq(#g.buildCmds, before, "nothing sent"); eq(g.proposalDataCalls, asked, "nothing asked")
+	a = roadRun(g, 1091, '{ from = "212.1,159.5", to = "212.1,259.5" }')
+	truthy(a.ok, a.error); eq(a.to.nodeConfigKept, true)
 	truthy(not g.crashed, g.crashed)
 end)
 

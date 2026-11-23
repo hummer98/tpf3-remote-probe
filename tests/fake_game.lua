@@ -1797,6 +1797,8 @@ end
 -- (0, 3600) over water: the engine check said critical false, infos "陸上に配置", collisions 6; the build was refused,
 -- its errorState critical false with the same infos, the log "ProposalData error: 陸上に配置");
 -- spec.landInfosBuildOnly: not in makeProposalData alone (the engine's own context); spec.landInfosOwnOnly: only there
+-- spec.softBlocked(x, y): a road piece's collision named with critical false: refused without ignoreErrors, built
+-- with it; spec.ignoreCritical: ignoreErrors builds past a critical error too (the API says it does not)
 -- The octree finds the constructions in g.built by their transf's position.
 -- A construction's shape may have free pieces (shape.free = { { i, j } }: an industry's arms, street_cross_01 / 02,
 -- not among its frozenEdges) and frozen nodes (shape.frozenNodes = { i }: CONSTRUCTION.frozenNodes, the inner end
@@ -2143,6 +2145,12 @@ function M.installBuild(g, spec)
 				table.insert(data.errorState.messages, "Collision")
 				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
 			end
+			-- spec.softBlocked(x, y): a collision the engine names with critical false (what ignoreErrors builds past)
+			local soft = spec.softBlocked and spec.softBlocked((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
+			if soft then
+				table.insert(data.errorState.messages, "Collision")
+				table.insert(data.collisionInfo.collisionEntities, { entity = soft })
+			end
 			-- (spec.landInfos for a street piece too, at its middle)
 			if spec.landInfos and spec.landInfos((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
 				and not (spec.landInfosBuildOnly and ctx and ctx.engineOwn) then
@@ -2308,7 +2316,12 @@ function M.installBuild(g, spec)
 		local data, adds, removes = evaluate(cmd.proposal, false, cmd.context)
 		-- spec.refuseBuild: every build refused, whatever makeProposalData says (with silentCallback: no reason)
 		if spec.refuseBuild then data.errorState.critical = true end
-		if data.errorState.critical and not cmd.ignoreErrors then return false, data, {} end
+		-- ignoreErrors (cmd.d.tl: "enabling the building of the proposal even if non-critical errors are
+		-- triggered"): a critical error refuses it all the same, unless spec.ignoreCritical (whether the engine
+		-- really keeps to that is not known); non-critical ones (spec.softBlocked, spec.landInfos) refuse it only
+		-- without ignoreErrors
+		if data.errorState.critical and not (cmd.ignoreErrors and spec.ignoreCritical) then return false, data, {} end
+		if #data.errorState.messages > 0 and not cmd.ignoreErrors then return false, data, {} end
 		-- (spec.landInfos: refused with critical false, the reason in infos only)
 		if data.infosRefuse and not cmd.ignoreErrors then return false, data, {} end
 		if data.fieldsGone then g.fieldsRemoved = (g.fieldsRemoved or 0) + data.fieldsGone end

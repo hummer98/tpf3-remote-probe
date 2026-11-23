@@ -97,6 +97,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # a curved piece: the from end follows the road there, the to end arrives heading east
   tf3ctl.py road --inspect-node 4077   # read only: the node's pieces, construction, set-up, octree hits
             # one straight road piece, no click: test saves only; an end within --snap m of a road node joins it
+  tf3ctl.py road --from 1500,-300 --to 1620,-300 --ignore-errors [--dry-run]   # for test saves only: skips the
+            # engine's checks (ignoreErrors); refused unless a test save is loaded (not a new game), and refused
+            # during coop. Answers ignoredErrors (sent forced), and unforced: what a build without it would get
   tf3ctl.py water --at 1500,-300 | water --grid 1000,-800,2000,200,50   # read only: the water level, and per
             # point water or land and the terrain's height (a grid: at most 400 points, rows of ~ water . land)
   tf3ctl.py terrain --rect 0,0,500,300 --flat 40 [--blend 16] [--dry-run]   # a rectangle's ground replaced
@@ -615,6 +618,41 @@ LOADED_ANCHORS = (b"Application startup", b"Loading game from file", b"Start new
 USER_ASKED = False  # set by main from --user-asked
 
 
+class IgnoreErrorsRefused(OwnerRefused):
+    """road --ignore-errors on a game that is not a test save's, or during coop; nothing was sent. Exit code 4."""
+    refused = "ignore-errors"
+
+
+def ignore_errors_check(cmd, args):
+    """Before a command carrying ignoreErrors (road --ignore-errors): the loaded save's name when it may go, which
+    the mod checks again (_testSave). Refused (nothing sent): on any command but road; when the loaded save is not a
+    test save's (a person's save, a new game with no name yet, or not known from the log); while the running game
+    carries any coop mark (active, expired or malformed: a person may be playing). None without ignoreErrors."""
+    if not args or "ignoreErrors" not in args:
+        return None
+    if cmd != "road":
+        raise IgnoreErrorsRefused("refused '%s', nothing sent: ignoreErrors goes with road only" % cmd)
+    if args["ignoreErrors"] is not True:
+        raise IgnoreErrorsRefused("refused 'road', nothing sent: ignoreErrors must be true (or left out)")
+    head = "refused 'road --ignore-errors', nothing sent (for test saves only: skips the engine's checks): "
+    pids = game_pids()
+    rec, _ = read_launched()
+    if pids and rec is not None and coop_mark(rec, pids)[0] is not None:
+        raise IgnoreErrorsRefused(head + "the running game carries a coop mark, so the user may be playing it "
+                                  "(coop end first)")
+    save = loaded_save()
+    if save == "":
+        raise IgnoreErrorsRefused(head + "the running game is a new game with no save name yet. Save it under a test "
+                                  "save's name (save probe-NAME), then load that (load probe-NAME): the loaded "
+                                  "save's name is read from the game's log")
+    if save is None:
+        raise IgnoreErrorsRefused(head + "which save the game loaded is not known (no game log, or the main menu)")
+    if not is_test_save(save):
+        raise IgnoreErrorsRefused(head + "the loaded save %r is not a test save's (%s, or one digit first)"
+                                  % (save, ", ".join(p + "*" for p in TEST_SAVE_PREFIXES)))
+    return save
+
+
 class CoopRefused(OwnerRefused):
     """A command the coop client may not send while a person shares the game; nothing was sent. Exit code 4."""
     refused = "coop"
@@ -805,8 +843,12 @@ def check_game_owner(cmd, args=None):
 
 def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
     other = check_game_owner(cmd, args)  # before anything is written to the exchange folder
+    forced_on = ignore_errors_check(cmd, args)  # (road --ignore-errors: a test save, no coop)
     folder = folder or exchange_dir()
     args = dict(args or {})
+    args.pop("_testSave", None)  # only ignore_errors_check names it
+    if forced_on is not None:
+        args["_testSave"] = forced_on
     if OWNER:
         args["_owner"] = OWNER
     if other and other.get("launchedBy"):
@@ -2474,9 +2516,10 @@ def water_args(ns):
 def road_inspect_args(ns):
     """road --inspect-node ID (read only): the node alone; nothing else goes with it."""
     if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run \
-            or ns.engine_check or ns.remove_fields or getattr(ns, "remove_buildings", False):
+            or ns.engine_check or ns.remove_fields or getattr(ns, "remove_buildings", False) \
+            or getattr(ns, "ignore_errors", False):
         raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run, "
-                        "--engine-check, --remove-fields, --remove-buildings)")
+                        "--engine-check, --remove-fields, --remove-buildings, --ignore-errors)")
     if getattr(ns, "tangent_from", None) is not None or getattr(ns, "tangent_to", None) is not None \
             or getattr(ns, "align_to_edge", None) is not None or getattr(ns, "align_edge", None):
         raise ToolError("--inspect-node takes nothing else (no --tangent-from, --tangent-to, --align-to-edge, "
@@ -2518,6 +2561,11 @@ def road_args(ns):
         args["removeFields"] = True
     if getattr(ns, "remove_buildings", False):
         args["removeBuildings"] = True
+    if getattr(ns, "ignore_errors", False):
+        # (send checks the loaded save and coop: ignore_errors_check)
+        args["ignoreErrors"] = True
+        if ns.dry_run:
+            args["engineCheck"] = True  # a forced dry run asks the engine what it would have refused; builds nothing
     for key, text in (("tangentFrom", getattr(ns, "tangent_from", None)), ("tangentTo", getattr(ns, "tangent_to", None))):
         if text is None:
             continue
@@ -5161,6 +5209,13 @@ def make_parser():
                     "buildings, tracks and the rest still refuse it. Test saves only (changes the game)")
     rd.add_argument("--remove-buildings", action="store_true", help="let the road take town buildings in its way "
                     "(the Context's gatherBuildings). Test saves only (changes the game)")
+    rd.add_argument("--ignore-errors", action="store_true", help="for test saves only: skips the engine's checks "
+                    "(the build sent with the engine's ignoreErrors on: built past its non-critical errors; its API "
+                    "says a critical one still refuses it). Refused unless the loaded save is a test save's (probe-*, "
+                    "aom-ops-*, aom-shot-*, aom-bgm-check-*, one digit first; a new game has no name: save it as "
+                    "probe-... and load that), and during coop. The probe's own checks (junction set-ups) still "
+                    "refuse. The answer: ignoredErrors, and unforced (the errors a build without it would be refused "
+                    "for). With --dry-run: the engine is asked, nothing is built")
     rd.add_argument("--tangent-from", metavar="DX,DY", help="a curved piece: the way the road leaves the from end "
                     "(a direction only; the length is the chord's). Both tangents point the way from -> to; at most "
                     "90 degrees off the line from -> to. A negative dx: --tangent-from=-1,0")

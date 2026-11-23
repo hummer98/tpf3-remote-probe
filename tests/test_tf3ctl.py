@@ -5990,6 +5990,146 @@ class NoAbbrevTest(unittest.TestCase):
         self.assertEqual((ns.action, ns.force_unload), ("create", "1"))
         self.assertEqual(p.parse_args(["stock", "set", "--entity", "1", "--stock", "0", "--amount", "5"]).entity, 1)
 
+class IgnoreErrorsTest(unittest.TestCase):
+    """road --ignore-errors (2026-11-24): the build sent with the engine's ignoreErrors on, for test saves only;
+    refused (nothing sent) on a person's save, a new game with no name, an unknown save, during coop, and on any
+    command but road."""
+
+    def setUp(self):
+        self.saved = {k: getattr(tf3ctl, k) for k in ("game_pids", "OWNER", "OTHER_OWNER_OK", "USER_ASKED",
+                                                       "exchange_dir")}
+        self.saved_env = {k: os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "TF3_LOG")}
+        self.run_dir = tempfile.mkdtemp()
+        os.environ["XDG_RUNTIME_DIR"] = self.run_dir
+        self.x = tempfile.mkdtemp()
+        self.log = os.path.join(self.x, "stdout.txt")
+        os.environ["TF3_LOG"] = self.log
+        tf3ctl.exchange_dir = lambda: self.x
+        tf3ctl.game_pids = lambda: [4242]
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK, tf3ctl.USER_ASKED = "alice", False, False
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(tf3ctl.write_launched(4242, owner="alice")["written"])
+        self.loaded("probe-flat-base")
+        self.p = tf3ctl.make_parser()
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(tf3ctl, k, v)
+        for k, v in self.saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        shutil.rmtree(self.x, ignore_errors=True)
+
+    def loaded(self, save):
+        lines = ["[2026-11-23 11:00:00Z - MESSAGE - Main Thread - Main ]  Application startup",
+                 "[2026-11-23 11:00:30Z - MESSAGE - Main Thread - Main ]  Main menu is ready"]
+        if save == "":
+            lines.append("[2026-11-23 11:01:00Z - MESSAGE - Main Thread - Main ]  Start new game...")
+        elif save is not None:
+            lines.append("[2026-11-23 11:01:00Z - MESSAGE - Load Game Pool 1 - Main ]  Loading game from file " + save)
+        lines.append("[2026-11-23 11:01:20Z - MESSAGE - Main Thread - Main ]  Game is ready")
+        write(self.log, "\n".join(lines) + "\n")
+
+    def road(self, *a):
+        return tf3ctl.road_args(self.p.parse_args(["road", "--from", "0,0", "--to", "10,0"] + list(a)))
+
+    def sent(self, cmd, args):
+        """Through send with the mod faked: the args written for the mod."""
+        got = []
+        with unittest.mock.patch.object(tf3ctl, "write_command", lambda f, cid, c, a: got.append((c, a))), \
+                unittest.mock.patch.object(tf3ctl, "cleanup", lambda f: None), \
+                unittest.mock.patch.object(tf3ctl, "note_activity", lambda *a: None), \
+                unittest.mock.patch.object(tf3ctl, "wait_pickup", lambda f, c: None), \
+                unittest.mock.patch.object(tf3ctl, "wait_answer", lambda *a: {"ok": True}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.send(cmd, args, folder=self.x)
+        self.assertEqual(len(got), 1)
+        return got[0][1]
+
+    def refused(self, cmd, args, why):
+        written = []
+        with unittest.mock.patch.object(tf3ctl, "write_command", lambda *a: written.append(a)):
+            with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+                tf3ctl.send(cmd, args, timeout=0.1, folder=self.x)
+        self.assertEqual(written, [], "nothing written for the game")
+        self.assertEqual([f for f in os.listdir(self.x) if f != "stdout.txt"], [])
+        self.assertIn(why, str(cm.exception))
+        return cm.exception
+
+    def test_args_and_help(self):
+        self.assertNotIn("ignoreErrors", self.road(), "off unless asked: as before")
+        self.assertNotIn("engineCheck", self.road())
+        r = self.road("--ignore-errors")
+        self.assertIs(r["ignoreErrors"], True)
+        self.assertNotIn("engineCheck", r, "a build: the engine checks it as it builds")
+        r = self.road("--ignore-errors", "--dry-run")
+        self.assertEqual((r["ignoreErrors"], r["dryRun"], r["engineCheck"]), (True, True, True),
+                         "a forced dry run asks the engine")
+        self.assertTrue(tf3ctl.changes_game("road", r), "asking the engine counts as changing the game")
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(self.p.parse_args(["road", "--inspect-node", "5", "--ignore-errors"]))
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.p.parse_args(["build", "--res", "x.con", "--at", "1,2", "--ignore-errors"])
+        self.assertNotIn("ignoreErrors", tf3ctl.build_args(self.p.parse_args(["build", "--res", "x.con", "--at", "1,2"])))
+        helptext = " ".join(self.p._subparsers._group_actions[0].choices["road"].format_help().split())
+        self.assertIn("for test saves only: skips the engine's checks", helptext)
+
+    def test_a_test_save_sends_it_with_the_save_named(self):
+        for save in ("probe-flat-base", "aom-ops-ship", "3-probe", "aom-shot-x"):
+            self.loaded(save)
+            a = self.sent("road", self.road("--ignore-errors"))
+            self.assertIs(a["ignoreErrors"], True, save)
+            self.assertEqual(a["_testSave"], save)
+        # without it: nothing of it goes, and a _testSave given by hand is dropped
+        a = self.sent("road", dict(self.road(), _testSave="probe-x"))
+        self.assertNotIn("ignoreErrors", a)
+        self.assertNotIn("_testSave", a)
+        a = self.sent("build", {"res": "x.con", "at": [1, 2], "_testSave": "probe-x"})
+        self.assertNotIn("_testSave", a)
+
+    def test_refused_on_a_persons_save_a_new_game_or_an_unknown_one(self):
+        self.loaded("aom-eu-1900")
+        e = self.refused("road", self.road("--ignore-errors"), "'aom-eu-1900' is not a test save's")
+        self.assertEqual(e.refused, "ignore-errors")
+        self.assertIn("for test saves only: skips the engine's checks", str(e))
+        self.loaded("12-probe")
+        self.refused("road", self.road("--ignore-errors"), "is not a test save's")
+        self.loaded("")
+        self.refused("road", self.road("--ignore-errors"), "save probe-NAME), then load that")
+        self.refused("road", self.road("--ignore-errors", "--dry-run"), "a new game with no save name")
+        self.loaded(None)
+        self.refused("road", self.road("--ignore-errors"), "is not known")
+        os.remove(self.log)
+        self.refused("road", self.road("--ignore-errors"), "is not known")
+        # the same road without it goes, on a person's save too (as before)
+        self.loaded("aom-eu-1900")
+        self.assertNotIn("ignoreErrors", self.sent("road", self.road()))
+
+    def test_refused_during_coop_even_on_a_test_save(self):
+        tf3ctl.coop_start(60, "look at the junction together")
+        self.refused("road", self.road("--ignore-errors"), "coop mark")
+        self.refused("road", self.road("--ignore-errors", "--dry-run"), "coop mark")
+        self.assertNotIn("ignoreErrors", self.sent("road", self.road()), "an unforced road goes in coop, as before")
+        # an expired mark: still refused
+        rec = json.loads(read(tf3ctl.launched_path()))
+        rec["coop"]["until"] = time.time() - 10
+        write(tf3ctl.launched_path(), json.dumps(rec))
+        with self.assertRaises(tf3ctl.OwnerRefused):
+            tf3ctl.send("road", self.road("--ignore-errors"), timeout=0.1, folder=self.x)
+        # a person's game in coop with another client, --other-owner-ok: still refused
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True
+        with self.assertRaises(tf3ctl.OwnerRefused):
+            tf3ctl.send("road", self.road("--ignore-errors"), timeout=0.1, folder=self.x)
+
+    def test_other_commands_never_carry_it(self):
+        for cmd in ("build", "connect", "terrain", "town", "line"):
+            self.refused(cmd, {"ignoreErrors": True, "res": "x"}, "road only")
+            self.refused(cmd, {"ignoreErrors": False}, "road only")
+        self.refused("road", dict(self.road(), ignoreErrors=1), "must be true")
+
 
 if __name__ == "__main__":
     unittest.main()
