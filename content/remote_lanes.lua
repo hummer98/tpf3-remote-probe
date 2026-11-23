@@ -20,7 +20,8 @@
 --     speedLimit, geometry.length / width / type / cubicOffsetSpline.offset), the engine's order, not matched to
 --     laneConfigs here
 -- tramTrackType here comes from the lanes: ELECTRIC when a lane has ELECTRIC_TRAM, YES when one has TRAM, NO when
--- none has either. A bus lane is a lane with BUS and without CAR.
+-- none has either (unknown when a lane's modes did not all read as names). A bus lane is a lane with BUS and
+-- without CAR. Mode names come from enum[name] for type.d.tl's sixteen names (no walk over the enum).
 -- Every engine call is in pcall and asked only about entities the engine says exist. Nothing is sent.
 --
 -- Not checked in a game yet (written 2026-11-23): whether the game's laneConfigs keep the template's order and
@@ -31,15 +32,18 @@ local M = {}
 M.MAX_LANES = 32 -- lanes per piece read (more: truncated, as no road has so many)
 M.MAX_NETWORK = 64 -- transport network edges per piece copied out
 M.NOTE = "read only; not checked in a game yet. Lanes run left to right looking from node0 to node1 (type.d.tl); " ..
-	"centre is worked out from the widths plus offset, + to the right (a guess from the base's templates). " ..
+	"centre is worked out from the widths plus offset, + to the right (a guess from the base's templates); side " ..
+	"goes by the widths alone. atNode0 / atNode1 are the numbers road --inspect-node's laneConnections use. " ..
 	"tramTrackType comes from the lanes' transport modes. modeKeys are the keys as read (the enum's values)"
 
 local function finite(v) return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge end
 local function r3(v) return finite(v) and math.floor(v * 1000 + 0.5) / 1000 or nil end
 
 -- the places of lanes across the piece: lanes = { { width, offset }, ... } left to right -> per lane
--- { centre, left, right, side } (metres from the middle, + to the right; side "left", "right" or "middle"),
--- and the whole width. Without every width: side from the lane's number alone (the first half left), no metres.
+-- { centre, left, right, side } (metres from the middle, + to the right) and the whole width. side ("left",
+-- "right" or "middle") goes by the widths alone, not the offset: offset's sign is a guess, and a middle lane
+-- nudged by it must not turn left or right; within a quarter of its width of the middle it is "middle".
+-- Without every width: side from the lane's number alone (the first half left), no metres.
 function M.layout(lanes)
 	local n = #lanes
 	local total, all = 0, n > 0
@@ -51,10 +55,12 @@ function M.layout(lanes)
 	for i, l in ipairs(lanes) do
 		local p = {}
 		if all then
-			local c = x + l.width / 2 + (finite(l.offset) and l.offset or 0)
+			local base = x + l.width / 2
+			local c = base + (finite(l.offset) and l.offset or 0)
 			x = x + l.width
 			p.centre, p.left, p.right = r3(c), r3(c - l.width / 2), r3(c + l.width / 2)
-			p.side = (c < -0.01 and "left") or (c > 0.01 and "right") or "middle"
+			local tol = math.max(l.width / 4, 0.01)
+			p.side = (base < -tol and "left") or (base > tol and "right") or "middle"
 		else
 			local mid = (n + 1) / 2
 			p.side = (i < mid and "left") or (i > mid and "right") or "middle"
@@ -68,8 +74,11 @@ end
 -- tramTrackType, tramLanes, busLanes (BUS without CAR), roadLanes, sidewalks (PERSON without any vehicle)
 local VEHICLE = { CAR = true, BUS = true, TRUCK = true, TRAM = true, ELECTRIC_TRAM = true, TRAIN = true,
 	ELECTRIC_TRAIN = true }
+-- vehicleLanes: the lanes with any vehicle mode, left to right (outer ones first and last). unknown: a lane's
+-- mode keys did not all read as names (then NO is not said: "unknown")
 function M.summary(lanes)
-	local tram, electric = false, false
+	local tram, electric, unknown = false, false, false
+	local vehicles = {}
 	local tramLanes, busLanes, roadLanes, walks = {}, {}, {}, {}
 	for i, l in ipairs(lanes) do
 		local s = l.set or {}
@@ -78,10 +87,13 @@ function M.summary(lanes)
 		if s.BUS and not s.CAR then busLanes[#busLanes + 1] = i end
 		if s.CAR or s.BUS or s.TRUCK then roadLanes[#roadLanes + 1] = i end
 		local vehicle = false
-		for k in pairs(s) do if VEHICLE[k] then vehicle = true end end
+		for k in pairs(s) do if VEHICLE[k] or k == "TRAM_TRACK" or k == "ELECTRIC_TRAM_TRACK" then vehicle = true end end
+		if vehicle then vehicles[#vehicles + 1] = i end
 		if s.PERSON and not vehicle then walks[#walks + 1] = i end
+		if l.unnamed or l.set == nil then unknown = true end
 	end
-	return { tramTrackType = (electric and "ELECTRIC") or (tram and "YES") or "NO", tramLanes = tramLanes,
+	local t = (electric and "ELECTRIC") or (tram and "YES") or (unknown and "unknown") or "NO"
+	return { tramTrackType = t, tramLanes = tramLanes, vehicleLanes = vehicles,
 		busLanes = busLanes, hasBusLane = #busLanes > 0, roadLanes = roadLanes, sidewalks = walks }
 end
 
@@ -99,14 +111,16 @@ function M.new(ctx)
 		return try(function() return api.engine.getComponent(e, k) end)
 	end
 	local function enum(name) return try(function() return api.type.enum[name] end) end
-	-- an enum value's name (nil when the enum or the value is not there)
-	local function nameIn(t, v)
+	-- an enum value's name among the names type.d.tl gives it, by t[name] (no walk over the enum: the game's may
+	-- be userdata); nil when the enum or the value is not there
+	local NAMES = { RoadType = { "STREET", "TRACK" }, BaseEdgeType = { "NORMAL", "BRIDGE", "TUNNEL" },
+		TramTrackType = { "NO", "YES", "ELECTRIC" }, GeometryType = { "ARC", "STRAIGHT", "CUBIC_SPLINE", "CUBIC_OFFSET_SPLINE" } }
+	local function nameIn(t, v, kind)
 		if t == nil or v == nil then return nil end
-		local found
-		pcall(function()
-			for k, x in pairs(t) do if x == v then found = k end end
-		end)
-		return found
+		for _, n in ipairs(NAMES[kind] or {}) do
+			if try(function() return t[n] end) == v then return n end
+		end
+		return nil
 	end
 	local function vec(v)
 		local x, y, z = tonumber(core.field(v, "x")), tonumber(core.field(v, "y")), tonumber(core.field(v, "z"))
@@ -117,17 +131,34 @@ function M.new(ctx)
 	-- a set of transport modes (the engine's map, { [TransportMode] = true }) -> sorted names, { [name] = true },
 	-- sorted keys as read; nil when it cannot be walked. A key that is no enum value keeps its key as its name.
 	local TM_LIMIT = 64
+	-- value -> name of TransportMode, by enum[name] for the names type.d.tl lists (no pairs over the enum: the
+	-- game's may be userdata); made once
+	local TM_NAMES = { "PERSON", "CARGO", "CAR", "BUS", "TRUCK", "TRAM", "ELECTRIC_TRAM", "TRAIN", "ELECTRIC_TRAIN",
+		"AIRCRAFT", "SHIP", "SMALL_AIRCRAFT", "SMALL_SHIP", "HELICOPTER", "TRAM_TRACK", "ELECTRIC_TRAM_TRACK" }
+	local tmByValue
+	local function tmName(k)
+		if tmByValue == nil then
+			tmByValue = {}
+			local TM = enum("TransportMode")
+			for _, n in ipairs(TM_NAMES) do
+				local v = TM and try(function() return TM[n] end)
+				if v ~= nil and tmByValue[v] == nil then tmByValue[v] = n end
+			end
+		end
+		return tmByValue[k]
+	end
 	local function modes(m)
 		if m == nil then return nil end
-		local TM = enum("TransportMode")
 		local names, set, keys = {}, {}, {}
+		local unnamed, cut = false, false
 		local ok = pcall(function()
 			local n = 0
 			for k, v in pairs(m) do
 				n = n + 1
-				if n > TM_LIMIT then break end
+				if n > TM_LIMIT then cut = true; break end
 				if v == true or (type(v) == "number" and v ~= 0) then
-					local name = type(k) == "string" and k or nameIn(TM, k) or tostring(k)
+					local name = type(k) == "string" and k or tmName(k)
+					if name == nil then name, unnamed = tostring(k), true end
 					if not set[name] then names[#names + 1] = name end
 					set[name] = true
 					keys[#keys + 1] = k
@@ -140,7 +171,7 @@ function M.new(ctx)
 			if type(a) == type(b) and (type(a) == "number" or type(a) == "string") then return a < b end
 			return tostring(a) < tostring(b)
 		end)
-		return names, set, keys
+		return names, set, keys, unnamed, cut
 	end
 
 	-- the lanes of a BASE_EDGE as plain values (see the top), and whether more were there than read
@@ -153,7 +184,7 @@ function M.new(ctx)
 		-- (only the first MAX_LANES are copied out: no whole list of a strange piece in one frame)
 		for i = 1, math.min(n, M.MAX_LANES) do
 			local lc = core.at(raw, i)
-			local names, set, keys = modes(core.field(lc, "transportModes"))
+			local names, set, keys, unnamed, mcut = modes(core.field(lc, "transportModes"))
 			local speed = tonumber(core.field(lc, "speed"))
 			local fwd = core.field(lc, "forward")
 			local lane = { index = i, width = r3(tonumber(core.field(lc, "width"))),
@@ -162,8 +193,13 @@ function M.new(ctx)
 				speed = r3(speed), speedKmh = finite(speed) and math.floor(speed * 3.6 + 0.5) or nil,
 				modes = names and core.array(names) or "unread", modeKeys = keys and core.array(keys) or nil, set = set }
 			if type(fwd) == "boolean" then lane.forward = fwd end -- (false kept: an and/or would drop it)
+			lane.unnamed, lane.modesTruncated = unnamed or nil, mcut or nil
+			-- the number road --inspect-node's laneConnections give it (0-based, left to right looking from that
+			-- node out along the piece, over every lane): at node0 k - 1, at node1 #lanes - k (set below)
+			lane.atNode0 = i - 1
 			out[i] = lane
 		end
+		for i, l in ipairs(out) do l.atNode1 = #out - i end
 		return out, cut
 	end
 
@@ -185,7 +221,7 @@ function M.new(ctx)
 			out[#out + 1] = { index = i - 1, modes = names and core.array(names) or "unread",
 				speedLimit = r3(tonumber(core.field(ed, "speedLimit"))),
 				length = r3(tonumber(g and core.field(g, "length"))), width = r3(tonumber(g and core.field(g, "width"))),
-				geometry = nameIn(GT, gtype) or (gtype ~= nil and tostring(gtype) or nil),
+				geometry = nameIn(GT, gtype, "GeometryType") or (gtype ~= nil and tostring(gtype) or nil),
 				offset = r3(tonumber(cos and core.field(cos, "offset"))) }
 		end
 		return out, nil, count
@@ -199,9 +235,9 @@ function M.new(ctx)
 		if be == nil then return nil, string.format("entity %d is no road or track piece (no BASE_EDGE)", e) end
 		local out = { edge = e }
 		local rt = core.field(be, "roadType")
-		out.roadType = nameIn(enum("RoadType"), rt) or (rt ~= nil and tostring(rt) or nil)
+		out.roadType = nameIn(enum("RoadType"), rt, "RoadType") or (rt ~= nil and tostring(rt) or nil)
 		local bt = core.field(be, "type")
-		out.edgeType = nameIn(enum("BaseEdgeType"), bt) or (bt ~= nil and tostring(bt) or nil)
+		out.edgeType = nameIn(enum("BaseEdgeType"), bt, "BaseEdgeType") or (bt ~= nil and tostring(bt) or nil)
 		local tpl, style = core.field(be, "roadTemplate"), core.field(be, "roadStyle")
 		out.streetType = tpl ~= nil and tostring(tpl) or nil
 		out.roadStyle = style ~= nil and tostring(style) or nil
@@ -219,7 +255,7 @@ function M.new(ctx)
 			local st = core.field(bes, "streetType")
 			s.streetType = st ~= nil and (tonumber(st) or tostring(st)) or nil
 			local tt = core.field(bes, "tramTrackType")
-			s.tramTrackType = tt ~= nil and (nameIn(enum("TramTrackType"), tt) or tonumber(tt) or tostring(tt)) or nil
+			s.tramTrackType = tt ~= nil and (nameIn(enum("TramTrackType"), tt, "TramTrackType") or tonumber(tt) or tostring(tt)) or nil
 			local hb = core.field(bes, "hasBus")
 			s.hasBus = type(hb) == "boolean" and hb or nil
 			out.street = s
@@ -231,8 +267,14 @@ function M.new(ctx)
 			l.centre, l.left, l.right, l.side = p.centre, p.left, p.right, p.side
 		end
 		local sum = M.summary(lanes)
+		-- each vehicle lane's place among the vehicle lanes (1 = leftmost), and whether it is an outer one
+		for n, k in ipairs(sum.vehicleLanes) do
+			lanes[k].vehicleIndex = n
+			lanes[k].outer = (n == 1 or n == #sum.vehicleLanes) or nil
+		end
 		for _, l in ipairs(lanes) do l.set = nil end
 		out.lanes = core.array(lanes)
+		out.vehicleLanes = core.array(sum.vehicleLanes)
 		out.laneCount = #lanes
 		out.lanesTruncated = cut or nil
 		out.width = width
@@ -241,6 +283,11 @@ function M.new(ctx)
 		out.roadLanes, out.sidewalks = core.array(sum.roadLanes), core.array(sum.sidewalks)
 		out.hasBusLane = sum.hasBusLane
 		if #lanes == 0 then out.why = "no laneConfigs read" end
+		-- BASE_EDGE_STREET's own tramTrackType (if the game has it) against the one from the lanes
+		if out.street and type(out.street.tramTrackType) == "string" and sum.tramTrackType ~= "unknown"
+			and out.street.tramTrackType ~= sum.tramTrackType then
+			out.tramMismatch = string.format("BASE_EDGE_STREET says %s, the lanes %s", out.street.tramTrackType, sum.tramTrackType)
+		end
 		if opts.network then
 			local net, why, count = network(e)
 			if net then

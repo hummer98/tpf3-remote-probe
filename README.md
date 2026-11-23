@@ -884,8 +884,8 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
 - **Not checked in game yet** (written 2026-11-23): which entities the octree has, whether a town building's box
   is on its `TOWN_BUILDING` entity or its construction, the time it takes on a large map.
 - `--lanes`: each `street` and `track` listed also gets `lanes`, as `lanes --edge` answers a piece (without the
-  transport network), for the nearest 100 of them (the rest: `lanesSkipped`); the answer's `lanesRead` and
-  `lanesNote`.
+  transport network), for the nearest 100 of them and within 2 s (the rest: `lanesSkipped`, and
+  `lanesTimeTruncated`); the answer's `lanesRead` (pieces read), `lanesNote` and `ms.lanes`.
 
 ### A road's lanes (`lanes`, read only)
 
@@ -899,22 +899,29 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
 - Per piece: `edge`, `roadType` (`STREET` / `TRACK`), `edgeType` (`NORMAL` / `BRIDGE` / `TUNNEL`), `streetType`
   (the street template, `BASE_EDGE`'s roadTemplate), `roadStyle`, `node0` / `node1`, `from` / `to`, `chord`
   (straight metres between the ends), `distance` (`BASE_EDGE`'s own, as read), `width` (all lanes), `laneCount`,
-  `tramTrackType` (`NO`, `YES`, `ELECTRIC`: from the lanes, `ELECTRIC_TRAM` before `TRAM`), `tramLanes`,
-  `busLanes` (`BUS` without `CAR`) and `hasBusLane`, `roadLanes`, `sidewalks` (lane numbers); `street`: what
+  `tramTrackType` (from the lanes: `ELECTRIC` when a lane has `ELECTRIC_TRAM`, else `YES` when one has `TRAM`,
+  else `NO`; `unknown` when a lane's modes did not all read as names), `tramLanes`, `busLanes` (`BUS` without
+  `CAR`) and `hasBusLane`, `roadLanes`, `vehicleLanes`, `sidewalks` (lane numbers); `street`: what
   `BASE_EDGE_STREET` has of `streetType`, `tramTrackType`, `hasBus` (TF2's fields; the TF3 tealdef does not list
-  them).
+  them), and `tramMismatch` when its `tramTrackType` differs from the lanes'.
 - Per lane (`lanes`, `laneConfigs` of `BASE_EDGE`, at most 32): `index` (1 = the leftmost looking from `node0` to
-  `node1`, as type.d.tl says they run), `side` (`left` / `middle` / `right`), `centre`, `left`, `right` (metres
-  from the piece's middle, + to the right), `forward` and `direction` (`node0->node1` or `node1->node0`), `modes`
+  `node1`, as type.d.tl says they run), `atNode0` / `atNode1` (the 0-based numbers `road --inspect-node`'s
+  `laneConnections` use at each end: `index - 1` and `laneCount - index`), `vehicleIndex` (among the lanes with a
+  vehicle mode, 1 = leftmost) and `outer` (the first or last of them), `side` (`left` / `middle` / `right`, by
+  the widths alone: a lane within a quarter of its width of the middle is `middle`), `centre`, `left`, `right`
+  (metres from the piece's middle with the offset, + to the right), `forward` and `direction` (`node0->node1` or
+  `node1->node0`), `modes`
   (transport modes by name: `PERSON`, `CARGO`, `CAR`, `BUS`, `TRUCK`, `TRAM`, `ELECTRIC_TRAM`, `TRAIN`, ...),
-  `modeKeys` (the keys as read), `speed` (m/s) and `speedKmh`, `width`, `offset`, `height`.
+  `modeKeys` (the keys as read; names by `enum[name]` for type.d.tl's sixteen, `unnamed` when one has none,
+  `modesTruncated` past 64 keys), `speed` (m/s) and `speedKmh`, `width`, `offset`, `height`.
 - `network` (unless `--no-network`): the piece's `TRANSPORT_NETWORK` edges in the engine's order (at most 64;
   `networkCount`): `index` (0-based), `modes`, `speedLimit`, `length`, `width`, `geometry`, `offset` (a cubic
   offset spline's). They are not matched to the lanes here.
 - `centre` is **worked out**: the widths laid side by side left to right, plus the lane's `offset`. The base's
   templates give offset as a small nudge (town_new_medium_tram_electrified: sidewalks 0.15 / -0.15, the tram
-  lanes -0.5 / 0.5), so + to the right is a guess from those numbers. Without every width, `side` comes from the
-  lane's number alone and there are no metres.
+  lanes -0.5 / 0.5), so + to the right is a guess from those numbers; `side` does not use it. Without every
+  width, `side` comes from the lane's number alone and there are no metres. Two pieces that meet end to end
+  (node1 to node0) keep left and right; meeting node1 to node1, one's left is the other's right.
 - **Not checked in game yet** (written 2026-11-23): whether the game's `laneConfigs` keep the template's order
   and offsets, whether `transportModes`' keys are the enum's values (`modeKeys`: a sidewalk should read
   `CARGO,PERSON`), what the transport network's edges are per lane.

@@ -826,7 +826,8 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): octree にどの entity が入っているか、町の建物の箱が `TOWN_BUILDING`
   の entity にあるか construction にあるか、大きな地図でかかる時間。
 - `--lanes`: 出した `street` と `track` に、`lanes --edge` と同じ形の `lanes` を付けます (transport network は除く)。近い順に
-  100 件まで (残りは `lanesSkipped`)。答えに `lanesRead` と `lanesNote`。
+  100 件まで、2 秒まで (残りは `lanesSkipped`、時間で切れたら `lanesTimeTruncated`)。答えに `lanesRead` (読めた本数)・
+  `lanesNote`・`ms.lanes`。
 
 ### 道路の車線 (`lanes`、読むだけ)
 
@@ -839,21 +840,27 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
   (その entity が無い、`BASE_EDGE` が無い)。1本でも読めれば `ok`。`read` / `asked`。
 - edge ごと: `edge`、`roadType` (`STREET` / `TRACK`)、`edgeType` (`NORMAL` / `BRIDGE` / `TUNNEL`)、`streetType` (道路の
   テンプレート、`BASE_EDGE` の roadTemplate)、`roadStyle`、`node0` / `node1`、`from` / `to`、`chord` (両端の間の直線の m)、
-  `distance` (`BASE_EDGE` の値をそのまま)、`width` (全車線の幅)、`laneCount`、`tramTrackType` (`NO`・`YES`・`ELECTRIC`。車線
-  から決める。`ELECTRIC_TRAM` があれば `ELECTRIC`)、`tramLanes`、`busLanes` (`BUS` があり `CAR` が無い車線) と
-  `hasBusLane`、`roadLanes`、`sidewalks` (車線の番号)。`street`: `BASE_EDGE_STREET` にある `streetType`・`tramTrackType`・
-  `hasBus` (TF2 の欄。TF3 の tealdef には無い)。
+  `distance` (`BASE_EDGE` の値をそのまま)、`width` (全車線の幅)、`laneCount`、`tramTrackType` (車線から決める。
+  `ELECTRIC_TRAM` のある車線があれば `ELECTRIC`、無くて `TRAM` があれば `YES`、どちらも無ければ `NO`。どれかの車線の mode が
+  名前に読めなければ `unknown`)、`tramLanes`、`busLanes` (`BUS` があり `CAR` が無い車線) と `hasBusLane`、`roadLanes`、
+  `vehicleLanes`、`sidewalks` (車線の番号)。`street`: `BASE_EDGE_STREET` にある `streetType`・`tramTrackType`・`hasBus`
+  (TF2 の欄。TF3 の tealdef には無い)。その `tramTrackType` が車線からのものと違えば `tramMismatch`。
 - 車線ごと (`lanes`、`BASE_EDGE` の `laneConfigs`、32 本まで): `index` (`node0` から `node1` を見て一番左が 1。type.d.tl の
-  とおり左から右)、`side` (`left` / `middle` / `right`)、`centre`・`left`・`right` (edge の真ん中からの m、右が +)、
+  とおり左から右)、`atNode0` / `atNode1` (`road --inspect-node` の `laneConnections` がそれぞれの端で使う 0 始まりの番号:
+  `index - 1` と `laneCount - index`)、`vehicleIndex` (乗り物の mode を持つ車線の中で左から何本目) と `outer` (その最初か
+  最後)、`side` (`left` / `middle` / `right`。幅だけで決め、真ん中から車線の幅の 1/4 以内なら `middle`)、`centre`・`left`・
+  `right` (edge の真ん中からの m、offset を足したもの、右が +)、
   `forward` と `direction` (`node0->node1` か `node1->node0`)、`modes` (transport mode の名前: `PERSON`・`CARGO`・`CAR`・
-  `BUS`・`TRUCK`・`TRAM`・`ELECTRIC_TRAM`・`TRAIN` など)、`modeKeys` (読んだままのキー)、`speed` (m/s) と `speedKmh`、
+  `BUS`・`TRUCK`・`TRAM`・`ELECTRIC_TRAM`・`TRAIN` など)、`modeKeys` (読んだままのキー。名前は type.d.tl の 16 個を `enum[名前]` で引く。名前の無いキーがあれば `unnamed`、64 個を
+  超えたら `modesTruncated`)、`speed` (m/s) と `speedKmh`、
   `width`、`offset`、`height`。
 - `network` (`--no-network` を付けないとき): その edge の `TRANSPORT_NETWORK` の edges をエンジンの順に (64 本まで、
   全部の数は `networkCount`): `index` (0 から)・`modes`・`speedLimit`・`length`・`width`・`geometry`・`offset` (cubic offset
   spline のもの)。ここでは車線と突き合わせません。
 - `centre` は**計算したもの**です。幅を左から右に並べ、車線の `offset` を足します。バニラのテンプレートの offset は小さな
   ずらし (town_new_medium_tram_electrified: 歩道 0.15 / -0.15、トラムの車線 -0.5 / 0.5) なので、右が + というのはその数から
-  の推測です。幅がそろわないときは、`side` を車線の番号だけで決め、m は出しません。
+  の推測です (`side` には使いません)。幅がそろわないときは、`side` を車線の番号だけで決め、m は出しません。2 本の edge が
+  端どうし (node1 と node0) でつながるなら左右はそのまま、node1 どうしなら片方の左がもう片方の右です。
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): ゲームの `laneConfigs` がテンプレートの順と offset のままか、
   `transportModes` のキーが enum の値か (`modeKeys`。歩道が `CARGO,PERSON` と読めれば合っている)、transport network の
   edges が車線ごとにどうなっているか。

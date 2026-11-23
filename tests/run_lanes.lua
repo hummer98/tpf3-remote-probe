@@ -53,6 +53,14 @@ return function(t)
 		-- by the fake enum's values, TRAM false), one lane's modes not walkable
 		[707] = { box = { 0, 120, 0, 100, 130, 1 }, comps = { BASE_EDGE = edge(0, 125, "odd.lua",
 			vector({ lane(false, 0, 4, { [2] = true, [3] = true, [4] = true, [5] = false }), lane(true, 0, 4, newproxy(false)) })) } },
+		-- an approach with one tram lane in the middle, nudged by its offset
+		[710] = { box = { 0, 160, 0, 100, 170, 1 }, comps = { BASE_EDGE = edge(0, 165, "approach1.lua", {
+			lane(false, 0.15, 3, WALK), lane(false, -0.25, 4, ROAD), lane(true, 0.3, 4, { "TRAM", "ELECTRIC_TRAM" }),
+			lane(true, 0.25, 4, ROAD), lane(true, -0.15, 3, WALK) }) } },
+		-- one way, the track on its right lane only, offsets not mirrored (as the base's small one-way tram road)
+		[711] = { box = { 0, 180, 0, 100, 190, 1 }, comps = { BASE_EDGE = edge(0, 185, "one_way_tram.lua", {
+			lane(true, 0.15, 3, WALK), lane(true, -0.5, 4, ROAD), lane(true, 0.5, 4, ETRAM), lane(true, -0.15, 3, WALK) }),
+			BASE_EDGE_STREET = { tramTrackType = 1 } } },
 		-- no widths: sides from the numbers alone
 		[708] = { box = { 0, 140, 0, 100, 150, 1 }, comps = { BASE_EDGE = edge(0, 145, "nowidth.lua", {
 			{ forward = false, transportModes = { "CAR" } }, { forward = true, transportModes = { "CAR" } },
@@ -86,6 +94,11 @@ return function(t)
 		eq(p[2].side, "left"); eq(p[5].side, "right")
 		p = L.layout({ { width = 4 }, { width = 4 }, { width = 4 } })
 		eq(p[2].side, "middle"); eq(p[2].centre, 0)
+		-- a middle lane nudged by its offset stays in the middle (side by the widths alone); centre has the nudge
+		p = L.layout({ { width = 4 }, { width = 4, offset = 0.5 }, { width = 4 } })
+		eq(p[2].side, "middle"); eq(p[2].centre, 0.5)
+		p = L.layout({ { width = 4 }, { width = 4, offset = -0.5 }, { width = 4 } })
+		eq(p[2].side, "middle"); eq(p[1].side, "left"); eq(p[3].side, "right")
 		p, w = L.layout({ { width = 4 }, {}, { width = 4 } })
 		eq(w, nil); eq(p[1].centre, nil); eq(p[1].side, "left"); eq(p[2].side, "middle"); eq(p[3].side, "right")
 		eq(#L.layout({}), 0)
@@ -96,6 +109,13 @@ return function(t)
 		eq(L.summary({ { set = { TRAM = true } } }).tramTrackType, "YES")
 		eq(L.summary({ { set = { CAR = true } } }).tramTrackType, "NO")
 		eq(L.summary({}).tramTrackType, "NO")
+		eq(L.summary({ { set = { TRAM_TRACK = true } } }).tramTrackType, "YES", "track alone")
+		eq(L.summary({ { set = { ELECTRIC_TRAM_TRACK = true } } }).tramTrackType, "ELECTRIC")
+		eq(L.summary({ { set = { CAR = true } }, {} }).tramTrackType, "unknown", "a lane unread")
+		eq(L.summary({ { set = { CAR = true }, unnamed = true } }).tramTrackType, "unknown", "a key with no name")
+		eq(L.summary({ { set = { TRAM = true } }, {} }).tramTrackType, "YES", "tram found: said")
+		s = L.summary({ { set = { PERSON = true } }, { set = { CAR = true } }, { set = { TRAM_TRACK = true } }, { set = { CAR = true } } })
+		eq(table.concat(s.vehicleLanes, ","), "2,3,4")
 	end)
 
 	test("core.edgeLanesRequest: ids as text or a list, network on by default; bad ids refused; read only", function()
@@ -179,7 +199,7 @@ return function(t)
 		truthy(byEdge(a.edges, 706).error:find("no BASE_EDGE", 1, true))
 		local u = byEdge(a.edges, 707)
 		eq(u.laneCount, 2); eq(table.concat(u.lanes[1].modes, ","), "BUS,CAR,TRUCK"); eq(u.lanes[2].modes, "unread")
-		eq(u.tramTrackType, "NO")
+		eq(u.tramTrackType, "unknown", "a lane's modes unread: not NO")
 		eq(u.network, "unread: no TRANSPORT_NETWORK on this piece")
 		local w = byEdge(a.edges, 708)
 		eq(w.width, nil); eq(w.lanes[1].centre, nil); eq(w.lanes[1].side, "left"); eq(w.lanes[2].side, "middle")
@@ -189,6 +209,40 @@ return function(t)
 		eq(b.ok, false); truthy(b.error:find("no entity", 1, true), b.error)
 		local c = run(g, 2823, "edgeLanes", '{ edges = "x" }')
 		eq(c.ok, false); truthy(c.error:find("no entity id", 1, true), c.error)
+		truthy(not g.crashed, g.crashed)
+	end)
+
+	test("lanes: a middle tram lane stays in the middle; one way with track on the right; numbers at each node", function()
+		local g = lanesGame()
+		api.type.enum.TramTrackType = { NO = 0, YES = 1, ELECTRIC = 2 }
+		local a = run(g, 2826, "edgeLanes", '{ edges = "710,711,701", network = false }')
+		truthy(a.ok, a.error)
+		local m = byEdge(a.edges, 710)
+		eq(m.tramLanes[1], 3); eq(#m.tramLanes, 1); eq(m.lanes[3].side, "middle"); eq(m.lanes[3].centre, 0.3)
+		eq(m.lanes[3].atNode0, 2); eq(m.lanes[3].atNode1, 2); eq(m.lanes[3].vehicleIndex, 2); eq(m.lanes[3].outer, nil)
+		eq(table.concat(m.vehicleLanes, ","), "2,3,4"); eq(m.lanes[2].outer, true)
+		local o = byEdge(a.edges, 711)
+		eq(o.tramTrackType, "ELECTRIC"); eq(o.tramLanes[1], 3); eq(o.lanes[3].side, "right"); eq(o.lanes[2].side, "left")
+		eq(o.lanes[3].atNode0, 2); eq(o.lanes[3].atNode1, 1); eq(o.lanes[3].outer, true)
+		eq(o.street.tramTrackType, "YES"); eq(o.tramMismatch, "BASE_EDGE_STREET says YES, the lanes ELECTRIC")
+		local b = byEdge(a.edges, 701)
+		eq(b.lanes[2].atNode0, 1); eq(b.lanes[2].atNode1, 4); eq(b.lanes[5].atNode1, 1); eq(b.tramMismatch, nil)
+		eq(b.lanes[2].outer, true); eq(b.lanes[3].outer, nil)
+		api.type.enum.TramTrackType = nil
+		truthy(not g.crashed, g.crashed)
+	end)
+
+	test("lanes: the TransportMode enum as userdata (no walk over it): names still read", function()
+		local g = lanesGame()
+		local TM = api.type.enum.TransportMode
+		local u = newproxy(true)
+		getmetatable(u).__index = function(_, k) return TM[k] end
+		api.type.enum.TransportMode = u
+		local ok, a = pcall(run, g, 2827, "edgeLanes", '{ edges = "701", network = false }')
+		api.type.enum.TransportMode = TM
+		truthy(ok, a)
+		truthy(a.ok, a.error)
+		eq(table.concat(a.edges[1].lanes[2].modes, ","), "BUS,CAR,ELECTRIC_TRAM,TRAM,TRUCK"); eq(a.edges[1].tramTrackType, "ELECTRIC")
 		truthy(not g.crashed, g.crashed)
 	end)
 
@@ -211,7 +265,8 @@ return function(t)
 		eq(s.lanes.network, nil, "around: no transport network")
 		eq(byEdge(a.entities, 705).lanes.roadType, "TRACK")
 		eq(byEdge(a.entities, 706).lanes, nil, "a house: no lanes")
-		truthy(a.lanesRead >= 6, a.lanesRead); eq(a.lanesSkipped, nil)
+		eq(a.lanesRead, 6, "the streets and tracks in the circle: 701-705 and 707 (708 on is past 120 m)"); eq(a.lanesSkipped, nil)
+		truthy(a.ms.lanes ~= nil, "its own time")
 		truthy(a.lanesNote:find("left to right", 1, true))
 		local b = run(g, 2842, "around", '{ at = "50,0", radius = 120 }')
 		eq(byEdge(b.entities, 701).lanes, nil); eq(b.lanesRead, nil)

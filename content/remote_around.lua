@@ -275,16 +275,23 @@ function M.new(ctx)
 			if addMouths(d) then withMouths = withMouths + 1 end
 		end
 		-- --lanes: each street and track listed gets its lanes (remote_lanes.lua), the nearest LANES_MAX of them
-		local withLanes, lanesSkipped = 0, 0
+		-- (under the same time limit as the walk, counted from here: past it the rest are skipped, lanesTimeTruncated)
+		local tL = appTime()
+		local tried, withLanes, lanesSkipped, lanesTime = 0, 0, 0, false
 		if r.lanes and ctx.lanes then
 			for _, d in ipairs(list) do
 				if d.kind == "street" or d.kind == "track" then
-					if withLanes >= M.LANES_MAX then
+					if not lanesTime and (appTime() - tL) * 1000 > core.AROUND_TIME_MS then lanesTime = true end
+					if tried >= M.LANES_MAX or lanesTime then
 						d.lanesSkipped, lanesSkipped = true, lanesSkipped + 1
 					else
-						withLanes = withLanes + 1
+						tried = tried + 1
 						local ok, info, why = pcall(ctx.lanes, d.id)
-						if ok and info then d.lanes = info else d.lanesError = ok and why or tostring(info) end
+						if ok and info then
+							d.lanes, withLanes = info, withLanes + 1
+						else
+							d.lanesError = ok and why or tostring(info)
+						end
 					end
 				end
 			end
@@ -297,8 +304,10 @@ function M.new(ctx)
 			scanned = scanned, scanTruncated = dropped > 0, dropped = dropped > 0 and dropped or nil,
 			timeTruncated = timeUp or nil, looked = looked,
 			lanesRead = (r.lanes and ctx.lanes) and withLanes or nil, lanesSkipped = lanesSkipped > 0 and lanesSkipped or nil,
+			lanesTimeTruncated = lanesTime or nil,
 			lanesNote = (r.lanes and ctx.lanes) and ctx.lanesNote or nil,
-			ms = { octree = math.floor((t1 - t0) * 1000 + 0.5), classify = math.floor((t2 - t1) * 1000 + 0.5),
+			ms = { octree = math.floor((t1 - t0) * 1000 + 0.5), classify = math.floor((tL - t1) * 1000 + 0.5),
+				lanes = (r.lanes and ctx.lanes) and math.floor((t2 - tL) * 1000 + 0.5) or nil,
 				total = math.floor((t2 - t0) * 1000 + 0.5) },
 			note = NOTE })
 	end
