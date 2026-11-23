@@ -1141,8 +1141,15 @@ python3 tools/tf3ctl.py persons --destination 51          # その産業を行�
 - `--from A --to B`: 道があるか。`api.engine.util.pathfinding.findPathNodeToNode` に `TransportMode.PERSON` (`walk`)
   と `CAR` (`drive`) を渡し、mode ごとに1回探します。端は entity か点: 建物そのものの `PERSON_CAPACITY` の
   `personNodes` (歩き) / `vehicleNodes` (車)、行き先なら `edgeWalk` / `edgeDrive` の node、
-  駅なら terminal (歩きは `personNodes`、車は `vehicleNodeId`)、ほかは位置または点から `--radius` m (初期設定 40、
-  500 まで) の中の網の node (`findTransportNetworkNodesInCircle`)。端ごとに 32 node まで。`paths` の mode ごとに:
+  駅なら terminal (歩きは `personNodes`、車は `vehicleNodeId`)、道路・線路の区間 (`BASE_EDGE`) なら、その区間自身の
+  網の edge のうち、その mode が通るものの `conns` (`from.edge` に `node0` / `node1`)、交差点 (`BASE_NODE`) も同じ
+  (自分の網の edge が無い交差点は、その網の node。mode は見ていない: `modesUnread`)、ほかは位置または点から `--radius` m
+  (初期設定 40、500 まで) の中の網の node (`findTransportNetworkNodesInCircle`)。端ごとに 32 node まで。区間と交差点は
+  円を使わないので、`--radius` で答えは変わりません (その mode の車線が無い区間は `found` が null で `why`)。両方の端が
+  円からだけ同じ node を持つとき、または 40 m より大きい円が相手の端の node を含むときは、円が重なっているだけなので探さず、`found` は null、`trivial: true`、`sharedNode`、
+  `why` を付けます (`--radius` を小さくして試す)。端が自分で持つ node (区間・駅・行き先) が相手の円か node にもあれば
+  `found: true`・`sameNode: true` で、`sameNodeFrom` / `sameNodeTo` にそれぞれの端がどこから持ったか (`circle`・
+  `edge`・`node`・`terminal`・`target`・`personCapacity`) が出ます。`paths` の mode ごとに:
   `found` (端に node が無いときは null で `why`)、`edges`、`pieces` (経路の網の entity の数、最初の 50 が
   `pieceIds`)、`ms`、node をどこから取ったか (`fromFrom` / `toFrom`)。見つからなかったときは、この探し方でそもそも
   道が見つかるとゲームで分かるまで `unverified: true` が付きます (まず、つながっていると分かっている2点で試す)。
@@ -1156,7 +1163,9 @@ python3 tools/tf3ctl.py persons --destination 51          # その産業を行�
 - **ゲーム内では未確認** (2026-11-23 に書いた): `getTargetsByLandUse` と `getTownProblems` が GUI のスクリプトにあるか
   (`reach --api` で分かる)、`getTargetsByLandUse` の答えの形、どの一覧がどの土地利用か (一覧は2つ: 商業・工業と推測)
   と `reachable` の2つの数も同じ、`findPathNodeToNode` がこの node どうしで歩きの道を見つけるか (別の MOD の覚え書き
-  には、駅の terminal の node どうしでは何も返らなかったとある)、大きな地図での1回の探索の時間。
+  には、駅の terminal の node どうしでは何も返らなかったとある)、大きな地図での1回の探索の時間。区間と交差点について
+  (2026-11-24 に書いた): ゲームでの網の edge と `conns` の中身 (区間の車線が交差点の網の node で終わり、つながった
+  2つの区間が node を共有するのか、探索でだけつながるのか)、`transportModes` が `pairs` で読めるか。
 
 ### メインメニューからのマイMOD (`modhub`)
 

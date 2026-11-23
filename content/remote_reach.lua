@@ -16,8 +16,15 @@
 --     Lines have no path search the GUI can call (a person's PathFactoryOutput lives in SimEntityNeedsPath, which
 --     is no ComponentType): for lines the answer gives the target's isReachableLines only.
 --   the nodes of a place: a target's edgeWalk / edgeDrive (an edge of a TRANSPORT_NETWORK: its conns), a station's
---     terminals (personNodes for walking, vehicleNodeId for driving), else the transport network nodes in a circle
+--     terminals (personNodes for walking, vehicleNodeId for driving), a road or track piece's (BASE_EDGE) or a
+--     junction's (BASE_NODE) own TRANSPORT_NETWORK edges that carry the mode (their conns; a junction without such
+--     edges: NodeId.new(node, i) of its network's nodes, type.d.tl), else the transport network nodes in a circle
 --     round its position or the point given (api.engine.util.octree.findTransportNetworkNodesInCircle).
+--   A piece or a junction never takes the circle: round a piece the circle holds the nodes of whatever is near,
+--     and two pieces with no road between them were found joined (2026-11-24, aom-ops: a ground road and a bridge
+--     piece, --radius 200-300). Two ends that share a node only because both came from circles, or because one
+--     end's circle wider than the default radius holds the other's node, are not searched (found null, trivial):
+--     that says the circles overlap, not that a path is there.
 -- Every engine call is in pcall and asked only about entities the engine says exist, and an engine vector is never
 -- read past its size (an unknown id or index may be the engine's assertion, which pcall does not catch).
 --
@@ -588,6 +595,13 @@ function M.new(ctx)
 			for _, x in ipairs(ids(core.field(sg, "stations"))) do add(x) end
 		end
 		if comp(e, "TOWN") ~= nil then kind("town") end
+		-- a road or track piece and a junction: their ends are their own network nodes (endNodes)
+		local be = comp(e, "BASE_EDGE")
+		if be ~= nil then
+			kind("edge")
+			d.edge = { node0 = tonumber(core.field(be, "node0")), node1 = tonumber(core.field(be, "node1")) }
+		end
+		if be == nil and comp(e, "BASE_NODE") ~= nil then kind("node"); d.node = true end
 		d.landUse, d.capacity = landUseOf(e)
 		return d
 	end
@@ -602,12 +616,13 @@ function M.new(ctx)
 	end
 	local function nodeKey(p) return p.entity .. ":" .. p.index end
 	-- the node list of an end: the engine's NodeIds (passed back as they came) and their plain ids, no doubles
+	-- (seen: key -> where the node came from, so a node shared by both ends tells whether it was only a circle's)
 	local function nodeSet() return { list = {}, plain = {}, seen = {}, from = {} } end
 	local function addNode(set, n, why)
 		if #set.list >= M.PATH_NODES_MAX then set.truncated = true; return end
 		local p = nodePlain(n)
 		if p == nil or set.seen[nodeKey(p)] then return end
-		set.seen[nodeKey(p)] = true
+		set.seen[nodeKey(p)] = why
 		set.list[#set.list + 1] = n
 		set.plain[#set.plain + 1] = p
 		set.from[why] = (set.from[why] or 0) + 1
@@ -621,6 +636,78 @@ function M.new(ctx)
 		if edges == nil or edge.index >= core.size(edges) then return end
 		local ed = core.at(edges, edge.index + 1)
 		for _, n in ipairs(core.toList(ed and core.field(ed, "conns"))) do addNode(set, n, why) end
+	end
+	local function modeSet(mode)
+		local TM = try(function() return api.type.enum.TransportMode end)
+		local out = {}
+		for _, k in ipairs(M.MODES[mode]) do
+			local v = TM and core.field(TM, k)
+			if v ~= nil then out[#out + 1] = v end
+		end
+		if #out == 0 then return nil end
+		return out
+	end
+
+	-- whether a transport network edge carries one of the mode's TransportModes: true, false, or nil when its
+	-- transportModes ({TransportMode : boolean}, type.d.tl Edge) does not read or reads as empty
+	local function carries(ed, modes)
+		local tm = core.field(ed, "transportModes")
+		if tm == nil or modes == nil then return nil end
+		local any, hit = false, false
+		local ok = pcall(function()
+			for k, v in pairs(tm) do
+				any = true
+				-- (a number not 0 as well, as remote_lanes reads them: TF2 kept some maps as numbers)
+				if v == true or (type(v) == "number" and v ~= 0) then
+					for _, m in ipairs(modes) do if k == m then hit = true end end
+				end
+			end
+		end)
+		if not ok or not any then return nil end
+		return hit
+	end
+	-- the nodes of a piece's or a junction's own transport network edges that carry the mode (an edge whose modes
+	-- do not read is taken: counted in set.modesUnread); the number of edges read
+	local function ownEdgeNodes(set, e, modes, why)
+		local tn = comp(e, "TRANSPORT_NETWORK")
+		local edges = tn and core.field(tn, "edges")
+		local count = core.size(edges)
+		for i = 1, count do
+			local ed = core.at(edges, i)
+			local c = ed and carries(ed, modes)
+			if c == nil then set.modesUnread = (set.modesUnread or 0) + 1 end
+			if ed and c ~= false then
+				for _, n in ipairs(core.toList(core.field(ed, "conns"))) do addNode(set, n, why) end
+			end
+		end
+		return count, tn
+	end
+	-- a piece (BASE_EDGE) or a junction (BASE_NODE) as an end: its own network nodes, never a circle (see the top)
+	local function networkNodes(set, e, kind, mode)
+		local count, tn = ownEdgeNodes(set, e, M.MODES[mode] and modeSet(mode), kind)
+		-- (only with no lanes at all: a junction whose lanes all lack the mode has no node for it, and says so)
+		if kind == "node" and count == 0 then
+			-- a junction with no network edges of its own: the nodes of its network by index (their modes not known)
+			local new = try(function() return api.type.NodeId.new end)
+			local n = core.size(tn and core.field(tn, "nodes"))
+			if new and n > 0 then
+				for i = 0, n - 1 do
+					local id = try(function() return new(e, i) end)
+					if id ~= nil then addNode(set, id, "node") end
+				end
+				if #set.list > 0 then set.modesUnread = (set.modesUnread or 0) + #set.list end
+			end
+		end
+		if #set.list == 0 then
+			if tn == nil then
+				set.why = string.format("no TRANSPORT_NETWORK on %s %d", kind == "edge" and "piece" or "junction", e)
+			elseif count > 0 then
+				set.why = string.format("none of the %d network edges of %s %d carries %s", count,
+					kind == "edge" and "piece" or "junction", e, mode)
+			else
+				set.why = string.format("no network nodes on %s %d", kind == "edge" and "piece" or "junction", e)
+			end
+		end
 	end
 	local function circleNodes(set, x, y, r)
 		local found = try(function()
@@ -653,6 +740,10 @@ function M.new(ctx)
 		if not exists(e) then return nil, "no such entity: " .. e end
 		local d = describe(e)
 		set.place = d
+		if d.edge or d.node then
+			networkNodes(set, e, d.edge and "edge" or "node", mode)
+			return set
+		end
 		local targets = {}
 		for _, c in ipairs(d.candidates) do
 			for _, p in ipairs(index and entriesFor(index, c) or {}) do targets[#targets + 1] = p end
@@ -681,26 +772,36 @@ function M.new(ctx)
 		return set
 	end
 
-	local function modeSet(mode)
-		local TM = try(function() return api.type.enum.TransportMode end)
-		local out = {}
-		for _, k in ipairs(M.MODES[mode]) do
-			local v = TM and core.field(TM, k)
-			if v ~= nil then out[#out + 1] = v end
-		end
-		if #out == 0 then return nil end
-		return out
-	end
-
-	local function searchPath(from, to, mode)
+	-- radius: the circle's (a node one end has of its own counts as met in the other end's circle only within the
+	-- default radius: a wider circle round a point by a road reaches a bridge above it with no road between them)
+	local function searchPath(from, to, mode, radius)
 		local res = { mode = mode, fromNodes = #from.list, toNodes = #to.list }
 		if #from.list == 0 or #to.list == 0 then
 			res.found = nil
 			res.why = from.why or to.why or "no nodes at one end"
 			return res
 		end
-		for k in pairs(from.seen) do
-			if to.seen[k] then res.found, res.sameNode, res.edges = true, true, 0; return res end
+		-- a node at both ends: the same place, unless both had it only from a circle (circles that overlap, which a
+		-- large --radius makes of two places with no road between them)
+		local overlap
+		for k, fw in pairs(from.seen) do
+			local tw = to.seen[k]
+			if tw then
+				local wide = (fw == "circle" or tw == "circle") and (radius or M.RADIUS_DEFAULT) > M.RADIUS_DEFAULT
+				if (fw ~= "circle" or tw ~= "circle") and not wide then
+					res.found, res.sameNode, res.edges = true, true, 0
+					res.sameNodeFrom, res.sameNodeTo = fw, tw
+					return res
+				end
+				overlap = overlap or k
+			end
+		end
+		if overlap then
+			res.found, res.trivial, res.sharedNode = nil, true, overlap
+			res.why = "the circle of one end holds a node of the other (" .. overlap .. "), the circle wider than " ..
+				M.RADIUS_DEFAULT .. " m or both ends circles: no path searched (trivial); a smaller --radius, or " ..
+				"entities with nodes of their own"
+			return res
 		end
 		local modes = modeSet(mode)
 		if modes == nil then res.why = "api.type.enum.TransportMode is not there"; return res end
@@ -743,6 +844,8 @@ function M.new(ctx)
 			end
 			out.targets = set.targets and core.array(set.targets) or nil
 			out.circle, out.position, out.truncated = set.circle, set.position, set.truncated
+			if set.place and set.place.edge then out.edge = set.place.edge end
+			out.modesUnread = set.modesUnread
 		end
 		return out
 	end
@@ -883,7 +986,7 @@ function M.new(ctx)
 			local to, terr = endNodes(a.to, mode, index, a.radius)
 			if not to then return fail(c.id, "to: " .. terr) end
 			firstFrom, firstTo = firstFrom or from, firstTo or to
-			local p = searchPath(from, to, mode)
+			local p = searchPath(from, to, mode, a.radius)
 			p.fromFrom, p.toFrom = from.from, to.from
 			res.paths[mode] = p
 		end
@@ -920,7 +1023,7 @@ function M.new(ctx)
 		if not to then return { why = "to: " .. terr } end
 		local p = searchPath(from, to, "walk")
 		return { found = p.found, why = p.why, ms = p.ms, edges = p.edges, fromNodes = p.fromNodes, toNodes = p.toNodes,
-			unverified = p.unverified, sameNode = p.sameNode }
+			unverified = p.unverified, sameNode = p.sameNode, trivial = p.trivial, sharedNode = p.sharedNode }
 	end
 
 	function R.handle(c)
