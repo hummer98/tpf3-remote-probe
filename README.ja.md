@@ -417,7 +417,9 @@ python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engi
   記録の上で読めた推測の名前は `guessed` に入ります。hits があるときは `overlaps` に、邪魔をしている箱とこちらの箱
   (`build`: 新しい建造物の箱、`road`: 区間の両端。幅なし) の重なりを書きます: 軸ごとの `overlap` (`[lo, hi]`)、または離れて
   いる距離 `gap` (m)、`meet`、高さが分からないときは `noZ`。箱は世界の軸にそろった箱です: T 型の橋脚の箱は足元から梁まで
-  あるので、`meet` は箱が重なることで、どの模型が当たるかではありません。旗を付けないときの答えは前と同じです。ゲームの型では
+  あるので、`meet` は箱が重なることで、どの模型が当たるかではありません。旗を付けると、建てられるが衝突の相手を挙げる
+  dry-run にも `hits` が付き、`road --ignore-errors` の本番では、検査を外さなかった場合の詳しい情報が `unforced.collisionDetail`
+  に入ります。旗を付けないときの答えは前と同じです。ゲームの型では
   `CollisionInfo.EntityData` は `entity` だけで、こちらのどの部品が、どの高さで当たるかはありません。エンジンが本当に何を
   返すかは**ゲーム内では未確認**です (2026-11-24 に書いた)。
 - `--dry-run` は何も建てず、エンジンにも**聞きません** (`road --dry-run --engine-check` は聞きます。`makeProposalData` は

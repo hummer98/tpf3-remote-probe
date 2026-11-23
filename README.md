@@ -444,7 +444,9 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   each box in the way meets the proposal's own (`build`: the new construction's box; `road`: the piece's ends,
   no width): `overlap` per axis as `[lo, hi]`, or `gap` in metres, `meet`, and `noZ` when a height is unknown.
   The boxes are axis aligned: a T pier's box runs from its foot to its beam, so `meet` says the boxes meet, not
-  which model does. Without the option the answers are as before. The game's types give `CollisionInfo.EntityData`
+  which model does. With the option a dry run that is buildable but names collisions also gets `hits`, and a
+  forced `road --ignore-errors` has the unforced check's detail in `unforced.collisionDetail`. Without the option
+  the answers are as before. The game's types give `CollisionInfo.EntityData`
   only an `entity`: which part of the proposal collides, and at what height, is not in them; what the engine
   really hands back is **not checked in a game yet** (written 2026-11-24).
 - `--dry-run` alone builds nothing and does **not** ask the engine (`road --dry-run --engine-check` does: `makeProposalData` takes a

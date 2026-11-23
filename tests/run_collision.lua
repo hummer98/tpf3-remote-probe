@@ -115,6 +115,17 @@ return function(t)
 		-- a plain table's keys the types do not name
 		local p = core.collisionDetail({ costs = 1, extra = true }, "x")
 		truthy(has(p.unlisted, function(x) return x.keys[1] == "extra" end))
+		-- a cycle and a wide deep tree under a field the types do not shape (station: any): the budget holds
+		local loop = {}
+		for i = 1, 40 do loop["k" .. i] = loop end
+		local function tree(d) local t = {}; if d > 0 then for i = 1, 40 do t[i] = tree(d - 1) end end; return t end
+		for _, st in ipairs({ loop, tree(4) }) do
+			local c = core.collisionDetail({ toAddData = { { subconstructionDatas = { { station = st } } } } }, "x", { values = 300 })
+			truthy(st == loop or c.valuesCut, "the tree cut by the value budget (the cycle stops by itself)")
+			truthy(#core.json(c) < 200000, "kept small: " .. #core.json(c))
+		end
+		local again = core.collisionDetail({ toAddData = { { subconstructionDatas = { { station = { me = loop } } } } } }, "x")
+		truthy(core.json(again):find('"again":true'), "a table met again is not walked again")
 		-- a whole read that raises does not escape
 		local okB = pcall(core.collisionDetail, setmetatable({}, { __index = function() error("gone") end }), "x")
 		truthy(okB, "never raises")
@@ -128,6 +139,10 @@ return function(t)
 		eq(m[1].meet, true); eq(m[1].overlap.z[2], 1)
 		local nz = core.collisionOverlaps({ { x0 = -10, y0 = -10, x1 = 10, y1 = 10 } }, hits)
 		eq(nz[1].noZ, true); eq(nz[1].meet, true)
+		-- a piece's box from its ends downhill (z0 above z1): still met
+		local dn = core.collisionOverlaps({ { x0 = -10, y0 = -10, z0 = 0, x1 = 10, y1 = 10, z1 = 45 } },
+			{ { id = 7, box = { x0 = -5, y0 = -5, z0 = 20, x1 = 5, y1 = 5, z1 = 10 } } })
+		eq(dn[1].meet, true); eq(dn[1].overlap.z[1], 10); eq(dn[1].overlap.z[2], 20)
 		eq(core.collisionOverlaps({}, hits), nil); eq(core.collisionOverlaps(nil, nil), nil)
 		eq(core.collisionOverlaps({ {} }, { { id = 1 } }), nil, "no box: nothing")
 	end)
@@ -168,6 +183,9 @@ return function(t)
 		local b = buildRun(g, 3102, string.format('{ res = %q, at = "100,0", dryRun = true, engineCheck = true, ' ..
 			'collisionDetail = true }', RAMP))
 		truthy(b.ok, b.error); truthy(b.collisionDetail.fields, "read when buildable too"); eq(b.collisionDetail.overlaps, nil)
+		-- built: the callback's detail in the answer
+		local c = buildRun(g, 3103, string.format('{ res = %q, at = "100,0", collisionDetail = true }', RAMP))
+		truthy(c.ok, c.error); eq(c.collisionDetail.from, "resultProposalData"); eq(c.collisionDetail.fields.costs, 5000)
 		truthy(not g.crashed, g.crashed)
 	end)
 
@@ -208,6 +226,15 @@ return function(t)
 		local f = roadRun(g, 3133, '{ from = "0,1500", to = "0,1600", dryRun = true, engineCheck = true, ignoreErrors = true, ' ..
 			'_testSave = "probe-x", collisionDetail = true }')
 		truthy(f.collisionDetail and f.collisionDetail.fields, "the forced dry run's own check")
+		-- a forced build: the unforced check's detail, its overlaps, and the callback's own
+		local s = roadWorld({ softBlocked = function(x, y) return y > 1000 and 501 or nil end })
+		fake.installAround(s, { things = HOUSE })
+		local fb = roadRun(s, 3134, '{ from = "0,1500", to = "0,1600", ignoreErrors = true, _testSave = "probe-x", collisionDetail = true }')
+		truthy(fb.ok, fb.error)
+		eq(fb.unforced.collisionDetail.fields.collisionInfo.collisionEntities[1].entity, 501)
+		truthy(fb.unforced.collisionDetail.overlaps, "the unforced check's overlaps")
+		eq(fb.collisionDetail.from, "resultProposalData", "the built one's callback too")
+		truthy(not s.crashed, s.crashed)
 		truthy(not g.crashed, g.crashed)
 	end)
 

@@ -4433,9 +4433,15 @@ function M.collisionDetail(data, where, limits)
 		return M.array(out)
 	end
 	-- anything the types do not shape: a scalar, a table walked, a userdata by its text and length
-	local function any(v, path, depth)
+	-- (counted in the value budget, and a table met again on the way down is not walked again: a cycle, or a
+	-- large tree, would hold the GUI thread)
+	local function any(v, path, depth, seen)
 		local t = type(v)
 		if t ~= "table" and t ~= "userdata" then return scalarOf(v) end
+		if not count() then return nil end
+		seen = seen or {}
+		if seen[v] then return { text = tostring(v), again = true } end
+		seen[v] = true
 		local out = { text = tostring(v) }
 		local okN, n = pcall(function() return #v end)
 		if okN and type(n) == "number" then out.size = n end
@@ -4445,8 +4451,8 @@ function M.collisionDetail(data, where, limits)
 				local i = 0
 				for k, x in pairs(v) do
 					i = i + 1
-					if i > L.items then cut = true; break end
-					fields[tostring(k)] = any(x, path .. "." .. tostring(k), depth + 1)
+					if i > L.items or st.values > L.values then cut = true; break end
+					fields[tostring(k)] = any(x, path .. "." .. tostring(k), depth + 1, seen)
 				end
 			end)
 			out.fields = fields
@@ -4547,6 +4553,9 @@ function M.collisionOverlaps(mine, hits)
 				for _, a in ipairs(axes) do
 					local k, a0, a1, b0, b1 = a[1], a[2], a[3], a[4], a[5]
 					if finite(a0) and finite(a1) and finite(b0) and finite(b1) then
+						-- (a box from a piece's ends may run downhill: z0 above z1, remote_around.lua)
+						a0, a1 = math.min(a0, a1), math.max(a0, a1)
+						b0, b1 = math.min(b0, b1), math.max(b0, b1)
 						local lo, hi = math.max(a0, b0), math.min(a1, b1)
 						if hi >= lo then o.overlap[k] = M.array({ lo, hi }) else o.gap[k] = lo - hi; all = false end
 					elseif k == "z" then
