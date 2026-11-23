@@ -1792,7 +1792,8 @@ function M.installBuild(g, spec)
 	CT.BASE_NODE, CT.BASE_EDGE, CT.CONSTRUCTION = "BASE_NODE", "BASE_EDGE", "CONSTRUCTION"
 	CT.BASE_NODE_CONFIG = not spec.noNodeConfigType and "BASE_NODE_CONFIG" or nil
 	CT.STATION, CT.TERRAIN = CT.STATION or "STATION", CT.TERRAIN or "TERRAIN"
-	g.buildStations = {}
+	g.buildStations, g.buildWarehouses, g.buildStockLists = {}, {}, {}
+	CT.WAREHOUSE = CT.WAREHOUSE or "WAREHOUSE"
 	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
 	api.type.Vec2f = { new = function(x, y) return { x = x, y = y } end }
 	api.type.Vec4f = { new = function(x, y, z, w) return { x, y, z, w } end }
@@ -2327,10 +2328,20 @@ function M.installBuild(g, spec)
 				local n = type(c.terminals) == "function" and c.terminals(ce.params) or c.terminals or 0
 				g.buildStations[g.nextEntity] = { terminals = n }
 			end
+			-- c.warehouse: a warehouse's subconstruction (WAREHOUSE { stockList, construction }) and its stock list
+			-- entity, as warehouse.script.lua's one subconstruction holds all its stocks
+			local subs = {}
+			if c.warehouse then
+				local wh, sl = g.nextEntity + 1, g.nextEntity + 2
+				g.nextEntity = sl
+				subs[1] = wh
+				g.buildWarehouses[wh] = { stockList = sl, construction = e }
+				g.buildStockLists[sl] = true
+			end
 			g.built[e] = { fileName = ce.fileName, params = copy(ce.params), transf = copy(t), name = ce.name,
 				player = ce.playerEntity, autoFillSlots = ce.autoFillSlots, frozenEdges = edgeIds, depots = depots,
 				freeEdges = freeIds, frozenNodes = frozenNodes, nodeIds = nodeIds,
-				stations = stations }
+				stations = stations, subconstructions = subs }
 			if ce.name ~= "" then names[e] = ce.name end
 			if not c.notInResult then results[#results + 1] = { e, 1 } end
 		end
@@ -2363,7 +2374,12 @@ function M.installBuild(g, spec)
 			local pn = copy(b.params)
 			return { fileName = b.fileName, params = copy(b.params), params_native = { asTable = function() return copy(pn) end },
 				transf = copy(b.transf), frozenEdges = copy(b.frozenEdges), frozenNodes = (not spec.noFrozenNodes) and copy(b.frozenNodes or {}) or nil,
-				depots = copy(b.depots), stations = copy(b.stations or {}), industries = {} }
+				depots = copy(b.depots), stations = copy(b.stations or {}), industries = {},
+				subconstructions = copy(b.subconstructions or {}) }
+		end
+		if g.buildWarehouses[e] then
+			if kind == "WAREHOUSE" then return copy(g.buildWarehouses[e]) end
+			return nil
 		end
 		if kind == "STATION" and g.buildStations[e] then
 			local t = {}
@@ -2394,6 +2410,10 @@ function M.installBuild(g, spec)
 	api.engine.util.getEntityName = function(e)
 		if names[e] then return names[e] end
 		return getName(e)
+	end
+	local exists = api.engine.entityExists
+	api.engine.entityExists = function(e)
+		return g.built[e] ~= nil or g.buildWarehouses[e] ~= nil or g.buildStockLists[e] ~= nil or exists(e)
 	end
 	g.buildNames = names
 	return makeCmd
@@ -2805,6 +2825,12 @@ function M.installDebug(g, spec)
 	spec = spec or {}
 	local lists = spec.stockLists or {}
 	local owners = spec.owners or {}
+	-- spec.constructions = { [entity] = { subconstructions = { ids }, industries = { ids }, townBuildings = { ids } } }:
+	-- a construction's CONSTRUCTION (a warehouse's: its one subconstruction, an owner of kind WAREHOUSE with
+	-- stockList and construction). Asking getComponent of an id none of this knows, nor the base fake, is the
+	-- engine's assertion (g.crashed) when spec.strictIds is set.
+	local cons = spec.constructions or {}
+	api.type.ComponentType.WAREHOUSE = api.type.ComponentType.WAREHOUSE or "WAREHOUSE"
 	g.debugCmds, g.updateCount = {}, g.updateCount or 1000
 	local function crash(msg) g.crashed = msg; error(msg) end
 	local function callable(f)
@@ -2908,12 +2934,21 @@ function M.installDebug(g, spec)
 	end
 	-- the stock lists and their owners
 	local exists, getComponent = api.engine.entityExists, api.engine.getComponent
-	api.engine.entityExists = function(e) return lists[e] ~= nil or owners[e] ~= nil or exists(e) end
+	api.engine.entityExists = function(e) return lists[e] ~= nil or owners[e] ~= nil or cons[e] ~= nil or exists(e) end
 	api.engine.getComponent = function(e, kind)
 		if kind == "GAME_TIME" then
 			local t = getComponent(e, kind)
 			t.updateCount, t.tickCount = g.updateCount, g.updateCount + 7
 			return t
+		end
+		if spec.strictIds and e ~= api.engine.util.getWorld() and not api.engine.entityExists(e) then crash("ASSERT: getComponent of no entity " .. tostring(e)) end
+		local cc = cons[e]
+		if cc then
+			if kind == "CONSTRUCTION" then
+				return { fileName = cc.fileName or "::/warehouses/warehouse.con", subconstructions = copy(cc.subconstructions or {}),
+					industries = copy(cc.industries or {}), townBuildings = copy(cc.townBuildings or {}) }
+			end
+			return nil
 		end
 		local l = lists[e]
 		if kind == "STOCK_LIST" and l then
@@ -2924,9 +2959,20 @@ function M.installDebug(g, spec)
 			return { stocks = stocks }
 		end
 		local o = owners[e]
-		if o and kind == o.kind then return { stockList = o.stockList } end
+		if o and kind == o.kind then return { stockList = o.stockList, construction = o.construction } end
 		if o or l then return nil end
 		return getComponent(e, kind)
+	end
+	-- warehouses (entities --kind warehouse): the owners of kind WAREHOUSE
+	local withComponent = api.engine.getEntitiesWithComponent
+	api.engine.getEntitiesWithComponent = function(kind, filter)
+		if kind == "WAREHOUSE" then
+			local ids = {}
+			for e, ow in pairs(owners) do if ow.kind == "WAREHOUSE" then ids[#ids + 1] = e end end
+			table.sort(ids)
+			return ids
+		end
+		return withComponent(kind, filter)
 	end
 	local sys = api.engine.system.simEntityAtStockSystem
 	local count = sys.getStockCount
@@ -3400,8 +3446,15 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		water = function(x) return x >= 1000 end, waterLevel = 5,
 		streets = { ["::/infrastructure/street/town/town_old_medium.street_template"] = { yearTo = 1940, cost = 10 },
 			["::/infrastructure/street/town/town_new_medium.street_template"] = { yearFrom = 1940, cost = 20 } } })
-	-- the debug commands (stock set, steps): the industry's stocks, 200 ms of game time a step
-	M.installDebug(g, { stepsPerFrame = 5 })
+	-- the debug commands (stock set, steps): the industry's stocks, 200 ms of game time a step; a warehouse
+	-- (construction 46840, its subconstruction 46841 with WAREHOUSE, stock list 46842: a universal stock and a
+	-- specialized one)
+	M.installDebug(g, { stepsPerFrame = 5,
+		constructions = { [46840] = { subconstructions = { 46841 } } },
+		owners = { [46841] = { kind = "WAREHOUSE", stockList = 46842, construction = 46840 } },
+		stockLists = { [46842] = { stocks = {
+			{ type = 2, cargoType = -1, cargoTypes = { 1, 2 }, capacity = 1000, count = 0, byCargo = {} },
+			{ type = 2, cargoType = 2, capacity = 500, count = 0 } } } } })
 	-- the base's company scripts: a save with its state (basePopulation 500); a newgame gets the start event
 	-- town connections: the two towns in the map's order, not connected; the coal mine is Emsworth's
 	M.installTownConnect(g, {}, { towns = { { entity = 11, name = "Emsworth" }, { entity = 12, name = "Emsworth Bay", x = 2000 } },

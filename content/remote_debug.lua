@@ -5,8 +5,9 @@
 -- The stock list is read as the base's debug panel reads it (debug_panel/make_entity_debug_panel.tl): the entity's
 -- STOCK_LIST component, stock ids 0-based (its slider sends params.stockId - 1), the count from
 -- simEntityAtStockSystem.getStockCount. An industry, town building or warehouse whose own entity has no STOCK_LIST
--- is followed to its stockList entity, as cargo_util.getStockListEntityFromOwner does. A vehicle has no stock list:
--- the panel sets its load with stock -1 and the cargo type's name, per cargo type.
+-- is followed to its stockList entity, as cargo_util.getStockListEntityFromOwner does; a construction (a
+-- warehouse's, as build gives it) to the one such owner among its subconstructions (core.stockOwnersOf). A vehicle
+-- has no stock list: the panel sets its load with stock -1 and the cargo type's name, per cargo type.
 --
 -- Sent as rename and build send theirs: api.cmd.sendCommand with a callback, everything round it in pcall. A debug
 -- function that is not there (nil) is not called: the answer says so. Whether a release build of the game takes
@@ -61,19 +62,50 @@ function M.new(ctx)
 	end
 
 	-- what holds the stocks of entity e: { kind = "stockList", entity = e, stockList = the stock list entity, via,
-	-- stocks = { ... } } or { kind = "vehicle", entity = e, cargo = { ... } }; nil and why
+	-- owner and construction (when e is a construction), stocks = { ... } } or { kind = "vehicle", entity = e, cargo = { ... } }; nil and why
 	local function holderOf(e)
 		-- only ids the engine has reach a component lookup (an unknown id may assert)
 		local exists = try(function() return api.engine.entityExists(e) end)
 		if exists ~= true then return nil, "no such entity: " .. e end
 		local names = cargoNames()
 		local slEntity, sl, via = e, comp(e, "STOCK_LIST"), nil
+		local owner, construction = nil, nil
+		local function follow(o, k)
+			local s = tonumber(core.field(comp(o, k), "stockList"))
+			if s and s >= 0 and s ~= o and try(function() return api.engine.entityExists(s) end) == true then
+				local c = comp(s, "STOCK_LIST")
+				if c ~= nil then return s, c end
+			end
+			return nil
+		end
 		if sl == nil then
 			for _, k in ipairs({ "INDUSTRY", "TOWN_BUILDING", "WAREHOUSE" }) do
-				local s = tonumber(core.field(comp(e, k), "stockList"))
-				if s and s >= 0 and s ~= e and try(function() return api.engine.entityExists(s) end) == true then
-					local c = comp(s, "STOCK_LIST")
-					if c ~= nil then slEntity, sl, via = s, c, k break end
+				local s, c = follow(e, k)
+				if s then slEntity, sl, via = s, c, k break end
+			end
+		end
+		-- a construction (the id build gives, e.g. a warehouse's): the stock list of the owner under it, as the
+		-- base opens a warehouse's or an industry's window from its construction (core.stockOwnersOf). More
+		-- than one (a construction with two industries): refused, naming them, so that nothing is guessed.
+		if sl == nil then
+			local con = comp(e, "CONSTRUCTION")
+			if con ~= nil then
+				local owners = core.stockOwnersOf(con, function(v, k)
+					if v == e or try(function() return api.engine.entityExists(v) end) ~= true then return nil end
+					return comp(v, k)
+				end)
+				if #owners > 1 then
+					local names = {}
+					for _, o in ipairs(owners) do
+						names[#names + 1] = string.format("%d (%s, stock list %d)", o.entity, o.kind, o.stockList)
+					end
+					return nil, "construction " .. e .. " has " .. #owners .. " stock lists under it: give one of "
+						.. table.concat(names, ", ")
+				end
+				construction = e
+				if #owners == 1 then
+					local s, c = follow(owners[1].entity, owners[1].kind)
+					if s then slEntity, sl, via, owner = s, c, "CONSTRUCTION>" .. owners[1].kind, owners[1].entity end
 				end
 			end
 		end
@@ -102,7 +134,8 @@ function M.new(ctx)
 				s.cargoTypes = core.array(per)
 				stocks[#stocks + 1] = s
 			end
-			return { kind = "stockList", entity = e, stockList = slEntity, via = via, stocks = core.array(stocks) }
+			return { kind = "stockList", entity = e, stockList = slEntity, via = via, owner = owner,
+				construction = construction, stocks = core.array(stocks) }
 		end
 		local tv = comp(e, "TRANSPORT_VEHICLE")
 		if tv ~= nil then
@@ -123,8 +156,12 @@ function M.new(ctx)
 			end
 			return { kind = "vehicle", entity = e, stock = -1, cargo = core.array(cargo) }
 		end
-		return nil, "entity " .. e .. " holds no stock list (no STOCK_LIST, no industry, town building or warehouse "
-			.. "with one) and is no vehicle"
+		if construction then
+			return nil, "construction " .. e .. " has no stock list under it (no warehouse, industry or town building "
+				.. "among its subconstructions with one; a warehouse with no modules has no stocks)"
+		end
+		return nil, "entity " .. e .. " holds no stock list (no STOCK_LIST, no industry, town building, warehouse "
+			.. "or construction with one) and is no vehicle"
 	end
 
 	-- the count of the stock (or the vehicle's cargo) a request is about, from a holder read
@@ -164,6 +201,9 @@ function M.new(ctx)
 			return "the vehicle has no room for " .. r.cargo .. " (it takes: " .. (#have > 0 and table.concat(have, ", ") or "nothing") .. ")"
 		end
 		local s = h.stocks[r.stock + 1]
+		if #h.stocks == 0 then
+			return "its stock list has no stocks (a warehouse gets one from its modules: none, or none with capacity)"
+		end
 		if r.stock < 0 or s == nil then
 			return "no stock " .. r.stock .. " here: its stock list has " .. #h.stocks .. " (ids 0.." .. (#h.stocks - 1) .. ")"
 		end
@@ -265,7 +305,7 @@ function M.new(ctx)
 		if why then return fail(c.id, why) end
 		local target = h.kind == "vehicle" and h.entity or h.stockList
 		local out = { ok = true, cmd = "stockSet", dryRun = r.dryRun or nil, entity = r.entity, stockList = target,
-			holder = h.kind, via = h.via, stock = r.stock, amount = r.amount, cargo = r.cargo,
+			holder = h.kind, via = h.via, owner = h.owner, construction = h.construction, stock = r.stock, amount = r.amount, cargo = r.cargo,
 			before = countIn(h, r), functionPresent = core.debugFunction(path) ~= nil, note = NOTE }
 		if r.dryRun then
 			out.sent = false

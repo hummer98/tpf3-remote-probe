@@ -216,7 +216,8 @@ A game started by hand from Steam skips this: run `keep-log` before starting it.
 ```
 python3 tools/tf3ctl.py log --grep remote_probe --tail 40   # the game's stdout.txt
 python3 tools/tf3ctl.py keep-log [--list]                   # copy stdout.txt to crash_dump/logs now; list the copies
-python3 tools/tf3ctl.py entities --kind town --grep ems     # ids and names: town, line, vehicle, station, industry
+python3 tools/tf3ctl.py entities --kind town --grep ems     # ids and names: town, line, vehicle, station, industry, warehouse
+python3 tools/tf3ctl.py entities --kind warehouse           # read only: each WAREHOUSE entity with its construction, stockList, stocks and capacity
 python3 tools/tf3ctl.py industry-workers [--entity 51]      # read only: capacity, sims headed there, last visitors (workers script), productivity, nearest town
 python3 tools/tf3ctl.py industry-stocks [--entity 51] [--grep mine] [--all-params]  # read only: stocks (cargo, capacity, count), rules (boost), productivity, the construction's .con and params (hummer_aom_upg_*; --all-params: best with --entity)
 python3 tools/tf3ctl.py window --town Emsworth --focus      # open its window and move the camera (--close-all)
@@ -389,7 +390,8 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   same each time. The probe adds `remote_probe_build = 1` to the params, its mark (see `--remove`); the
   construction's updateFn does not know the key and leaves it alone.
 - The answer: `entity` (the new construction), `construction` (`fileName`, `name`, `depots`, `stations`,
-  `industries`, and `ends`: the free ends of its own road or track pieces with their positions, candidates for
+  `industries`, `stockLists`: the stock lists under it, `entity` / `kind` / `stockList`, e.g. a warehouse's
+  WAREHOUSE subconstruction, and `ends`: the free ends of its own road or track pieces with their positions, candidates for
   `connect --from`; and `connectable`: where a `road` can join it, see `road`), `cost` (the engine's), `balanceBefore` / `balanceAfter` / `spent`, `errors`, `warnings`,
   `collisions` (ids in the way), `params` as sent, `at` (with the z used, `zFrom`). A refusal is `ok: false` with
   the engine's messages in `error`.
@@ -741,10 +743,16 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   0-based (the ids `stock set --stock` takes), each stock's `type`, `cargoType` and `cargo` (the cargo type's
   name), `capacity`, `count` (`getStockCount`) and `cargoTypes` (per cargo type the stock takes: its name and
   `count`). An industry, town building or warehouse whose own entity has no `STOCK_LIST` is followed to its
-  `stockList` entity (`via`). A vehicle has no stock list: `kind` is `vehicle`, with `cargo` per cargo type it has
+  `stockList` entity (`via`). A construction (the id `build` answers, e.g. a warehouse's) is followed to the one
+  warehouse, industry or town building with a stock list among its subconstructions (`via`
+  `CONSTRUCTION>WAREHOUSE`, `owner`, `construction`), as the base finds a warehouse's window from its construction;
+  two or more are refused, naming them, and none is an error. A warehouse (`warehouse.con`) keeps all its stocks
+  in one stock list: one mixed stock for its universal modules (500 each, summed) and one stock per specialized
+  module (bulk, liquid, flatbed, goods); a warehouse without modules has no stocks. A vehicle has no stock list: `kind` is `vehicle`, with `cargo` per cargo type it has
   room for (`capacity`, `count`; passengers left out and refused, as the base panel does), set with
-  `--stock -1 --cargo NAME`. `--cargo` takes the `cargo` field exactly as `stock list` shows it. Ids come from `industry-stocks`, `stations`
-  and `vehicles`.
+  `--stock -1 --cargo NAME`. `--cargo` takes the `cargo` field exactly as `stock list` shows it. Ids come from `industry-stocks`, `stations`,
+  `entities --kind warehouse` (or `build`'s answer) and `vehicles`. **Not checked in game yet**: a warehouse's
+  stock list (read from the base's sources, not measured).
 - `stock set` sends `api.cmd.debug.makeStockSetCargoAmountCmd(stock list entity, stock, amount[, cargo])` (the cargo
   only when given, as the base panel leaves it out for a stock list's stock). Refused before anything is sent: a
   stock id the list does not have, an amount over the stock's capacity (or the vehicle's for that cargo, or
