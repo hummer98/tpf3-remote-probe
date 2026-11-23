@@ -518,6 +518,7 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # asks the engine (changes the game)
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
+python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only: a junction's light off
 python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lanes (see "A road's lanes")
 ```
 
@@ -654,8 +655,25 @@ autosave loaded again saves under any name.
   `node1`, `street`, `construction`), `constructionForNode` (getConstructionEntityForNode), `construction`
   (the construction found, `frozen`, `by`) with its `constructionFrozenNodes` / `constructionFrozenEdges`,
   `nodeConfig` (`false` when none; else its `laneConnections`, `crosswalks`, `trafficLightStates`,
-  `doubleSlipSwitch`), `octree` (the pieces `findEntitiesInCircle` meets within 1, 5 and 20 m, whether each ends
+  `doubleSlipSwitch`, `trafficLightPreference` (`YES` / `NO` / `AUTO`, by the game's enum; its number in
+  `trafficLightPreferenceValue`) and `trafficLightType`), `octree` (the pieces `findEntitiesInCircle` meets within 1, 5 and 20 m, whether each ends
   at the node, at most 40 listed) and `road`: what the road command would do with the node as an end.
+- road does not join a node with traffic lights (their phases name lanes, and would not be remade). `lights --node
+  ID --off` takes a junction's traffic light off first, with the node's window's two buttons in one proposal: "None"
+  (`trafficLightPreference` NO) and "Reset to Default" (the phases, `states`, emptied; road refuses a node by its
+  phases, and None alone keeps them). The set-up's traffic light config is copied (`clone`), its type kept, and sent
+  with `createTrafficLightProposal` as `makeWorldBuildProposalCmd(proposal, nil, false, true)`.
+  - **For test saves only, and not during coop**: tf3ctl refuses it (exit 4, `"refused": "lights"`, nothing sent)
+    by the same rule as `road --ignore-errors`, and the mod checks the save name again. It goes through the owner
+    check, `--dry-run` too.
+  - Refused before anything is sent: a node with two street pieces or fewer (the node's window offers traffic
+    lights only where more than two meet), a construction's node, a node without a junction set-up. A node whose
+    preference is NO already and that has no phases: nothing is sent (`changed: false`).
+  - The answer: `before` and `after` (read back: `trafficLightPreference`, `trafficLightStates`,
+    `trafficLightType`), `off` (NO and no phases read back), `changed`. `--dry-run`: the proposal made and asked of the engine
+    (makeProposalData, with no Context, as the window sends none): `verdict`, nothing sent.
+  - **Not checked in game yet** (written 2026-11-24): whether the engine keeps NO and the emptied phases (or makes
+    phases again), and whether road then joins the node. Look at it with `road --inspect-node` before trusting it.
 - Between 1 m and 2000 m long. A piece across water or a valley needs a bridge, which this does not build (the
   engine refuses or follows the terrain: not known).
 - Use: a harbour's pedestrian link alone does not join it to the road network; a road along it, from the

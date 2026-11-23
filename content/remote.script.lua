@@ -1208,6 +1208,7 @@ handlers.build = build.handle
 handlers.water = build.water
 handlers.road = build.road
 handlers.roadInspect = build.roadInspect -- (read only)
+handlers.lightsOff = build.lightsOff -- (test saves only: a junction's traffic light taken off)
 -- around (remote_around.lua): read only, what stands near a point (kinds, names, boxes; constructions' mouths);
 -- its describe also names what a refused build or road collided with
 -- lanes (remote_lanes.lua): read only, a road or track piece's lanes (modes, side, speed, width) and tram track;

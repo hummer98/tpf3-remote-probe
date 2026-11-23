@@ -2011,6 +2011,20 @@ function M.installBuild(g, spec)
 	-- true }: a set-up with traffic light states
 	for id, cs in pairs((spec.roads or {}).conns or {}) do g.nodeConns[id] = copy(cs) end
 	local lights = (spec.roads or {}).lights or {}
+	-- traffic lights (lights --off): the set-up's trafficLightPreference (type.d.tl TrafficLightPreference; the
+	-- numbers are the fake's own, the game's are not read), YES where spec.roads.lights names the node, else AUTO;
+	-- spec.roads.lightPrefs = { [node] = "NO" / "YES" / "AUTO" } sets one. createTrafficLightProposal (engine/util.d.tl)
+	-- asserts, as the engine might (a guess), on a node without a set-up, a config that is not one (the window
+	-- sends a clone of the set-up's), or a preference that is none of the enum's. Applied, the node takes the
+	-- preference and the config's phases as sent (the window's None keeps the phases; its Reset to Default sends
+	-- none): NO alone leaves them, so road still refuses it.
+	-- g.lightCmds: every traffic light proposal sent, as plain values. spec.noTrafficLightProposal: not there;
+	-- spec.lightsRefused: the engine refuses it (critical, "Not possible")
+	api.type.enum.TrafficLightPreference = api.type.enum.TrafficLightPreference or { YES = 0, NO = 1, AUTO = 2 }
+	local TLP = api.type.enum.TrafficLightPreference
+	g.lightPref, g.lightCmds = {}, {}
+	for id in pairs(g.nodes) do g.lightPref[id] = lights[id] and TLP.YES or TLP.AUTO end
+	for id, k in pairs((spec.roads or {}).lightPrefs or {}) do g.lightPref[id] = TLP[k] end
 	-- (over a street system installed before, Track Connector's fake: its nodes and lookups are kept)
 	local oldStreets = api.engine.system.streetSystem or {}
 	local streetSystem = {}
@@ -2068,6 +2082,15 @@ function M.installBuild(g, spec)
 	-- ctx: the proposal's Context (its gatherFields: a field in the way is removed, a warning, instead of a collision)
 	local function evaluate(p, dry, ctx)
 		local st = getmetatable(p).store
+		if st.trafficLight then
+			local data = { errorState = { critical = false, messages = {}, warnings = {} }, collisionInfo = { collisionEntities = {} },
+				costs = 0 }
+			if spec.lightsRefused then
+				data.errorState.critical = true
+				table.insert(data.errorState.messages, "Not possible")
+			end
+			return data, {}, {}
+		end
 		local adds, removes = {}, copy(st.constructionsToRemove or {})
 		local data = { errorState = { critical = false, messages = {}, warnings = {} }, collisionInfo = { collisionEntities = {} },
 			costs = 0 }
@@ -2245,6 +2268,7 @@ function M.installBuild(g, spec)
 	end
 
 	g.proposalDataCalls = 0
+	-- (createTrafficLightProposal: below, after makeProposalData)
 	api.engine.util.proposal = { makeProposalData = function(p, ctx)
 		g.proposalDataCalls = g.proposalDataCalls + 1
 		if spec.noSimpleProposalData then
@@ -2259,6 +2283,19 @@ function M.installBuild(g, spec)
 		-- Context: that one)
 		return (evaluate(p, true, ctx or { gatherFields = true, engineOwn = true }))
 	end }
+	if not spec.noTrafficLightProposal then
+		api.engine.util.proposal.createTrafficLightProposal = function(e, config, pref)
+			if not (g.nodes[e] and g.nodeConfig[e]) then crash("createTrafficLightProposal: node " .. tostring(e) .. " has no set-up") end
+			if type(config) ~= "table" or not config.cloned then crash("createTrafficLightProposal: no TrafficLightConfig") end
+			local known = false
+			for _, v in pairs(TLP) do if v == pref then known = true end end
+			if not known then crash("createTrafficLightProposal: preference " .. tostring(pref)) end
+			local u = newproxy(true)
+			getmetatable(u).store = { trafficLight = { entity = e, preference = pref,
+				config = { states = copy(config.states), trafficLightType = config.trafficLightType } } }
+			return u
+		end
+	end
 	api.type.Box3 = { new = function(lo, hi) return { min = lo, max = hi } end }
 	api.type.Vec3f = api.type.Vec3f or { new = function(x, y, z) return { x = x, y = y, z = z } end }
 	api.engine.system = api.engine.system or {}
@@ -2321,6 +2358,15 @@ function M.installBuild(g, spec)
 
 	local function apply(cmd)
 		local data, adds, removes = evaluate(cmd.proposal, false, cmd.context)
+		local tl = getmetatable(cmd.proposal).store.trafficLight
+		if tl then
+			g.lightCmds[#g.lightCmds + 1] = { entity = tl.entity, preference = tl.preference, config = copy(tl.config),
+				context = cmd.context, ignoreErrors = cmd.ignoreErrors, playerInitiated = cmd.playerInitiated }
+			if data.errorState.critical then return false, data, {} end
+			g.lightPref[tl.entity] = tl.preference
+			lights[tl.entity] = #(tl.config.states or {}) > 0 or nil
+			return true, data, {}
+		end
 		-- spec.refuseBuild: every build refused, whatever makeProposalData says (with silentCallback: no reason)
 		if spec.refuseBuild then data.errorState.critical = true end
 		-- ignoreErrors (cmd.d.tl: "enabling the building of the proposal even if non-critical errors are
@@ -2522,8 +2568,12 @@ function M.installBuild(g, spec)
 			g.nodeConfigReads = (g.nodeConfigReads or 0) + 1
 			if spec.nodeConfigRaises then error("getComponent: BASE_NODE_CONFIG") end
 			if g.nodeConfig[e] then
+				-- (the config's clone: TrafficLightConfig.clone, engine.d.tl, called as the window does, config:clone())
+				local function clone(c) return { states = copy(c.states), trafficLightType = c.trafficLightType, cloned = true } end
 				return { laneConnections = copy(g.nodeConns[e] or {}), crosswalks = {}, doubleSlipSwitch = false,
-					trafficLightConfig = { states = lights[e] and { { duration = 30 } } or {}, trafficLightType = 0 } }
+					trafficLightPreference = g.lightPref[e] or TLP.AUTO,
+					trafficLightConfig = { states = lights[e] and { { duration = 30 } } or {}, trafficLightType = 0,
+						clone = spec.lightCloneRaises and function() error("clone") end or clone } }
 			end
 			return nil
 		end

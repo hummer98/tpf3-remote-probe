@@ -8787,7 +8787,7 @@ test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on 
 	eq(#g.buildCmds, 0); truthy(not g.crashed, g.crashed)
 end)
 
--- road --ignore-errors (2026-11-24, mod-keeper's ask): a one-way road drawn both ways off one end of a four-lane road
+-- road --ignore-errors (2026-11-24): a one-way road drawn both ways off one end of a four-lane road
 -- is refused the second time ("collision"); the build sent with the engine's ignoreErrors on, on test saves only,
 -- to see whether it stands, carries vehicles and survives a save and a load
 test("core.roadRequest ignoreErrors: a test save named (_testSave), boolean only, a dry run with engineCheck; isTestSaveName", function()
@@ -9481,6 +9481,177 @@ test("road --inspect-node (roadInspect): pieces, construction, set-up, octree; r
 	a = final(g, 1064)
 	eq(a.ok, false); truthy(a.error:find("777777 is no entity", 1, true), a.error)
 	eq(#g.buildCmds, 0, "nothing sent")
+	truthy(not g.crashed, g.crashed)
+end)
+
+-- lights --off (lightsOff, 2026-11-24): a junction's traffic light taken off as the node's window
+-- does it (double_slip_switch.tl: createTrafficLightProposal(node, config:clone() with no phases, NO), sent with
+-- makeWorldBuildProposalCmd(proposal, nil, false, true)), so that road can join a node it refuses for its lights.
+-- A T junction: node 9000 with three pieces and a light; its arms' far ends 9001-9003
+local function lightsWorld(extra)
+	local spec = { roads = { nodes = { [9000] = { x = 0, y = 0, z = 0 }, [9001] = { x = 100, y = 0, z = 0 },
+		[9002] = { x = -100, y = 0, z = 0 }, [9003] = { x = 0, y = 100, z = 0 } },
+		edges = { [9101] = { node0 = 9000, node1 = 9001 }, [9102] = { node0 = 9002, node1 = 9000 },
+			[9103] = { node0 = 9000, node1 = 9003 } }, lights = { [9000] = true } }, height = function() return 0 end }
+	for k, v in pairs(extra or {}) do spec[k] = v end
+	return roadWorld(spec)
+end
+local function lightsRun(g, id, argsLua, n)
+	send(g, id, "lightsOff", argsLua)
+	frames(g, n or FIRST + 20)
+	return final(g, id)
+end
+
+test("road --inspect-node: trafficLightPreference (YES / NO / AUTO by the enum) and the light's type", function()
+	local g = lightsWorld()
+	send(g, 1500, "roadInspect", "{ node = 9000 }")
+	frames(g, FIRST + 2)
+	local a = final(g, 1500)
+	truthy(a.ok, a.error)
+	eq(a.nodeConfig.trafficLightPreference, "YES"); eq(a.nodeConfig.trafficLightPreferenceValue, 0)
+	eq(a.nodeConfig.trafficLightStates, 1); eq(a.nodeConfig.trafficLightType, 0)
+	send(g, 1501, "roadInspect", "{ node = 9001 }")
+	frames(g, FIRST + 2)
+	a = final(g, 1501)
+	eq(a.nodeConfig.trafficLightPreference, "AUTO"); eq(a.nodeConfig.trafficLightStates, 0)
+	g = lightsWorld()
+	g.lightPref[9000] = 7 -- none of the three: its number, as text
+	send(g, 1502, "roadInspect", "{ node = 9000 }")
+	frames(g, FIRST + 2)
+	a = final(g, 1502)
+	eq(a.nodeConfig.trafficLightPreference, "7"); eq(a.nodeConfig.trafficLightPreferenceValue, 7)
+	eq(#g.buildCmds, 0, "read only"); truthy(not g.crashed, g.crashed)
+end)
+
+test("core.lightsOffRequest: node, dryRun, a test save's name (a second fence); bad values refused", function()
+	truthy(core.COMMANDS.lightsOff and core.CHANGES_GAME.lightsOff, "a command that changes the game")
+	local r = core.lightsOffRequest({ node = 9000, _testSave = "probe-x" })
+	eq(r.node, 9000); eq(r.dryRun, false); eq(r.testSave, "probe-x")
+	eq(core.lightsOffRequest({ node = 9000, dryRun = true, _testSave = "3-probe" }).dryRun, true)
+	for _, bad in ipairs({ { {}, "node must be" }, { { node = -1, _testSave = "probe-x" }, "node must be" },
+		{ { node = 1.5, _testSave = "probe-x" }, "node must be" }, { { node = 9000, dryRun = "yes", _testSave = "probe-x" }, "dryRun must be" },
+		{ { node = 9000 }, "test saves only" }, { { node = 9000, _testSave = "aom-eu-1900" }, "test saves only" },
+		{ { node = 9000, _testSave = "" }, "test saves only" }, { { node = 9000, _testSave = "12-probe" }, "test saves only" } }) do
+		local no, why = core.lightsOffRequest(bad[1])
+		eq(no, nil); truthy(why:find(bad[2], 1, true), why)
+	end
+end)
+
+test("lights --off: the window's proposal (config cloned, phases emptied, NO, no Context, not forced, player-initiated); read back; road joins then", function()
+	local g = lightsWorld()
+	-- road refuses the node while it has a light
+	local rd = roadRun(g, 1510, '{ from = "0,0", to = "0,-100" }')
+	eq(rd.ok, false); truthy(rd.error:find("has traffic lights", 1, true), rd.error)
+	local a = lightsRun(g, 1511, '{ node = 9000, _testSave = "probe-lights" }')
+	truthy(a.ok, a.error); eq(a.sent, true); eq(a.changed, true); eq(a.off, true); eq(a.testSave, "probe-lights")
+	eq(a.before.trafficLightPreference, "YES"); eq(a.before.trafficLightStates, 1)
+	eq(a.after.trafficLightPreference, "NO"); eq(a.after.trafficLightStates, 0)
+	truthy(a.note:find("not checked in a game", 1, true), a.note)
+	eq(#g.lightCmds, 1)
+	local cmd = g.lightCmds[1]
+	eq(cmd.entity, 9000); eq(cmd.preference, api.type.enum.TrafficLightPreference.NO)
+	eq(cmd.context, nil, "no Context, as the window"); eq(cmd.ignoreErrors, false); eq(cmd.playerInitiated, true)
+	eq(#cmd.config.states, 0, "the phases emptied, as Reset to Default"); eq(cmd.config.trafficLightType, 0)
+	-- off already: nothing sent again
+	a = lightsRun(g, 1512, '{ node = 9000, _testSave = "probe-lights" }')
+	truthy(a.ok, a.error); eq(a.changed, false); eq(a.sent, false); truthy(a.why:find("NO already", 1, true), a.why)
+	eq(#g.lightCmds, 1)
+	-- road joins it now
+	rd = roadRun(g, 1513, '{ from = "0,0", to = "0,-100" }')
+	truthy(rd.ok, rd.error); eq(rd.from.node, 9000)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("lights --off --dry-run: the proposal made and asked of the engine alone, never sent; a refusal said", function()
+	local g = lightsWorld()
+	local a = lightsRun(g, 1520, '{ node = 9000, dryRun = true, _testSave = "probe-x" }')
+	truthy(a.ok, a.error); eq(a.dryRun, true); eq(a.sent, false); eq(a.checked, true); eq(a.verdict, "buildable")
+	eq(a.engineCheck, "makeProposalData (proposal)")
+	eq(g.proposalDataCalls, 1); eq(#g.buildCmds, 0); eq(#g.lightCmds, 0); eq(g.lightPref[9000], api.type.enum.TrafficLightPreference.YES)
+	g = lightsWorld({ lightsRefused = true })
+	a = lightsRun(g, 1521, '{ node = 9000, dryRun = true, _testSave = "probe-x" }')
+	eq(a.ok, false); eq(a.verdict, "refused"); truthy(a.error:find("Not possible", 1, true), a.error)
+	eq(#g.buildCmds, 0)
+	-- refused in a build too: said, the light left on
+	a = lightsRun(g, 1522, '{ node = 9000, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("refused it: Not possible", 1, true), a.error)
+	eq(g.lightPref[9000], api.type.enum.TrafficLightPreference.YES)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("lights --off: refused before anything is made: no test save, a bad node, two pieces or fewer, a construction's node", function()
+	local g = lightsWorld()
+	for i, save in ipairs({ "nil", '"aom-eu-1900"', '""' }) do
+		local a = lightsRun(g, 1530 + i, '{ node = 9000, _testSave = ' .. save .. ' }')
+		eq(a.ok, false, save); truthy(a.error:find("test saves only", 1, true), a.error)
+	end
+	eq(#g.lightCmds, 0, "nothing sent"); eq(g.proposalDataCalls, 0, "nothing asked")
+	local a = lightsRun(g, 1534, '{ node = 777777, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("777777 is no entity", 1, true), a.error)
+	a = lightsRun(g, 1535, '{ node = 9001, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("has 1 street piece:", 1, true), a.error)
+	-- two pieces: refused as the window offers no light there; three pieces and no set-up: refused
+	local g2 = lightsWorld()
+	g2.edges[9103] = nil
+	a = lightsRun(g2, 1539, '{ node = 9000, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("has 2 street pieces:", 1, true), a.error)
+	eq(#g.lightCmds + #g2.lightCmds, 0, "nothing sent")
+	local g3 = lightsWorld()
+	g3.nodeConfig[9000] = false
+	a = lightsRun(g3, 1544, '{ node = 9000, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("has no junction set-up", 1, true), a.error)
+	local g4 = lightsWorld({ nodeConfigRaises = true })
+	a = lightsRun(g4, 1545, '{ node = 9000, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("could not be read", 1, true), a.error)
+	eq(#g3.lightCmds + #g4.lightCmds, 0, "nothing sent")
+	-- the config does not copy: nothing made
+	g = lightsWorld({ lightCloneRaises = true })
+	a = lightsRun(g, 1536, '{ node = 9000, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("could not be copied", 1, true), a.error)
+	-- no createTrafficLightProposal in this game
+	g = lightsWorld({ noTrafficLightProposal = true })
+	a = lightsRun(g, 1537, '{ node = 9000, _testSave = "probe-x" }')
+	eq(a.ok, false); truthy(a.error:find("createTrafficLightProposal is not there", 1, true), a.error)
+	eq(#g.buildCmds, 0); eq(g.proposalDataCalls, 0)
+	-- a construction's node (a forest's mouth: three pieces)
+	local gf, b = forestWorld()
+	local mouth = nodeAt(b.construction.connectable, "mouth")
+	send(gf, 1538, "lightsOff", string.format('{ node = %d, _testSave = "probe-x" }', mouth.node))
+	frames(gf, FIRST + 20)
+	a = final(gf, 1538)
+	eq(a.ok, false); truthy(a.error:find("construction " .. b.entity .. "'s", 1, true), a.error)
+	eq(#gf.lightCmds, 0)
+	truthy(not g.crashed, g.crashed); truthy(not gf.crashed, gf.crashed)
+end)
+
+test("lights --off: NO already but phases left (the window's None alone): sent again with no phases; road joins then", function()
+	local g = lightsWorld()
+	g.lightPref[9000] = api.type.enum.TrafficLightPreference.NO
+	local rd = roadRun(g, 1550, '{ from = "0,0", to = "0,-100" }')
+	eq(rd.ok, false); truthy(rd.error:find("has traffic lights", 1, true), rd.error)
+	local a = lightsRun(g, 1551, '{ node = 9000, _testSave = "probe-x" }')
+	truthy(a.ok, a.error); eq(a.sent, true); eq(a.before.trafficLightPreference, "NO"); eq(a.before.trafficLightStates, 1)
+	eq(a.after.trafficLightStates, 0); eq(a.off, true); eq(#g.lightCmds, 1)
+	rd = roadRun(g, 1552, '{ from = "0,0", to = "0,-100" }')
+	truthy(rd.ok, rd.error)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("lights --off: no callback in time: the node read again, NO there taken as done", function()
+	local g = lightsWorld({ lostCallback = true })
+	send(g, 1540, "lightsOff", '{ node = 9000, _testSave = "probe-x" }')
+	frames(g, FIRST + 20)
+	eq(final(g, 1540), nil, "no answer yet")
+	frames(g, 200, 0.2)
+	local a, n = final(g, 1540)
+	eq(n, 1); truthy(a.ok, a.error); eq(a.off, true); truthy(a.why:find("NO and no phases", 1, true), a.why)
+	-- refused and no callback: the light still on, an error after the wait
+	g = lightsWorld({ lostCallback = true, lightsRefused = true })
+	send(g, 1541, "lightsOff", '{ node = 9000, _testSave = "probe-x" }')
+	frames(g, FIRST + 20)
+	frames(g, 200, 0.2)
+	a, n = final(g, 1541)
+	eq(n, 1); eq(a.ok, false); truthy(a.error:find("no answer from the engine", 1, true) and a.error:find("reads YES", 1, true), a.error)
 	truthy(not g.crashed, g.crashed)
 end)
 

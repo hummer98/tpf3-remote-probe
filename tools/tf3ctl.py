@@ -103,7 +103,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
   tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
             # a curved piece: the from end follows the road there, the to end arrives heading east
-  tf3ctl.py road --inspect-node 4077   # read only: the node's pieces, construction, set-up, octree hits
+  tf3ctl.py road --inspect-node 4077   # read only: the node's pieces, construction, set-up (with its
+            # trafficLightPreference YES / NO / AUTO), octree hits
+  tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only, not in coop: the junction's traffic light
+            # taken off as the node's window does it (trafficLightPreference NO); then road joins the node
             # one straight road piece, no click: test saves only; an end within --snap m of a road node joins it
   tf3ctl.py road --from 1500,-300 --to 1620,-300 --ignore-errors [--dry-run]   # for test saves only: skips the
             # engine's checks (ignoreErrors); refused unless a test save is loaded (not a new game), and refused
@@ -215,7 +218,7 @@ RECENT_SEC = 600  # another owner's game-changing command this recent gets a war
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
-                "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect", "runningCostsSet"}  # window: what the player sees  # poll: only the mod's file reads
+                "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect", "runningCostsSet", "lightsOff"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 
@@ -559,7 +562,7 @@ OWNER = None  # set by main from --owner / TF3CTL_OWNER
 OTHER_OWNER_OK = False  # set by main from --other-owner-ok
 
 # commands in CHANGES_GAME whose --dry-run still does work in the game (the validator runs for minutes)
-DRY_RUN_CHANGES = {"modhubPublish", "modhubValidate"}
+DRY_RUN_CHANGES = {"modhubPublish", "modhubValidate", "lightsOff"}  # lightsOff: its dry run asks the engine
 
 
 def changes_game(cmd, args):
@@ -685,6 +688,32 @@ def running_costs_check(cmd, args):
     head = ("refused 'running-costs' (a write), nothing sent (for test saves only: it rewrites a vehicle model's "
             "running costs for the rest of the session): ")
     return loaded_test_save_or_refuse(head, RunningCostsRefused)
+
+
+class LightsRefused(OwnerRefused):
+    """lights --off on a game that is not a test save's, or during coop; nothing was sent. Exit code 4."""
+    refused = "lights"
+
+
+def lights_check(cmd, args):
+    """Before lightsOff (lights --off, its --dry-run too: it asks the engine): the loaded save's name, which the mod
+    checks again (_testSave), when it is a test save's and no coop mark is on the running game; else LightsRefused,
+    nothing sent (the same rules as road --ignore-errors). None for any other command."""
+    if cmd != "lightsOff":
+        return None
+    head = ("refused 'lights --off', nothing sent (for test saves only: it changes a junction's traffic light): ")
+    return loaded_test_save_or_refuse(head, LightsRefused)
+
+
+def test_save_checks(cmd, args):
+    """The loaded test save's name for the commands that go to test saves only (road --ignore-errors, running-costs
+    writes, lights --off), which the mod checks again (_testSave); None for any other command. Refuses (nothing
+    sent) as each check says."""
+    for check in (ignore_errors_check, running_costs_check, lights_check):
+        save = check(cmd, args)
+        if save is not None:
+            return save
+    return None
 
 
 # The force mark (2026-11-24): once road --ignore-errors went to the running game (a build, not --dry-run), its
@@ -1001,11 +1030,11 @@ def check_game_owner(cmd, args=None):
 
 def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=None):
     other = check_game_owner(cmd, args)  # before anything is written to the exchange folder
-    forced_on = ignore_errors_check(cmd, args)  # (road --ignore-errors: a test save, no coop)
-    test_save = forced_on if forced_on is not None else running_costs_check(cmd, args)  # (running-costs writes too)
+    # (road --ignore-errors, running-costs writes, lights --off: a test save, no coop)
+    test_save = test_save_checks(cmd, args)
     folder = folder or exchange_dir()
     args = dict(args or {})
-    args.pop("_testSave", None)  # only ignore_errors_check and running_costs_check name it
+    args.pop("_testSave", None)  # only test_save_checks names it
     if test_save is not None:
         args["_testSave"] = test_save
     if OWNER:
@@ -2700,6 +2729,19 @@ def road_inspect_args(ns):
     if ns.inspect_node < 0:
         raise ToolError("--inspect-node must be a node's entity id (0 or more)")
     return {"node": ns.inspect_node}
+
+
+def lights_args(ns):
+    """lights --node ID --off [--dry-run]: lightsOff's args (send checks the loaded save and coop: lights_check)."""
+    if not ns.off:
+        raise ToolError("lights needs --off (taking a junction's traffic light off is all it does; road "
+                        "--inspect-node reads one)")
+    if ns.node < 0:
+        raise ToolError("--node must be a node's entity id (0 or more)")
+    args = {"node": ns.node}
+    if ns.dry_run:
+        args["dryRun"] = True
+    return args
 
 
 def road_args(ns):
@@ -5463,6 +5505,15 @@ def make_parser():
     rd.add_argument("--inspect-node", type=int, metavar="ID", help="read only, alone: what road reads of one node "
                     "(the street system's pieces there, the construction it belongs to and whether it is frozen, its "
                     "junction set-up, the octree's pieces within 1, 5 and 20 m) and what road would do with it")
+    li = sub.add_parser("lights", help="take a road junction's traffic light off, as the node's window does it "
+                        "(trafficLightPreference NO, sent with createTrafficLightProposal): road does not join a node "
+                        "with traffic lights. Test saves only, not in coop (changes the game)")
+    li.add_argument("--node", type=int, required=True, metavar="ID", help="the junction's node (road --inspect-node "
+                    "shows its trafficLightPreference); more than two street pieces must meet there, and it must not "
+                    "be a construction's")
+    li.add_argument("--off", action="store_true", help="take its traffic light off (required)")
+    li.add_argument("--dry-run", action="store_true", help="make the proposal and ask the engine (makeProposalData); "
+                    "nothing is sent. Test saves only all the same")
     te = sub.add_parser("terrain", help="replace a rectangle's ground: flat at a height, or a uniform slope along x "
                         "or y (one whole-map replacement, as the map editor's); in the map editor only, unless "
                         "--in-game")
@@ -6074,6 +6125,8 @@ def main(argv=None):
             log_path = game_log_path()
             log_start = log_size(log_path)
             res = check_build_answer(args, send("road", args, timeout=BUILD_TIMEOUT_SEC), log_path, log_start)
+        elif ns.cmd == "lights":
+            res = send("lightsOff", lights_args(ns), timeout=BUILD_TIMEOUT_SEC)
         elif ns.cmd == "water":
             res = send("water", water_args(ns))
         elif ns.cmd == "terrain":
