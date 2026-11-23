@@ -8787,6 +8787,122 @@ test("road --dry-run --engine-check: the engine's verdict (makeProposalData) on 
 	eq(#g.buildCmds, 0); truthy(not g.crashed, g.crashed)
 end)
 
+-- road --bridge (2026-11-24, the pier spike's e2e: two piers' deck ends joined by a pillarless bridge): the piece sent
+-- as BaseEdge type BRIDGE with typeIndex the bridge type's bridgeTypeRep id; an unknown or rail-only type refused
+local PILLARLESS = "hummer_pier_spike::/infrastructure/bridge/hps_pillarless.bridge"
+local CONCRETE = "::/infrastructure/bridge/concrete.bridge"
+test("core.roadRequest bridge: a resName or file name, trimmed; nil without it; bad values refused", function()
+	eq(core.roadRequest({ from = "0,0", to = "30,0" }).bridge, nil)
+	eq(core.roadRequest({ from = "0,0", to = "30,0", bridge = " " .. PILLARLESS .. " " }).bridge, PILLARLESS)
+	eq(core.roadRequest({ from = "0,0", to = "30,0", bridge = "concrete" }).bridge, "concrete")
+	for _, bad in ipairs({ "", "  ", 5, true, "a@b", "a\nb", string.rep("x", 513) }) do
+		local ok, err = core.roadRequest({ from = "0,0", to = "30,0", bridge = bad })
+		eq(ok, nil, tostring(bad)); truthy(tostring(err):find("bridge must be", 1, true), tostring(err))
+	end
+end)
+
+test("road --bridge: the piece sent as a bridge of that type (type BRIDGE, typeIndex its id); read back built", function()
+	local g = roadWorld()
+	local id = api.res.bridgeTypeRep.find(PILLARLESS)
+	truthy(id >= 0)
+	-- both ends in the air (z given), new nodes
+	local a = roadRun(g, 7701, string.format('{ from = "0,500,10", to = "0,600,10", snap = 0, bridge = %q }', PILLARLESS))
+	truthy(a.ok, a.error)
+	eq(a.bridge.name, PILLARLESS); eq(a.bridge.id, id); eq(a.bridge.carriesRoad, true)
+	eq(a.bridge.carriers[1], "RAIL"); eq(a.bridge.carriers[2], "ROAD"); eq(a.bridge.available, true)
+	truthy(a.bridge.note:find("not checked in a game", 1, true))
+	local sent = g.streetCmds[1]
+	eq(sent.comp.type, api.type.enum.BaseEdgeType.BRIDGE); eq(sent.comp.typeIndex, id)
+	eq(sent.comp.position0.z, 10); eq(sent.comp.position1.z, 10); eq(a.from.zFrom, "given"); eq(a.to.zFrom, "given")
+	eq(sent.comp.roadTemplate, TOWN_OLD, "the template as without --bridge")
+	eq(a.bridge.built.edgeType, "BRIDGE"); eq(a.bridge.built.typeIndex, id); eq(a.bridge.built.asSent, true)
+	-- a base bridge by its file name
+	a = roadRun(g, 7702, '{ from = "0,700,10", to = "0,800,10", snap = 0, bridge = "concrete" }')
+	truthy(a.ok, a.error); eq(a.bridge.name, CONCRETE); eq(g.streetCmds[2].comp.typeIndex, api.res.bridgeTypeRep.find(CONCRETE))
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --bridge: joins a node in the air (snap in three dimensions) as any road end", function()
+	local g = roadWorld({ roads = { nodes = { [8101] = { x = 500, y = 0, z = 10 }, [8102] = { x = 400, y = 0, z = 10 },
+		[8103] = { x = 600, y = 0, z = 10 }, [8104] = { x = 700, y = 0, z = 10 } },
+		edges = { [8110] = { node0 = 8102, node1 = 8101 }, [8111] = { node0 = 8103, node1 = 8104 } } } })
+	local a = roadRun(g, 7711, string.format('{ from = "500.5,0,10", to = "599.5,0,10", snap = 1, bridge = %q }', PILLARLESS))
+	truthy(a.ok, a.error); eq(a.from.node, 8101); eq(a.to.node, 8103); eq(a.newNodes, 0)
+	local sent = g.streetCmds[1]
+	eq(sent.comp.node0, 8101); eq(sent.comp.node1, 8103); eq(sent.comp.type, api.type.enum.BaseEdgeType.BRIDGE)
+	-- the terrain's height (0) for the point: 10 m below the node, beyond snap 1: a new node, not the node in the air
+	a = roadRun(g, 7712, string.format('{ from = "500.5,0", to = "500.5,80", snap = 1, bridge = %q, dryRun = true }', PILLARLESS))
+	truthy(a.ok, a.error); eq(a.from.node, nil); truthy(a.from.snapNote:find("node 8101", 1, true), tostring(a.from.snapNote))
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --bridge: an unknown type (some names in the error), a rail-only type, no BRIDGE enum: refused, nothing sent", function()
+	local g = roadWorld()
+	local a = roadRun(g, 7721, '{ from = "0,500,10", to = "0,600,10", bridge = "hummer_pier_spike::/bridge/hps_pillarless.bridge" }')
+	eq(a.ok, false); truthy(a.error:find("no bridge type hummer_pier_spike::/bridge/hps_pillarless.bridge", 1, true), a.error)
+	truthy(a.error:find(PILLARLESS, 1, true) and a.error:find("(3 in all)", 1, true), a.error)
+	truthy(a.error:find("nothing sent", 1, true))
+	a = roadRun(g, 7722, '{ from = "0,500,10", to = "0,600,10", bridge = "steel" }')
+	eq(a.ok, false); truthy(a.error:find("::/infrastructure/bridge/steel.bridge", 1, true), a.error)
+	a = roadRun(g, 7723, '{ from = "0,500,10", to = "0,600,10", bridge = "rail_only" }')
+	eq(a.ok, false); truthy(a.error:find("carries RAIL, not ROAD", 1, true), a.error)
+	-- a dry run is refused the same
+	a = roadRun(g, 7724, '{ from = "0,500,10", to = "0,600,10", bridge = "steel", dryRun = true }')
+	eq(a.ok, false); truthy(a.error:find("no bridge type steel", 1, true), a.error)
+	local real = api.type.enum.BaseEdgeType
+	api.type.enum.BaseEdgeType = { NORMAL = 0 }
+	a = roadRun(g, 7725, string.format('{ from = "0,500,10", to = "0,600,10", bridge = %q }', PILLARLESS))
+	api.type.enum.BaseEdgeType = real
+	eq(a.ok, false); truthy(a.error:find("BaseEdgeType.BRIDGE", 1, true), a.error)
+	eq(#g.buildCmds, 0); eq(#g.streetCmds, 0); eq(g.proposalDataCalls or 0, 0, "the engine not asked either")
+	-- no bridge type to read at all: said so
+	g = roadWorld({ bridges = {} })
+	a = roadRun(g, 7726, '{ from = "0,500,10", to = "0,600,10", bridge = "concrete" }')
+	eq(a.ok, false); truthy(a.error:find("none could be read", 1, true), a.error); eq(#g.buildCmds, 0)
+	-- carriers that do not read: built, and said that it was not checked
+	g = roadWorld({ bridges = { [CONCRETE] = { noCarriers = true } } })
+	a = roadRun(g, 7727, '{ from = "0,500,10", to = "0,600,10", bridge = "concrete" }')
+	truthy(a.ok, a.error); eq(a.bridge.carriesRoad, nil); truthy(a.bridge.carriersNote:find("not checked", 1, true))
+	-- out of its years: said, not refused
+	g = roadWorld({ bridges = { [CONCRETE] = { carriers = { "ROAD" }, yearFrom = 1950 } } })
+	a = roadRun(g, 7728, '{ from = "0,500,10", to = "0,600,10", bridge = "concrete" }')
+	truthy(a.ok, a.error); eq(a.bridge.available, false); eq(a.bridge.availability.yearFrom, 1950)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road without --bridge: the piece plain as before (NORMAL, typeIndex -1), no bridge in the answer", function()
+	local g = roadWorld()
+	local a = roadRun(g, 7731, '{ from = "0,500,10", to = "0,600,10", snap = 0 }')
+	truthy(a.ok, a.error); eq(a.bridge, nil)
+	local sent = g.streetCmds[1]
+	eq(sent.comp.type, api.type.enum.BaseEdgeType.NORMAL); eq(sent.comp.typeIndex, -1)
+	eq(g.edges[a.edge].type, nil, "the fake keeps no edge type for a plain piece")
+	-- the same ends with and without --bridge: only type and typeIndex differ
+	g = roadWorld()
+	roadRun(g, 7732, '{ from = "0,500,10", to = "0,600,10", snap = 0 }')
+	local g2 = roadWorld()
+	roadRun(g2, 7733, string.format('{ from = "0,500,10", to = "0,600,10", snap = 0, bridge = %q }', PILLARLESS))
+	local p, q = g.streetCmds[1], g2.streetCmds[1]
+	for _, k in ipairs({ "node0", "node1", "roadTemplate", "roadStyle", "roadType" }) do eq(p.comp[k], q.comp[k], k) end
+	for _, k in ipairs({ "position0", "position1", "tangent0", "tangent1" }) do
+		for _, xyz in ipairs({ "x", "y", "z" }) do eq(p.comp[k][xyz], q.comp[k][xyz], k .. "." .. xyz) end
+	end
+	eq(#p.comp.laneConfigs, #q.comp.laneConfigs); eq(p.entity, q.entity); eq(p.type, q.type)
+	truthy(p.comp.type ~= q.comp.type and p.comp.typeIndex ~= q.comp.typeIndex)
+	truthy(not g.crashed and not g2.crashed)
+end)
+
+test("road --bridge --dry-run (and --engine-check): the bridge in the answer, nothing sent; the engine asked (its fake checks the bridge index)", function()
+	local g = roadWorld()
+	local a = roadRun(g, 7741, string.format('{ from = "0,500,10", to = "0,600,10", snap = 0, bridge = %q, dryRun = true }', PILLARLESS))
+	truthy(a.ok, a.error); eq(a.dryRun, true); eq(a.checked, false); eq(a.bridge.name, PILLARLESS)
+	eq(a.bridge.id, api.res.bridgeTypeRep.find(PILLARLESS)); eq(a.bridge.built, nil)
+	a = roadRun(g, 7742, string.format('{ from = "0,500,10", to = "0,600,10", snap = 0, bridge = %q, dryRun = true, engineCheck = true }', PILLARLESS))
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.buildable, true); eq(a.bridge.name, PILLARLESS)
+	eq(#g.buildCmds, 0); eq(#g.streetCmds, 0); eq(g.proposalDataCalls, 2)
+	truthy(not g.crashed, g.crashed)
+end)
+
 -- road --ignore-errors (2026-11-24, mod-keeper's ask): a one-way road drawn both ways off one end of a four-lane road
 -- is refused the second time ("collision"); the build sent with the engine's ignoreErrors on, on test saves only,
 -- to see whether it stands, carries vehicles and survives a save and a load

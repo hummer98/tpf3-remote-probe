@@ -488,6 +488,7 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # エンジンに聞く (ゲームを変える側)
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
+python3 tools/tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 --bridge concrete [--dry-run --engine-check]
 python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
 python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車線 (「道路の車線」を参照)
 ```
@@ -496,6 +497,17 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   `SimpleStreetProposal` (新しい edge 1本と新しい node。番号は `type.d.tl` のとおり -1 から下へ) を
   `api.cmd.makeWorldBuildProposalCmd` で送ります。`build` が建物を送るのと同じ形です (同じ context: 何も壊さない、
   エラーを無視しない)。ゲームを変えるので、テスト用のセーブでだけ使ってください。
+- `--bridge RES` は、その種類の橋として道路を建てます。RES は `api.res.bridgeTypeRep` の resName (MOD のものは
+  `<modId>::/infrastructure/bridge/<名前>.bridge`) か、バニラの橋のファイル名 (`concrete` なら
+  `::/infrastructure/bridge/concrete.bridge`)。edge の種類 `BRIDGE` と、その種類の番号 (`bridgeTypeRep.find`) を
+  `typeIndex` に入れて送ります。ゲームの橋の edge もこの2つで橋を持っています (`BaseEdge.type` / `typeIndex`)。
+  プレイヤーの道路の道具は橋の種類を道具の側で選んでいるので、proposal のふつうの edge をエンジンが高さを見て橋に変える
+  ことは無いと見て (ゲーム内では未確認)、ここで入れます。ゲームが知らない種類は、そこにある名前の一部を添えて断ります。carriers が読めて
+  `ROAD` が無い種類も断ります。どちらも何も送りません (dry-run も)。答えの `bridge`: `name`、`id`、`carriers`、
+  `carriesRoad` (読めなければ `carriersNote`)、`availability` / `available` (書くだけで断らない)、建てたあとは `built`
+  (新しい edge の種類と `typeIndex` の読み返し、`asSent`)。空中の道路は、`--from` / `--to` の z で端の高さを決めるか、
+  そこにある道路の node につなぎます (`--snap`、3次元で測る)。`--bridge` が無ければ、これまでどおりふつうの edge
+  (`NORMAL`、`typeIndex` -1) です。ゲーム内では未確認 (柱・橋台・地面に近い橋): 絵で見てください。
 - 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない。3次元で測るので、点の上にある橋の node は使わない)
   以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。点の近くの道路は octree
   (`api.engine.util.octree.findEntitiesInCircle` で BASE_EDGE、無ければ octree system の箱) から探し、道路だけ

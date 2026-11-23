@@ -2001,6 +2001,34 @@ function M.installBuild(g, spec)
 				laneConfigs = s.noLanes and {} or townLanes(s.modesUnread, s.perSide) }
 		end,
 	}
+	-- bridge types (road --bridge): spec.bridges = { [resName] = { carriers = { "ROAD", ... }, yearFrom, yearTo,
+	-- noCarriers (none to read) } }; by default the base's concrete (rail and road) and a rail-only one, and the pier
+	-- spike's pillarless type. getAll gives { [id] = name } as the game's (res.d.tl)
+	local bridges = spec.bridges or {
+		["::/infrastructure/bridge/concrete.bridge"] = { carriers = { "RAIL", "ROAD" } },
+		["::/infrastructure/bridge/rail_only.bridge"] = { carriers = { "RAIL" } },
+		["hummer_pier_spike::/infrastructure/bridge/hps_pillarless.bridge"] = { carriers = { "RAIL", "ROAD" } },
+	}
+	local bridgeNames = {}
+	for name in pairs(bridges) do bridgeNames[#bridgeNames + 1] = name end
+	table.sort(bridgeNames)
+	g.bridgeNames = bridgeNames
+	-- (ids from 10, so that a bridge id is never taken for a street template's)
+	api.res.bridgeTypeRep = {
+		find = function(name) for i, n in ipairs(bridgeNames) do if n == name then return 9 + i end end return -1 end,
+		get = function(idx)
+			local name = bridgeNames[idx - 9]
+			if not name then crash("bridgeTypeRep.get(" .. tostring(idx) .. ")") end
+			local b = bridges[name]
+			local cs
+			if not b.noCarriers then
+				cs = {}
+				for _, k in ipairs(b.carriers or {}) do cs[#cs + 1] = api.type.enum.Carrier[k] end
+			end
+			return { carriers = cs, availability = { yearFrom = b.yearFrom or 0, yearTo = b.yearTo or 0 } }
+		end,
+		getAll = function() local out = {} for i, n in ipairs(bridgeNames) do out[9 + i] = n end return out end,
+	}
 	api.engine.util.getYear = function() return spec.year end
 	g.streetCmds = {}
 	for id, n in pairs((spec.roads or {}).nodes or {}) do g.nodes[id] = copy(n) end
@@ -2125,6 +2153,16 @@ function M.installBuild(g, spec)
 				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
+			-- the edge type and its typeIndex (a guess at what the engine asserts: a bridge whose index is no bridge
+			-- type's, a plain piece with an index)
+			local BET = api.type.enum.BaseEdgeType
+			if c.type == BET.BRIDGE then
+				if not bridgeNames[(c.typeIndex or -1) - 9] then crash("street proposal: bridge type index " .. tostring(c.typeIndex)) end
+			elseif c.type == BET.NORMAL then
+				if c.typeIndex ~= -1 then crash("street proposal: a plain piece with typeIndex " .. tostring(c.typeIndex)) end
+			else
+				crash("street proposal: edge type " .. tostring(c.type))
+			end
 			-- a tangent not finite or of length 0 (the curve has no way there): taken for an assertion (a guess; the
 			-- engine's own check is not known). The tests' hand-made pieces send none
 			for _, k in ipairs({ "tangent0", "tangent1" }) do
@@ -2373,6 +2411,10 @@ function M.installBuild(g, spec)
 			g.edges[g.nextEntity] = { node0 = idOf[c.node0] or c.node0, node1 = idOf[c.node1] or c.node1,
 				roadTemplate = c.roadTemplate, roadType = c.roadType == 1 and "TRACK" or "STREET", player = e.playerOwned and e.playerOwned.player,
 				laneConfigs = copy(c.laneConfigs), tangent0 = copy(c.tangent0), tangent1 = copy(c.tangent1) }
+			-- (a bridge keeps its edge type and index, as the engine's BASE_EDGE; a plain piece as before)
+			if c.type ~= api.type.enum.BaseEdgeType.NORMAL then
+				g.edges[g.nextEntity].type, g.edges[g.nextEntity].typeIndex = c.type, c.typeIndex
+			end
 			if not spec.noStreetResults then results[#results + 1] = { g.nextEntity, 1 } end
 		end
 		-- the set-ups, their pieces' new ids in place (g.nodeConns: plain connections)

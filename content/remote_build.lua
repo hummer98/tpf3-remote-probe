@@ -940,6 +940,10 @@ function M.new(ctx)
 	-- metres of a node with road pieces is that node (the piece joins the road there); else a new node on the
 	-- terrain (or at the z given). The piece is the template's: its lanes, style and type (BaseEdge in engine.d.tl:
 	-- roadTemplate, roadStyle, laneConfigs, roadType), NORMAL (typeIndex -1: no bridge or tunnel), the company's.
+	-- With a bridge type (road --bridge): BRIDGE and typeIndex its bridgeTypeRep id, as the game's own pieces hold a
+	-- bridge (game_tooltips.tl: BaseEdge.type BRIDGE, bridgeTypeRep.get(typeIndex)). The player's road tool picks
+	-- the type itself (streetEdgeBuilder's bridgeTypeId, construction_react_util.tl), so a proposal's piece is taken
+	-- not to be turned into a bridge by the engine (a guess, not checked in a game): both are set here.
 
 	-- the town roads a road gets by default, the one to be had this year first (their availability: old until
 	-- 1940, new from then; base/content/infrastructure/street.zip, street/town/*.street_template.lua)
@@ -1004,6 +1008,71 @@ function M.new(ctx)
 			end
 		end
 		return nil, "no street template " .. given .. " (streetTemplateRep.find gives -1 for " .. table.concat(names, ", ") .. ")"
+	end
+
+	-- a bridge type by resName, or a base bridge's file name (concrete: ::/infrastructure/bridge/concrete.bridge),
+	-- for a road piece: { name, id, carriers, carriesRoad, availability, available }, or nil and why (none of that
+	-- name: with some of the names there; one whose carriers read without ROAD). Read only: nothing is sent here
+	local BRIDGE_NAMES_SHOWN = 12
+	local function bridgeType(given, year)
+		local names = { given }
+		if not given:find("::", 1, true) then
+			names[#names + 1] = "::/infrastructure/bridge/" .. given:gsub("%.bridge$", "") .. ".bridge"
+		end
+		local idx, name
+		for _, n in ipairs(names) do
+			local i = tonumber(try(function() return api.res.bridgeTypeRep.find(n) end))
+			if i and i >= 0 then idx, name = i, n; break end
+		end
+		if not idx then
+			local all = try(function() return api.res.bridgeTypeRep.getAll() end)
+			local there = {}
+			pcall(function()
+				for _, n in pairs(all) do if type(n) == "string" then there[#there + 1] = n end end
+			end)
+			table.sort(there)
+			local shown = {}
+			for i = 1, math.min(#there, BRIDGE_NAMES_SHOWN) do shown[i] = there[i] end
+			local list = #there == 0 and "none could be read (bridgeTypeRep.getAll)" or
+				string.format("%s%s (%d in all)", table.concat(shown, ", "), #there > #shown and ", ..." or "", #there)
+			return nil, "no bridge type " .. given .. " (bridgeTypeRep.find gives -1 for " .. table.concat(names, ", ") ..
+				"); the bridge types there: " .. list .. ": nothing sent"
+		end
+		local t = try(function() return api.res.bridgeTypeRep.get(idx) end)
+		local out = { name = name, id = idx }
+		-- its carriers as names (ROAD, RAIL): a type without ROAD is refused (a road over a rail-only bridge is not
+		-- what the player's tool offers: makeFilterObjectsFn filters by Carrier.ROAD); unread: said, not refused
+		local C = try(function() return api.type.enum.Carrier end)
+		local cs = t ~= nil and core.field(t, "carriers") or nil
+		local okC = C ~= nil and cs ~= nil and pcall(function()
+			-- (the names looked up one by one, as remote_lines.lua's carrierName: the game's enum may not iterate)
+			local byValue = {}
+			for _, k in ipairs({ "ROAD", "RAIL", "TRAM", "AIR", "WATER", "OTHER" }) do
+				local v = try(function() return C[k] end)
+				if v ~= nil then byValue[v] = k end
+			end
+			local list, road = {}, false
+			for _, c in ipairs(core.toList(cs)) do
+				list[#list + 1] = byValue[c] or tostring(c)
+				if c == C.ROAD then road = true end
+			end
+			out.carriers, out.carriesRoad = list, road
+		end)
+		if not okC or out.carriers == nil then
+			out.carriers, out.carriesRoad = nil, nil
+			out.carriersNote = "its carriers could not be read: not checked that it carries roads"
+		elseif not out.carriesRoad then
+			return nil, string.format("bridge type %s carries %s, not ROAD: no road on it: nothing sent", name,
+				#out.carriers > 0 and table.concat(out.carriers, ", ") or "nothing")
+		end
+		local av = t ~= nil and core.field(t, "availability") or nil
+		if av ~= nil then
+			out.availability = { yearFrom = tonumber(core.field(av, "yearFrom")) or 0, yearTo = tonumber(core.field(av, "yearTo")) or 0 }
+			-- (said, not refused: whether the engine refuses a bridge type out of its years in a script's proposal
+			-- is not known)
+			out.available = availableIn(out.availability, year)
+		end
+		return out
 	end
 
 	-- the road pieces (BASE_EDGE of roadType STREET) whose box meets a circle of r metres around x, y: the octree
@@ -1397,6 +1466,9 @@ function M.new(ctx)
 		"past its non-critical errors; its API says a critical one still refuses it). unforced: what the engine's check " ..
 		"said before (makeProposalData), the errors a build without --ignore-errors would be refused for. Not " ..
 		"checked in a game yet whether vehicles take a forced piece, or whether it survives a save and a load"
+	local NOTE_BRIDGE = "sent as a bridge piece (BaseEdge type BRIDGE, typeIndex this type's id); not checked in a " ..
+		"game yet whether the engine takes it as one (pillars, abutments, a bridge low over the ground): look at it " ..
+		"(frame, around --kinds street --lanes)"
 	local NOTE_KEEP = "joined to a construction's node: its junction set-up is the construction's and was left as it " ..
 		"is (neither removed nor remade); whether the engine joins the new piece's lanes there is not checked in a " ..
 		"game yet: look at it, and whether vehicles take the new piece"
@@ -1481,7 +1553,19 @@ function M.new(ctx)
 		if normal == nil or streetType == nil then
 			return fail(c.id, "api.type.enum.BaseEdgeType.NORMAL or RoadType.STREET could not be read: nothing sent")
 		end
-		local out = { from = a, to = b, template = tpl.name, length = length, year = year, snap = r.snap, note = NOTE_ROAD }
+		-- --bridge: the piece's edge type BRIDGE and its typeIndex the type's id (else NORMAL and -1, as before)
+		local edgeType, typeIndex, bridge = normal, -1, nil
+		if r.bridge then
+			local berr2
+			bridge, berr2 = bridgeType(r.bridge, year)
+			if not bridge then return fail(c.id, "bridge: " .. berr2) end
+			local be = enumOf("BaseEdgeType", "BRIDGE")
+			if be == nil then return fail(c.id, "api.type.enum.BaseEdgeType.BRIDGE could not be read: nothing sent") end
+			edgeType, typeIndex = be, bridge.id
+			bridge.note = NOTE_BRIDGE
+		end
+		local out = { from = a, to = b, template = tpl.name, length = length, year = year, snap = r.snap, note = NOTE_ROAD,
+			bridge = bridge }
 		-- the ids the proposal will give (endNode below: the new nodes from -1 in the order from, to; then the piece)
 		local n0 = a.node or -1
 		local n1 = b.node or (a.node and -1 or -2)
@@ -1612,8 +1696,8 @@ function M.new(ctx)
 		-- (core.roadTangents: the chord at both ends unless a way was given or followed)
 		e.comp.tangent0 = api.type.Vec3f.new(t0.x, t0.y, t0.z)
 		e.comp.tangent1 = api.type.Vec3f.new(t1.x, t1.y, t1.z)
-		e.comp.type = normal
-		e.comp.typeIndex = -1
+		e.comp.type = edgeType
+		e.comp.typeIndex = typeIndex
 		e.comp.roadType = streetType
 		e.comp.roadTemplate = tpl.name
 		if tpl.style ~= nil then e.comp.roadStyle = tpl.style end
@@ -1908,6 +1992,18 @@ function M.new(ctx)
 		if res.success and edges[1] then
 			local be = comp(edges[1], "BASE_EDGE")
 			out.node0, out.node1 = tonumber(core.field(be, "node0")), tonumber(core.field(be, "node1"))
+			-- --bridge: the built piece's own edge type and typeIndex read back (whether the engine kept it a bridge
+			-- of that type); "unread" where they cannot be read
+			if out.bridge then
+				local t, i = be and core.field(be, "type"), be and tonumber(core.field(be, "typeIndex"))
+				local names = {}
+				for _, k in ipairs({ "NORMAL", "BRIDGE", "TUNNEL" }) do
+					local v = enumOf("BaseEdgeType", k)
+					if v ~= nil then names[v] = k end
+				end
+				out.bridge.built = { edgeType = t ~= nil and (names[t] or tostring(t)) or "unread", typeIndex = i or "unread",
+					asSent = t ~= nil and names[t] == "BRIDGE" and i == out.bridge.id }
+			end
 		end
 	end
 

@@ -517,6 +517,7 @@ python3 tools/tf3ctl.py build --res <industry resName> --at 800,600 --no-owner  
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_small] [--snap 5] [--dry-run]
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # asks the engine (changes the game)
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
+python3 tools/tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 --bridge concrete [--dry-run --engine-check]
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
 python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lanes (see "A road's lanes")
 ```
@@ -525,6 +526,18 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   a `SimpleStreetProposal` (one new edge and its new nodes, numbered down from -1, as `type.d.tl` describes it)
   sent as `api.cmd.makeWorldBuildProposalCmd`, the way `build` sends a construction (the same context: nothing
   knocked down, errors not ignored). Changes the game: test saves only.
+- `--bridge RES` builds the piece as a bridge of that type: a bridge type's resName as `api.res.bridgeTypeRep`
+  knows it (a mod's: `<modId>::/infrastructure/bridge/<name>.bridge`), or a base bridge's file name (`concrete` is
+  `::/infrastructure/bridge/concrete.bridge`). The piece goes with its edge type `BRIDGE` and `typeIndex` the
+  type's id (`bridgeTypeRep.find`), as the game's own bridge pieces hold it (`BaseEdge.type` / `typeIndex`). The
+  player's road tool picks the bridge type itself, so the engine is taken not to turn a proposal's plain piece into
+  a bridge by its height (not checked in a game); both are set here. A type the game does not know is refused with some of the names there; one whose
+  carriers read without `ROAD` is refused; nothing is sent either way (dry runs too). The answer's `bridge`: `name`,
+  `id`, `carriers`, `carriesRoad` (or `carriersNote` when they do not read), `availability` / `available` (said, not
+  refused), and after a build `built` (the new piece's edge type and `typeIndex` read back, `asSent`). A piece in the
+  air takes its ends' heights from `--from` / `--to` (x,y,z), or joins a road node there (`--snap`, measured in three
+  dimensions). Without `--bridge` the piece is plain (`NORMAL`, `typeIndex` -1), as before. Not checked in a game yet
+  (pillars, abutments, a bridge low over the ground): look at it.
 - An end within `--snap` metres (default 5, at most 20, 0: never; measured in three dimensions, so a bridge's
   node above the point is not taken) of an end of a road piece is that node, so the piece joins the road there.
   The pieces near the point are found in the octree (`api.engine.util.octree.findEntitiesInCircle` with
