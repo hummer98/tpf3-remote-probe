@@ -789,10 +789,16 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   (`cargoType` -1, e.g. a warehouse's universal one) is sent with stock **-1** and the cargo's name, as the base
   panel sets a vehicle's load per cargo type (`sentStock` -1, `form`): sent with the stock's own id, the engine did
   not take the name (grain asked, bricks set, 2026-11-23). A stock of one cargo type, and a mixed stock without
-  `--cargo`, go with their stock id, as before. **Not checked in game yet**: the stock -1 form at a stock list
-  (test saves only). Every count of the stock list is read before and after; the others that moved are in
+  `--cargo`, go with their stock id, as before. **Measured** (2026-11-23, a warehouse's mixed stock): the stock -1
+  form took nothing either (grain asked, grain 0 and every other cargo 0, also after `steps 5`), while the engine
+  said success: the debug command has no way to put a chosen cargo into a mixed stock. Such a set is still sent
+  (an industry's or a station's mixed stock is not measured); its answer carries a `warning`, and when the stock
+  reads as before it is an error (below). Without `--cargo` a mixed stock's own id fills its default cargo. Every count of the stock list is read before and after; the others that moved are in
   `elsewhere`. When one of them now reads the very amount asked while the asked one did not get it, the engine put
-  it there: an error, not ok. Other moves (a running game's production and deliveries) are a warning. Refused before anything is sent: a
+  it there: an error, not ok. When the asked count reads just as before (and the amount was another) while the
+  engine said success, nothing went in: an error too ("nothing went in"; at a mixed stock it says that no chosen
+  cargo goes in so). A vehicle's load is left to the warning ("reads back"): how soon it reads back is not
+  measured. Other moves (a running game's production and deliveries) are a warning. Refused before anything is sent: a
   stock id the list does not have, an amount over the stock's capacity (or the vehicle's for that cargo, or
   100000; in a mixed stock with the other cargo there counted), passengers, a cargo the stock or vehicle does not
   take, an entity the engine does not have. The answer: `before`,
@@ -887,7 +893,8 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
 
 ```
 python3 tools/tf3ctl.py fit --res ::/depots/road/road_depot.con --at 1200,800 [--radius 100] [--angle 1.5708]
-python3 tools/tf3ctl.py fit --res <station .con> --at 1200,800 --mouth 0,-12 [--track] --houses 5 [--catchment 150]
+python3 tools/tf3ctl.py fit --res road_depot --at 1200,800 --mouth 0,-35 [--link 8,40] [--link-edge] [--houses 5]   # + a link road
+python3 tools/tf3ctl.py fit --res <station .con> --at 1200,800 --mouth 0,-12 --track --houses 5 [--catchment 150]
 python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0      # read only: no engine check
 ```
 
@@ -897,14 +904,28 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   point outwards (a grid every `--step`, default 4 m), each turn (`--angle`, else four quarter turns), kept when its
   turned box keeps 0.5 m from every box around lists (not towns, trees, nodes, what moves or map, nor
   any box of 2000 m or more both ways: the map's own, which stood in the way of every place before, 2026-11-23) and from each road
-  and track piece's line by its half width. `--mouth DX,DY` (a road end in its own frame: the `local` of a trial
-  build's `connectable` mouth) tries instead only places that put that point right on the end of a road piece
-  of no construction (`--track`: a track's), every 15 degrees; the pieces at that end may meet the box there.
+  and track piece's line by its half width. `--mouth DX,DY` (a road end in its own frame: the `local` of a
+  `connectable` mouth in `build`'s answer, or of `around`'s `mouths`; a road depot's is 0,-35, measured
+  2026-11-23) tries instead only places from which one short straight road joins that mouth to a road piece of no
+  construction: the mouth is never put on the road's node (a road depot's mouth on a dead end's node, two nodes
+  at one point, was refused as not buildable with and without `--join-streets`, 2026-11-23). The link runs
+  straight out of the box face the mouth is on (a mouth outside the box: the side it is beyond), `--link MIN,MAX`
+  metres (default 8,40) from the mouth to the road's centre line; it ends on a node of a free road piece, at 60
+  degrees or more from every piece there (a dead end: straight on or up to 120 degrees off it; at 30 the two
+  roads' widths overlapped some 16 m out), each turn every 15 degrees, the places nearest the point first.
+  `--link-edge` adds, after every node's, links ending on a piece's middle, 45 degrees or more across it and 4 m
+  or more from its ends (off by default: `road` joins nodes only, so a piece ending on another's middle makes a
+  new node there, not checked in a game; with `--angle`, only a piece whose way gives that very turn). The link keeps its half width (the road's
+  it joins, at least 3 m) and 0.5 m from every other box and piece. With `--track` the mouth goes right on the end
+  of a track piece, as before (the pieces at that end may meet the box there). Without `--mouth` nothing of this,
+  as before; `mouthHint` gives the mouth of the same construction standing near, when around lists one.
   `--houses N`: at least N town buildings within `--catchment` (default 150 m) of the box's centre.
 - Then the best `--check` places (default 3, 0: none) are asked of the engine in turn (`build --dry-run
   --engine-check`: this counts as changing the game, ask for it first); the first it would build is the answer:
-  `place` (`x`, `y`, `angle`, `offset` from the point, `centre`, `houses`, `roadDist`, `joinAt` with `--mouth`),
-  `build` (the command to build it), `refusedFirst` (the places the engine refused, with their `hits`). A place the
+  `place` (`x`, `y`, `angle`, `offset` from the point, `centre`, `houses`, `roadDist`, `link` with `--mouth`,
+  `joinAt` with `--mouth --track`), `build` (the command to build it), with `--mouth` `link` (`from`: the mouth,
+  `to`, `length`, `on` node or edge, `pieces`) and `road` (`road --from=... --to=... --snap 3`, to give after the
+  build: its from snaps to the mouth's new node; the road piece is not asked of the engine), `refusedFirst` (the places the engine refused, with their `hits`). A place the
   engine calls buildable only with warnings, or with town buildings it would take, is not taken: that verdict is
   in the engine's own context, and the build gathers no fields or buildings (a road refused so, 2026-11-23). An
   engine that cannot be asked stops it (`checked: false`), not counted as a refusal. None free: `ok: false`, "no
@@ -914,9 +935,9 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   out it went) when it stopped short, and the error names that distance. The grid has at most a million points
   (`--radius` / `--step`). `--check 0` answers the search's best place unchecked (`checked: false`).
 - The boxes are the octree's (axis aligned: a turned thing reads larger) and the widths a guess, so the search
-  only narrows the places; the engine's check decides. Whether a mouth put on a road end joins that road (one node)
-  is not known yet: see `build --join-streets` and its `joins`. Water (a harbour) is not looked at.
-- **Not checked in game yet** (written 2026-11-23).
+  only narrows the places; the engine's check decides. Water (a harbour) is not looked at.
+- **Checked in game** (2026-11-23): a road depot's fit without `--mouth` near a town, its `build` built at once.
+  **Not checked in game yet**: `--mouth` with its link and `road` (written 2026-11-23 after the node was refused).
 
 ### Whether a place can be got to (`reach`, read only)
 

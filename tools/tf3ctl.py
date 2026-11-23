@@ -54,8 +54,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # ticket price multiplier) and what is missing
   tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's start event (initNewGameFromMap) sent
             # again when basePopulation is missing or 0 while towns have population (a start with no towns)
-  tf3ctl.py fit --res R --at x,y [--radius 100] [--size W,D] [--mouth DX,DY] [--houses N] [--check 3]   # where
-            # it fits: around's list searched here, the best few asked of the engine (dry runs); builds nothing
+  tf3ctl.py fit --res R --at x,y [--radius 100] [--size W,D] [--mouth DX,DY [--link 8,40]] [--houses N] [--check 3]   # where
+            # it fits: around's list searched here, the best few asked of the engine (dry runs); builds nothing;
+            # with --mouth also the road (from its mouth to a road node a short way off) to give after the build
   tf3ctl.py around --at x,y [--radius 100] [--kinds town_building,street,...|all] [--limit 200]   # read only: what
             # stands near a point (kind, name, box, distance; constructions' road mouths in their own frame)
   tf3ctl.py parcels --edge 9010 [--no-list] | parcels --rect x0,y0,x1,y1 [--list]   # read only: the town
@@ -2597,6 +2598,198 @@ def fit_blocker(poly, obstacles, margin, join=None):
     return None
 
 
+# --mouth on a road: the mouth is never put on a road's node (a depot's mouth on a dead end, both nodes at one
+# point, was refused as "Construction Not Possible" with and without --join-streets, 2026-11-23). It is kept a
+# short way off, straight out of its face, so that one road piece (road --from mouth --to there --snap 3) joins it to
+# the road once it stands: a node of a free road piece first, else a point on one (fallback: the road command joins
+# nodes only, a piece ending on another's middle is not checked in a game).
+FIT_LINK_DEFAULT = (8.0, 40.0)  # m, mouth to the road's centre line: shorter pieces are refused, longer ones wander
+FIT_LINK_MIN = 2.0  # m, the least --link MIN taken
+FIT_LINK_SNAP = 3.0  # road --snap for both ends: the mouth's node once built, the road's node
+# the link and every piece at its node: at least this apart (at 30 degrees two pieces' widths overlap some 16 m
+# out from the node, unseen by the link's own clearance, which skips the pieces it joins)
+FIT_LINK_NODE_ANGLE = math.radians(60)
+FIT_LINK_EDGE_ANGLE = math.radians(45)  # a link onto a piece's middle: at least this across it
+FIT_LINK_EDGE_TURNS = tuple(math.radians(d) for d in (0, -15, 15, -30, 30))  # off square to the piece, tried in turn
+FIT_LINK_HALF = 3.0  # m, the least half width the link is kept clear by (the target piece's when wider)
+
+
+def fit_mouth_normal(box, mouth):
+    """The way out of the box face a mouth (own frame) is on, or nearest to: a unit vector in the own frame. A
+    mouth outside the box goes out the side it is beyond (the farthest beyond, when beyond two)."""
+    x0, y0, x1, y1 = box
+    mx, my = mouth
+    beyond = [(y0 - my, (0.0, -1.0)), (my - y1, (0.0, 1.0)), (x0 - mx, (-1.0, 0.0)), (mx - x1, (1.0, 0.0))]
+    far = max(beyond, key=lambda f: f[0])
+    if far[0] > 0:
+        return far[1]
+    faces = ((abs(my - y0), (0.0, -1.0)), (abs(my - y1), (0.0, 1.0)), (abs(mx - x0), (-1.0, 0.0)),
+             (abs(mx - x1), (1.0, 0.0)))
+    return min(faces, key=lambda f: f[0])[1]
+
+
+def fit_seg_seg_dist(a, b, c, d):
+    """The least distance between the segments a-b and c-d (0 when they cross)."""
+    if _fit_cross(a, b, c, d):
+        return 0.0
+    return min(fit_seg_dist(a, c, d), fit_seg_dist(b, c, d), fit_seg_dist(c, a, b), fit_seg_dist(d, a, b))
+
+
+def _fit_angle_between(u, v):
+    nu, nv = math.hypot(*u), math.hypot(*v)
+    if nu == 0 or nv == 0:
+        return math.pi
+    c = max(-1.0, min(1.0, (u[0] * v[0] + u[1] * v[1]) / (nu * nv)))
+    return math.acos(c)
+
+
+def fit_link_targets(entities, track=False):
+    """Where a link may end: {"nodes": [((x, y), [(piece id, (dx, dy) out of the node along it)])], "edges":
+    [(piece id, a, b, halfWidth)]}, of the road pieces that belong to no construction."""
+    want = "track" if track else "street"
+    nodes, edges = {}, []
+    for e in entities:
+        if e.get("kind") != want or e.get("construction") is not None:
+            continue
+        f, t = e.get("from"), e.get("to")
+        if not (f and t and f.get("x") is not None and t.get("x") is not None):
+            continue
+        a, b = (f["x"], f["y"]), (t["x"], t["y"])
+        edges.append((e.get("id"), a, b, float(e.get("halfWidth") or 0)))
+        for p, q in ((a, b), (b, a)):
+            key = (round(p[0], 3), round(p[1], 3))
+            nodes.setdefault(key, []).append((e.get("id"), (q[0] - p[0], q[1] - p[1])))
+    return {"nodes": sorted(nodes.items()), "edges": edges}
+
+
+def fit_link_ok_at_node(direction, pieces):
+    """Whether a link leaving a node the way direction points (node to mouth) stays FIT_LINK_NODE_ANGLE off every
+    piece at it (pieces: [(id, (dx, dy) along it out of the node)])."""
+    return all(_fit_angle_between(direction, d) >= FIT_LINK_NODE_ANGLE for _, d in pieces)
+
+
+def fit_link_on_edge(mouth_pt, out, a, b, lmin, lmax):
+    """A link straight out of a mouth at mouth_pt the way out points (a unit vector) onto the piece a-b: (to,
+    length) where the ray crosses the piece's centre line within lmin..lmax metres and at FIT_LINK_EDGE_ANGLE or
+    more across it, at least FIT_LINK_SNAP + 1 m from both its ends (nearer: its node is the target); else None."""
+    vx, vy = b[0] - a[0], b[1] - a[1]
+    L = math.hypot(vx, vy)
+    den = out[0] * vy - out[1] * vx
+    if L == 0 or abs(den) < 1e-12:
+        return None
+    wx, wy = a[0] - mouth_pt[0], a[1] - mouth_pt[1]
+    t = (wx * vy - wy * vx) / den  # along the ray
+    s = (wx * out[1] - wy * out[0]) / den  # along the piece, 0..1
+    if not lmin <= t <= lmax:
+        return None
+    if s * L < FIT_LINK_SNAP + 1 or (1 - s) * L < FIT_LINK_SNAP + 1:
+        return None
+    cross = _fit_angle_between(out, (vx, vy))
+    if min(cross, math.pi - cross) < FIT_LINK_EDGE_ANGLE:
+        return None
+    return (a[0] + s * vx, a[1] + s * vy), t
+
+
+def fit_link_clear(frm, to, half, obstacles, skip, margin):
+    """The first obstacle a link frm-to (kept clear by half metres each side; its last half + 1 m, inside the road
+    it joins, not looked at) comes closer than margin to, or None. skip: ids it joins (the pieces at its node, or
+    the piece it ends on)."""
+    L = math.hypot(to[0] - frm[0], to[1] - frm[1])
+    if L == 0:
+        return None
+    cut = min(L, half + 1.0)
+    end = (to[0] - (to[0] - frm[0]) * cut / L, to[1] - (to[1] - frm[1]) * cut / L)
+    for o in obstacles:
+        if o["id"] in skip:
+            continue
+        if "line" in o:
+            a, b, hw = o["line"]
+            if fit_seg_seg_dist(frm, end, a, b) < hw + half + margin:
+                return o
+        elif fit_poly_seg_dist(o["poly"], frm, end) < half + margin:
+            return o
+    return None
+
+
+def _fit_link_places(want, radius, step, angles, box, mouth, targets, link, edges=False):
+    """The places with a link, nearest to want first: (offset, x, y, angle, link) with link = {"from", "to",
+    "length", "on", "pieces"}. On nodes; with edges, after them, on pieces' middles too."""
+    lmin, lmax = link
+    nx, ny = fit_mouth_normal(box, mouth)
+    reach = radius + lmax + math.hypot(*mouth)
+    lens = []
+    v = lmin
+    while v < lmax - 1e-9:
+        lens.append(v)
+        v += max(step, 1.0)
+    lens.append(lmax)
+
+    def turn_for(out):
+        """The construction's turn that points its mouth's face the world way out."""
+        a = math.atan2(out[1], out[0]) - math.atan2(ny, nx)
+        return math.atan2(math.sin(a), math.cos(a))
+
+    def ordered(group):
+        group.sort(key=lambda p: (round(p[0], 6), p[1], p[5]["length"], p[4], p[2], p[3]))
+        for p in group:
+            yield (p[0], p[2], p[3], p[4], p[5])
+
+    node_places, edge_places = [], []
+    for (tx, ty), pieces in targets["nodes"]:
+        if math.hypot(tx - want[0], ty - want[1]) > reach:
+            continue
+        ids = sorted(p[0] for p in pieces)
+        for a in angles:
+            ox, oy = fit_to_world(0, 0, a, nx, ny)  # the way out, in the world
+            if not fit_link_ok_at_node((-ox, -oy), pieces):
+                continue
+            mdx, mdy = fit_to_world(0, 0, a, mouth[0], mouth[1])
+            for L in lens:
+                mx, my = tx - ox * L, ty - oy * L
+                x, y = mx - mdx, my - mdy
+                d = math.hypot(x - want[0], y - want[1])
+                if d <= radius:
+                    node_places.append((d, 0 if len(pieces) == 1 else 1, x, y, a,
+                                        {"from": (mx, my), "to": (tx, ty), "length": L, "on": "node", "pieces": ids}))
+    for p in ordered(node_places):
+        yield p
+    if not edges:
+        return
+    # (made only once every node's place was taken: the search stops early when enough are found)
+    for pid, pa, pb, hw in targets["edges"]:
+        L = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
+        if L < 2 * (FIT_LINK_SNAP + 1) or fit_seg_dist(want, pa, pb) > reach:
+            continue
+        rx, ry = -(pb[1] - pa[1]) / L, (pb[0] - pa[0]) / L  # square to the piece
+        k = FIT_LINK_SNAP + 1
+        while k <= L - (FIT_LINK_SNAP + 1) + 1e-9:
+            tx, ty = pa[0] + (pb[0] - pa[0]) * k / L, pa[1] + (pb[1] - pa[1]) * k / L
+            k += max(step, 1.0)
+            if math.hypot(tx - want[0], ty - want[1]) > reach:
+                continue
+            for side in (1.0, -1.0):
+                for turn in FIT_LINK_EDGE_TURNS:
+                    c, sn = math.cos(turn), math.sin(turn)
+                    # the way out of the mouth: towards the piece, so the mouth stands on this side
+                    ox, oy = -side * (c * rx - sn * ry), -side * (sn * rx + c * ry)
+                    a = turn_for((ox, oy))
+                    if len(angles) == 1 and abs(math.atan2(math.sin(a - angles[0]), math.cos(a - angles[0]))) > 1e-6:
+                        continue
+                    mdx, mdy = fit_to_world(0, 0, a, mouth[0], mouth[1])
+                    for Ln in lens:
+                        mx, my = tx - ox * Ln, ty - oy * Ln
+                        hit = fit_link_on_edge((mx, my), (ox, oy), pa, pb, lmin, lmax)
+                        if hit is None:
+                            continue
+                        x, y = mx - mdx, my - mdy
+                        d = math.hypot(x - want[0], y - want[1])
+                        if d <= radius:
+                            edge_places.append((d, 2, x, y, a, {"from": (mx, my), "to": hit[0], "length": hit[1],
+                                                                 "on": "edge", "pieces": [pid]}))
+    for p in ordered(edge_places):
+        yield p
+
+
 def _fit_places(want, radius, step, angles, mouth, joins):
     """The places to try, nearest to want first: (offset, x, y, angle, join), made as they are taken."""
     if mouth is not None:
@@ -2627,10 +2820,12 @@ def _fit_places(want, radius, step, angles, mouth, joins):
 
 
 def fit_search(entities, box, want, radius, angles, step=4.0, mouth=None, track=False, houses=0, catchment=None,
-               margin=0.5, limit=50, most=None):
+               margin=0.5, limit=50, most=None, link=None, link_edges=False):
     """Places for a construction whose box (x0, y0, x1, y1, own frame) fits among around's entities, nearest to
-    want (x, y) first, within radius of it. angles: the turns tried. mouth (dx, dy, own frame): put that point
-    on the end of a road (track) piece that belongs to no construction; without it a grid every step metres. houses
+    want (x, y) first, within radius of it. angles: the turns tried. mouth (dx, dy, own frame): with track, put
+    that point on the end of a track piece that belongs to no construction; on a road, kept link (min, max, default
+    FIT_LINK_DEFAULT) metres off a free road piece, straight out of its face, with the link road clear (each
+    candidate's "link": from, to, length, on node / edge, pieces); without it a grid every step metres. houses
     / catchment: at least that many town buildings within catchment metres of the box's centre. At most `most`
     places are tried (FIT_CANDIDATES_MAX): searched says how far out they went.
     -> {"candidates": [...], "tried": n, "searched": m, "complete": bool, "tooFewHouses": n,
@@ -2643,9 +2838,22 @@ def fit_search(entities, box, want, radius, angles, step=4.0, mouth=None, track=
     grid = fit_index(obstacles)
     homes = fit_houses(entities) if houses else []
     bcx, bcy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    joins = list(fit_join_nodes(entities, track).items()) if mouth is not None else []
+    linking = mouth is not None and not track
+    if linking:
+        link = tuple(link or FIT_LINK_DEFAULT)
+        places = _fit_link_places(want, radius, step, angles, box, mouth, fit_link_targets(entities), link,
+                                  edges=link_edges)
+        halves = {o["id"]: o["line"][2] for o in obstacles if "line" in o}
+    else:
+        joins = list(fit_join_nodes(entities, track).items()) if mouth is not None else []
+        places = ((d, x, y, a, join, None) for d, x, y, a, join in _fit_places(want, radius, step, angles, mouth, joins))
     found, blocked, tried, searched, few, complete = [], {}, 0, 0.0, 0, True
-    for d, x, y, a, join in _fit_places(want, radius, step, angles, mouth, joins):
+    for item in places:
+        if linking:
+            d, x, y, a, lk = item
+            join = None
+        else:
+            d, x, y, a, join, lk = item
         if tried >= most:
             complete = False
             break
@@ -2653,6 +2861,11 @@ def fit_search(entities, box, want, radius, angles, step=4.0, mouth=None, track=
         searched = d
         poly = fit_rect(x, y, a, box)
         o = fit_blocker(poly, fit_near(poly, obstacles, grid, margin), margin, join)
+        if o is None and lk is not None:
+            half = max([FIT_LINK_HALF] + [halves.get(i, 0.0) for i in lk["pieces"]])
+            lpoly = [lk["from"], lk["to"], lk["to"], lk["from"]]
+            o = fit_link_clear(lk["from"], lk["to"], half, fit_near(lpoly, obstacles, grid, margin + half), set(lk["pieces"]),
+                               margin)
         if o is not None:
             k = o["id"]
             if k not in blocked:
@@ -2674,6 +2887,10 @@ def fit_search(entities, box, want, radius, angles, step=4.0, mouth=None, track=
             cand["roadDist"] = round(max(0.0, min(roads)), 3)
         if join:
             cand["joinAt"] = {"x": join[0][0], "y": join[0][1], "pieces": sorted(join[1])}
+        if lk is not None:
+            cand["link"] = {"from": [round(lk["from"][0], 3), round(lk["from"][1], 3)],
+                            "to": [round(lk["to"][0], 3), round(lk["to"][1], 3)], "length": round(lk["length"], 3),
+                            "on": lk["on"], "pieces": lk["pieces"]}
         found.append(cand)
         if len(found) >= limit:
             break
@@ -2734,14 +2951,54 @@ def fit_plan(ns):
         raise ToolError("--check must be 0-%d" % FIT_CHECK_MAX)
     if box is None and ns.check == 0:
         raise ToolError("without --size the box comes from the engine's check: --check 0 needs --size")
-    return want, radius, step, angles, box, mouth, params
+    link = None
+    if ns.link is not None:
+        if not mouth or ns.track:
+            raise ToolError("--link goes with --mouth on a road (not --track)")
+    if ns.link_edge and (not mouth or ns.track):
+        raise ToolError("--link-edge goes with --mouth on a road (not --track)")
+    if ns.link is not None:
+        link = fit_numbers(ns.link, (2,), "--link")
+        if not FIT_LINK_MIN <= link[0] <= link[1] <= FIT_RADIUS_MAX:
+            raise ToolError("--link MIN,MAX: %g <= MIN <= MAX <= %d m" % (FIT_LINK_MIN, FIT_RADIUS_MAX))
+        link = tuple(link)
+    return want, radius, step, angles, box, mouth, params, link
+
+
+def fit_link_road(lk):
+    """The road command that joins a placed construction's mouth to the road: both ends snapped FIT_LINK_SNAP m."""
+    def pt(p):
+        return "%s,%s" % (round(p[0], 3), round(p[1], 3))
+    return "road --from=%s --to=%s --snap %g" % (pt(lk["from"]), pt(lk["to"]), FIT_LINK_SNAP)
+
+
+def _fit_res_stem(res):
+    base = res.replace("\\", "/").rsplit("/", 1)[-1]
+    return base[:-4] if base.endswith(".con") else base
+
+
+def fit_mouth_hint(entities, res):
+    """A road mouth of the same construction standing near (around's mouths, in its own frame): {"mouth": "DX,DY",
+    "from": its id} for --mouth, or None. Only a hint: fit without --mouth searches as before."""
+    stem = _fit_res_stem(res)
+    for e in entities:
+        fn = e.get("fileName")
+        if not fn or e.get("kind") == "town_building" or _fit_res_stem(fn) != stem:
+            continue
+        for m in e.get("mouths") or []:
+            loc = m.get("local") if isinstance(m, dict) else None
+            if m.get("kind") == "mouth" and not m.get("track") and loc and loc.get("dx") is not None:
+                return {"mouth": "%g,%g" % (loc["dx"], loc["dy"]), "from": e.get("id"),
+                        "note": "a road mouth of the same construction near (around's mouths): give it as --mouth "
+                                "to get a place with a link road"}
+    return None
 
 
 def cmd_fit(ns, sender=None):
     """fit: the box (--size, else one engine check at the point), around's list, the search here, then the best
     few asked of the engine; the first it would build is the answer."""
     sender = sender or send
-    want, radius, step, angles, box, mouth, params = fit_plan(ns)
+    want, radius, step, angles, box, mouth, params, link = fit_plan(ns)
     checks = 3 if ns.check is None else ns.check
     base = {"res": ns.res.strip(), "dryRun": True, "engineCheck": True}
     if params is not None:
@@ -2759,6 +3016,8 @@ def cmd_fit(ns, sender=None):
         out["boxFrom"] = "--size"
     out["box"] = {"x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3]}
     reach = radius + math.hypot(box[2] - box[0], box[3] - box[1]) + ((ns.catchment or FIT_CATCHMENT_DEFAULT) if ns.houses else 0) + 10
+    if mouth and not ns.track:
+        reach += (link or FIT_LINK_DEFAULT)[1]
     seen = sender("around", {"at": want, "radius": min(reach, AROUND_RADIUS_MAX), "limit": AROUND_LIMIT_MAX},
                   timeout=60)
     if not isinstance(seen, dict) or not seen.get("ok"):
@@ -2767,7 +3026,12 @@ def cmd_fit(ns, sender=None):
         out["warning"] = "around's list was cut short (a smaller --radius): places may be taken that are not free"
     found = fit_search(seen.get("entities") or [], box, want, radius, angles, step=step, mouth=mouth,
                        track=ns.track, houses=ns.houses or 0,
-                       catchment=(ns.catchment or FIT_CATCHMENT_DEFAULT) if ns.houses else None)
+                       catchment=(ns.catchment or FIT_CATCHMENT_DEFAULT) if ns.houses else None, link=link,
+                       link_edges=ns.link_edge)
+    if not mouth:
+        hint = fit_mouth_hint(seen.get("entities") or [], ns.res.strip())
+        if hint:
+            out["mouthHint"] = hint
     out.update(tried=found["tried"], searched=found["searched"], complete=found["complete"],
                free=len(found["candidates"]), blockers=found["blockers"],
                aroundMs=(seen.get("ms") or {}).get("total"),
@@ -2778,8 +3042,8 @@ def cmd_fit(ns, sender=None):
     if not found["candidates"]:
         within = radius if found["complete"] else found["searched"]
         why = ("; %d free places had too few town buildings near" % found["tooFewHouses"]) if found["tooFewHouses"] else ""
-        cut = "" if found["complete"] else " (the search stopped at %d places, %g m out: a larger --step)" % (
-            found["tried"], found["searched"])
+        cut = "" if found["complete"] else " (the search stopped at %d places, %g m out: %s)" % (
+            found["tried"], found["searched"], "a smaller --radius" if mouth and not ns.track else "a larger --step")
         out.update(ok=False, error="no free place within %g m of the point%s (the box %s, %d places tried)%s; most "
                    "in the way: %s" % (within, cut, out["box"], found["tried"], why,
                                     ", ".join("%s %s (%s) x%d" % (b["kind"], b["id"], b.get("name") or "-", b["count"])
@@ -2809,7 +3073,16 @@ def cmd_fit(ns, sender=None):
             if params is not None:
                 cmd += " --params " + shlex.quote(json.dumps(params))
             out["build"] = cmd
-            if mouth and "joinAt" not in cand:
+            if "link" in cand:
+                lk = cand["link"]
+                out["link"] = lk
+                out["road"] = fit_link_road(lk)
+                out["roadNote"] = ("build first, then road: its from is the mouth's node once the construction "
+                                   "stands; the road piece itself was not asked of the engine")
+                if lk["on"] == "edge":
+                    out["roadNote"] += ("; it ends on the middle of piece %s, not on a node: road joins nodes only, "
+                                        "so a new node there, not checked in a game (it may be refused)" % lk["pieces"][0])
+            elif mouth and "joinAt" not in cand:
                 out["roadNote"] = "not put on a road end"
             if refused:
                 out["refusedFirst"] = refused
@@ -4642,9 +4915,15 @@ def make_parser():
                     "every 15 degrees")
     fi.add_argument("--size", metavar="W,D[,X,Y]", help="its box in its own frame (W along its x; X,Y: the box's "
                     "centre from its origin); default: from the engine's check at the point, unturned")
-    fi.add_argument("--mouth", metavar="DX,DY", help="the road end in its own frame (build's connectable[].local of a "
-                    "trial build): only places with it on the end of a road piece of no construction")
-    fi.add_argument("--track", action="store_true", help="with --mouth: on a track's end instead of a road's")
+    fi.add_argument("--mouth", metavar="DX,DY", help="the road end in its own frame (build's connectable[].local, "
+                    "around's mouths; a road depot: 0,-35): only places with it a short way straight out from a road "
+                    "piece of no construction (never on its node), answered with the link and its road command")
+    fi.add_argument("--link", metavar="MIN,MAX", help="with --mouth: the link road's length, mouth to the road's "
+                    "centre line (default %g,%g m)" % FIT_LINK_DEFAULT)
+    fi.add_argument("--link-edge", action="store_true", help="with --mouth: also links ending on a road piece's middle, "
+                    "after every node's (road joins nodes only: a new node there, not checked in a game)")
+    fi.add_argument("--track", action="store_true", help="with --mouth: on a track's end instead of a road's "
+                    "(put on its node, as before)")
     fi.add_argument("--houses", type=int, help="at least this many town buildings within --catchment of its centre")
     fi.add_argument("--catchment", type=float, help="metres for --houses (default %d)" % FIT_CATCHMENT_DEFAULT)
     fi.add_argument("--check", type=int, help="the best places asked of the engine, in turn (default 3, at most %d; "
