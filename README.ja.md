@@ -582,6 +582,23 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   試験用のセーブでだけ。ゲーム内では未確認。dry-run の engine-check がエンジン自身の context で判定したとき
   (`engineContext`) はこれが効いていないので、`removeBuildingsNote` で「hits の町の建物は本番では取り除かれうる」と言います。衝突で断られたとき (建てるとき、dry-run の engine-check) は、`build` と
   同じく `hits` に邪魔な物が入ります。
+- `--ignore-errors` (**試験用のセーブだけ。エンジンの検査を外します**): `makeWorldBuildProposalCmd` の `ignoreErrors` を
+  有効にして送り、エンジンに誤りを無視して建てさせます。ゲームの API (`api/tealdef/api/cmd.d.tl`) には「critical でない
+  誤りでも建てる」とあるので、`critical` の誤りでは断られることがあります。送る前に、同じ提案をエンジンに聞きます
+  (`makeProposalData`、`--dry-run --engine-check` と同じ)。答えの `unforced` に、これを付けなかったら断られた理由
+  (`refused`・`verdict`・`critical`・`errors`・`warnings`・`infos`・`collisions`・`collisionEntities`・`hits`)、`unforcedContexts` に
+  2つの context、check が critical と言ったときは `unforcedCritical` に注意が入ります。ほかに `ignoreErrors: true`・
+  `ignoredErrors: true` (強制で送ったという印。無視する誤りがあったかは `unforced.refused`)・`testSave`・`ignoreErrorsNote` が付き、建てば普通の road と同じく `edge`・`edges`・`nodes` が入ります。
+  読み込まれているセーブ (ゲームのログから読む) が試験用の名前 (`probe-*`・`aom-ops-*`・`aom-shot-*`・`aom-bgm-check-*`・
+  数字1文字で始まる名前) でないとき、また動いているゲームに共同作業 (coop) の印があるとき (有効・期限切れ・壊れた印の
+  どれでも) は、tf3ctl が断ります (終了コード 4、`"refused": "ignore-errors"`、何も送らない)。新しいゲームにはまだセーブの
+  名前が無いので、先に試験用の名前で保存し、そのセーブを読み込んでから使ってください。MOD の側でもセーブの名前
+  (tf3ctl が送る) を確認し、`road` 以外の命令に付いた `ignoreErrors` は断ります。probe 自身の検査は外しません: 交差点の
+  設定 (junction set-up) の無い node・信号のある node・設定を読めない node への接続は、これまでどおり断ります (設定の無い
+  node につないでゲームが落ちたことがあるため)。建物 (construction) の node (設定をそのまま残す端) へは、強制では
+  つなぎません。`--dry-run` と一緒なら、エンジンに聞くだけで何も建てません
+  (`--engine-check` が付いた扱い)。答えは強制しなかった場合の判定で、`ignoredErrors: false` です。**ゲーム内では未確認**
+  (2026-11-24 に書いたもの): 衝突する道路をエンジンが建てるか、車が通るか、セーブとロードのあとも壊れないか。
 - `--inspect-node ID` (読むだけ、ほかの引数と一緒には使わない): node の位置、`streetSegments` (それぞれの道路の `edge`、
   `node0` / `node1`、`street`、`construction`)、`constructionForNode` (getConstructionEntityForNode)、`construction`
   (見つけた建物、`frozen`、`by`) と `constructionFrozenNodes` / `constructionFrozenEdges`、`nodeConfig` (無ければ

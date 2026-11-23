@@ -1393,6 +1393,10 @@ function M.new(ctx)
 		"before trusting the answer"
 	local NOTE_CURVE = "one curved piece (tangents given or followed from the road there) as a SimpleStreetProposal; " ..
 		"curves are not checked in a game yet: look at it (frame) before trusting the answer"
+	local NOTE_FORCE = "for test saves only: skips the engine's checks (sent with ignoreErrors on, the engine builds " ..
+		"past its non-critical errors; its API says a critical one still refuses it). unforced: what the engine's check " ..
+		"said before (makeProposalData), the errors a build without --ignore-errors would be refused for. Not " ..
+		"checked in a game yet whether vehicles take a forced piece, or whether it survives a save and a load"
 	local NOTE_KEEP = "joined to a construction's node: its junction set-up is the construction's and was left as it " ..
 		"is (neither removed nor remade); whether the engine joins the new piece's lanes there is not checked in a " ..
 		"game yet: look at it, and whether vehicles take the new piece"
@@ -1653,9 +1657,14 @@ function M.new(ctx)
 		if #cfgAdd > 0 then sp.streetProposal.nodeConfigsToAdd = cfgAdd end
 		if #cfgRemove > 0 then sp.streetProposal.nodeConfigsToRemove = cfgRemove end
 		out.newNodes, out.nodeConfigs = #nodes, #cfgAdd
+		if r.ignoreErrors then
+			out.ignoreErrors, out.testSave, out.ignoreErrorsNote = true, r.testSave, NOTE_FORCE
+		end
 		if r.dryRun then
 			-- (engineCheck) the same proposal a build sends, asked of the engine and not sent
 			out.dryRun = true
+			-- (--ignore-errors with --dry-run: nothing is forced; the verdict below is the unforced one)
+			if r.ignoreErrors then out.ignoredErrors = false end
 			local v, form, both = engineCheck(sp, r.removeFields, r.removeBuildings)
 			if not v then
 				out.ok, out.checked = true, false
@@ -1713,10 +1722,49 @@ function M.new(ctx)
 			out.removeFieldsNote = "gatherFields on, gatherBuildings off: not checked in a game yet that only fields go " ..
 				"and buildings and tracks still refuse it: look at it (frame)"
 		end
+		-- --ignore-errors: the engine's check first (the same proposal, not sent), so that the answer says what an
+		-- unforced build would have been refused for; the probe's own checks above (the junction set-ups: a node
+		-- without one killed the game, BUG.md 2026-11-23 01:03) have run all the same and are not skipped
+		local force = r.ignoreErrors == true
+		if force then
+			-- a construction's node (its set-up left as it is, NOTE_KEEP): whether the engine joins the new piece's
+			-- lanes there is not checked in a game, and an error it gives there may be what stands between the
+			-- game and a node without lanes for the new piece (as the node without a set-up that killed it): not
+			-- forced (review 2026-11-24)
+			for _, key in ipairs({ "from", "to" }) do
+				if plans[key] and plans[key].keep then
+					return fail(c.id, string.format("%s: node %d is construction %d's (its junction set-up is left as " ..
+						"it is): ignoreErrors does not join a construction's node (not checked in a game what the " ..
+						"engine makes of it); build it without --ignore-errors: nothing sent", key,
+						(key == "from" and a or b).node, plans[key].keep.construction))
+				end
+			end
+			local okV, v, form, both = pcall(engineCheck, sp, r.removeFields, r.removeBuildings)
+			if okV and v then
+				local u = summary(v)
+				u.form = form
+				-- (whether the unforced build would have been refused: ignoredErrors only says it was sent forced)
+				u.refused = refuses(v) or (v.errors ~= nil and #v.errors > 0)
+				u.collisionEntities = v.collisions and core.array(v.collisions) or nil
+				out.unforced = u
+				if both then out.unforcedContexts = { own = both.own, build = both.build } end
+				if v.critical then
+					out.unforcedCritical = "the engine's check says critical: makeWorldBuildProposalCmd's ignoreErrors " ..
+						"builds past non-critical errors only (api/tealdef/api/cmd.d.tl), so the build may be refused all the same"
+				end
+				if v.collisions and describeHits then
+					local okH, hits = pcall(describeHits, v.collisions, (a.x + b.x) / 2, (a.y + b.y) / 2)
+					if okH then out.unforced.hits = hits else out.unforced.hitsError = tostring(hits) end
+				end
+			else
+				out.unforced = { unread = tostring(okV and form or v) }
+			end
+			out.ignoredErrors = true
+		end
 		local job = { id = c.id, kind = "road", out = out, started = appTime(), before = balance(),
 			piecesBefore = piecesAround(a, b), sp = sp, ctxArgs = { r.removeFields, r.removeBuildings } }
 		out.removeBuildings = r.removeBuildings or nil
-		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields, r.removeBuildings), false, true), function(data, success, entities)
+		api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(r.removeFields, r.removeBuildings), force, true), function(data, success, entities)
 			local ok, cerr = pcall(function()
 				local v = verdict(try(function() return data.resultProposalData end), "resultProposalData")
 				local list = ids(try(function() return data.resultEntities end))

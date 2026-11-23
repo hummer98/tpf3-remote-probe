@@ -1560,6 +1560,8 @@ local function poll()
 		return fail(c.id, c.cmd .. " works only in the main menu (My Mods' publish helper is a privileged API, made in "
 			.. "the menu's Lua state); quit to the menu or use launch without a save")
 	end
+	local misplaced = core.ignoreErrorsMisplaced(c.cmd, c.args)
+	if misplaced then return fail(c.id, misplaced) end
 	local ok, err = pcall(handlers[c.cmd], c)
 	if not ok then fail(c.id, err) end
 	-- what status shows as "who used the game last": commands that change it and were not refused (a load
