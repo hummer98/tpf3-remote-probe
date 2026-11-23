@@ -2397,8 +2397,8 @@ FIT_STEP_MIN = 0.5
 FIT_CANDIDATES_MAX = 200000  # places tried at most (each against the obstacles near it only)
 FIT_GRID_MAX = 1000000  # grid points made at most
 FIT_CHECK_MAX = 10
-# a town's box is the whole town; trees go when one builds; terrain and map hold the whole map (around's kinds)
-FIT_SKIP_KINDS = ("town", "moving", "node", "asset", "terrain", "map")
+# a town's box is the whole town; trees go when one builds; map: a box the size of the map (around's kind)
+FIT_SKIP_KINDS = ("town", "moving", "node", "asset", "map")
 # m, both sides: a box this large is the map's own (entity 2, kind other, 14,336 m square, stood in the way of every
 # place a road depot's fit tried, 2026-11-23), never a thing a build collides with. The mod's core.AROUND_MAP_SIZE
 FIT_MAP_SIZE = 2000
@@ -3680,7 +3680,7 @@ def parcels_args(ns):
 AROUND_RADIUS_MAX = 2000  # the mod's core.AROUND_RADIUS.max
 AROUND_LIMIT_MAX = 2000  # the mod's core.AROUND_LIMIT.max
 AROUND_KINDS = ("street", "track", "node", "town_building", "station", "depot", "industry", "construction", "field",
-                "asset", "town", "model", "moving", "other", "terrain", "map")  # the mod's core.AROUND_KINDS
+                "asset", "town", "model", "moving", "other", "map")  # the mod's core.AROUND_KINDS
 
 
 def around_args(ns):
@@ -4626,7 +4626,7 @@ def make_parser():
                         "octree's, axis aligned), distance; a construction's road ends and mouths in its own frame")
     ar.add_argument("--at", required=True, metavar="X,Y", help="the point (for a negative x write --at=-100,50)")
     ar.add_argument("--radius", type=float, help="metres (default 100, at most %d)" % AROUND_RADIUS_MAX)
-    ar.add_argument("--kinds", metavar="A,B", help="only these (all: every kind; default all but node, moving, terrain and map: map is a box "
+    ar.add_argument("--kinds", metavar="A,B", help="only these (all: every kind; default all but node, moving and map: map is a box "
                     "the size of the map): "
                     + ", ".join(AROUND_KINDS))
     ar.add_argument("--limit", type=int, help="entries listed, nearest first (default 200, at most %d)" % AROUND_LIMIT_MAX)

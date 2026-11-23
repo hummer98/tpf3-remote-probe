@@ -10129,6 +10129,22 @@ test("stockSet: an engine that puts the amount into another cargo is not answere
 	truthy(not g.crashed, g.crashed)
 end)
 
+test("stockSet: other counts that move meanwhile (a running game) are listed with a warning, not an error", function()
+	local g = debugGame()
+	-- the coal mine's output moves by itself while the stock set waits (as production does in a running game)
+	local send0 = api.cmd.sendCommand
+	api.cmd.sendCommand = function(cmd, cb)
+		g.industries[51].stocks[1].count = g.industries[51].stocks[1].count + 7
+		return send0(cmd, cb)
+	end
+	local a = debugRun(g, 2300, "stockSet", '{ entity = 51, stock = 1, amount = 20, cargo = "GRAIN" }')
+	api.cmd.sendCommand = send0
+	truthy(a.ok, a.error); eq(a.after, 20); truthy(#a.elsewhere >= 1)
+	for _, x in ipairs(a.elsewhere) do eq(x.stock, 0, "only the output that moved by itself") end
+	truthy(a.warning and a.warning:find("moved meanwhile", 1, true), a.warning)
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("stockSet: an industry's stock of one cargo type keeps its stock id; its mixed input takes stock -1", function()
 	local g = debugGame()
 	local a = debugRun(g, 2298, "stockSet", '{ entity = 51, stock = 0, amount = 120, cargo = "COAL" }')

@@ -3731,11 +3731,11 @@ M.AROUND_SCAN_MAX = 10000 -- entities the octree gives that are looked at; more:
 M.AROUND_TIME_MS = 2000
 -- every kind an entry can have; the default leaves out nodes (each road end: the pieces are listed) and what moves
 M.AROUND_KINDS = { "street", "track", "node", "town_building", "station", "depot", "industry", "construction",
-	"field", "asset", "town", "model", "moving", "other", "terrain", "map" }
--- terrain (the TERRAIN entity) and map (an entity whose box is the size of a map: the world, the emission grid,
--- or what is not known but spans AROUND_MAP_SIZE) hold the whole map and never stand in a build's way (a road
--- depot's fit met entity 2, a box 14,336 m square, at every place, 2026-11-23): off unless asked for
-M.AROUND_DEFAULT_OFF = { node = true, moving = true, terrain = true, map = true }
+	"field", "asset", "town", "model", "moving", "other", "map" }
+-- map: an entity whose box spans AROUND_MAP_SIZE both ways (the terrain, the world or a grid over the map) never
+-- stands in a build's way (a road depot's fit met entity 2, a box 14,336 m square, at every place, 2026-11-23):
+-- off unless asked for
+M.AROUND_DEFAULT_OFF = { node = true, moving = true, map = true }
 M.AROUND_MAP_SIZE = 2000 -- m, both sides: more than any station or industry, less than the smallest map
 -- a road or track piece is a line with a width: half of these, a guess (not read from the street type)
 M.AROUND_HALF_WIDTH = { street = 6, track = 3 }

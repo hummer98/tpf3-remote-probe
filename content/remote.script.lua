@@ -63,6 +63,8 @@ local function fineTime()
 	if fineClock then
 		local ok, us = pcall(function() return fineClock:getTime() end)
 		if ok and tonumber(us) then return tonumber(us) / 1e6 end
+		-- (never mixed with appTime afterwards: the two count from different starts)
+		fineClock = false
 	end
 	return appTime()
 end

@@ -1621,11 +1621,11 @@ class QuitLaunchTest(unittest.TestCase):
 
     def test_fit_ignores_the_maps_own_boxes_and_the_town(self):
         # as a game's around answered 2026-11-23: entity 2 (kind other, 14,336 m square) met every place, and the
-        # town 4835 (180 m square) was listed too; terrain / map from a mod that names them
+        # town 4835 (180 m square) was listed too; map from a mod that names it, and a map-sized box of another kind
         huge = {"x0": -7168, "y0": -7168, "x1": 7168, "y1": 7168}
         scene = self.FIT_SCENE + [
             {"id": 2, "kind": "other", "box": dict(huge), "x": 0, "y": 0},
-            {"id": 3, "kind": "terrain", "box": dict(huge), "x": 0, "y": 0},
+            {"id": 3, "kind": "model", "box": dict(huge), "x": 0, "y": 0},
             {"id": 4, "kind": "map", "box": dict(huge), "x": 0, "y": 0},
             {"id": 4835, "kind": "town", "box": {"x0": -90, "y0": -90, "x1": 90, "y1": 90}, "x": 0, "y": 0},
             # large, but no map (an airport): still in the way
@@ -1637,7 +1637,7 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(res["candidates"][0]["offset"], 0, "the free point itself, as without them")
         self.assertNotIn(2, [b["id"] for b in res["blockers"]])
         self.assertNotIn(4835, [b["id"] for b in res["blockers"]])
-        self.assertIn("terrain", tf3ctl.AROUND_KINDS); self.assertIn("map", tf3ctl.AROUND_KINDS)
+        self.assertIn("map", tf3ctl.AROUND_KINDS)
 
     def test_fit_search_grid_nearest_free_place(self):
         box = (-5, -5, 5, 5)  # 10 m square round its origin

@@ -114,10 +114,10 @@ return function(t)
 		eq(#g.commands, 0, "nothing sent"); truthy(not g.crashed, g.crashed)
 	end)
 
-	test("around: the map's own boxes (one of the map's size, the terrain) are map / terrain, off unless asked", function()
+	test("around: the map's own boxes (the map's size, whatever their components) are map, off unless asked", function()
 		local things = {}
 		for k, v in pairs(THINGS) do things[k] = v end
-		-- as a game's entity 2 (kind other, 14,336 m square), a terrain entity, and an emission grid
+		-- as a game's entity 2 (kind other, 14,336 m square), and map-sized boxes with TERRAIN / EMISSION_GRID (map by size)
 		things[2] = { box = { -7168, -7168, -100, 7168, 7168, 2000 }, comps = {} }
 		things[3] = { box = { -7168, -7168, -100, 7168, 7168, 900 }, comps = { TERRAIN = {} } }
 		things[4] = { box = { -7168, -7168, 0, 7168, 7168, 1 }, comps = { EMISSION_GRID = {} } }
@@ -129,11 +129,14 @@ return function(t)
 		eq(byId(a.entities, 2), nil, "the map-sized box: off by default"); eq(byId(a.entities, 3), nil); eq(byId(a.entities, 4), nil)
 		eq(byId(a.entities, 5).kind, "construction")
 		eq(byId(a.entities, 700).kind, "town", "the town is listed as a town")
-		local b = aroundRun(g, 2742, '{ at = "0,10", radius = 120, kinds = "map,terrain" }')
+		local b = aroundRun(g, 2742, '{ at = "0,10", radius = 120, kinds = "map" }')
 		truthy(b.ok, b.error); eq(#b.entities, 3)
 		eq(byId(b.entities, 2).kind, "map"); eq(byId(b.entities, 2).mapOf, "other")
-		eq(byId(b.entities, 3).kind, "terrain"); eq(byId(b.entities, 4).kind, "map")
-		eq(b.counts.map, 2); eq(b.counts.terrain, 1)
+		eq(byId(b.entities, 3).kind, "map"); eq(byId(b.entities, 4).kind, "map"); eq(b.counts.map, 3)
+		-- a town as large stays a town (fit skips towns by their kind)
+		things[6] = { box = { -3000, -3000, 0, 3000, 3000, 50 }, name = "Bigtown", comps = { TOWN = {} } }
+		local c = aroundRun(aroundGame({ things = things }), 2744, '{ at = "0,10", radius = 120 }')
+		eq(byId(c.entities, 6).kind, "town")
 		truthy(not g.crashed, g.crashed)
 	end)
 

@@ -790,8 +790,9 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   panel sets a vehicle's load per cargo type (`sentStock` -1, `form`): sent with the stock's own id, the engine did
   not take the name (grain asked, bricks set, 2026-11-23). A stock of one cargo type, and a mixed stock without
   `--cargo`, go with their stock id, as before. **Not checked in game yet**: the stock -1 form at a stock list
-  (test saves only). Every count of the stock list is read before and after: when the engine changed another
-  cargo or stock than the one asked, the answer is an error naming them (`elsewhere`), not ok. Refused before anything is sent: a
+  (test saves only). Every count of the stock list is read before and after; the others that moved are in
+  `elsewhere`. When one of them now reads the very amount asked while the asked one did not get it, the engine put
+  it there: an error, not ok. Other moves (a running game's production and deliveries) are a warning. Refused before anything is sent: a
   stock id the list does not have, an amount over the stock's capacity (or the vehicle's for that cargo, or
   100000; in a mixed stock with the other cargo there counted), passengers, a cargo the stock or vehicle does not
   take, an entity the engine does not have. The answer: `before`,
@@ -871,10 +872,11 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
   construction of a `building/...` file), `station` / `depot` / `industry` / `construction` (`CONSTRUCTION` by its
   stations, depots, industries; `fileName`; for each, up to 50 per answer: `place`, `ends` and `mouths` as `build`
   answers them, with `local`), `field` (`FIELD`), `town` (`TOWN`: its box covers the town), `asset` (`ASSET_GROUP`:
-  trees, rocks), `model`, `moving` (vehicles, persons, animals), `terrain` (`TERRAIN`), `map` (`WORLD`,
-  `EMISSION_GRID`, or a box of 2000 m or more both ways that would be `other`: `mapOf`; a game's entity 2 was a
-  14,336 m square, 2026-11-23) and `other`. `--kinds` takes some of them, or `all`; the default is all but `node`,
-  `moving`, `terrain` and `map`.
+  trees, rocks), `model`, `moving` (vehicles, persons, animals), `map` (any box of 2000 m or more both
+  ways but a road's, a track's or a town's, by its size only: what it was read as in `mapOf`; a game's entity 2,
+  kind `other`, was a 14,336 m square, 2026-11-23) and `other`. `--kinds` takes some of them, or `all`; the default
+  is all but `node`, `moving` and `map`. With `ms` on a clock that moves within the frame, the 2 s stop now takes
+  effect.
 - The boxes are the octree's bounding volumes: **axis aligned**, so a turned station or a slanting road reads
   larger than it is. Road and track widths (`halfWidth`, 6 m and 3 m) are **a guess**. What the octree does not
   hold is not listed (trees, if their asset groups are not in it).
@@ -893,7 +895,7 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   unturned (one `build --dry-run --engine-check`). Then one `around` over the circle and what may reach into it,
   and the search here (tools/tf3ctl.py `fit_search`, plain functions tested without the game): places from the
   point outwards (a grid every `--step`, default 4 m), each turn (`--angle`, else four quarter turns), kept when its
-  turned box keeps 0.5 m from every box around lists (not towns, trees, nodes, what moves, terrain or map, nor
+  turned box keeps 0.5 m from every box around lists (not towns, trees, nodes, what moves or map, nor
   any box of 2000 m or more both ways: the map's own, which stood in the way of every place before, 2026-11-23) and from each road
   and track piece's line by its half width. `--mouth DX,DY` (a road end in its own frame: the `local` of a trial
   build's `connectable` mouth) tries instead only places that put that point right on the end of a road piece

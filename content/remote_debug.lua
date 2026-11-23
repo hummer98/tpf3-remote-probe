@@ -203,16 +203,14 @@ function M.new(ctx)
 	end
 
 	-- the counts that moved between two snapshots and are not the request's: another stock, or (with a cargo) another
-	-- cargo in the same stock. -> { { stock, cargo, before, after } } sorted, empty when only the request's moved
+	-- cargo in the same stock. -> { { stock, cargo, before, after } } sorted, empty when only the request's moved.
+	-- A count not read at either end is left out (nothing to compare).
 	local function strayChanges(before, after, r)
 		local out = {}
 		if before == nil or after == nil then return out end
-		local keys = {}
-		for k in pairs(before) do keys[k] = true end
-		for k in pairs(after) do keys[k] = true end
-		for k in pairs(keys) do
-			local b, a = before[k] or 0, after[k] or 0
-			if a ~= b then
+		for k, b in pairs(before) do
+			local a = after[k]
+			if a ~= nil and a ~= b then
 				local st, cargo = k:match("^(%-?%d+):(.+)$")
 				st = tonumber(st or k)
 				local mine = st == r.stock and (cargo == nil or r.cargo == nil or cargo == r.cargo)
@@ -492,11 +490,20 @@ function M.new(ctx)
 				out.warning = (out.warning and out.warning .. "; " or "") .. "the stock reads back " .. out.after
 					.. ", not " .. job.r.amount
 			end
-			-- what else moved (another cargo or stock): the engine put it elsewhere, so ok is not claimed
+			-- what else moved (another cargo or stock). A running game moves counts by itself (production, deliveries):
+			-- so only a count that now reads the very amount asked, where the asked one did not get it, says the engine
+			-- put it elsewhere, and ok is not claimed; any other move is listed with a warning
 			local stray = strayChanges(job.snap, snapshot(h), job.r)
 			if #stray > 0 then
 				out.elsewhere = core.array(stray)
-				if job.success == true then
+				local landed = false
+				for _, x in ipairs(stray) do
+					if x.after == job.r.amount and out.after ~= job.r.amount then landed = true end
+				end
+				if not landed then
+					out.warning = (out.warning and out.warning .. "; " or "") .. "other counts moved meanwhile (elsewhere: "
+						.. "the game running, or the engine)"
+				elseif job.success == true then
 					local parts = {}
 					for _, x in ipairs(stray) do
 						parts[#parts + 1] = string.format("stock %d%s %s -> %s", x.stock, x.cargo and (" " .. x.cargo) or "",

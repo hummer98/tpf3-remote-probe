@@ -743,7 +743,8 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   本体のパネルが車両の積み荷を貨物ごとに決めるときと同じ形です。stock の番号のまま送ると、エンジンは名前を見ませんでした
   (穀物を指定してレンガが入った。2026-11-23)。貨物が1種類の stock と、`--cargo` なしの混合の stock は、これまでどおり
   stock の番号で送ります。**ゲーム内では未確認**: 在庫の一覧への stock -1 の形 (試験用のセーブでだけ)。送る前と後に一覧の
-  数を全部読み、頼んだのと別の貨物・stock が変わっていたら、ok にせず、変わったものを挙げてエラーにします (`elsewhere`)。送る前に断るもの: 一覧に無い stock の
+  数を全部読み、ほかに動いた数を `elsewhere` に挙げます。そのどれかが頼んだ量ちょうどになり、頼んだ所には入っていなければ、
+  エンジンが別の所に入れたので、ok にせずエラーにします。それ以外の動き (動いているゲームの生産・搬入) は warning です。送る前に断るもの: 一覧に無い stock の
   番号、stock の capacity (車両ならその貨物の capacity、ほかは 100000。混合の stock ではほかの貨物と合わせて) を超える量、乗客、stock や車両が受けない貨物、
   エンジンに無い entity。答え: `before`、`after` (callback の数フレーム後に読む)、`success`、`engineResult` (callback が
   返したもの)、`stockList` (送った先の entity)。`--dry-run` は何も送らず、`before` と `functionPresent` を答えます。
@@ -815,9 +816,9 @@ python3 tools/tf3ctl.py around --at 1200,800 [--radius 100] [--kinds town_buildi
   `construction`。その construction も `building` 付きで。`building/...` のファイルの建造物も)、`station` / `depot` /
   `industry` / `construction` (`CONSTRUCTION` の駅・車庫・産業で分ける。`fileName`。1回の答えで 50 件まで、`place`・
   `ends`・`mouths` を `build` の答えと同じ形で、`local` 付きで)、`field` (`FIELD`)、`town` (`TOWN`: 箱は町全体)、`asset`
-  (`ASSET_GROUP`: 木・岩)、`model`、`moving` (車両・人・動物)、`terrain` (`TERRAIN`)、`map` (`WORLD`・`EMISSION_GRID`、
-  または `other` になるはずの、縦横とも 2000 m 以上の箱。`mapOf` 付き。ゲームでは entity 2 が 14,336 m 四方だった。2026-11-23)、
-  `other`。`--kinds` でいくつかに絞れます (`all` で全部)。初期設定は `node`・`moving`・`terrain`・`map` 以外の全部です。
+  (`ASSET_GROUP`: 木・岩)、`model`、`moving` (車両・人・動物)、`map` (道路・線路・町を除き、縦横とも 2000 m 以上の箱。大きさだけで決め、元の種類は
+  `mapOf`。ゲームでは種類 other の entity 2 が 14,336 m 四方だった。2026-11-23)、`other`。`--kinds` でいくつかに絞れます
+  (`all` で全部)。初期設定は `node`・`moving`・`map` 以外の全部です。`ms` がフレームの中でも進む時計になったので、2 秒の打ち切りも効くようになりました。
 - 箱は octree の bounding volume で、**軸にそろった箱**です。斜めに置いた駅や斜めの道路は、実物より大きく出ます。道路と
   線路の幅 (`halfWidth`、6 m と 3 m) は**推測**です。octree に入っていない物は出ません (木の asset group が入っていなければ、
   木も出ません)。
@@ -836,7 +837,7 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   エンジンの箱を使います (`build --dry-run --engine-check` を1回)。次に、円とそこへ届きうる範囲で `around` を1回読み、
   ここで探します (tools/tf3ctl.py の `fit_search`。ゲームなしでテストする純粋な関数)。点から外へ候補を並べ
   (`--step` ごとの格子、初期設定 4 m)、向きごとに (`--angle`、無ければ 4 方向)、回した箱が、around の箱 (町・木・node・
-  動く物・terrain・map と、縦横とも 2000 m 以上の箱は除く。地図そのものの箱が、前は全部の候補の邪魔をしていた。2026-11-23) から 0.5 m、道路と線路の線から幅の半分だけ離れていれば残します。`--mouth DX,DY` (建造物の向きでの
+  動く物・map と、縦横とも 2000 m 以上の箱は除く。地図そのものの箱が、前は全部の候補の邪魔をしていた。2026-11-23) から 0.5 m、道路と線路の線から幅の半分だけ離れていれば残します。`--mouth DX,DY` (建造物の向きでの
   道路の出入り口。試しに建てた build の `connectable` の mouth の `local`) を付けると、その点が、建造物に属さない道路の
   区間の端にちょうど重なる位置だけを、15 度ごとに試します (`--track` なら線路の端)。その端の区間は、そこで箱に触れて
   かまいません。`--houses N`: 箱の中心から `--catchment` (初期設定 150 m) 以内に町の建物が N 戸以上。
