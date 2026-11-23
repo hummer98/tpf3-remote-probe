@@ -11793,6 +11793,10 @@ dofile(root .. "/tests/run_lanes.lua")({ test = test, eq = eq, truthy = truthy, 
 -- the diagnosis of stations --catchment (tests/run_catchment.lua)
 dofile(root .. "/tests/run_catchment.lua")({ test = test, eq = eq, truthy = truthy, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
+-- road --batch (tests/run_road_batch.lua)
+dofile(root .. "/tests/run_road_batch.lua")({ test = test, eq = eq, truthy = truthy, core = core,
+	send = send, frames = frames, final = final, FIRST = FIRST, roadWorld = roadWorld, roadRun = roadRun,
+	forestWorld = forestWorld, nodeAt = nodeAt })
 -- running-costs and finance (tests/run_runcost.lua)
 dofile(root .. "/tests/run_runcost.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })

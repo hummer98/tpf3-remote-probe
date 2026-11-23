@@ -106,6 +106,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 \
             --bridge hummer_pier_spike::/infrastructure/bridge/hps_pillarless.bridge [--dry-run --engine-check]
             # the piece as a bridge of that type (edge type BRIDGE); ends in the air by their z (or a node there)
+  tf3ctl.py road --batch pieces.json [--dry-run [--engine-check]] [--ignore-errors] [--remove-fields]
+            # several pieces in one proposal, judged and built together (at most 16): a JSON list, each piece with
+            # road's values (from, to, type, bridge, snap, tangent-from, tangent-to, align-to-edge, align-edge) and
+            # from-node / to-node: an existing node's id, or "@a" for a new node the pieces share
   tf3ctl.py road --inspect-node 4077   # read only: the node's pieces, construction, set-up (with its
             # trafficLightPreference YES / NO / AUTO), octree hits
   tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only, not in coop: the junction's traffic light
@@ -2722,9 +2726,10 @@ def road_inspect_args(ns):
     """road --inspect-node ID (read only): the node alone; nothing else goes with it."""
     if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run \
             or ns.engine_check or ns.remove_fields or getattr(ns, "remove_buildings", False) \
-            or getattr(ns, "ignore_errors", False) or getattr(ns, "bridge", None) is not None:
+            or getattr(ns, "ignore_errors", False) or getattr(ns, "bridge", None) is not None \
+            or getattr(ns, "batch", None) is not None:
         raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run, "
-                        "--engine-check, --remove-fields, --remove-buildings, --ignore-errors, --bridge)")
+                        "--engine-check, --remove-fields, --remove-buildings, --ignore-errors, --bridge, --batch)")
     if getattr(ns, "tangent_from", None) is not None or getattr(ns, "tangent_to", None) is not None \
             or getattr(ns, "align_to_edge", None) is not None or getattr(ns, "align_edge", None):
         raise ToolError("--inspect-node takes nothing else (no --tangent-from, --tangent-to, --align-to-edge, "
@@ -2822,6 +2827,140 @@ def road_args(ns):
 
 
 ROAD_MAX_SNAP = 20  # the mod's core.ROAD_LIMITS.snap
+ROAD_BATCH_MAX = 16  # the mod's core.ROAD_BATCH_MAX
+# a --batch piece's keys as road's flags spell them (and as the mod's args, which are read too) -> the mod's
+ROAD_BATCH_KEYS = {"from": "from", "to": "to", "from-node": "fromNode", "to-node": "toNode", "type": "type",
+                   "bridge": "bridge", "snap": "snap", "tangent-from": "tangentFrom", "tangent-to": "tangentTo",
+                   "align-to-edge": "alignToEdge", "align-edge": "alignEdge"}
+ROAD_BATCH_KEYS.update({v: v for v in list(ROAD_BATCH_KEYS.values())})
+
+
+def road_batch_args(ns):
+    """road --batch FILE: the pieces of one proposal from a JSON list (each as road's flags, from-node / to-node
+    besides), with the options that go for the whole proposal (--dry-run, --engine-check, --remove-fields,
+    --remove-buildings, --ignore-errors) beside them. Each piece is checked as road_args checks road's flags; the
+    mod checks them all again (the named nodes' points among them). Nothing is sent when the file does not read."""
+    for flag, v in (("--from", ns.from_), ("--to", ns.to), ("--type", ns.type), ("--snap", ns.snap),
+                    ("--bridge", getattr(ns, "bridge", None)), ("--tangent-from", getattr(ns, "tangent_from", None)),
+                    ("--tangent-to", getattr(ns, "tangent_to", None)),
+                    ("--align-to-edge", getattr(ns, "align_to_edge", None)),
+                    ("--align-edge", getattr(ns, "align_edge", None) or None),
+                    ("--inspect-node", getattr(ns, "inspect_node", None))):
+        if v is not None:
+            raise ToolError("--batch takes the pieces from its file: %s goes in each piece there (nothing sent)" % flag)
+    try:
+        def once(pairs):
+            # (a key written twice in one object: json would take the last one silently)
+            seen = {}
+            for k, v in pairs:
+                if k in seen:
+                    raise ToolError("--batch %s: %r written twice in one object (nothing sent)" % (ns.batch, k))
+                seen[k] = v
+            return seen
+        with open(ns.batch, encoding="utf-8") as f:
+            pieces = json.load(f, object_pairs_hook=once)
+    except OSError as e:
+        raise ToolError("--batch %s: cannot read it: %s (nothing sent)" % (ns.batch, e))
+    except ValueError as e:
+        raise ToolError("--batch %s: not JSON: %s (nothing sent)" % (ns.batch, e))
+    if not isinstance(pieces, list):
+        raise ToolError("--batch: the file must hold a JSON list of pieces ([{\"from\": ..., \"to\": ...}, ...]); "
+                        "nothing sent")
+    if not pieces:
+        raise ToolError("--batch: the list is empty: give at least one piece (nothing sent)")
+    if len(pieces) > ROAD_BATCH_MAX:
+        raise ToolError("--batch: %d pieces, at most %d in one proposal (nothing sent)" % (len(pieces), ROAD_BATCH_MAX))
+    out = []
+    for i, el in enumerate(pieces, 1):
+        head = "--batch piece %d: " % i
+        if not isinstance(el, dict):
+            raise ToolError(head + "not a JSON object of from, to, ... (nothing sent)")
+        piece = {}
+        for k, v in el.items():
+            key = ROAD_BATCH_KEYS.get(k)
+            if key is None:
+                raise ToolError(head + "unknown key %r (from, to, from-node, to-node, type, bridge, snap, tangent-from, "
+                                "tangent-to, align-to-edge, align-edge; the whole proposal's --dry-run, --ignore-errors, "
+                                "... go on the command line) (nothing sent)" % (k,))
+            if key in piece:
+                raise ToolError(head + "%s given twice (nothing sent)" % k)
+            piece[key] = v
+        # (each piece's own values the way road takes them from its flags: from road_args, so both say the same)
+        flags = argparse.Namespace(
+            from_=None, to=None, type=None, snap=None, dry_run=False, engine_check=False, remove_fields=False,
+            remove_buildings=False, ignore_errors=False, bridge=None, tangent_from=None, tangent_to=None,
+            align_to_edge=None, align_edge=None)
+        def text(key, v):
+            if isinstance(v, list) and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v):
+                return ",".join(repr(float(x)) for x in v)
+            if isinstance(v, str):
+                return v
+            raise ToolError(head + "%s must be \"x,y[,z]\" or a list of numbers (nothing sent)" % key)
+        for key, attr in (("from", "from_"), ("to", "to"), ("tangentFrom", "tangent_from"), ("tangentTo", "tangent_to")):
+            if key in piece:
+                setattr(flags, attr, text(key, piece[key]))
+        for key, attr in (("type", "type"), ("bridge", "bridge"), ("alignToEdge", "align_to_edge")):
+            if key in piece:
+                if not isinstance(piece[key], str):
+                    raise ToolError(head + "%s must be a string (nothing sent)" % key)
+                setattr(flags, attr, piece[key])
+        if "snap" in piece:
+            v = piece["snap"]
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise ToolError(head + "snap must be a number of metres (nothing sent)")
+            flags.snap = float(v)
+        if "alignEdge" in piece:
+            v = piece["alignEdge"]
+            v = [v] if isinstance(v, int) and not isinstance(v, bool) else v
+            if not isinstance(v, list) or not all(isinstance(x, int) and not isinstance(x, bool) for x in v):
+                raise ToolError(head + "align-edge must be a piece's entity id or a list of them (nothing sent)")
+            flags.align_edge = v
+        if flags.align_to_edge is not None and flags.align_to_edge not in ("from", "to", "both"):
+            raise ToolError(head + "align-to-edge must be from, to or both (nothing sent)")
+        nodes = {}
+        for key in ("fromNode", "toNode"):
+            if key not in piece:
+                continue
+            v = piece[key]
+            name = "from-node" if key == "fromNode" else "to-node"
+            if isinstance(v, int) and not isinstance(v, bool):
+                if v < 0:
+                    raise ToolError(head + "%s must be a node's entity id (0 or more) or \"@name\" (nothing sent)" % name)
+                if key[:-4] in piece:
+                    raise ToolError(head + "give %s or %s %d (an existing node), not both (nothing sent)"
+                                    % (key[:-4], name, v))
+            elif isinstance(v, str):
+                if not re.match(r"^@[A-Za-z0-9_-]{1,32}$", v.strip()):
+                    raise ToolError(head + "%s %r: a new node's name is @ and up to 32 letters, digits, _ or - "
+                                    "(nothing sent)" % (name, v))
+                v = v.strip()
+            else:
+                raise ToolError(head + "%s must be a node's entity id or \"@name\" (nothing sent)" % name)
+            nodes[key] = v
+        # road_args wants both ends as points: an end given by its node only is put in for the check and taken out
+        for key, attr in (("fromNode", "from_"), ("toNode", "to")):
+            if key in nodes and getattr(flags, attr) is None:
+                setattr(flags, attr, "0,0")
+        try:
+            got = road_args(flags)
+        except ToolError as e:
+            raise ToolError(head + str(e) + " (nothing sent)")
+        for key, end in (("fromNode", "from"), ("toNode", "to")):
+            if key in nodes:
+                if end not in piece:
+                    got.pop(end, None)
+                got[key] = nodes[key]
+        out.append(got)
+    # the whole proposal's options, as road's
+    whole = argparse.Namespace(from_="0,0", to="0,0", type=None, snap=None, dry_run=ns.dry_run,
+                               engine_check=ns.engine_check, remove_fields=ns.remove_fields,
+                               remove_buildings=getattr(ns, "remove_buildings", False),
+                               ignore_errors=getattr(ns, "ignore_errors", False))
+    args = road_args(whole)
+    args.pop("from")
+    args.pop("to")
+    args["batch"] = out
+    return args
 
 TERRAIN_MAX_SIDE = 1024  # the mod's core.TERRAIN_MAX_SIDE (metres per side)
 TERRAIN_TIMEOUT_SEC = 180  # the mod waits 120 s for the replacement's callback
@@ -5516,6 +5655,14 @@ def make_parser():
                     "piece needs --align-edge")
     rd.add_argument("--align-edge", type=int, action="append", metavar="ID", help="with --align-to-edge: the road "
                     "piece to follow at a node with more than one (once per end; each id is taken at the end it is at)")
+    rd.add_argument("--batch", metavar="FILE", help="several pieces in one proposal (one SimpleProposal, judged and "
+                    "built together; at most %d): a JSON file with a list of pieces, each an object with road's own "
+                    "values by their flags' names (from, to, type, bridge, snap, tangent-from, tangent-to, "
+                    "align-to-edge, align-edge) and from-node / to-node: an existing road node's entity id (joined as "
+                    "it is, no snap), or a name \"@a\" for a new node the pieces share (its point given at one of its "
+                    "ends at least, the same at each). --dry-run, --engine-check, --remove-fields, --remove-buildings "
+                    "and --ignore-errors go for the whole proposal, as for one piece; the answer is the one proposal's "
+                    "(errors, critical, hits) with each piece's ends and edge" % ROAD_BATCH_MAX)
     rd.add_argument("--inspect-node", type=int, metavar="ID", help="read only, alone: what road reads of one node "
                     "(the street system's pieces there, the construction it belongs to and whether it is frozen, its "
                     "junction set-up, the octree's pieces within 1, 5 and 20 m) and what road would do with it")
@@ -6135,7 +6282,7 @@ def main(argv=None):
         elif ns.cmd == "road" and ns.inspect_node is not None:
             res = send("roadInspect", road_inspect_args(ns))
         elif ns.cmd == "road":
-            args = road_args(ns)
+            args = road_batch_args(ns) if ns.batch is not None else road_args(ns)
             log_path = game_log_path()
             log_start = log_size(log_path)
             res = check_build_answer(args, send("road", args, timeout=BUILD_TIMEOUT_SEC), log_path, log_start)

@@ -1969,6 +1969,8 @@ function M.installBuild(g, spec)
 		local lanes = { walk(true), road(false), road(true), walk(false) }
 		-- (perSide 2: two road lanes each way)
 		if perSide == 2 then lanes = { walk(true), road(false), road(false), road(true), road(true), walk(false) } end
+		-- (perSide "oneWay": two road lanes, both node0 -> node1, as a one-way road)
+		if perSide == "oneWay" then lanes = { walk(true), road(true), road(true), walk(false) } end
 		-- (unread: modes that are no map, so that they cannot be read)
 		if unread then for _, l in ipairs(lanes) do l.transportModes = "?" end end
 		return lanes
@@ -2124,9 +2126,31 @@ function M.installBuild(g, spec)
 			costs = 0 }
 		local street = getmetatable(st.streetProposal).store
 		local newNodes = {}
+		-- the new entities' ids: -1, -2, ... over nodes and pieces, each once (type.d.tl SimpleStreetProposal: "entity
+		-- id will be decreasing starting from -1 for all new entities"); what the engine does with others is not
+		-- known: taken for an assertion here
+		local idsSeen, idCount = {}, 0
+		for _, list in ipairs({ street.nodesToAdd or {}, street.edgesToAdd or {} }) do
+			for _, x in ipairs(list) do
+				if type(x.entity) ~= "number" or x.entity >= 0 then crash("street proposal: new entity id " .. tostring(x.entity)) end
+				if idsSeen[x.entity] then crash("street proposal: entity id " .. tostring(x.entity) .. " twice") end
+				idsSeen[x.entity] = true
+				idCount = idCount + 1
+			end
+		end
+		for i = 1, idCount do
+			if not idsSeen[-i] then crash("street proposal: new entity ids are not -1 .. -" .. idCount .. " (no " .. -i .. ")") end
+		end
 		for _, n in ipairs(street.nodesToAdd or {}) do
-			newNodes[n.entity] = n.comp.position
 			local q = n.comp.position
+			-- (two new nodes on one point: refused as a new node on an old one, a guess at the engine's)
+			for _, o in pairs(newNodes) do
+				if (o.x - q.x) ^ 2 + (o.y - q.y) ^ 2 + (o.z - q.z) ^ 2 <= 0.0001 then
+					data.errorState.critical = true
+					table.insert(data.errorState.messages, "Construction not possible")
+				end
+			end
+			newNodes[n.entity] = n.comp.position
 			for _, o in pairs(g.nodes) do
 				if (o.x - q.x) ^ 2 + (o.y - q.y) ^ 2 + (o.z - q.z) ^ 2 <= 0.0001 then
 					data.errorState.critical = true
@@ -2173,6 +2197,14 @@ function M.installBuild(g, spec)
 					local n = 0
 					for _, ed in pairs(g.edges) do if ed.node0 == c[k] or ed.node1 == c[k] then n = n + 1 end end
 					if n >= 2 then crash("GetComponentDataIndex: node " .. tostring(c[k]) .. " has no BaseNodeConfig") end
+				end
+			end
+			-- a piece's end where its node is (a guess at what the engine asserts; Track Connector sends its pieces'
+			-- positions at their nodes')
+			for _, kk in ipairs({ { "node0", "position0" }, { "node1", "position1" } }) do
+				local q, at = newNodes[c[kk[1]]] or g.nodes[c[kk[1]]], c[kk[2]]
+				if q and at and (q.x - at.x) ^ 2 + (q.y - at.y) ^ 2 + (q.z - at.z) ^ 2 > 0.0001 then
+					crash("street proposal: " .. kk[2] .. " is not at " .. kk[1] .. " " .. tostring(c[kk[1]]))
 				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end

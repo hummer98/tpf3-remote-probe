@@ -6150,6 +6150,151 @@ class IgnoreErrorsTest(_ForceBase):
         self.refused("road", dict(self.road(), ignoreErrors=1), "must be true")
 
 
+class RoadBatchTest(_ForceBase):
+    """road --batch FILE (2026-11-24): several pieces in one proposal, from a JSON list; each piece checked as road's
+    flags are, the whole proposal's options beside them; nothing sent when the file does not read or a piece is bad.
+    It goes as the command road, so road's fences (--ignore-errors on test saves only and not in coop, the force
+    mark, changes_game) are the same."""
+
+    def setUp(self):
+        super().setUp()
+        # (the pieces' file beside the exchange folder, which refused checks for leftovers)
+        self.files = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.files, ignore_errors=True)
+
+    def batch(self, pieces, *a, raw=None):
+        path = os.path.join(self.files, "pieces.json")
+        write(path, raw if raw is not None else json.dumps(pieces))
+        return tf3ctl.road_batch_args(self.p.parse_args(["road", "--batch", path] + list(a)))
+
+    def bad(self, why, pieces=None, *a, raw=None):
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            self.batch(pieces, *a, raw=raw)
+        self.assertIn(why, str(cm.exception))
+        return cm.exception
+
+    TWO = [{"from-node": 8001, "to": "300,-12", "type": "town_new_medium", "tangent-from": [1, 0]},
+           {"from": [100, 0, 2], "to": "300,12", "to-node": "@a", "snap": 0, "align-to-edge": "from", "align-edge": 8100},
+           {"fromNode": "@a", "to": "400,12", "tangentTo": "1,0"}]
+
+    def test_pieces_by_road_flags_names_and_the_mods(self):
+        a = self.batch(self.TWO)
+        self.assertEqual(set(a), {"batch"}, "nothing else unless asked")
+        b = a["batch"]
+        self.assertEqual(b[0], {"fromNode": 8001, "to": [300.0, -12.0], "type": "town_new_medium", "tangentFrom": [1.0, 0.0]})
+        self.assertEqual(b[1], {"from": [100.0, 0.0, 2.0], "to": [300.0, 12.0], "toNode": "@a", "snap": 0.0,
+                                "alignToEdge": "from", "alignEdge": [8100]})
+        self.assertEqual(b[2], {"fromNode": "@a", "to": [400.0, 12.0], "tangentTo": [1.0, 0.0]})
+        # the whole proposal's options, as road's
+        a = self.batch(self.TWO, "--dry-run", "--engine-check", "--remove-fields", "--remove-buildings")
+        self.assertEqual((a["dryRun"], a["engineCheck"], a["removeFields"], a["removeBuildings"]), (True, True, True, True))
+        self.assertTrue(tf3ctl.changes_game("road", a), "the engine asked: changes the game, as road's")
+        self.assertFalse(tf3ctl.changes_game("road", self.batch(self.TWO, "--dry-run")))
+        self.assertTrue(tf3ctl.changes_game("road", self.batch(self.TWO)))
+        a = self.batch(self.TWO, "--ignore-errors", "--dry-run")
+        self.assertEqual((a["ignoreErrors"], a["engineCheck"]), (True, True), "a forced dry run asks the engine")
+        # what the mod is written: a Lua list of pieces
+        self.assertIn('["tangentFrom"] = { 1.0, 0.0 }, ["fromNode"] = 8001 }', tf3ctl.to_lua(self.batch(self.TWO)))
+        self.assertIn("--batch", " ".join(self.p._subparsers._group_actions[0].choices["road"].format_help().split()))
+
+    def test_bad_files_and_pieces_send_nothing(self):
+        self.bad("not JSON", raw="[{\"from\": ")
+        self.bad("not JSON", raw="")
+        self.bad("'from' written twice in one object", raw='[{"from": "0,0", "from": "5,0", "to": "1,0"}]')
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            tf3ctl.road_batch_args(self.p.parse_args(["road", "--batch", os.path.join(self.files, "none.json")]))
+        self.assertIn("cannot read it", str(cm.exception))
+        self.bad("a JSON list of pieces", {"from": "0,0", "to": "1,0"})
+        self.bad("the list is empty", [])
+        many = [{"from": [i * 20, 0], "to": [i * 20, 50]} for i in range(17)]
+        self.bad("17 pieces, at most 16", many)
+        self.assertEqual(len(self.batch(many[:16])["batch"]), 16)
+        for why, pieces in (
+                ("piece 2: not a JSON object", [{"from": "0,0", "to": "1,0"}, 5]),
+                ("piece 1: unknown key 'tangent_from'", [{"from": "0,0", "to": "1,0", "tangent_from": "1,0"}]),
+                ("unknown key 'dry-run'", [{"from": "0,0", "to": "1,0", "dry-run": True}]),
+                ("tangentFrom given twice", [{"from": "0,0", "to": "1,0", "tangent-from": "1,0", "tangentFrom": "1,0"}]),
+                ("piece 1: road needs --from and --to", [{"from": "0,0"}]),
+                ("piece 1: --to must be", [{"from": "0,0", "to": "1"}]),
+                ("piece 1: --from must be numbers", [{"from": "a,0", "to": "1,0"}]),
+                ("from must be", [{"from": True, "to": "1,0"}]),
+                ("snap must be 0-20", [{"from": "0,0", "to": "1,0", "snap": 30}]),
+                ("snap must be a number", [{"from": "0,0", "to": "1,0", "snap": "5"}]),
+                ("align-edge must be", [{"from": "0,0", "to": "1,0", "align-to-edge": "from", "align-edge": "x"}]),
+                ("align-to-edge must be from, to or both", [{"from": "0,0", "to": "1,0", "align-to-edge": "x"}]),
+                ("--align-edge goes with --align-to-edge only", [{"from": "0,0", "to": "1,0", "align-edge": 5}]),
+                ("from-node must be a node's entity id", [{"from-node": -1, "to": "1,0"}]),
+                ("from-node must be a node's entity id", [{"from-node": 1.5, "to": "1,0"}]),
+                ("a new node's name is @", [{"from-node": "a", "to": "1,0"}]),
+                ("a new node's name is @", [{"from-node": "@" + "x" * 33, "to": "1,0"}]),
+                ("give from or from-node 8001", [{"from": "0,0", "from-node": 8001, "to": "1,0"}]),
+                ("type must be a string", [{"from": "0,0", "to": "1,0", "type": 5}]),
+        ):
+            self.bad(why, pieces)
+        # road's own flags beside --batch: in the file instead
+        for flag in (["--from", "0,0"], ["--type", "x"], ["--snap", "1"], ["--tangent-from", "1,0"], ["--bridge", "concrete"]):
+            path = os.path.join(self.files, "pieces.json")
+            write(path, json.dumps(self.TWO))
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.road_batch_args(self.p.parse_args(["road", "--batch", path] + flag))
+            self.assertIn("goes in each piece there", str(cm.exception))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(self.p.parse_args(["road", "--inspect-node", "5", "--batch", "x.json"]))
+        with self.assertRaises(tf3ctl.ToolError):
+            self.batch(self.TWO, "--engine-check")  # without --dry-run, as road
+
+    def test_main_sends_nothing_for_a_bad_file(self):
+        path = os.path.join(self.files, "pieces.json")
+        write(path, "[]")
+        written = []
+        with unittest.mock.patch.object(tf3ctl, "write_command", lambda *a: written.append(a)), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = tf3ctl.main(["road", "--batch", path])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(written, [], "nothing written for the game")
+
+    def test_one_bad_piece_of_three_sends_none(self):
+        # piece 2 of three fails tf3ctl's check: nothing written for the game, the piece named
+        pieces = [dict(self.TWO[0]), {"from": "0,900", "to": "100,900", "snap": 99}, dict(self.TWO[2])]
+        path = os.path.join(self.files, "pieces.json")
+        write(path, json.dumps(pieces))
+        written, err = [], io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "write_command", lambda *a: written.append(a)), \
+                contextlib.redirect_stdout(err), contextlib.redirect_stderr(err):
+            code = tf3ctl.main(["--owner", "alice", "road", "--batch", path])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(written, [], "nothing written for the game")
+        self.assertIn("--batch piece 2: --snap must be 0-20", err.getvalue())
+        # forced on a person's save or in coop: the batch as a whole refused, nothing written (fences above)
+        self.loaded("aom-eu-1900")
+        self.refused("road", self.batch(self.TWO, "--ignore-errors"), "is not a test save's")
+
+    def test_fences_as_roads(self):
+        # a test save: sent with the save named; the force mark counts a forced batch as one forced build
+        a = self.sent("road", self.batch(self.TWO, "--ignore-errors"))
+        self.assertEqual((a["ignoreErrors"], a["_testSave"]), (True, "probe-flat-base"))
+        self.assertEqual(len(a["batch"]), 3)
+        rec = json.loads(read(tf3ctl.launched_path()))
+        self.assertEqual((rec["forced"], rec["forcedCount"]), (True, 1))
+        self.refused("save", {"name": "aom-shot-x"}, "probe-force-* names")
+        # a person's save, a new game: refused, nothing sent
+        self.loaded("aom-eu-1900")
+        e = self.refused("road", self.batch(self.TWO, "--ignore-errors"), "'aom-eu-1900' is not a test save's")
+        self.assertEqual(e.refused, "ignore-errors")
+        self.refused("road", self.batch(self.TWO, "--ignore-errors", "--dry-run"), "is not a test save's")
+        self.assertNotIn("ignoreErrors", self.sent("road", self.batch(self.TWO)), "unforced it goes, as road")
+        self.loaded("")
+        self.refused("road", self.batch(self.TWO, "--ignore-errors"), "a new game with no save name")
+        # coop: refused forced, unforced it goes (road is among the coop client's commands)
+        self.loaded("probe-flat-base")
+        tf3ctl.coop_start(60, "two roads with the user")
+        self.refused("road", self.batch(self.TWO, "--ignore-errors"), "coop mark")
+        self.assertNotIn("ignoreErrors", self.sent("road", self.batch(self.TWO)))
+        # a _testSave written into the file's pieces or beside them by hand is not tf3ctl's word: dropped
+        a = self.sent("road", dict(self.batch(self.TWO), _testSave="probe-x"))
+        self.assertNotIn("_testSave", a)
+
+
 class ForcedSaveTest(_ForceBase):
     """After road --ignore-errors went to this run of the game (a build, not --dry-run), save goes to probe-force-*
     names only (2026-11-24): a state built past the engine's checks must not land in a test base or a person's
