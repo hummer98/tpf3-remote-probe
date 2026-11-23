@@ -1006,6 +1006,23 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no match", res["error"])
 
+    def test_9x_entities_warehouse_and_its_stocks(self):
+        code, res = self.ctl("entities", "--kind", "warehouse")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["entities"], [{"id": 46841, "name": "", "construction": 46840, "stockList": 46842,
+                                            "stocks": 2, "capacity": 1500}])
+        # the construction's id (as build gives it) reaches the warehouse's stock list
+        code, res = self.ctl("stock", "list", "--entity", "46840")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["stockList"], res["via"], res["owner"], res["construction"], len(res["stocks"])),
+                         (46842, "CONSTRUCTION>WAREHOUSE", 46841, 46840, 2))
+        code, res = self.ctl("stock", "set", "--entity", "46840", "--stock", "1", "--amount", "500", "--dry-run")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["sent"], res["stockList"], res["before"]), (False, 46842, 0))
+        code, res = self.ctl("stock", "set", "--entity", "46840", "--stock", "1", "--amount", "501")
+        self.assertEqual(code, 1, res)
+        self.assertIn("capacity (500)", res["error"])
+
     def test_9x_window_manager(self):
         code, res = self.ctl("window", "--line", "Bus 1", "--manager")
         self.assertEqual(code, 0, res)
@@ -1593,6 +1610,13 @@ class QuitLaunchTest(unittest.TestCase):
                                 ("stockSet", {"entity": 47, "stock": 1, "amount": 100, "cargo": "COAL"},
                                  tf3ctl.STOCK_TIMEOUT_SEC),
                                 ("steps", {"count": 500, "dryRun": True}, tf3ctl.steps_timeout(500))])
+        # warehouses: entities --kind warehouse and window --warehouse NAME
+        del sent[:]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["entities", "--kind", "warehouse"]), 0)
+            self.assertEqual(tf3ctl.main(["window", "--warehouse", "Lager"]), 0)
+        self.assertEqual([(c, a) for c, a, _ in sent], [("entities", {"kind": "warehouse", "limit": 200}),
+                                                       ("window", {"kind": "warehouse", "name": "Lager"})])
 
     def test_build_args_and_main(self):
         def ns(**kw):

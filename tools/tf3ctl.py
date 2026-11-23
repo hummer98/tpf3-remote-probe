@@ -103,7 +103,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] [--dry-run]   # test saves only: the town's
             # size factors (makeTownUpdateSizeCmd); answers the factors and the town's buildings before / after
   tf3ctl.py stock list --entity 51          # read only: a stock list's stocks (ids 0-based), counts per cargo; an
-            # industry, town building or warehouse, a station, or a vehicle (its load per cargo, stock -1)
+            # industry, town building or warehouse, a station, a construction with one under it (a warehouse's, as
+            # build gives it: entities --kind warehouse lists them), or a vehicle (its load per cargo, stock -1)
   tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]   # debug command: test saves
             # only; a vehicle's load: --stock -1 --cargo NAME. Answers before / after and the engine's success
   tf3ctl.py steps 500 [--dry-run]           # debug command: the simulation 1-10000 steps on; test saves only.
@@ -3790,13 +3791,14 @@ def make_parser():
     sc.add_argument("--preview", help="also write a small JPEG here (needs ImageMagick)")
     sc.add_argument("--preview-width", type=int, default=1600)
     sc.add_argument("--timeout", type=float, default=60)
-    en = sub.add_parser("entities", help="towns, lines, vehicles, stations or industries with their ids")
-    en.add_argument("--kind", required=True, choices=["town", "line", "vehicle", "station", "industry"])
+    en = sub.add_parser("entities", help="towns, lines, vehicles, stations, industries or warehouses with their ids "
+                                         "(a warehouse: its construction, stock list entity, stocks and capacity)")
+    en.add_argument("--kind", required=True, choices=["town", "line", "vehicle", "station", "industry", "warehouse"])
     en.add_argument("--grep")
     en.add_argument("--limit", type=int, default=200)
-    wi = sub.add_parser("window", help="open the window of a town, line, vehicle, station or industry")
+    wi = sub.add_parser("window", help="open the window of a town, line, vehicle, station, industry or warehouse")
     wg = wi.add_mutually_exclusive_group(required=True)
-    for kind in ("town", "line", "vehicle", "station", "industry"):
+    for kind in ("town", "line", "vehicle", "station", "industry", "warehouse"):
         wg.add_argument("--" + kind, metavar="NAME", help="exact name (any case) or a unique part of it")
     wg.add_argument("--entity", type=int)
     wg.add_argument("--close-all", action="store_true")
@@ -4025,8 +4027,10 @@ def make_parser():
     ssub = sk.add_subparsers(dest="action", required=True)
     skl = ssub.add_parser("list", help="read only: the stocks (ids 0-based), cargo, capacity, counts per cargo; a "
                                        "vehicle's load per cargo")
-    skl.add_argument("--entity", type=int, required=True, help="an industry, station, town building or vehicle "
-                                                               "(industry-stocks, stations, vehicles)")
+    skl.add_argument("--entity", type=int, required=True, help="an industry, station, town building, warehouse, a "
+                                                               "construction with one (as build gives it) or a "
+                                                               "vehicle (industry-stocks, stations, entities --kind "
+                                                               "warehouse, vehicles)")
     sks = ssub.add_parser("set", help="set a stock's amount (api.cmd.debug.makeStockSetCargoAmountCmd): test saves only")
     sks.add_argument("--entity", type=int, required=True, help="as stock list")
     sks.add_argument("--stock", type=int, required=True, help="the stock's id as stock list shows it (0-based); -1: "
@@ -4329,7 +4333,8 @@ def main(argv=None):
             elif ns.entity is not None:
                 args = {"entity": ns.entity}
             else:
-                kind = next(k for k in ("town", "line", "vehicle", "station", "industry") if getattr(ns, k))
+                kind = next(k for k in ("town", "line", "vehicle", "station", "industry", "warehouse")
+                            if getattr(ns, k))
                 args = {"kind": kind, "name": getattr(ns, kind)}
             if ns.manager:
                 if ns.close_all or (ns.line is None and ns.entity is None):

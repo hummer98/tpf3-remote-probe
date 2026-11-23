@@ -424,9 +424,17 @@ function M.new(ctx)
 		end
 		local okC, conn, connWhy = pcall(connectableOf, c)
 		if not okC then conn, connWhy = nil, tostring(conn) end
+		-- the stock lists under it (a warehouse's: { entity, kind = "WAREHOUSE", stockList }), the ids stock list
+		-- and stock set take (they take this construction's id too, when there is one): only ids the engine has
+		-- reach getComponent, and only component kinds this game has
+		local okS, owners = pcall(core.stockOwnersOf, c, function(v, k)
+			if v == e or CT()[k] == nil or try(function() return api.engine.entityExists(v) end) ~= true then return nil end
+			return comp(v, k)
+		end)
 		return { entity = e, fileName = tostring(core.field(c, "fileName")), name = nameOf(e),
 			ends = #ends > 0 and core.array(ends) or nil, depots = list("depots"), stations = list("stations"),
-			industries = list("industries"), connectable = conn, connectableWhy = connWhy }
+			industries = list("industries"), stockLists = okS and #owners > 0 and core.array(owners) or nil,
+			connectable = conn, connectableWhy = connWhy }
 	end
 
 	-- what the engine has under an id now, for build remove (core.buildRemovable): file, position, name, mark

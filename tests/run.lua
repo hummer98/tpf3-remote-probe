@@ -7839,6 +7839,32 @@ test("build: a ramp at x,y on the terrain, turned, with its defaults; the answer
 	truthy(not g.crashed, g.crashed)
 end)
 
+test("build: a warehouse's answer names the stock list under its construction (stock list / stock set take it)", function()
+	local WH = "::/warehouses/warehouse.con"
+	local g = buildWorld({ cons = { [WH] = { cost = 1000, warehouse = true }, [RAMP] = { cost = 5000 } } })
+	local a = buildRun(g, 905, string.format('{ res = %q, at = "100,200" }', WH))
+	truthy(a.ok, a.error)
+	local sl = a.construction.stockLists
+	truthy(sl, "stockLists in the answer"); eq(#sl, 1)
+	local wh = g.built[a.entity].subconstructions[1]
+	eq(sl[1].entity, wh); eq(sl[1].kind, "WAREHOUSE"); eq(sl[1].stockList, g.buildWarehouses[wh].stockList)
+	-- the construction's id, as build answered it, reaches that stock list in stock list and stock set
+	local slId = sl[1].stockList
+	fake.installDebug(g, { stockLists = { [slId] = { stocks = {
+		{ type = 2, cargoType = -1, cargoTypes = { 1, 2 }, capacity = 500, count = 0, byCargo = {} } } } } })
+	send(g, 907, "stockList", string.format("{ entity = %d }", a.entity)); frames(g, FIRST + 10)
+	local l = final(g, 907)
+	truthy(l.ok, l.error); eq(l.stockList, slId); eq(l.owner, wh); eq(l.via, "CONSTRUCTION>WAREHOUSE"); eq(#l.stocks, 1)
+	send(g, 908, "stockSet", string.format('{ entity = %d, stock = 0, amount = 200, cargo = "COAL" }', a.entity))
+	frames(g, FIRST + 10)
+	local s = final(g, 908)
+	truthy(s.ok, s.error); eq(g.debugCmds[1].entity, slId); eq(s.after, 200)
+	-- a construction with nothing under it: no stockLists
+	local r = buildRun(g, 906, string.format('{ res = %q, at = "400,200" }', RAMP))
+	truthy(r.ok, r.error); eq(r.construction.stockLists, nil)
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("build: a depot's id comes back (to buy at); the base game's name without ::/ is found", function()
 	local g = buildWorld()
 	local a = buildRun(g, 910, '{ res = "depots/water/ship_depot.con.lua", at = "0,0", name = "Yard" }')
@@ -9923,6 +9949,116 @@ test("stockSet: what the stock cannot take is refused before anything is sent; d
 	local s = debugRun(g, 2241, "steps", "{ count = 50, dryRun = true }")
 	truthy(s.ok, s.error); eq(s.sent, false); eq(s.count, 50)
 	eq(#g.debugCmds, 0, "a dry run sends nothing"); eq(g.updateCount, 1000)
+	truthy(not g.crashed, g.crashed)
+end)
+
+-- warehouses (2026-11-23): build gives the construction; its one subconstruction has WAREHOUSE, whose stockList
+-- holds a mixed stock for the universal modules and one stock per specialized module (warehouse.script.lua)
+local function warehouseGame()
+	return debugGame({ strictIds = true,
+		constructions = {
+			[46840] = { subconstructions = { 46841 } }, -- a warehouse: a universal and a specialized module
+			[46850] = { subconstructions = { 46851 } }, -- a warehouse whose stock list has no stocks
+			[46860] = { subconstructions = {} },        -- a construction with nothing under it
+			[46870] = { subconstructions = { 46871 }, industries = { 46871, 46872 } }, -- two industries
+			[46880] = { subconstructions = { 99998, 46880 } }, -- an id the engine does not have, and itself
+		},
+		owners = {
+			[46841] = { kind = "WAREHOUSE", stockList = 46842, construction = 46840 },
+			[46851] = { kind = "WAREHOUSE", stockList = 46852, construction = 46850 },
+			[46871] = { kind = "INDUSTRY", stockList = 46873 },
+			[46872] = { kind = "INDUSTRY", stockList = 46874 },
+		},
+		stockLists = {
+			[46842] = { stocks = {
+				{ type = 2, cargoType = -1, cargoTypes = { 1, 2 }, capacity = 1000, count = 0, byCargo = {} },
+				{ type = 2, cargoType = 2, capacity = 500, count = 0 } } },
+			[46852] = { stocks = {} },
+			[46873] = { stocks = { { type = 0, cargoType = 1, capacity = 10 } } },
+			[46874] = { stocks = { { type = 1, cargoType = 2, capacity = 10 } } },
+		} })
+end
+
+test("core.stockOwnersOf: the owners under a construction, one per stock list; nil and unknown kinds skipped", function()
+	local comps = {
+		[1] = { WAREHOUSE = { stockList = 10 } }, [2] = { INDUSTRY = { stockList = 20 } },
+		[3] = { TOWN_BUILDING = { stockList = -1 } }, [4] = { INDUSTRY = { stockList = 10 } }, -- the same list again
+	}
+	local asked = {}
+	local function read(e, k)
+		asked[#asked + 1] = e .. k
+		return (comps[e] or {})[k]
+	end
+	local o = core.stockOwnersOf({ subconstructions = { 1, 3, 5 }, industries = { 2, 1, 4 }, townBuildings = { -1 } }, read)
+	eq(#o, 2); eq(o[1].entity, 1); eq(o[1].kind, "WAREHOUSE"); eq(o[1].stockList, 10)
+	eq(o[2].entity, 2); eq(o[2].kind, "INDUSTRY"); eq(o[2].stockList, 20)
+	for _, a in ipairs(asked) do truthy(not a:find("^%-1"), "a negative id is never asked: " .. a) end
+	eq(#core.stockOwnersOf(nil, read), 0)
+	eq(#core.stockOwnersOf({}, read), 0)
+	-- engine vectors as userdata: read through core.toList
+	local u = newproxy(true)
+	getmetatable(u).__index = function(_, i) return ({ 1 })[i] end
+	getmetatable(u).__len = function() return 1 end
+	eq(core.stockOwnersOf({ subconstructions = u }, read)[1].stockList, 10)
+end)
+
+test("stockList: a warehouse by its construction (as build gives it) or its WAREHOUSE entity", function()
+	local g = warehouseGame()
+	local a = debugRun(g, 2261, "stockList", "{ entity = 46840 }")
+	truthy(a.ok, a.error); eq(a.kind, "stockList"); eq(a.stockList, 46842); eq(a.via, "CONSTRUCTION>WAREHOUSE")
+	eq(a.owner, 46841); eq(a.construction, 46840); eq(#a.stocks, 2)
+	eq(a.stocks[1].stockId, 0); eq(a.stocks[1].capacity, 1000); eq(a.stocks[1].typeName, "StorageStock")
+	eq(a.stocks[1].cargoType, -1); eq(#a.stocks[1].cargoTypes, 2)
+	eq(a.stocks[2].stockId, 1); eq(a.stocks[2].cargo, "GRAIN"); eq(a.stocks[2].capacity, 500)
+	local w = debugRun(g, 2262, "stockList", "{ entity = 46841 }")
+	truthy(w.ok, w.error); eq(w.stockList, 46842); eq(w.via, "WAREHOUSE"); eq(w.owner, nil); eq(w.construction, nil)
+	-- a warehouse whose stock list has no stocks: read, empty
+	local e = debugRun(g, 2263, "stockList", "{ entity = 46850 }")
+	truthy(e.ok, e.error); eq(e.stockList, 46852); eq(#e.stocks, 0)
+	-- nothing under it; two stock lists (refused, naming them); an unknown id and itself among its subconstructions
+	local n = debugRun(g, 2264, "stockList", "{ entity = 46860 }")
+	eq(n.ok, false); truthy(n.error:find("construction 46860 has no stock list under it", 1, true), n.error)
+	local t = debugRun(g, 2265, "stockList", "{ entity = 46870 }")
+	eq(t.ok, false); truthy(t.error:find("2 stock lists", 1, true), t.error)
+	truthy(t.error:find("46871 (INDUSTRY, stock list 46873)", 1, true) and t.error:find("46872", 1, true), t.error)
+	local x = debugRun(g, 2266, "stockList", "{ entity = 46880 }")
+	eq(x.ok, false); truthy(x.error:find("no stock list under it", 1, true), x.error)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("stockSet: a warehouse by its construction goes to its stock list entity; checked against its stocks", function()
+	local g = warehouseGame()
+	local a = debugRun(g, 2271, "stockSet", '{ entity = 46840, stock = 0, amount = 300, cargo = "COAL" }')
+	truthy(a.ok, a.error); eq(a.sent, true); eq(a.stockList, 46842); eq(a.via, "CONSTRUCTION>WAREHOUSE")
+	eq(a.owner, 46841); eq(a.construction, 46840)
+	eq(g.debugCmds[1].entity, 46842); eq(g.debugCmds[1].stock, 0); eq(g.debugCmds[1].cargoType, "COAL")
+	eq(a.before, 0); eq(a.after, 300)
+	local b = debugRun(g, 2272, "stockSet", "{ entity = 46840, stock = 1, amount = 500 }")
+	truthy(b.ok, b.error); eq(g.debugCmds[2].entity, 46842); eq(g.debugCmds[2].nargs, 3); eq(b.after, 500)
+	for i, case in ipairs({
+		{ "{ entity = 46840, stock = 1, amount = 501 }", "capacity (500)" },
+		{ "{ entity = 46840, stock = 2, amount = 1 }", "no stock 2" },
+		-- the universal stock holds the 300 coal: 701 grain does not fit beside it
+		{ '{ entity = 46840, stock = 0, amount = 701, cargo = "GRAIN" }', "other cargo" },
+		{ "{ entity = 46850, stock = 0, amount = 1 }", "has no stocks" },
+		{ "{ entity = 46860, stock = 0, amount = 1 }", "no stock list under it" },
+		{ "{ entity = 46870, stock = 0, amount = 1 }", "2 stock lists" },
+	}) do
+		local r = debugRun(g, 2272 + i, "stockSet", case[1])
+		eq(r.ok, false, case[1]); truthy(tostring(r.error):find(case[2], 1, true), tostring(r.error) .. " / " .. case[2])
+	end
+	eq(#g.debugCmds, 2, "nothing more sent")
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("entities --kind warehouse: id, construction, stock list, its stocks and capacity", function()
+	local g = warehouseGame()
+	local a = debugRun(g, 2281, "entities", '{ kind = "warehouse" }')
+	truthy(a.ok, a.error); eq(a.kind, "warehouse"); eq(a.total, 2)
+	local by = {}
+	for _, e in ipairs(a.entities) do by[e.id] = e end
+	eq(by[46841].construction, 46840); eq(by[46841].stockList, 46842); eq(by[46841].stocks, 2); eq(by[46841].capacity, 1500)
+	eq(by[46851].construction, 46850); eq(by[46851].stocks, 0); eq(by[46851].capacity, 0)
 	truthy(not g.crashed, g.crashed)
 end)
 

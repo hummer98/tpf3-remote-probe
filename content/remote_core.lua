@@ -692,9 +692,9 @@ function M.newGameStart(base, du, duError)
 end
 
 ---------------------------------------------------------------------------------------------------------------------
--- towns, lines, vehicles, stations and industries by name (for the window command)
+-- towns, lines, vehicles, stations, industries and warehouses by name (for the window command)
 
-M.ENTITY_KINDS = { town = true, line = true, vehicle = true, station = true, industry = true }
+M.ENTITY_KINDS = { town = true, line = true, vehicle = true, station = true, industry = true, warehouse = true }
 
 -- list: { { id = n, name = s } }. An exact name (any case) wins; otherwise a unique substring match.
 -- Returns the entry, or nil and why (with up to 10 candidates).
@@ -3060,7 +3060,41 @@ local function wholeNumber(v)
 	return n
 end
 
--- stockList: args entity (a stock list, an industry / town building / warehouse holding one, or a vehicle)
+-- The stock lists under a construction, through its subconstructions as the base finds a warehouse's or an
+-- industry's window from the construction (the base takes the first; the caller here refuses two or more)
+-- (view_manager_util.tl: the WAREHOUSE / INDUSTRY component of one of con.subconstructions; the
+-- stock list entity in its stockList, as cargo_util.getStockListEntityFromOwner). A warehouse (warehouse.script.lua)
+-- has one subconstruction holding all its stocks: one mixed stock for the universal modules (their capacities
+-- summed) and one stock for each specialized module. c: the CONSTRUCTION component; read(e, kind): that component
+-- of e, or nil (only ids the engine has may reach getComponent: read checks). -> { { entity, kind, stockList } },
+-- one per stock list (an owner listed twice, in subconstructions and industries, counts once).
+M.STOCK_OWNER_KINDS = { "WAREHOUSE", "INDUSTRY", "TOWN_BUILDING" }
+function M.stockOwnersOf(c, read)
+	local out, seenEntity, seenList = {}, {}, {}
+	if c == nil then return out end
+	for _, list in ipairs({ "subconstructions", "industries", "townBuildings" }) do
+		for _, v in ipairs(M.toList(M.field(c, list))) do
+			v = tonumber(v)
+			if v and v >= 0 and not seenEntity[v] then
+				seenEntity[v] = true
+				for _, kind in ipairs(M.STOCK_OWNER_KINDS) do
+					local s = tonumber(M.field(read(v, kind), "stockList"))
+					if s and s >= 0 then
+						if not seenList[s] then
+							seenList[s] = true
+							out[#out + 1] = { entity = v, kind = kind, stockList = s }
+						end
+						break
+					end
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- stockList: args entity (a stock list, an industry / town building / warehouse holding one, a construction with
+-- one of those under it, or a vehicle)
 function M.stockListArgs(args)
 	args = type(args) == "table" and args or {}
 	local e = wholeNumber(args.entity)
