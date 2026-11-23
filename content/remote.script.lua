@@ -1266,7 +1266,8 @@ modhub = (ug_require or require)(MOD .. "::/remote_modhub.lua").new({ core = cor
 for k, fn in pairs(modhub.handlers) do handlers[k] = fn end
 -- reach (remote_reach.lua): read only, whether a place can be got to (the engine's targets, town problems, a path)
 local reach = (ug_require or require)(MOD .. "::/remote_reach.lua").new({ core = core, answer = answer, fail = fail,
-	try = try, appTime = fineTime, say = say, posOf = function(e) return lines.posOf(e) end })
+	try = try, appTime = fineTime, say = say, posOf = function(e) return lines.posOf(e) end,
+	modeNames = lanesMod.modeNames, tmNamer = lanesMod.tmNamer })
 handlers.reach = reach.handle
 -- running costs and finance (remote_runcost.lua): a model's running-cost fields read and (test saves) written, through
 -- the game script (remote_gs.script.lua) whose state guiUpdate is handed

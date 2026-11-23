@@ -97,6 +97,51 @@ function M.summary(lanes)
 		busLanes = busLanes, hasBusLane = #busLanes > 0, roadLanes = roadLanes, sidewalks = walks }
 end
 
+-- a set of transport modes (the engine's map, { [TransportMode] = true }; its keys may be the names, as in
+-- construction_util_serialized.d.tl) -> sorted names, { [name] = true }, sorted keys as read, whether a key had no
+-- name, whether more were there than read, and how many entries were read (false and 0 values too); nil when it
+-- cannot be walked. A key that is no enum value keeps its key as its name. A value counts when true or a number
+-- not 0. (Also used by reach, content/remote_reach.lua.)
+M.TM_LIMIT = 64
+-- the names type.d.tl lists for TransportMode
+M.TM_NAMES = { "PERSON", "CARGO", "CAR", "BUS", "TRUCK", "TRAM", "ELECTRIC_TRAM", "TRAIN", "ELECTRIC_TRAIN",
+	"AIRCRAFT", "SHIP", "SMALL_AIRCRAFT", "SMALL_SHIP", "HELICOPTER", "TRAM_TRACK", "ELECTRIC_TRAM_TRACK" }
+-- value -> name of TransportMode, by enum[name] for M.TM_NAMES (no pairs over the enum: the game's may be
+-- userdata); TM the enum (nil: no names), try(fn) the caller's pcall
+function M.tmNamer(TM, try)
+	local byValue = {}
+	for _, n in ipairs(M.TM_NAMES) do
+		local v = TM and try(function() return TM[n] end)
+		if v ~= nil and byValue[v] == nil then byValue[v] = n end
+	end
+	return function(k) return byValue[k] end
+end
+function M.modeNames(m, tmName)
+	if m == nil then return nil end
+	local names, set, keys = {}, {}, {}
+	local unnamed, cut, n = false, false, 0
+	local ok = pcall(function()
+		for k, v in pairs(m) do
+			n = n + 1
+			if n > M.TM_LIMIT then cut = true; break end
+			if v == true or (type(v) == "number" and v ~= 0) then
+				local name = type(k) == "string" and k or tmName(k)
+				if name == nil then name, unnamed = tostring(k), true end
+				if not set[name] then names[#names + 1] = name end
+				set[name] = true
+				keys[#keys + 1] = k
+			end
+		end
+	end)
+	if not ok then return nil end
+	table.sort(names)
+	table.sort(keys, function(a, b)
+		if type(a) == type(b) and (type(a) == "number" or type(a) == "string") then return a < b end
+		return tostring(a) < tostring(b)
+	end)
+	return names, set, keys, unnamed, cut, n
+end
+
 -- ctx: core, try(fn), answer(id, payload), fail(id, msg)
 function M.new(ctx)
 	local core, try, answer, fail = ctx.core, ctx.try, ctx.answer, ctx.fail
@@ -128,50 +173,11 @@ function M.new(ctx)
 		return { x = x, y = y, z = finite(z) and z or nil }
 	end
 
-	-- a set of transport modes (the engine's map, { [TransportMode] = true }) -> sorted names, { [name] = true },
-	-- sorted keys as read; nil when it cannot be walked. A key that is no enum value keeps its key as its name.
-	local TM_LIMIT = 64
-	-- value -> name of TransportMode, by enum[name] for the names type.d.tl lists (no pairs over the enum: the
-	-- game's may be userdata); made once
-	local TM_NAMES = { "PERSON", "CARGO", "CAR", "BUS", "TRUCK", "TRAM", "ELECTRIC_TRAM", "TRAIN", "ELECTRIC_TRAIN",
-		"AIRCRAFT", "SHIP", "SMALL_AIRCRAFT", "SMALL_SHIP", "HELICOPTER", "TRAM_TRACK", "ELECTRIC_TRAM_TRACK" }
-	local tmByValue
-	local function tmName(k)
-		if tmByValue == nil then
-			tmByValue = {}
-			local TM = enum("TransportMode")
-			for _, n in ipairs(TM_NAMES) do
-				local v = TM and try(function() return TM[n] end)
-				if v ~= nil and tmByValue[v] == nil then tmByValue[v] = n end
-			end
-		end
-		return tmByValue[k]
-	end
+	-- (M.modeNames: shared with reach, which reads a network edge's modes the same way)
+	local tmName
 	local function modes(m)
-		if m == nil then return nil end
-		local names, set, keys = {}, {}, {}
-		local unnamed, cut = false, false
-		local ok = pcall(function()
-			local n = 0
-			for k, v in pairs(m) do
-				n = n + 1
-				if n > TM_LIMIT then cut = true; break end
-				if v == true or (type(v) == "number" and v ~= 0) then
-					local name = type(k) == "string" and k or tmName(k)
-					if name == nil then name, unnamed = tostring(k), true end
-					if not set[name] then names[#names + 1] = name end
-					set[name] = true
-					keys[#keys + 1] = k
-				end
-			end
-		end)
-		if not ok then return nil end
-		table.sort(names)
-		table.sort(keys, function(a, b)
-			if type(a) == type(b) and (type(a) == "number" or type(a) == "string") then return a < b end
-			return tostring(a) < tostring(b)
-		end)
-		return names, set, keys, unnamed, cut
+		tmName = tmName or M.tmNamer(enum("TransportMode"), try)
+		return M.modeNames(m, tmName)
 	end
 
 	-- the lanes of a BASE_EDGE as plain values (see the top), and whether more were there than read
