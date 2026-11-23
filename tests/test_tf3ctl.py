@@ -5611,13 +5611,12 @@ class CoopTest(unittest.TestCase):
     # (d)
     def test_d_the_mark_ends_with_its_time_and_with_the_game(self):
         now = time.time()
-        self.start(now=now - 3601)  # until is past
+        self.start(now=now - 3601)  # until is past: the strict side (CoopExpiredTest)
         self.assertIsNone(tf3ctl.active_coop(self.rec(), [4242]))
-        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+        with self.assertRaises(tf3ctl.CoopMarkRefused) as cm:
             tf3ctl.check_game_owner("build", {"res": "x"})
-        self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused)
-        self.assertIn("has ended", str(cm.exception))
-        self.assertFalse(tf3ctl.coop_note()["coop"]["active"], "status: ended")
+        self.assertEqual(cm.exception.refused, "coop-expired")
+        self.assertFalse(tf3ctl.coop_note()["coop"]["active"], "status: not active")
         self.start()
         self.assertIsNotNone(tf3ctl.active_coop(self.rec(), [4242]))
         tf3ctl.game_pids = lambda: [5555]  # the shared game is gone; another runs
@@ -5645,12 +5644,12 @@ class CoopTest(unittest.TestCase):
         for until in (now + 7 * 86400 + 60, float("nan"), float("inf"), 1e300):
             self.assertIsNone(tf3ctl.active_coop({"pid": 4242, "coop": {"with": "alice", "until": until}}, [4242],
                                                  now=now), until)
-        # as written by another tool: JSON's NaN / Infinity never count
+        # as written by another tool: JSON's NaN / Infinity never count, and are the strict side
         for text in ("NaN", "Infinity", str(int(now) + 8 * 86400)):
             write(tf3ctl.launched_path(), '{"v": 1, "pid": 4242, "coop": {"with": "alice", "until": %s}}' % text)
-            with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            with self.assertRaises(tf3ctl.CoopMarkRefused) as cm:
                 tf3ctl.check_game_owner("build", {"res": "x"})
-            self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused, text)
+            self.assertEqual(cm.exception.refused, "coop-invalid", text)
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.coop_start(10081, "x")
 
@@ -5716,6 +5715,228 @@ class CoopTest(unittest.TestCase):
         self.record("alice")
         self.assertIn("note", tf3ctl.coop_end())
         self.assertEqual(self.rec()["owner"], "alice")
+
+
+class CoopExpiredTest(unittest.TestCase):
+    """An expired or malformed coop mark on the running game is the strict side (D-20261123-26, like the guard
+    outside): the launcher and the client send no game-changing command until coop start or coop end; reading
+    commands go; the mark is never removed for its time."""
+
+    # CoopTest's fixture and helpers, not its tests
+    setUp, tearDown, loaded, record, start, rec, goes, sent = (
+        CoopTest.setUp, CoopTest.tearDown, CoopTest.loaded, CoopTest.record, CoopTest.start, CoopTest.rec,
+        CoopTest.goes, CoopTest.sent)
+
+    def mark_refused(self, cmd, args=None, refused="coop-expired"):
+        before = sorted(os.listdir(self.x))
+        with self.assertRaises(tf3ctl.CoopMarkRefused) as cm:
+            tf3ctl.send(cmd, args, timeout=0.1, folder=self.x)
+        self.assertEqual(cm.exception.refused, refused)
+        self.assertEqual(sorted(os.listdir(self.x)), before, "nothing written for the game")
+        self.assertNotIn("remote_probe__cmd", " ".join(before))
+        return str(cm.exception)
+
+    def main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = tf3ctl.main(argv)
+        return code, out.getvalue()
+
+    def expire(self):
+        rec = self.rec()
+        rec["coop"]["until"] = int(time.time()) - 120
+        write(tf3ctl.launched_path(), json.dumps(rec))
+
+    def test_expired_on_the_launchers_game(self):
+        self.record("alice")
+        self.start()
+        self.loaded("aom-eu-1900")
+        self.sent("build", {"res": "x"})  # a change on a person's save: counted
+        self.expire()
+        before = self.rec()
+        msg = self.mark_refused("build", {"res": "x"})
+        self.assertIn("expired at %s" % tf3ctl._clock(before["coop"]["until"]), msg)
+        self.assertIn("extend it with coop start", msg)
+        self.assertIn("coop end", msg)
+        self.mark_refused("camera", {"x": 1, "y": 2})  # camera --set changes the game
+        self.mark_refused("quit")
+        self.mark_refused("save", {"name": "probe-x"})
+        tf3ctl.OTHER_OWNER_OK = True
+        self.mark_refused("build", {"res": "x"})  # --other-owner-ok does not send it either
+        tf3ctl.OTHER_OWNER_OK = False
+        # reading commands go
+        self.assertIsNone(tf3ctl.check_game_owner("status"))
+        self.assertIsNone(tf3ctl.check_game_owner("camera", {}))
+        self.assertIsNone(tf3ctl.check_game_owner("build", {"res": "x", "dryRun": True}))
+        # status says so, in both languages
+        note = tf3ctl.coop_note()["coop"]
+        self.assertTrue(note["expired"])
+        self.assertFalse(note["active"])
+        self.assertIn("expired at", note["text"])
+        self.assertIn("期限", note["textJa"])
+        self.assertIn("coop start", note["textJa"])
+        # the mark stays as it was: nothing removes or rewrites it for its time
+        self.assertEqual(self.rec(), before)
+        # through main: exit 4, "refused": "coop-expired"
+        code, out = self.main(["--owner", "alice", "build", "--res", "x.con", "--at", "1,2"])
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(out)["refused"], "coop-expired")
+        self.assertEqual(self.rec(), before)
+        # coop start extends it, with the change count kept
+        self.start()
+        self.assertEqual((self.rec()["coop"]["modified"], self.rec()["coop"]["changes"]), (True, 1))
+        self.goes("build", {"res": "x"})
+        # coop end: the launcher's game is its own again
+        self.expire()
+        self.mark_refused("build", {"res": "x"})
+        tf3ctl.coop_end()
+        self.assertNotIn("coop", self.rec())
+        self.assertIsNone(tf3ctl.check_game_owner("build", {"res": "x"}))
+        self.assertIsNone(tf3ctl.check_game_owner("quit"))
+
+    def test_expired_on_a_persons_game(self):
+        self.start()  # no record: a game a person started
+        self.expire()
+        self.assertIsNone(self.rec().get("owner"))
+        self.mark_refused("build", {"res": "x"})
+        tf3ctl.OTHER_OWNER_OK = True
+        self.mark_refused("build", {"res": "x"})
+        tf3ctl.OTHER_OWNER_OK = False
+        # other clients: as before (the owner check, --other-owner-ok sends)
+        tf3ctl.OWNER = "bob"
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopMarkRefused)
+        tf3ctl.OTHER_OWNER_OK = True
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIn("launchedBy", tf3ctl.check_game_owner("build", {"res": "x"}))
+        tf3ctl.OTHER_OWNER_OK = False
+        tf3ctl.OWNER = None
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopMarkRefused)
+        # coop end as anybody, then the person's game refuses as before
+        tf3ctl.OWNER = "alice"
+        tf3ctl.coop_end()
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopMarkRefused)
+
+    def test_the_mark_of_a_game_that_ended_is_no_mark(self):
+        self.record("alice")
+        self.start()
+        self.expire()
+        tf3ctl.game_pids = lambda: [5555]  # another game runs
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopMarkRefused)
+        self.assertEqual(tf3ctl.coop_note(), {})
+        self.assertEqual(tf3ctl.coop_mark(self.rec(), [5555]), (None, None))
+        # malformed, too
+        write(tf3ctl.launched_path(), '{"v": 1, "owner": "alice", "pid": 4242, "coop": {"until": NaN}}')
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopMarkRefused)
+
+    def test_malformed_marks(self):
+        self.record("alice")
+        now = int(time.time())
+        good = {"with": "alice", "reason": "r", "since": now, "until": now + 600}
+        for bad in ({"until": now + 600}, dict(good, **{"with": ""}), dict(good, **{"with": []}),
+                    dict(good, until="tomorrow"), dict(good, until=True), dict(good, until=None),
+                    dict(good, until=now + 8 * 86400), "x", [1], None):
+            rec = dict(self.rec(), coop=bad)
+            write(tf3ctl.launched_path(), json.dumps(rec))
+            self.assertEqual(tf3ctl.coop_mark(rec, [4242])[0], "invalid", bad)
+            msg = self.mark_refused("build", {"res": "x"}, refused="coop-invalid")
+            self.assertIn("malformed", msg)
+            self.assertIn("coop end", msg)
+            self.assertIn("coop start", msg)
+            self.assertIsNone(tf3ctl.check_game_owner("status"))
+            note = tf3ctl.coop_note()["coop"]
+            self.assertTrue(note["invalid"], bad)
+            self.assertIn("壊れて", note["textJa"])
+            self.assertEqual(self.rec(), rec, "the mark is not rewritten")
+        for text in ("NaN", "Infinity", "-Infinity"):
+            write(tf3ctl.launched_path(), '{"v": 1, "owner": "alice", "pid": 4242, "coop": {"with": "alice", '
+                  '"until": %s}}' % text)
+            self.mark_refused("build", {"res": "x"}, refused="coop-invalid")
+        # a person's game (no owner) with a malformed until: its client is refused too
+        write(tf3ctl.launched_path(), json.dumps({"v": 1, "pid": 4242, "coop": dict(good, until=float("inf"))})
+              .replace("Infinity", "1e999"))
+        self.mark_refused("build", {"res": "x"}, refused="coop-invalid")
+        code, out = self.main(["--owner", "alice", "pause"])
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(out)["refused"], "coop-invalid")
+        # coop start writes it anew; coop end removes even a mark that is not an object
+        self.start()
+        self.goes("build", {"res": "x"})
+        write(tf3ctl.launched_path(), json.dumps(dict(self.rec(), owner="alice", coop="x")))
+        self.mark_refused("build", {"res": "x"}, refused="coop-invalid")
+        self.start()
+        self.assertEqual(self.rec()["coop"]["with"], "alice")
+        write(tf3ctl.launched_path(), json.dumps(dict(self.rec(), coop="x")))
+        tf3ctl.coop_end()
+        self.assertNotIn("coop", self.rec())
+        self.assertIsNone(tf3ctl.check_game_owner("build", {"res": "x"}))
+
+    def test_malformed_mark_on_a_persons_game_refuses_every_client(self):
+        """A person's game (no owner) whose mark names no client: whose coop it is is not known, so no client
+        changes it, not even with --other-owner-ok; coop end removes it, coop start writes it anew."""
+        now = int(time.time())
+        os.makedirs(os.path.dirname(tf3ctl.launched_path()), exist_ok=True)
+        for coop in ('"x"', "null", "[1]", '{"until": %d}' % (now + 600), '{"with": "", "until": %d}' % (now + 600)):
+            write(tf3ctl.launched_path(), '{"v": 1, "pid": 4242, "cmd": "coop", "coop": %s}' % coop)
+            for owner, ok in (("alice", False), ("alice", True), ("bob", True)):
+                tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = owner, ok
+                self.mark_refused("build", {"res": "x"}, refused="coop-invalid")
+            tf3ctl.OTHER_OWNER_OK = False
+            self.assertTrue(tf3ctl.coop_note()["coop"]["invalid"], coop)
+            json.dumps(tf3ctl.coop_note(), allow_nan=False)  # strict JSON out
+            tf3ctl.coop_end()
+            self.assertNotIn("coop", self.rec(), coop)
+            with self.assertRaises(tf3ctl.OwnerRefused) as cm:  # a person's game, as before
+                tf3ctl.check_game_owner("build", {"res": "x"})
+            self.assertNotIsInstance(cm.exception, tf3ctl.CoopMarkRefused)
+        write(tf3ctl.launched_path(), '{"v": 1, "pid": 4242, "cmd": "coop", "coop": "x"}')
+        self.start()
+        self.goes("build", {"res": "x"})
+        # NaN written by another tool is not passed on to status's JSON
+        write(tf3ctl.launched_path(), '{"v": 1, "pid": 4242, "coop": {"with": "alice", "since": NaN, '
+              '"reason": NaN, "until": NaN}}')
+        json.dumps(tf3ctl.coop_note(), allow_nan=False)
+
+    def test_other_clients_hear_that_the_user_may_still_be_playing(self):
+        self.start()  # a person's game
+        self.expire()
+        tf3ctl.OWNER = "bob"
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertIn("is expired, so the user may still be playing", str(cm.exception))
+
+    def test_quit_kill_and_restart_stop_before_the_game(self):
+        self.record("alice")
+        self.start()
+        self.expire()
+        killed = []
+        with unittest.mock.patch.object(tf3ctl.os, "kill", lambda *a: killed.append(a)):
+            with self.assertRaises(tf3ctl.CoopMarkRefused):
+                tf3ctl.quit_game(timeout=0.1, kill=True, force=True)
+        self.assertEqual(killed, [], "no SIGKILL")
+        self.assertIn("coop", self.rec(), "the record stays")
+        code, out = self.main(["--owner", "alice", "restart", "--no-kill"])
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(out)["refused"], "coop-expired")
+        self.assertEqual(killed, [])
+
+    def test_no_change_counted_while_expired(self):
+        self.record("alice")
+        self.start()
+        self.loaded("aom-eu-1900")
+        self.expire()
+        with self.assertRaises(tf3ctl.CoopMarkRefused):
+            self.sent("build", {"res": "x"})
+        self.assertNotIn("changes", self.rec()["coop"])
 
 
 class NoAbbrevTest(unittest.TestCase):

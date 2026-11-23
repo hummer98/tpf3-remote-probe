@@ -1195,7 +1195,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 - 形: JSON 1 つ。`{"v": 1, "owner": "<owner>", "pid": <ゲームの pid>, "started_at": <epoch 秒>, "cmd": "launch"}`
   (`restart` でも `cmd` は `launch`。`started_at` は probe が答えた時刻)。
 - 共同作業の印 (上の `coop`) は、キーを 1 つ足すだけです (ほかは変わりません): `"coop": {"with": "<owner>", "reason": "<文>",
-  "since": <epoch 秒>, "until": <epoch 秒>}`。人のセーブでは `"modified": true, "changes": <回数>` も付きます。tf3ctl は `with` を 1 人の名前で書きます。読む側はリストも受けてください。人が起動したゲームでは、`owner` の無い記録になります: `{"v": 1, "pid": ..., "started_at": ..., "cmd": "coop", "coop": {...}}`。キーが無い、`until` を過ぎた、pid が動いているゲームでない、のどれかなら共同作業ではありません。`coop end` はキーだけを消します (記録は残るので、人のゲームでは owner も coop も無い記録になり、無いのと同じに扱います)。ゲームが変更されていたときは、上の段に `"coopChanges": <回数>` を残します。同じゲームでまた `coop start` したとき、変更ありを言い直すためです (印ではないので、読む側は無視してよい)。
+  "since": <epoch 秒>, "until": <epoch 秒>}`。人のセーブでは `"modified": true, "changes": <回数>` も付きます。tf3ctl は `with` を 1 人の名前で書きます。読む側はリストも受けてください。人が起動したゲームでは、`owner` の無い記録になります: `{"v": 1, "pid": ..., "started_at": ..., "cmd": "coop", "coop": {...}}`。キーが無い、pid が動いているゲームでない、のどちらかなら共同作業ではありません。動いているゲームのキーで、`until` を過ぎたものと形が壊れたものは、厳しい側に倒します (下の「期限切れ・形の壊れた印」)。`coop end` はキーだけを消します (記録は残るので、人のゲームでは owner も coop も無い記録になり、無いのと同じに扱います)。ゲームが変更されていたときは、上の段に `"coopChanges": <回数>` を残します。同じゲームでまた `coop start` したとき、変更ありを言い直すためです (印ではないので、読む側は無視してよい)。
 - 書く: `launch` / `restart` で、probe がメインメニューで答えたあと (`--load` / `--new` の前)。pid は動いている
   `TransportFever3` のプロセス (複数あれば一番新しいもの)。owner が無ければ書かず、前のファイルを消します。
 - 消す: ゲームが止まったのを tf3ctl が見たとき。`quit` (`--kill` も、動いていなかったときも)、`restart` の中の quit、
@@ -1213,7 +1213,7 @@ tf3ctl.py --owner bob launch --load probe-x --coop --reason "..." [--minutes 60]
 tf3ctl.py --owner bob coop end
 ```
 
-- `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。`until` が 7 日より先・NaN・Infinity の印は、印ではないとみなします。
+- `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。延長しても、印の変更の回数は引き継ぎます。
 - 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`。ユーザーのセーブでも同じです。
 - `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`。
 - `save` は試験用のセーブの名前にだけ: `probe-*`、`aom-ops-*`、`aom-shot-*`、`aom-bgm-check-*`、数字 1 文字で始まる名前 (`3-probe`)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
@@ -1221,7 +1221,8 @@ tf3ctl.py --owner bob coop end
 - 読み込まれているセーブは、ゲームのログから読みます (起動から最後の `Loading game from file` / `Start new game`)。
 - 人のセーブで、ゲームを変える命令を MOD が受け取るたびに (`camera`・`window`・`speed`・`save`・dry run は除く)、印に `"modified": true` を付け、`"changes"` を数えます。そのあと `status` と `coop end` が、共同作業で変更されていること、保存すると変更が残ることを出します。`coop end` は続けて、オートセーブには変更後の状態が入っていること、元に戻すには保存せずに名前のついたセーブを読み直すことを出します。文は `text` (英) と `textJa` (日)。
 - ほかのクライアントは、これまでどおり断ります (`--other-owner-ok` もこれまでどおり)。
-- 終わるのは、`until` を過ぎたとき、ゲームが無くなったとき (記録の pid が動いているゲームでない)、tf3ctl が記録を消したとき (quit)、`coop end` (印だけを消す。権限を減らすだけなので誰が打ってもよい)。`status` の `coop` に出ます (`active`・`with`・`minutesLeft`・`save`・`testSave`・`text` など)。
+- 終わるのは、ゲームが無くなったとき (記録の pid が動いているゲームでない)、tf3ctl が記録を消したとき (quit)、`coop end` (印だけを消す。権限を減らすだけなので誰が打ってもよい)。`status` の `coop` に出ます (`active`・`with`・`minutesLeft`・`save`・`testSave`・`text` など)。
+- 期限切れ・形の壊れた印: `until` に達しても共同作業は終わらず、tf3ctl はそのために印を消したり書き換えたりしません。ユーザーがまだ遊んでいるかもしれないので、厳しい側に倒します (外のゲームの安全装置と同じ)。動いているゲームの印が期限切れ (`until` を過ぎた) か、形が壊れている (`with` が無い・空、`until` が有限の数でない・7 日より先・NaN・Infinity、印がオブジェクトでない) 間は、ゲームを起動した owner も印の `with` のクライアントも、ゲームを変える命令を一切送りません: 終了コード 4、`"refused": "coop-expired"` か `"coop-invalid"`、何も送りません (`--other-owner-ok` でも同じ)。読む命令は通ります。`coop start` (延長する。壊れた印は書き直す。変更の回数は残る) と `coop end` も通ります。ほかのクライアントの扱いは前と同じです。ただし、人が起動したゲームで、形の壊れた印から `with` が読めないときは、誰の共同作業か分からないので、どのクライアントも断ります (`"coop-invalid"`、`--other-owner-ok` でも)。`status` の `coop` に `"expired": true` か `"invalid": true` (と `why`) が付き、`text` と `textJa` に出ます。pid が動いているゲームでない印は、印ではありません (ゲームが終わった)。
 
 ### 環境変数
 

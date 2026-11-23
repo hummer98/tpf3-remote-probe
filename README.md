@@ -1297,7 +1297,8 @@ still let the owner who started the game quit it. A game started by hand from St
   "since": <epoch seconds>, "until": <epoch seconds>}`, and on a person's save also `"modified": true, "changes":
   <count>`. tf3ctl writes `with` as one name; a reader should take a list too. A game a person started gets a
   record without `owner`: `{"v": 1, "pid": ..., "started_at": ..., "cmd": "coop", "coop": {...}}`. It is not
-  coop when the key is missing, `until` is past, or the pid is not the running game. `coop end` removes the key
+  coop when the key is missing or the pid is not the running game. A key on the running game whose `until` is past,
+  or that is malformed, is the strict side (see "Expired or malformed mark" below). `coop end` removes the key
   only (the record stays, so a person's game then has a record without owner and coop, which counts as none); when
   the game was changed it leaves `"coopChanges": <count>` at the top, so that a later `coop start` on the same game
   says so again (it is not a mark: readers ignore it).
@@ -1326,7 +1327,7 @@ tf3ctl.py --owner bob coop end
 - `coop start` goes on the game this owner started, or on a game a person started from Steam (no record of the
   running game; the record then names no owner, only the coop mark). Never on another owner's game, and not while
   another client's mark counts (`--other-owner-ok` changes neither). Again by the same owner renews it. `--reason`
-  is required (1-200 characters), `--minutes` is 1-10080 (7 days). A mark whose `until` is more than 7 days ahead, NaN or Infinity is no mark.
+  is required (1-200 characters), `--minutes` is 1-10080 (7 days). Renewing keeps the change count of the mark.
 - While it counts, this owner may send what helps the user: every reading command, `camera`, `window` (not
   `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`. This holds on the user's own
   saves too.
@@ -1343,9 +1344,20 @@ tf3ctl.py --owner bob coop end
   was changed during coop and that saving keeps the changes; `coop end` adds that the autosave has the changed
   game, and that to go back the user loads a named save without saving. Each line is in `text` and `textJa`.
 - Other clients are refused as before (`--other-owner-ok` as before).
-- It ends at `until`, when the game is gone (a reader sees the record's pid is not the running game), when tf3ctl
-  removes the record (quit), or with `coop end`, which removes the mark only (anybody may: it only takes rights
-  away). `status` shows it in `coop` (`active`, `with`, `minutesLeft`, `save`, `testSave`, `text`, ...).
+- It ends when the game is gone (a reader sees the record's pid is not the running game), when tf3ctl removes the
+  record (quit), or with `coop end`, which removes the mark only (anybody may: it only takes rights away). `status`
+  shows it in `coop` (`active`, `with`, `minutesLeft`, `save`, `testSave`, `text`, ...).
+- Expired or malformed mark: reaching `until` does not end coop, and tf3ctl never removes or changes the mark for
+  it. The user may still be playing, so the strict side holds (like the game guard outside): while a mark on the
+  running game is expired (`until` past) or malformed (no `with` or an empty one, `until` not a finite number or
+  more than 7 days ahead, NaN, Infinity, the mark not an object), the game's launcher and the mark's client send no
+  game-changing command at all: exit 4, `"refused": "coop-expired"` or `"coop-invalid"`, nothing sent, also with
+  `--other-owner-ok`. Reading commands still go, and so do `coop start` (extends the mark, or writes a malformed
+  one anew; the change count stays) and `coop end`. Other clients are checked as before, except on a game a person
+  started whose malformed mark names no client that can be read: whose coop it is is not known, so every client is
+  refused (`"coop-invalid"`, also with `--other-owner-ok`). `status` shows it in
+  `coop` with `"expired": true` or `"invalid": true` (and `why`), in `text` and `textJa`. A mark whose pid is not
+  the running game is no mark (the game ended).
 
 ### Environment
 
