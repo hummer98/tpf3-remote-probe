@@ -422,7 +422,7 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   game yet**; when it raises, the answer is the engine's own context's as before (`engineContext`, `caution`).
 - `errorState.infos` with `critical` not set count as a refusal in `--dry-run --engine-check` (`build` and `road`,
   and so in `fit`'s checks): `buildable: false`, `verdict: "refused"`, `infosRefusal: true`, and `error` says the
-  infos' text with `(errorState.infos, critical not set: ...)`; `critical` stays what the engine said. It goes by
+  infos' text with `(errorState.infos, critical not set: ...)`; `critical` is left out (the engine did not set it). It goes by
   the field, not its words (they change with the game's language). Measured 2026-11-23: a road depot placed over
   water was `critical false` in both contexts with infos `陸上に配置` ("place on land") and 6 collisions, and the
   build was refused all the same (its `errorState` the same, the log `ProposalData error: 陸上に配置`); an earlier
@@ -1021,7 +1021,8 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   `to`, `length`, `on` node or edge, `pieces`) and `road` (`road --from=... --to=... --snap 3`, to give after the
   build: its from snaps to the mouth's new node; the road piece is not asked of the engine), `refusedFirst` (the places the engine refused, with their `hits`). A place the
   engine calls buildable only with warnings, or with town buildings it would take, is not taken: that verdict is
-  in the engine's own context, and the build gathers no fields or buildings (a road refused so, 2026-11-23). An
+  in the engine's own context, and the build gathers no fields or buildings (a road refused so, 2026-11-23). A
+  place with `errorState.infos` only is refused too (see `build`: such a build is refused, 2026-11-23). An
   engine that cannot be asked stops it (`checked: false`), not counted as a refusal. None free: `ok: false`, "no
   free place", and `blockers` (what stood in the way of most places: id, kind, name, place, count);
   `tooFewHouses` counts free places with too few houses. At most 200000 places are tried (each against the

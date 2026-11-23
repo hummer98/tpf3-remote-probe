@@ -789,6 +789,9 @@ function M.new(ctx)
 	local function finish(job)
 		local out, res = job.out, job.result
 		for k, v in pairs(res.verdict) do out[k] = v end
+		-- (infosRefusal is a dry run's mark: a build is judged by its success, and one that stood with infos is
+		-- no refusal)
+		if res.success then out.infosRefusal = nil end
 		out.balanceBefore, out.balanceAfter = job.before, balance()
 		if out.balanceBefore and out.balanceAfter then out.spent = out.balanceBefore - out.balanceAfter end
 		if job.kind == "road" then

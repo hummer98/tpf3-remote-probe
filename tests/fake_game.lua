@@ -1796,7 +1796,7 @@ end
 -- with a Context, and the build's callback), and the build is refused all the same (2026-11-23, P12: road_depot at
 -- (0, 3600) over water: the engine check said critical false, infos "陸上に配置", collisions 6; the build was refused,
 -- its errorState critical false with the same infos, the log "ProposalData error: 陸上に配置");
--- spec.landInfosBuildOnly: not in makeProposalData alone (the engine's own context)
+-- spec.landInfosBuildOnly: not in makeProposalData alone (the engine's own context); spec.landInfosOwnOnly: only there
 -- The octree finds the constructions in g.built by their transf's position.
 -- A construction's shape may have free pieces (shape.free = { { i, j } }: an industry's arms, street_cross_01 / 02,
 -- not among its frozenEdges) and frozen nodes (shape.frozenNodes = { i }: CONSTRUCTION.frozenNodes, the inner end
@@ -2144,7 +2144,8 @@ function M.installBuild(g, spec)
 				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
 			end
 			-- (spec.landInfos for a street piece too, at its middle)
-			if spec.landInfos and spec.landInfos((p0.x + p1.x) / 2, (p0.y + p1.y) / 2) then
+			if spec.landInfos and spec.landInfos((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
+				and not (spec.landInfosBuildOnly and ctx and ctx.engineOwn) then
 				data.errorState.infos = data.errorState.infos or {}
 				table.insert(data.errorState.infos, "陸上に配置")
 				data.infosRefuse = true
@@ -2199,7 +2200,7 @@ function M.installBuild(g, spec)
 				data.errorState.critical = true
 				table.insert(data.errorState.messages, "陸上に配置")
 			end
-			if spec.landInfos and spec.landInfos(ce.transf[13], ce.transf[14]) and not (spec.landInfosBuildOnly and own) then
+			if spec.landInfos and spec.landInfos(ce.transf[13], ce.transf[14]) and not (spec.landInfosBuildOnly and own) and not (spec.landInfosOwnOnly and not own) then
 				data.errorState.infos = data.errorState.infos or {}
 				table.insert(data.errorState.infos, "陸上に配置")
 				data.infosRefuse = true
