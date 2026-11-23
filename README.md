@@ -1293,6 +1293,14 @@ still let the owner who started the game quit it. A game started by hand from St
   old one, so a reader never sees half of it.
 - What: one JSON object, `{"v": 1, "owner": "<owner>", "pid": <the game's pid>, "started_at": <epoch seconds>,
   "cmd": "launch"}` (`cmd` is `launch` for `restart` too; `started_at` is when the probe answered).
+- The coop mark (`coop`, above) adds one key, nothing else changes: `"coop": {"with": "<owner>", "reason": "<text>",
+  "since": <epoch seconds>, "until": <epoch seconds>}`, and on a person's save also `"modified": true, "changes":
+  <count>`. tf3ctl writes `with` as one name; a reader should take a list too. A game a person started gets a
+  record without `owner`: `{"v": 1, "pid": ..., "started_at": ..., "cmd": "coop", "coop": {...}}`. It is not
+  coop when the key is missing, `until` is past, or the pid is not the running game. `coop end` removes the key
+  only (the record stays, so a person's game then has a record without owner and coop, which counts as none); when
+  the game was changed it leaves `"coopChanges": <count>` at the top, so that a later `coop start` on the same game
+  says so again (it is not a mark: readers ignore it).
 - Written: after `launch` / `restart` once the probe answered in the main menu (before `--load` / `--new`). The pid
   is the running `TransportFever3` process (the newest one if there are several). Without an owner nothing is
   written, and an older record is removed.
@@ -1303,6 +1311,41 @@ still let the owner who started the game quit it. A game started by hand from St
   remove the record is only a warning on stderr. A record left behind (a crash, a quit by hand) is not to be
   trusted alone: readers should check that the pid is alive and is the game, and, under `/tmp`, that the folder
   and the file belong to them and are 0700 / 0600 (anybody may have made `/tmp/tf3ctl-<uid>` first).
+
+### Sharing the game with the user (`coop`)
+
+The owner check above keeps every other client off a game, which also keeps a client off a game the user is
+playing with it. `coop` is for that: the user and one client (its `--owner`) share the running game for a while.
+
+```
+tf3ctl.py --owner bob coop start --reason "test the new depot with the user" [--minutes 60]
+tf3ctl.py --owner bob launch --load probe-x --coop --reason "..." [--minutes 60]   # start, load, then share
+tf3ctl.py --owner bob coop end
+```
+
+- `coop start` goes on the game this owner started, or on a game a person started from Steam (no record of the
+  running game; the record then names no owner, only the coop mark). Never on another owner's game, and not while
+  another client's mark counts (`--other-owner-ok` changes neither). Again by the same owner renews it. `--reason`
+  is required (1-200 characters), `--minutes` is 1-10080 (7 days). A mark whose `until` is more than 7 days ahead, NaN or Infinity is no mark.
+- While it counts, this owner may send what helps the user: every reading command, `camera`, `window` (not
+  `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`. This holds on the user's own
+  saves too.
+- Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`.
+- `save` only to a test save's name: `probe-*`, `aom-ops-*`, `aom-shot-*`, `aom-bgm-check-*`, or one digit first
+  (`3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that
+  kind, a new game, or unknown), a save to a new test name needs `--user-asked` too.
+- Everything else is refused: `quit` (also `--kill`, and the quit of `restart`), `load`, `newgame`, `tool`, `buy`,
+  `line`, `terrain`, `town`, `modhub`, ... Exit 4, `"refused": "coop"`, nothing sent; the message says why.
+- The loaded save is read from the game's log (the last `Loading game from file` / `Start new game` since the
+  start).
+- On a person's save, each game-changing command the mod took (not `camera`, `window`, `speed`, `save`, nor a dry
+  run) sets `"modified": true` and counts `"changes"` in the mark. `status` and `coop end` then say that the game
+  was changed during coop and that saving keeps the changes; `coop end` adds that the autosave has the changed
+  game, and that to go back the user loads a named save without saving. Each line is in `text` and `textJa`.
+- Other clients are refused as before (`--other-owner-ok` as before).
+- It ends at `until`, when the game is gone (a reader sees the record's pid is not the running game), when tf3ctl
+  removes the record (quit), or with `coop end`, which removes the mark only (anybody may: it only takes rights
+  away). `status` shows it in `coop` (`active`, `with`, `minutesLeft`, `save`, `testSave`, `text`, ...).
 
 ### Environment
 

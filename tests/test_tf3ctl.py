@@ -5367,6 +5367,357 @@ class OwnerCheckTest(unittest.TestCase):
             tf3ctl.check_game_owner("save", {"name": "x"})
 
 
+class CoopTest(unittest.TestCase):
+    """coop: the user and one client share the running game (2026-11-23). The client may look, build and send test
+    commands, also on the user's own save, but never quit, load or save over the user's game; a change to a
+    person's save is counted, and status / coop end say so."""
+
+    def setUp(self):
+        self.saved = {k: getattr(tf3ctl, k) for k in ("game_pids", "OWNER", "OTHER_OWNER_OK", "USER_ASKED",
+                                                       "exchange_dir")}
+        self.saved_env = {k: os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "TF3_LOG")}
+        self.run_dir = tempfile.mkdtemp()
+        os.environ["XDG_RUNTIME_DIR"] = self.run_dir
+        self.x = tempfile.mkdtemp()
+        self.log = os.path.join(self.x, "stdout.txt")
+        os.environ["TF3_LOG"] = self.log
+        self.loaded("probe-flat-base")
+        tf3ctl.exchange_dir = lambda: self.x
+        tf3ctl.game_pids = lambda: [4242]
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK, tf3ctl.USER_ASKED = "alice", False, False
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(tf3ctl, k, v)
+        for k, v in self.saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        shutil.rmtree(self.x, ignore_errors=True)
+
+    def loaded(self, save):
+        lines = ["[2026-11-23 11:00:00Z - MESSAGE - Main Thread - Main ]  Application startup",
+                 "[2026-11-23 11:00:30Z - MESSAGE - Main Thread - Main ]  Main menu is ready"]
+        if save == "":
+            lines.append("[2026-11-23 11:01:00Z - MESSAGE - Main Thread - Main ]  Start new game...")
+        elif save is not None:
+            lines.append("[2026-11-23 11:01:00Z - MESSAGE - Load Game Pool 1 - Main ]  Loading game from file " + save)
+        lines.append("[2026-11-23 11:01:20Z - MESSAGE - Main Thread - Main ]  Game is ready")
+        write(self.log, "\n".join(lines) + "\n")
+
+    def record(self, owner, pid=4242):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(tf3ctl.write_launched(pid, owner=owner)["written"])
+
+    def start(self, owner="alice", minutes=60, now=None):
+        tf3ctl.OWNER = owner
+        return tf3ctl.coop_start(minutes, "try the depot together", now=now)
+
+    def rec(self):
+        with open(tf3ctl.launched_path(), encoding="utf-8") as f:
+            return json.load(f)
+
+    def goes(self, cmd, args=None):
+        note = tf3ctl.check_game_owner(cmd, args)
+        self.assertIsNotNone(note, cmd)
+        self.assertIn("coop", note, cmd)
+        return note
+
+    def refused(self, cmd, args=None):
+        with self.assertRaises(tf3ctl.CoopRefused) as cm:
+            tf3ctl.send(cmd, args, timeout=0.1, folder=self.x)
+        self.assertEqual(os.listdir(self.x), ["stdout.txt"], "nothing written for the game")
+        self.assertIn("the user is playing", str(cm.exception))
+        return str(cm.exception)
+
+    def sent(self, cmd, args):
+        """Through send with the mod faked: the answer."""
+        with unittest.mock.patch.object(tf3ctl, "write_command", lambda *a: None), \
+                unittest.mock.patch.object(tf3ctl, "cleanup", lambda f: None), \
+                unittest.mock.patch.object(tf3ctl, "note_activity", lambda *a: None), \
+                unittest.mock.patch.object(tf3ctl, "wait_pickup", lambda f, c: None), \
+                unittest.mock.patch.object(tf3ctl, "wait_answer", lambda *a: {"ok": True}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            return tf3ctl.send(cmd, args, folder=self.x)
+
+    # (a)
+    def test_a_launchers_coop_lets_build_and_camera_through_not_quit_or_load(self):
+        self.record("alice")
+        self.start()
+        rec = self.rec()
+        self.assertEqual((rec["v"], rec["owner"], rec["pid"], rec["cmd"]), (1, "alice", 4242, "launch"), "kept")
+        self.assertEqual(rec["coop"]["with"], "alice")
+        self.assertEqual(rec["coop"]["reason"], "try the depot together")
+        self.assertEqual(rec["coop"]["until"] - rec["coop"]["since"], 3600)
+        for cmd, args in (("build", {"res": "x"}), ("camera", {"set": "1,2,3,4,5"}), ("window", {"entity": 1}),
+                          ("event", {"name": "e"}), ("road", {"from": [0, 0]}), ("stockSet", {"entity": 1}),
+                          ("money", {"set": 1}), ("steps", {"count": 5}),
+                          ("build", {"res": "x", "dryRun": True, "engineCheck": True})):  # fit's check
+            self.assertFalse(self.goes(cmd, args)["count"], "a test save: nothing to count")
+        self.assertIsNone(tf3ctl.check_game_owner("stations", {}), "reading goes as ever")
+        for cmd, args in (("quit", None), ("load", {"save": "s"}), ("newgame", {}), ("tool", {"x": 1}),
+                          ("modhubValidate", {"folder": "f"}), ("buy", {"x": 1})):
+            self.assertIn("'%s'" % cmd, self.refused(cmd, args))
+        self.assertIn("--close-all", self.refused("window", {"closeAll": True}))
+        tf3ctl.OTHER_OWNER_OK = True  # does not widen coop
+        self.refused("quit")
+        kills = []
+        with unittest.mock.patch.object(tf3ctl.os, "kill", lambda pid, sig: kills.append(pid)), \
+                self.assertRaises(tf3ctl.CoopRefused):
+            tf3ctl.quit_game(timeout=0.1, kill=True, force=True)  # restart's quit too
+        self.assertEqual(kills, [])
+
+    def test_speed_run_pause_only_when_the_user_asked(self):
+        self.record("alice")
+        self.start()
+        self.assertIn("--user-asked", self.refused("speed", {"speed": 0}))
+        self.assertIn("--user-asked", self.refused("run", {"days": 1}))
+        tf3ctl.USER_ASKED = True
+        self.goes("speed", {"speed": 4})
+        self.goes("run", {"days": 1})
+        # through main: the flag is parsed on speed, pause and run, and the refusal is exit 4 "coop"
+        tf3ctl.USER_ASKED = False
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["--owner", "alice", "pause"]), 4)
+        self.assertEqual(json.loads(out.getvalue())["refused"], "coop")
+        p = tf3ctl.make_parser()
+        for argv in (["speed", "1", "--user-asked"], ["pause", "--user-asked"], ["run", "--days", "1", "--user-asked"],
+                     ["save", "probe-x", "--user-asked"]):
+            self.assertTrue(p.parse_args(argv).user_asked, argv)
+
+    def test_save_only_to_a_test_name(self):
+        self.record("alice")
+        self.start()
+        self.goes("save", {"name": "probe-after"})
+        self.goes("save", {"name": "3-probe"})
+        for name in ("aom-eu-1900", "aom-long-12m", "39-x", "../probe-x", "probe-x/../aom-eu-1900", ""):
+            tf3ctl.USER_ASKED = True  # not even when asked: the user's names are never written
+            self.assertIn("not a test save", self.refused("save", {"name": name}), name)
+
+    # (b')
+    def test_b_a_persons_save_takes_build_refuses_save_and_status_says_changed(self):
+        self.loaded("aom-eu-1900")
+        tf3ctl.game_pids = lambda: [4242]
+        tf3ctl.OWNER = "alice"
+        # without coop: as before, a person's game refuses everything
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused)
+        self.start()  # a game a person started: the record has no owner
+        rec = self.rec()
+        self.assertNotIn("owner", rec)
+        self.assertEqual((rec["v"], rec["pid"], rec["cmd"]), (1, 4242, "coop"))
+        self.assertTrue(self.goes("build", {"res": "x"})["count"])
+        self.assertFalse(self.goes("camera", {"set": "1,2,3,4,5"})["count"], "the view is not the game")
+        self.assertIn("not saved", self.refused("save", {"name": "probe-new"}))
+        self.assertIn("not a test save", self.refused("save", {"name": "aom-eu-1900"}))
+        tf3ctl.USER_ASKED = True
+        self.assertFalse(self.goes("save", {"name": "probe-new"})["count"])
+        self.assertIn("not a test save", self.refused("save", {"name": "aom-eu-1900"}))
+        tf3ctl.USER_ASKED = False
+        self.assertNotIn("modified", self.rec()["coop"])
+        res = self.sent("build", {"res": "x"})
+        self.assertEqual(res["coop"]["save"], "aom-eu-1900")
+        self.sent("steps", {"count": 5})
+        self.sent("camera", {"set": "1,2,3,4,5"})  # not counted
+        self.assertEqual((self.rec()["coop"]["modified"], self.rec()["coop"]["changes"]), (True, 2))
+        self.assertNotIn("owner", self.rec(), "the count keeps the record's shape")
+        note = tf3ctl.coop_note()["coop"]
+        self.assertTrue(note["active"])
+        self.assertIn("changed during coop (2 times)", note["text"])
+        self.assertIn("このゲームは共同作業で変更されています（2 回）。保存すると変更が残ります", note["textJa"])
+        end = tf3ctl.coop_end()
+        self.assertIn("オートセーブ（10 分ごと）には変更後の状態が入っています", end["coop"]["textJa"])
+        self.assertIn("load a named save again", end["coop"]["text"])
+        self.assertNotIn("coop", self.rec(), "coop end removes the mark only")
+        self.assertEqual(self.rec()["pid"], 4242)
+        # after coop end a person's game refuses again
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused)
+        self.assertEqual(tf3ctl.coop_note(), {})
+
+    def test_a_new_game_or_an_unknown_save_counts_as_a_persons(self):
+        for save in ("", None):
+            self.loaded(save)
+            self.start()
+            self.assertTrue(self.goes("build", {"res": "x"})["count"], save)
+            self.assertIn("not saved", self.refused("save", {"name": "probe-new"}))
+
+    def test_is_test_save(self):
+        for name in ("probe-x", "aom-ops-u6", "aom-shot-1950", "aom-bgm-check-1", "3-probe", "6", "3.sav",
+                     "/a/b/probe-x.sav"):
+            self.assertTrue(tf3ctl.is_test_save(name), name)
+        for name in ("aom-eu-1900", "aom-long-12m", "39-x", "Probe-x", "", None, 3, "autosave_1", "xprobe-"):
+            self.assertFalse(tf3ctl.is_test_save(name), name)
+        self.assertFalse(tf3ctl.is_test_save("/a/probe-x", path_ok=False), "a name to save to is a plain name")
+
+    # (c)
+    def test_c_without_coop_as_before(self):
+        self.record("bob")
+        for cmd in ("build", "camera", "quit", "save"):
+            with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+                tf3ctl.check_game_owner(cmd, {"x": 1})
+            self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused)
+            self.assertIn("started by bob, not by alice", str(cm.exception))
+        self.record("alice")
+        self.assertIsNone(tf3ctl.check_game_owner("quit"), "the launcher without coop: unchanged")
+        self.assertIsNone(tf3ctl.check_game_owner("save", {"name": "aom-eu-1900"}))
+
+    def test_other_clients_are_refused_as_before_during_coop(self):
+        self.start()  # a person's game shared with alice
+        tf3ctl.OWNER = "bob"
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused)
+        self.assertIn("names alice", str(cm.exception))
+        tf3ctl.OWNER = None
+        with self.assertRaises(tf3ctl.OwnerRefused):
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True  # unchanged: sends anyway
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.check_game_owner("quit")["launchedBy"], "none")
+
+    def test_start_refused_on_another_owners_game_or_another_clients_coop(self):
+        self.record("bob")
+        tf3ctl.OTHER_OWNER_OK = True
+        with self.assertRaises(tf3ctl.OwnerRefused):
+            self.start("alice")
+        self.assertNotIn("coop", self.rec())
+        os.remove(tf3ctl.launched_path())
+        self.start("alice")
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            self.start("carol")
+        self.assertIn("shared with alice", str(cm.exception))
+        self.start("alice", minutes=30)  # renewing one's own goes
+        self.assertEqual(self.rec()["coop"]["until"] - self.rec()["coop"]["since"], 1800)
+
+    def test_start_checks_its_args_and_a_running_game(self):
+        tf3ctl.OWNER = None
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.coop_start(60, "x")
+        tf3ctl.OWNER = "alice"
+        for minutes, reason in ((0, "x"), (10081, "x"), (True, "x"), (60, " "), (60, "x" * 201)):
+            with self.assertRaises(tf3ctl.ToolError):
+                tf3ctl.coop_start(minutes, reason)
+        tf3ctl.game_pids = lambda: []
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.coop_start(60, "x")
+        self.assertFalse(os.path.exists(tf3ctl.launched_path()))
+
+    # (d)
+    def test_d_the_mark_ends_with_its_time_and_with_the_game(self):
+        now = time.time()
+        self.start(now=now - 3601)  # until is past
+        self.assertIsNone(tf3ctl.active_coop(self.rec(), [4242]))
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused)
+        self.assertIn("has ended", str(cm.exception))
+        self.assertFalse(tf3ctl.coop_note()["coop"]["active"], "status: ended")
+        self.start()
+        self.assertIsNotNone(tf3ctl.active_coop(self.rec(), [4242]))
+        tf3ctl.game_pids = lambda: [5555]  # the shared game is gone; another runs
+        self.assertIsNone(tf3ctl.active_coop(self.rec(), [5555]))
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner("build", {"res": "x"})
+        self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused)
+        self.assertEqual(tf3ctl.coop_note(), {}, "status: not this game's")
+        tf3ctl.game_pids = lambda: [4242]
+        with contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.remove_launched()  # what quit and launch do once the game is seen stopped
+        self.assertIsNone(tf3ctl.read_launched()[0])
+        # a mark of a bad shape never counts
+        for coop in ({"with": "alice", "until": "tomorrow"}, {"with": [], "until": now + 99}, {"until": now + 99},
+                     {"with": "alice", "until": True}):
+            self.assertIsNone(tf3ctl.active_coop({"pid": 4242, "coop": coop}, [4242]), coop)
+        self.assertIsNotNone(tf3ctl.active_coop({"pid": 4242, "coop": {"with": ["x", "alice"], "until": now + 99}},
+                                                [4242]), "a list of clients is read")
+
+    def test_until_is_finite_and_at_most_seven_days_ahead(self):
+        self.start(minutes=10080)  # the longest: 7 days
+        self.assertEqual(self.rec()["coop"]["until"] - self.rec()["coop"]["since"], 7 * 86400)
+        self.assertIsNotNone(tf3ctl.active_coop(self.rec(), [4242]))
+        now = time.time()
+        for until in (now + 7 * 86400 + 60, float("nan"), float("inf"), 1e300):
+            self.assertIsNone(tf3ctl.active_coop({"pid": 4242, "coop": {"with": "alice", "until": until}}, [4242],
+                                                 now=now), until)
+        # as written by another tool: JSON's NaN / Infinity never count
+        for text in ("NaN", "Infinity", str(int(now) + 8 * 86400)):
+            write(tf3ctl.launched_path(), '{"v": 1, "pid": 4242, "coop": {"with": "alice", "until": %s}}' % text)
+            with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+                tf3ctl.check_game_owner("build", {"res": "x"})
+            self.assertNotIsInstance(cm.exception, tf3ctl.CoopRefused, text)
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.coop_start(10081, "x")
+
+    def test_owner_less_record_without_coop_does_not_count(self):
+        os.makedirs(os.path.dirname(tf3ctl.launched_path()), exist_ok=True)
+        write(tf3ctl.launched_path(), '{"v": 1, "pid": 4242, "started_at": 1, "cmd": "coop"}')
+        self.assertIsNone(tf3ctl.read_launched()[0])
+        write(tf3ctl.launched_path(), '{"v": 1, "pid": 4242, "coop": {"with": "alice", "until": 1}}')
+        self.assertIsNone(tf3ctl.read_launched()[0]["owner"])
+
+    def test_launch_coop_shares_after_the_load(self):
+        tf3ctl.OWNER = "alice"
+        tf3ctl.game_pids = lambda: []
+        ns = tf3ctl.make_parser().parse_args(["launch", "--load", "aom-eu-1900", "--coop", "--reason", "play",
+                                              "--minutes", "30"])
+        seen = []
+
+        def fake_launch(t):
+            tf3ctl.game_pids = lambda: [4242]
+            return {"ok": True, "menu": True}
+
+        def fake_replace(cmd, args, dry, timeout, company_init=True):
+            seen.append(tf3ctl.check_game_owner(cmd, args))  # the load goes: coop comes after it
+            self.loaded("aom-eu-1900")
+            return {"ok": True}
+        with unittest.mock.patch.object(tf3ctl, "launch_game", fake_launch), \
+                unittest.mock.patch.object(tf3ctl, "replace_game", fake_replace), \
+                contextlib.redirect_stderr(io.StringIO()):
+            out = tf3ctl.cmd_start(ns, restart=False)
+        self.assertEqual(seen, [None])
+        self.assertTrue(out["coop"]["active"])
+        self.assertEqual(self.rec()["owner"], "alice")
+        self.assertEqual(self.rec()["coop"]["until"] - self.rec()["coop"]["since"], 1800)
+        self.refused("load", {"save": "s"})
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.cmd_start(tf3ctl.make_parser().parse_args(["launch", "--coop"]), restart=False)
+
+    def test_launch_coop_checks_reason_before_starting(self):
+        tf3ctl.OWNER = "alice"
+        tf3ctl.game_pids = lambda: []
+        started = []
+        for argv in (["launch", "--coop", "--reason", "x" * 201], ["launch", "--coop", "--reason", "x",
+                                                                   "--minutes", "10081"]):
+            with unittest.mock.patch.object(tf3ctl, "launch_game", lambda t: started.append(1)), \
+                    self.assertRaises(tf3ctl.ToolError):
+                tf3ctl.cmd_start(tf3ctl.make_parser().parse_args(argv), restart=False)
+        self.assertEqual(started, [], "nothing started")
+
+    def test_changes_are_remembered_after_coop_end_on_the_same_game(self):
+        self.loaded("aom-eu-1900")
+        self.start()
+        self.sent("build", {"res": "x"})
+        tf3ctl.coop_end()
+        self.assertEqual(self.rec()["coopChanges"], 1)
+        self.assertNotIn("coop", self.rec())
+        self.start()
+        self.assertEqual((self.rec()["coop"]["modified"], self.rec()["coop"]["changes"]), (True, 1))
+        self.assertNotIn("coopChanges", self.rec())
+        self.assertIn("(1 times)", tf3ctl.coop_note()["coop"]["text"])
+
+    def test_coop_end_without_a_mark(self):
+        self.assertTrue(tf3ctl.coop_end()["ok"])
+        self.record("alice")
+        self.assertIn("note", tf3ctl.coop_end())
+        self.assertEqual(self.rec()["owner"], "alice")
+
+
 class NoAbbrevTest(unittest.TestCase):
     """Only whole option names: the game guard outside reads the flags as typed, so --eng must not mean --engine-check."""
 
