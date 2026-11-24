@@ -1125,6 +1125,39 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("around", "--at", "0,7000", "--kinds", "field")
         self.assertEqual([e["id"] for e in res["entities"]], [9604])
 
+    def test_9xz_mod_commands(self):
+        sample = "hummer_remote_probe_ext_sample"
+        code, res = self.ctl("mod", "--list")
+        self.assertEqual(code, 0, res)
+        mods = {m["mod"]: m for m in res["mods"]}
+        self.assertEqual([c["name"] for c in mods[sample]["commands"]], ["hello", "speed"])
+        self.assertEqual([c["tag"] for c in mods[sample]["commands"]], ["reads", "changes"])
+        self.assertEqual(res["checked"], 2, "example_mod has no file and is left out")
+        code, res = self.ctl("mod", sample)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["checked"], 1)
+        code, res = self.ctl("--owner", "tester", "mod", sample, "hello", '{"who": "ann", "n": [1, 2]}')
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["result"]["greeting"], "hello, ann")
+        self.assertEqual(res["result"]["args"]["n"], [1, 2])
+        self.assertEqual(res["result"]["from"], "tester")
+        # tagged changes: sent again as modChange, which the mod runs
+        code, res = self.ctl("--owner", "tester", "mod", sample, "speed", '{"speed": 0}')
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["result"]["speed"], 0)
+        self.assertEqual(res["result"]["speedup"], 0)
+        code, res = self.ctl("status")
+        self.assertEqual(res["lastAction"]["cmd"], "modChange")
+        code, res = self.ctl("--owner", "tester", "mod", sample, "speed", '{"speed": 9}')
+        self.assertEqual(code, 1, res)
+        self.assertEqual(res["kind"], "error")
+        code, res = self.ctl("mod", sample, "nope")
+        self.assertEqual(code, 1, res)
+        self.assertEqual(res["kind"], "noCommand")
+        code, res = self.ctl("mod", "example_mod", "x")
+        self.assertEqual(res["kind"], "noExt")
+        self.ctl("--owner", "tester", "mod", sample, "speed", '{"speed": 1}')
+
     def test_9xz_lanes(self):
         # the fake's electric tram street 9620 (the base's town_new_medium_tram_electrified lanes): track on the
         # outer road lanes, 2 (left, against the piece) and 5 (right)
@@ -5255,6 +5288,16 @@ class OwnerCheckTest(unittest.TestCase):
         tf3ctl.OWNER = None
         self.assertIn("no --owner", self.refused("quit"))
 
+    def test_other_mods_commands_that_change_the_game_go_past_the_owner_check(self):
+        self.record("bob")
+        args = {"mod": "m", "command": "c", "args": {}, "timeout": 25}
+        self.assertIn("started by bob, not by alice", self.refused("modChange", args))
+        for cmd in ("modList", "modRead"):
+            self.assertIsNone(tf3ctl.check_game_owner(cmd, args), cmd)
+        # a dryRun inside the command's own arguments is the other mod's business: still changing
+        self.assertTrue(tf3ctl.changes_game("modChange", dict(args, args={"dryRun": True})))
+        self.assertNotIn("modChange", tf3ctl.COOP_ALLOWED, "not one of the commands coop lets through")
+
     def test_reading_commands_dry_runs_and_camera_reading_go(self):
         self.record("bob")
         for cmd, args in (("status", None), ("stations", {}), ("industryStocks", {}), ("saves", None),
@@ -7073,6 +7116,112 @@ class ConfiguredMachineTest(unittest.TestCase):
         self.assertEqual(tf3ctl.CONFIG_INFO["state"], "file")
         for key in ("ownerCheck", "coop", "pointer"):
             self.assertIs(tf3ctl.CONFIG[key], True, key)
+
+
+class ModCommandTest(unittest.TestCase):
+    """mod --list / mod <modId> <command> [JSON]: the arguments, and modRead first, modChange when the mod says so."""
+
+    def ns(self, *argv):
+        return tf3ctl.make_parser().parse_args(["mod"] + list(argv))
+
+    def test_args(self):
+        self.assertEqual(tf3ctl.mod_call_args(self.ns("--list")), ("modList", {}))
+        self.assertEqual(tf3ctl.mod_call_args(self.ns("m")), ("modList", {"mod": "m"}))
+        self.assertEqual(tf3ctl.mod_call_args(self.ns("--list", "m")), ("modList", {"mod": "m"}))
+        self.assertEqual(tf3ctl.mod_call_args(self.ns("m", "c")),
+                         ("modRead", {"mod": "m", "command": "c", "args": {}, "timeout": 25}))
+        self.assertEqual(tf3ctl.mod_call_args(self.ns("m", "c", '[1, {"a": null}]', "--timeout", "60"))[1],
+                         {"mod": "m", "command": "c", "args": [1, {"a": None}], "timeout": 55})
+        for argv, text in ((("--list", "m", "c"), "at most a mod's id"), (("m", "c", "{x"), "not JSON"),
+                           (("m", "c", "3"), "object or list"), (("m", "c", '"s"'), "object or list"),
+                           (("m", "c", "--timeout", "5"), "between 6 and 125"),
+                           (("m", "c", "--timeout", "126"), "between 6 and 125"),
+                           (("m", "c", "--timeout", "nan"), "between 6 and 125")):
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.mod_call_args(self.ns(*argv))
+            self.assertIn(text, str(cm.exception), argv)
+        # NaN in the arguments: the command file cannot hold it
+        wire, args = tf3ctl.mod_call_args(self.ns("m", "c", '{"x": NaN}'))
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.command_text(1, wire, args)
+
+    def test_arguments_reach_the_mod_as_sent(self):
+        wire, args = tf3ctl.mod_call_args(self.ns("m", "c", '{"s": "a \\"q\\" 日本", "l": [1, 2.5, true], "o": {"k": {}}}'))
+        got = mod_reads(tf3ctl.command_text(7, wire, args))
+        self.assertEqual(got["cmd"], "modRead")
+        self.assertEqual(got["args"]["args"], {"s": 'a "q" 日本', "l": [1, 2.5, True], "o": {"k": {}}})
+
+    def run_mod(self, answers, *argv):
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args, timeout))
+            return answers.pop(0)
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send):
+            res = tf3ctl.cmd_mod(self.ns(*argv))
+        return res, sent
+
+    def test_list_takes_the_timeout_given(self):
+        _, sent = self.run_mod([{"ok": True, "mods": []}], "--list")
+        self.assertEqual(sent, [("modList", {}, tf3ctl.MOD_LIST_TIMEOUT_SEC)])
+        _, sent = self.run_mod([{"ok": True, "mods": []}], "--list", "--timeout", "15")
+        self.assertEqual(sent, [("modList", {}, 15)])
+        _, sent = self.run_mod([{"ok": True, "result": 1}], "m", "c")
+        self.assertEqual(sent[0][2], tf3ctl.MOD_TIMEOUT_SEC)
+
+    def test_reads_once_and_changes_twice(self):
+        res, sent = self.run_mod([{"ok": True, "result": 1}], "m", "c")
+        self.assertEqual([c for c, _, _ in sent], ["modRead"])
+        self.assertEqual(res["result"], 1)
+        res, sent = self.run_mod([{"ok": False, "needsChange": True, "kind": "changes"}, {"ok": True, "result": 2}],
+                                 "m", "c", '{"a": 1}', "--timeout", "40")
+        self.assertEqual([c for c, _, _ in sent], ["modRead", "modChange"])
+        self.assertEqual(sent[0][1], sent[1][1], "the same arguments both times")
+        self.assertEqual(sent[1][2], 40)
+        self.assertEqual(res["result"], 2)
+        # an error that is not needsChange is the answer
+        res, sent = self.run_mod([{"ok": False, "kind": "noExt", "error": "x"}], "m", "c")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(res["kind"], "noExt")
+        res, sent = self.run_mod([{"ok": True, "mods": []}], "--list")
+        self.assertEqual(sent[0][0], "modList")
+
+    def test_a_refused_change_sends_nothing_after_the_read(self):
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            if cmd == "modChange":
+                raise tf3ctl.OwnerRefused("refused 'modChange', nothing sent")
+            return {"ok": False, "needsChange": True}
+        out = io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = tf3ctl.main(["--owner", "alice", "mod", "m", "c"])
+        self.assertEqual(code, 4)
+        self.assertIn("refused 'modChange'", json.loads(out.getvalue())["error"])
+
+    def test_owner_check_takes_mod_change_only_when_the_configuration_turns_it_on(self):
+        # the real check_game_owner (not a stand-in): modChange changes the game, modRead / modList only read
+        saved = (tf3ctl.game_pids, tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK)
+        args = {"mod": "m", "command": "c", "args": {}, "timeout": 25}
+        try:
+            tf3ctl.game_pids = lambda: [4242]
+            with contextlib.redirect_stderr(io.StringIO()):
+                tf3ctl.write_launched(4242, owner="bob")
+            tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "alice", False
+            use_config(CONFIGURED)
+            with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+                tf3ctl.check_game_owner("modChange", args)
+            self.assertIn("not by alice", str(cm.exception))
+            for wire in ("modRead", "modList"):
+                self.assertIsNone(tf3ctl.check_game_owner(wire, args), wire)
+            tf3ctl.OWNER = "bob"
+            self.assertIsNone(tf3ctl.check_game_owner("modChange", args), "the owner's own game")
+            tf3ctl.OWNER = "alice"
+            use_config(dict(CONFIGURED, ownerCheck=False, coop=False))
+            self.assertIsNone(tf3ctl.check_game_owner("modChange", args), "no owner check configured")
+        finally:
+            tf3ctl.game_pids, tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = saved
+            use_config(CONFIGURED)
+            tf3ctl.remove_launched()
 
 
 if __name__ == "__main__":
