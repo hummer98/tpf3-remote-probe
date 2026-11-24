@@ -1401,13 +1401,6 @@ function M.new(dir, opts)
 			setCameraData = function(v) g.cam = { x = v.x, y = v.y, distance = v.z, angle = v.w, pitch = v.q } end,
 			focusPosition = function(p, d) g.cam.x, g.cam.y, g.cam.distance = p.x, p.y, d; g.focusedAt = p end,
 			getHeightAboveTerrain = function() return g.cam.distance * 0.5 end,
-			takeScreenshot = function(scale)
-				os.execute("mkdir -p '" .. dir .. "/screenshots'")
-				local f = assert(io.open(dir .. "/screenshots/shot_" .. tostring(#g.logs) .. "_" .. tostring(scale) .. ".png", "w"))
-				f:write("PNG")
-				f:close()
-				g.shots = (g.shots or 0) + 1
-			end,
 		}, game = {
 			getEstimatedMaximumGameSpeed = function() return opts.maxSpeed or 0 end,
 			-- per-mod GUI save data held by the game (C++): every Lua state sees the same
@@ -1645,6 +1638,9 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_runcost.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_reach.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
+		-- M.coreSetup(core): a test run's changes to this game's own copy of remote_core.lua (its fallbacks for what
+		-- tf3ctl's configuration sends)
+		if M.coreSetup then M.coreSetup(require("hummer_remote_probe::/remote_core.lua")) end
 		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
 		-- (MODHUB_PUBLISHED_IDS), taken out of that table in this game's own copy of remote_core.lua
 		if type(opts.modhub) == "table" and opts.modhub.firstUploadOf then

@@ -54,6 +54,30 @@ local function truthy(v, msg) if not v then error(msg or "expected a true value"
 local fake = dofile(root .. "/tests/fake_game.lua")
 local core = require "hummer_remote_probe::/remote_core.lua"
 
+-- The commands these tests send carry no _testSaveRules or _modhub, which tf3ctl adds from its configuration file.
+-- What the mod falls back on (one prefix, no modhub folder) is set here to what tf3ctl sends with a configuration of
+-- several test-save prefixes, the digit rule and four modhub folders: the tests were written against that, and this
+-- keeps them checking that it works as before. Every copy of remote_core.lua a fake game boots gets it too
+-- (fake.coreSetup). The mod's real defaults: the "configuration" tests, on a fresh copy (freshCore).
+local CONFIGURED = {
+	testSaveRules = { prefixes = { "probe-", "aom-ops-", "aom-shot-", "aom-bgm-check-" }, digitFirst = true },
+	modhubFolders = { "hummer_force_unload_default_1", "hummer_cursor_altitude_tooltip_1",
+		"hummer_construction_altitude_tooltip_1", "hummer_industry_pollution_display_1" },
+	modhubIds = { hummer_force_unload_default_1 = "6543965", hummer_cursor_altitude_tooltip_1 = "6523060",
+		hummer_construction_altitude_tooltip_1 = "6536988", hummer_industry_pollution_display_1 = "6536959" },
+}
+local function configure(c)
+	c.TEST_SAVE_DEFAULT = CONFIGURED.testSaveRules
+	c.MODHUB_VALIDATE_FOLDERS, c.MODHUB_PUBLISH_FOLDERS, c.MODHUB_PUBLISHED_IDS = {}, {}, {}
+	for _, f in ipairs(CONFIGURED.modhubFolders) do
+		c.MODHUB_VALIDATE_FOLDERS[f], c.MODHUB_PUBLISH_FOLDERS[f] = true, true
+	end
+	for f, id in pairs(CONFIGURED.modhubIds) do c.MODHUB_PUBLISHED_IDS[f] = id end
+end
+configure(core)
+fake.coreSetup = configure
+local function freshCore() return dofile(root .. "/content/remote_core.lua") end
+
 ---------------------------------------------------------------------------------------------------------------------
 -- core
 
@@ -1499,10 +1523,10 @@ test("newgame dryRun: the plan only", function()
 end)
 
 test("newgame: ack, then startGame with the plan; the probe answers again in the new game", function()
-	local g = newGame({ saves = SAVES, modParams = { m1 = { a = 1 } } })
+	local g = newGame({ saves = SAVES, menu = true })
 	frames(g, 2)
 	local before = stampOf(g.x)
-	send(g, 142, "newgame", '{ size = "tiny", year = 1920, seed = "abc", industries = false, unsafe = true }')
+	send(g, 142, "newgame", '{ size = "tiny", year = 1920, seed = "abc", industries = false, mods = { add = { "m1" } } }')
 	frames(g, FIRST)
 	truthy(answerText(g, 142, "ack"), "ack")
 	eq(#g.started, 1)
@@ -1519,21 +1543,18 @@ test("newgame: ack, then startGame with the plan; the probe answers again in the
 	truthy((answerText(g, 143) or ""):find('"year":1920'), "the new game answers")
 end)
 
-test("newgame: a refused startGame is an error answer; a running run is cancelled first", function()
-	local g = newGame({ saves = SAVES, startFails = true })
+test("newgame: a refused startGame is an error answer", function()
+	local g = newGame({ saves = SAVES, startFails = true, menu = true })
 	frames(g, 2)
-	send(g, 144, "run", "{ months = 6, speed = 2 }")
+	send(g, 145, "newgame", "{}")
 	frames(g, FIRST)
-	send(g, 145, "newgame", "{ unsafe = true }")
-	frames(g, 30)
-	truthy((answerText(g, 144, "error") or ""):find("cancelled: newgame command 145"))
-	truthy((answerText(g, 145, "error") or ""):find("startGame refused"))
+	truthy((answerText(g, 145, "error") or ""):find("startGame refused"), answerText(g, 145, "error"))
 end)
 
 test("newgame: placement for towns and industries as the base page builds it", function()
-	local g = newGame({ saves = SAVES })
+	local g = newGame({ saves = SAVES, menu = true })
 	frames(g, 2)
-	send(g, 146, "newgame", '{ size = "tiny", unsafe = true }')
+	send(g, 146, "newgame", '{ size = "tiny" }')
 	frames(g, FIRST)
 	local L = g.started[1].locationsConfig
 	truthy(L, "locationsConfig set")
@@ -1544,6 +1565,10 @@ end)
 local MENU_BASE = { ["locations.towns.frequency"] = 3, ["locations.towns.populationDensity"] = 3,
 	["locations.industry.initialIndustryDensity"] = 3, ["gameTimeConfig.timeOfDayMode"] = 1,
 	["weatherConfig.dynamicWeather"] = 1 }
+-- the same, as a newgame command's params (the main menu has no game to take them from)
+local MENU_BASE_ARGS = 'params = { [""] = { ["locations.towns.frequency"] = 3, ["locations.towns.populationDensity"] = 3, '
+	.. '["locations.industry.initialIndustryDensity"] = 3, ["gameTimeConfig.timeOfDayMode"] = 1, '
+	.. '["weatherConfig.dynamicWeather"] = 1 } }'
 local function near(a, b, msg) truthy(type(a) == "number" and math.abs(a - b) < 1e-9, (msg or "") .. ": " .. tostring(a) .. " ~= " .. tostring(b)) end
 
 test("core.newGameStart: the menu's densities, time and clouds; the copy when difficulty_util is missing", function()
@@ -1606,10 +1631,10 @@ end)
 
 test("newgame: densities and start time as the menu computes them, with difficulty_util loaded", function()
 	-- difficulty_util is really asked: its answers (100 + level) reach locationsConfig
-	local g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE },
+	local g = newGame({ saves = SAVES, menu = true,
 		difficultyUtil = { getScale = function(k, l) return 100 + l end } })
 	frames(g, 2)
-	send(g, 148, "newgame", '{ size = "tiny", unsafe = true }')
+	send(g, 148, "newgame", '{ size = "tiny", ' .. MENU_BASE_ARGS .. ' }')
 	frames(g, FIRST)
 	local ack = answerText(g, 148, "ack") or ""
 	truthy(not ack:find('"warnings"'), ack)
@@ -1618,9 +1643,9 @@ test("newgame: densities and start time as the menu computes them, with difficul
 	eq(p.locationsConfig.industry.industryDensity, 103)
 	eq(p.startTimeOfDaySeconds, 14 * 3600); eq(p.startCloudCoverage, 0)
 	-- the fake's copy of the base module: the menu's 0.4, 1.0, 1.0
-	g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE } })
+	g = newGame({ saves = SAVES, menu = true })
 	frames(g, 2)
-	send(g, 149, "newgame", '{ size = "tiny", unsafe = true }')
+	send(g, 149, "newgame", '{ size = "tiny", ' .. MENU_BASE_ARGS .. ' }')
 	frames(g, FIRST)
 	local L = g.started[1].locationsConfig
 	near(L.town.townFrequency, 0.4); near(L.town.populationDensity, 1.0); near(L.industry.industryDensity, 1.0)
@@ -1629,9 +1654,9 @@ end)
 
 test("newgame: difficulty_util not loadable gives the same values from the copy, and a warning in the answer", function()
 	-- before 2026-11-23 this case (always: an undefined req) left Locations.new()'s values and only logged it
-	local g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE }, noDifficultyUtil = true })
+	local g = newGame({ saves = SAVES, menu = true, noDifficultyUtil = true })
 	frames(g, 2)
-	send(g, 150, "newgame", '{ size = "tiny", unsafe = true }')
+	send(g, 150, "newgame", '{ size = "tiny", ' .. MENU_BASE_ARGS .. ' }')
 	frames(g, FIRST)
 	local ack = answerText(g, 150, "ack") or ""
 	truthy(ack:find('"warnings":%["difficulty_util not available'), ack)
@@ -1641,9 +1666,9 @@ test("newgame: difficulty_util not loadable gives the same values from the copy,
 end)
 
 test("newgame: --param on the base densities and time-of-day mode changes them as in the menu", function()
-	local g = newGame({ saves = SAVES, modParams = { [""] = MENU_BASE } })
+	local g = newGame({ saves = SAVES, menu = true })
 	frames(g, 2)
-	send(g, 151, "newgame", '{ size = "tiny", unsafe = true, params = { [""] = { ["locations.towns.frequency"] = 5, '
+	send(g, 151, "newgame", '{ size = "tiny", params = { [""] = { ["locations.towns.frequency"] = 5, '
 		.. '["locations.towns.populationDensity"] = 1, ["locations.industry.initialIndustryDensity"] = 4, '
 		.. '["gameTimeConfig.timeOfDayMode"] = 6, ["weatherConfig.dynamicWeather"] = 4 } } }')
 	frames(g, FIRST)
@@ -1671,17 +1696,6 @@ test("newgame dryRun: the locationsConfig values, levels, start time and clouds 
 	send(g, 153, "newgame", '{ size = "tiny", dryRun = true }')
 	frames(g, FIRST)
 	truthy((answerText(g, 153) or ""):find('"warnings":%["difficulty_util not available'), answerText(g, 153))
-end)
-
-test("newgame / load: an answer when the call returns but the game does not change", function()
-	local g = newGame({ saves = SAVES, startNoop = true })
-	frames(g, 2)
-	send(g, 147, "newgame", "{ unsafe = true }")
-	frames(g, FIRST)
-	truthy(answerText(g, 147, "ack"))
-	eq(answerText(g, 147, "error"), nil, "not before 30 s")
-	frames(g, 30 * 31)
-	truthy((answerText(g, 147, "error") or ""):find("kept running for 30 s"), answerText(g, 147, "error"))
 end)
 
 test("capSpeed: the estimate, the buttons' 4x without one, force and slow speeds untouched", function()
@@ -1757,22 +1771,6 @@ test("newgame: refused from inside a save (the base's StartGame asserts no game 
 	frames(g, FIRST)
 	truthy((answerText(g, 160, "error") or ""):find("cannot start from inside a save"))
 	eq(#g.started, 0)
-end)
-
-test("screenshot: the game's own takeScreenshot with the scale asked; bad scales refused", function()
-	local g = newGame({ saves = SAVES })
-	frames(g, 2)
-	send(g, 170, "screenshot", "{ scale = 1 }")
-	frames(g, FIRST)
-	truthy((answerText(g, 170) or ""):find('"scale":1'))
-	eq(g.shots, 1)
-	send(g, 171, "screenshot", "{ scale = 9 }")
-	frames(g, 20)
-	truthy((answerText(g, 171, "error") or ""):find("0%-4"))
-	send(g, 172, "screenshot", "{ scale = 1.5 }")
-	frames(g, 20)
-	truthy((answerText(g, 172, "error") or ""):find("0%-4"), "not rounded down")
-	eq(g.shots, 1)
 end)
 
 test("load / newgame: params for a mod that will not be active are refused, with --add suggested", function()
@@ -2092,7 +2090,7 @@ test("menu: startup.lua answers in the main menu with the same files, and says i
 	send(g, 221, "saves")
 	frames(g, 20)
 	truthy((answerText(g, 221) or ""):find('"saveName":"probe"'))
-	for i, cmd in ipairs({ "speed", "run", "save", "window", "event", "tool", "entities", "screenshot" }) do
+	for i, cmd in ipairs({ "speed", "run", "save", "window", "event", "tool", "entities" }) do
 		send(g, 221 + i, cmd, "{ speed = 1, days = 1, name = 'x', kind = 'town' }")
 		frames(g, 20)
 		truthy((answerText(g, 221 + i, "error") or ""):find("needs a running game"), cmd .. ": " .. tostring(answerText(g, 221 + i, "error")))
@@ -2100,7 +2098,7 @@ test("menu: startup.lua answers in the main menu with the same files, and says i
 	for _, l in ipairs(g.logs) do truthy(not l:find("error %("), "no script errors: " .. l) end
 end)
 
-test("menu: newgame starts without unsafe; the menu copy stops and the new game's probe answers", function()
+test("menu: newgame starts; the menu copy stops and the new game's probe answers", function()
 	local g = newGame({ saves = SAVES, menu = true, menuKeepsRunning = true })
 	frames(g, 2)
 	local menuStamp = stampOf(g.x)
@@ -10203,26 +10201,24 @@ test("newgame editor: isMapEditor, the official mods and the probe only (not the
 	local d = final(g, 1060)
 	eq(d.plan.editor, true); eq(table.concat(d.plan.mods, ","), "ug_legacy_ships,ug_tgv_pse,hummer_remote_probe")
 	eq(d.plan.modParams.hummer_age_of_mobility, nil, "no params of the game's mods")
-	send(g, 1061, "newgame", '{ size = "tiny", editor = true, unsafe = true, mods = { add = { "extra" } } }')
-	frames(g, FIRST)
-	eq(#g.started, 1)
-	eq(g.started[1].isMapEditor, true)
-	eq(table.concat(g.started[1].mods, ","), "ug_legacy_ships,ug_tgv_pse,extra,hummer_remote_probe")
-	frames(g, 3)
-	send(g, 1062, "status")
-	frames(g, FIRST)
-	local s = final(g, 1062)
-	eq(s.mapEditor.gui, true)
-	-- the menu way too
-	local m = newGame({ saves = SAVES, menu = true, installed = { "ug_tgv_pse" } })
+	-- started from the main menu (from inside a save, newgame starts nothing)
+	local m = newGame({ saves = SAVES, menu = true,
+		installed = { "hummer_age_of_mobility", "ug_tgv_pse", "ug_legacy_ships", "hummer_remote_probe" } })
 	frames(m, 2)
-	send(m, 1063, "newgame", '{ size = "tiny", editor = true }')
+	send(m, 1061, "newgame", '{ size = "tiny", editor = true, mods = { add = { "extra" } } }')
 	frames(m, FIRST)
-	eq(m.started[1].isMapEditor, true); eq(table.concat(m.started[1].mods, ","), "ug_tgv_pse,hummer_remote_probe")
+	eq(#m.started, 1)
+	eq(m.started[1].isMapEditor, true)
+	eq(table.concat(m.started[1].mods, ","), "ug_legacy_ships,ug_tgv_pse,extra,hummer_remote_probe")
+	frames(m, 3)
+	send(m, 1062, "status")
+	frames(m, FIRST)
+	local s = final(m, 1062)
+	eq(s.mapEditor.gui, true)
 	-- without editor: as before
-	local n = newGame({ saves = SAVES })
+	local n = newGame({ saves = SAVES, menu = true })
 	frames(n, 2)
-	send(n, 1064, "newgame", '{ size = "tiny", unsafe = true }')
+	send(n, 1064, "newgame", '{ size = "tiny" }')
 	frames(n, FIRST)
 	eq(n.started[1].isMapEditor, false)
 	send(n, 1065, "status")
@@ -11602,8 +11598,9 @@ test("company init: dry run, map editor, mission, no script, refused, not delive
 end)
 
 test("company init after a newgame: towns at the start give a basePopulation, nothing to send", function()
-	local g = companyGame({ company = { basePopulation = 500, companyStates = {} }, growth = { companyState = {} } })
-	send(g, 2532, "newgame", '{ size = "tiny", unsafe = true }')
+	local g = companyGame({ company = { basePopulation = 500, companyStates = {} }, growth = { companyState = {} } },
+		{ menu = true })
+	send(g, 2532, "newgame", '{ size = "tiny" }')
 	frames(g, FIRST + 10)
 	local b = companyRun(g, 2533, "company")
 	truthy(b.ok, b.error); eq(b.company.basePopulation, 200, "the start event, as measured")
@@ -11613,9 +11610,9 @@ test("company init after a newgame: towns at the start give a basePopulation, no
 end)
 
 test("company init: no towns at the start, towns placed later: sent, basePopulation from them", function()
-	local opts = { townCapacities = {} }
+	local opts = { townCapacities = {}, menu = true }
 	local g = companyGame({ company = { basePopulation = 500, companyStates = {} }, growth = { companyState = {} } }, opts)
-	send(g, 2541, "newgame", '{ size = "tiny", towns = false, unsafe = true }')
+	send(g, 2541, "newgame", '{ size = "tiny", towns = false }')
 	frames(g, FIRST + 10)
 	local a = companyRun(g, 2542, "company")
 	eq(a.company.basePopulation, 0); eq(a.worldPopulation, 0); truthy(a.diagnosis:find("no population"), a.diagnosis)
@@ -11862,6 +11859,9 @@ dofile(root .. "/tests/run_runcost.lua")({ test = test, eq = eq, truthy = truthy
 -- build / road --collision-detail (tests/run_collision.lua)
 dofile(root .. "/tests/run_collision.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core,
 	buildWorld = buildWorld, buildRun = buildRun, roadWorld = roadWorld, roadRun = roadRun, RAMP = RAMP })
+-- the mod's defaults without tf3ctl's configuration (tests/run_config.lua)
+dofile(root .. "/tests/run_config.lua")({ test = test, eq = eq, truthy = truthy, freshCore = freshCore,
+	newGame = newGame, send = send, frames = frames, final = final, FIRST = FIRST, SAVES = SAVES })
 
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it

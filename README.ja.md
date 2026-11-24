@@ -46,7 +46,7 @@ MOD は速度ボタンのレシピを、同じボタンと ×8 / ×16 のボタ�
 - Steam 版の Transport Fever 3 (build 40444 で試験)、Linux。ツールは `fcntl` と Linux のプロセス一覧を使うので、
   このままでは Windows で動きません。
 - Python 3.8 以上と、`PATH` 上の `luajit` (ツールは MOD の Lua のファイルを luajit で読みます)。
-- 任意: `frame` に `ffmpeg` と Steam のバックグラウンド録画。`screenshot --preview` に ImageMagick。
+- 任意: `frame` に `ffmpeg` と Steam のバックグラウンド録画。
 - 任意: `connect` に Track Connector MOD (mod.io、modId `ethan_track_connector`、revision 3 / v1.3 に合わせて作成、ゲーム内ではまだ動かしていない)。セーブで
   有効にしておきます。
 - Time Warp (mod.io 6453396、modId `mobarzik_faster_game_speed`) とは一緒に使えません。どちらも同じ速度ボタンを
@@ -70,7 +70,8 @@ python3 tools/tf3ctl.py status
 
 どのコマンドも JSON のオブジェクトを 1 つ出力します。終了コード: 0 成功、1 ゲームがエラーを返した、2 応答なしか
 ツールのエラー、3 ゲームが今いる場所では答えられない (メニュー、ロード中、probe のないメインメニュー、終了。
-`gameState` が示す)、4 断った: 動いているゲームはこの `--owner` のものではない (何も送っていない。「ゲームを変えるのは起動した owner だけ」)。
+`gameState` が示す)、4 断った (何も送っていない): 動いているゲームはこの `--owner` のものではない (「ゲームを変えるのは起動した owner だけ」)、
+試験用セーブだけの命令を別のセーブに送ろうとした、設定ファイルで入れていない命令 (「設定ファイル」)。
 
 ### 時間と速度
 
@@ -620,8 +621,8 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   (`refused`・`verdict`・`critical`・`errors`・`warnings`・`infos`・`collisions`・`collisionEntities`・`hits`)、`unforcedContexts` に
   2つの context、check が critical と言ったときは `unforcedCritical` に注意が入ります。ほかに `ignoreErrors: true`・
   `ignoredErrors: true` (強制で送ったという印。無視する誤りがあったかは `unforced.refused`)・`testSave`・`ignoreErrorsNote` が付き、建てば普通の road と同じく `edge`・`edges`・`nodes` が入ります。
-  読み込まれているセーブ (ゲームのログから読む) が試験用の名前 (`probe-*`・`aom-ops-*`・`aom-shot-*`・`aom-bgm-check-*`・
-  数字1文字で始まる名前) でないとき、また動いているゲームに共同作業 (coop) の印があるとき (有効・期限切れ・壊れた印の
+  読み込まれているセーブ (ゲームのログから読む) が試験用の名前 (設定ファイルの `testSavePrefixes`。初期設定は
+  `probe-*`) でないとき、また動いているゲームに共同作業 (coop) の印があるとき (有効・期限切れ・壊れた印の
   どれでも) は、tf3ctl が断ります (終了コード 4、`"refused": "ignore-errors"`、何も送らない)。新しいゲームにはまだセーブの
   名前が無いので、先に試験用の名前で保存し、そのセーブを読み込んでから使ってください。MOD の側でもセーブの名前
   (tf3ctl が送る) を確認し、`road` 以外の命令に付いた `ignoreErrors` は断ります。probe 自身の検査は外しません: 交差点の
@@ -1208,7 +1209,7 @@ python3 tools/tf3ctl.py modhub publish-clear --yes
   最大 30 秒、MOD が Sync を抜けるのを最大 60 秒待ちます。Publishing か HasResult の MOD (アップロードが持っている) には
   触りません。helper がまだ知らない MOD は、ページと同じく Sync とみなします。`--timeout` はこれらの待ちも含めた
   コマンド全体の上限で、過ぎると動いている検証を止めます (`abortValidation`。ページを閉じたときと同じ)。受け付けるのは
-  `MODHUB_VALIDATE_FOLDERS` (content/remote_core.lua) にあるフォルダだけです。自分の MOD に合わせて直してください。
+  設定ファイルの `modhub.validateFolders` にあるフォルダだけです (初期設定は空)。
 - helper を作ると、ゲームは staging の MOD を mod.io と同期します。mod.io への読む要求で、書き込みはしません。
 - helper は、mod.io の準備ができてから最初の modhub のコマンドで1度だけ作ります。`ModPublishHelper.new` が失敗すると、
   probe はそのエラーを覚えて、メインメニューにいる間は作り直しません。あとの modhub のコマンドは全部同じエラーを
@@ -1229,9 +1230,9 @@ python3 tools/tf3ctl.py modhub publish-clear --yes
 mod.io に MOD があるときだけボタンの名前を「Update」にします。この道具は、どちらのつもりかを推し量りません。新しい
 MOD のページや公開にした MOD はゲームからは戻せないので、次のどれか1つでも外れると何も送りません。
 
-- フォルダが、publish の受け付ける2つの一覧の両方にある。`tools/tf3ctl.py` と `content/remote_core.lua` の
-  `MODHUB_PUBLISH_FOLDERS` (validate の一覧とは別)。自分の MOD に合わせて両方を直してください。mod.io に上げ済みの
-  フォルダは、`MODHUB_PUBLISHED_IDS` (両方のファイル) で mod.io の id にも結び付けてある: `--first-upload` は断り、
+- フォルダが、設定ファイルの `modhub.publishFolders` にある (validate の一覧とは別。初期設定は空。tf3ctl が命令と
+  一緒に送るので、MOD も同じ一覧で確認する)。mod.io に上げ済みの
+  フォルダは、`modhub.publishedIds` で mod.io の id にも結び付けてある: `--first-upload` は断り、
   更新は fileid のファイルがその id のときだけ送る (fileid のファイルが消えると新規に見えてしまうため)。
 - `--public yes|no` (既定値なし) と、空でない `--changelog` が付いている。
 - staging のフォルダの `_metadata/mod.io_fileid.txt` (最初のアップロードのあとゲームが mod.io の id を書くファイルで、
@@ -1327,6 +1328,7 @@ Publishing のあいだは `quit`・`load`・`newgame` を断るので、ゲー�
 
 ### ゲームを変えるのは起動した owner だけ
 
+設定ファイルで `"ownerCheck": true` のとき (初期設定は切れていて、ここに書いたことはどれも断りません)。
 ゲームが動いている間、ゲームを変えるコマンド (そう数えるもの全部: `save`・`quit`・`load`・`newgame`・`speed`・`run`・
 `build`・`line`・`event`・`window`・`modhub validate` / `publish` など。`restart` の中の quit も) は、`launched.json` (下) が
 この `--owner` を指し、その pid が動いているゲームのときだけ送ります。そうでなければ、ゲームに何も書かずに断り、終了コード 4 と
@@ -1366,6 +1368,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 
 ### ユーザーと同じゲームを使う (`coop`)
 
+設定ファイルで `"coop": true` のとき (初期設定は切れていて、coop の命令は断ります)。
 上の owner の確認は、ほかのクライアントをゲームから遠ざけます。そのため、ユーザーと一緒に遊ぶゲームにも、クライアントは手を出せません。`coop` はそのためのものです。ユーザーと 1 つのクライアント (その `--owner`) が、しばらくの間、動いているゲームを一緒に使います。
 
 ```
@@ -1377,7 +1380,7 @@ tf3ctl.py --owner bob coop end
 - `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。延長しても、印の変更の回数は引き継ぎます。
 - 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`。ユーザーのセーブでも同じです。
 - `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`。
-- `save` は試験用のセーブの名前にだけ: `probe-*`、`aom-ops-*`、`aom-shot-*`、`aom-bgm-check-*`、数字 1 文字で始まる名前 (`3-probe`)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
+- `save` は試験用のセーブの名前にだけ (`testSavePrefixes`。`testSaveDigitFirst` なら数字 1 文字で始まる名前 `3-probe` も)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
 - ほかは断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`、`tool`、`buy`、`line`、`terrain`、`town`、`modhub` など。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。
 - 読み込まれているセーブは、ゲームのログから読みます (起動から最後の `Loading game from file` / `Start new game`)。
 - 人のセーブで、ゲームを変える命令を MOD が受け取るたびに (`camera`・`window`・`speed`・`save`・dry run は除く)、印に `"modified": true` を付け、`"changes"` を数えます。そのあと `status` と `coop end` が、共同作業で変更されていること、保存すると変更が残ることを出します。`coop end` は続けて、オートセーブには変更後の状態が入っていること、元に戻すには保存せずに名前のついたセーブを読み直すことを出します。文は `text` (英) と `textJa` (日)。
@@ -1398,7 +1401,39 @@ tf3ctl.py --owner bob coop end
 - `TF3_GAME_DIR`: ゲームのインストール先。`--lang` で選べる言語を見るため (既定: userdata のある Steam の
   `steamapps/common/Transport Fever 3`)。
 - `TF3CTL_OTHER_BACKUPS`: 別の道具による `profile.lua` の控え (ファイルかフォルダ)。`:` で区切る (`--lang` を参照)。
+- `TF3CTL_CONFIG`、`XDG_CONFIG_HOME`: 設定ファイル (「設定ファイル」を参照)。
 - `XDG_STATE_HOME`: `modhub publish` の印の置き場所 (`tf3ctl/publish_pending.json`。既定 `~/.local/state`)。
+
+## 設定ファイル
+
+`tools/tf3ctl.py` は `$TF3CTL_CONFIG`、なければ `$XDG_CONFIG_HOME/tf3ctl/config.json`、なければ
+`~/.config/tf3ctl/config.json` を読みます。ファイルがなければ下の項目はすべて切れたままで、1 人が 1 つのゲームを
+動かすのに向きます。複数のクライアント・MOD のアップロード・テスト用の道具を使う環境では、要るものだけを入れます。
+すべての項目と初期設定と働きは `tools/config.example.json` に、いま効いている値と読んだ場所は `tf3ctl.py config` で
+見られます。
+
+| 項目 | 初期設定 | 入れると / 値 |
+|---|---|---|
+| `ownerCheck` | `false` | ゲームを変える命令は、その `--owner` が起動したゲームにだけ届く (下記) |
+| `coop` | `false` | `coop start` / `end` と `launch --coop`。切れていると断ります (終了コード 4、`"refused": "config"`) |
+| `testSavePrefixes` | `["probe-"]` | 試験用セーブとみなす名前の前置き (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み) |
+| `testSaveDigitFirst` | `false` | 数字 1 文字で始まる名前 (`3-probe`) も試験用セーブにする |
+| `pointer` | `false` | `pointer` 命令 |
+| `modhub.validateFolders` / `publishFolders` / `publishedIds` | 空 | `modhub validate` / `publish` が受け付ける staging のフォルダと、mod.io にすでにあるフォルダとその id |
+
+`_` で始まる項目は注釈です。ほかの知らない項目や、型の違う値があると、ファイル全体を読めないものとして扱い、
+警告を出して、初期設定に `ownerCheck` だけを入れた状態で動きます (書き間違いで検査がゆるむことはありません)。
+MOD はこのファイルを読めないので、試験用セーブの名前と modhub の一覧は、要る命令ごとに tf3ctl が送り、MOD は
+それで確認します (送られなければ `probe-` だけ、modhub のフォルダはなし)。
+
+**デバッグ命令**は、プレイヤーにはできない形でゲームを変えます: `stock set`・`steps`・`money`・`town develop` /
+`size` / `connect`・`company init`・`running-costs` の書き込み・`lights --off`・`road --ignore-errors`。答え (dry run
+を除く) に `saveNote` が付きます: セーブの中身が変わり、保存すると変更が残ります (`running-costs` は、その起動の
+間の車両の型)。それぞれの検査 (試験用セーブだけ、coop の間は断る、など) は前のままです。
+
+`screenshot` と `newgame --unsafe` は外しました。`screenshot` は写真モードの外ではファイルを書かず (`frame` を
+使ってください)、`--unsafe` はゲームを落とすだけでした (新しいゲームはメインメニューから `launch` / `restart --new`
+で始めます)。
 
 ## MOD の設定
 
@@ -1417,8 +1452,8 @@ tf3ctl.py --owner bob coop end
 ## 安全上の注意
 
 - **`newgame` はゲームの途中からは使えません。** 本体の `StartGame` はゲームが動いていないことを前提にしていて、
-  TF3 が落ちました (2026-11-15)。セーブの中で安全なのは `newgame --list` と `--dry-run` だけです (`--unsafe` で送れますが
-  落ちます)。新しいゲームは、メインメニューから `restart --new` か `launch --new` で始めます。
+  TF3 が落ちました (2026-11-15)。セーブの中で通るのは `newgame --list` と `--dry-run` だけです (始めるのは道具も MOD も
+  断ります)。新しいゲームは、メインメニューから `restart --new` か `launch --new` で始めます。
 - **車両の価格の試験には `--via gui` (既定) を使ってください。** `--via cmd` はエンジンのコマンドだけを送り、
   `purchaseTime` を 0 のままにします。エンジンは補わないので、車両は「ゲームの開始時に買った」扱いになり、値下がり
   しきった残りの価値だけを払います (ある試験で、店の価格 48441 に対して払ったのは 261)。cmd の経路は、`autoLoadConfig`
@@ -1554,8 +1589,8 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
 - **`frame`** は、Steam のバックグラウンド録画 (`userdata/<id>/gamerecordings/video/bg_3493540_*`) の書き終わった
   最新の断片から、最後のコマを ffmpeg で取り出します。UI 込み、数秒遅れ、録画の解像度で、窓の前面化もキー送信も要り
   ません。録画フォルダは、最後に断片を書いた時刻で選びます (フォルダの mtime ではない。Steam は止まった録画の古い断片を
-  消すので、そのフォルダの mtime が新しくなり、81 分前に止まった録画を選んだことがある)。`screenshot`
-  (`api.gui.camera.takeScreenshot`) は、試すとファイルができませんでした (写真モード用とみられる)。
+  消すので、そのフォルダの mtime が新しくなり、81 分前に止まった録画を選んだことがある)。ゲーム自身の
+  `takeScreenshot` は、試すとファイルができなかったので (写真モード用とみられる)、`screenshot` 命令は外しました。
 - **`window`** は、本体の統計や路線のウィンドウと同じく `react.fireEvent(nil, "selectEntity", {entity})` で開きます。
   イベントは react の中からしか送れないので、GUI スクリプトが依頼を GUI の保存データ (`api.gui.game.setGuiSaveData`、
   ゲームが MOD ごとに C++ で持つ) に書き、速度ボタンのレシピが `react.enqueueJoin` で読みます。両者で共有した Lua の表

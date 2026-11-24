@@ -1,0 +1,25 @@
+{
+  "_about": "tf3ctl's configuration file. Copy it to $XDG_CONFIG_HOME/tf3ctl/config.json (~/.config/tf3ctl/config.json), or name it in TF3CTL_CONFIG, and change what you need. Every value here is the default, the same as having no file. Keys starting with _ are comments; any other unknown key, or a value of the wrong kind, makes the whole file unreadable: tf3ctl then warns and runs with the defaults and ownerCheck on. tf3ctl.py config shows what is in effect.",
+
+  "_ownerCheck": "true: launch / restart --owner NAME record who started the game, and game-changing commands go only to the game that owner started (others: exit 4). For several clients (people or scripts) sharing one machine.",
+  "ownerCheck": false,
+
+  "_coop": "true: coop start / end and launch --coop, a person and one --owner client sharing the running game (the client may look, build and test, not quit, load or save the person's game). Goes with ownerCheck.",
+  "coop": false,
+
+  "_testSavePrefixes": "Saves whose names start with one of these are test saves: road --ignore-errors, lights --off and running-costs writes go only to a game loaded from one (and the probe's game script only with one).",
+  "testSavePrefixes": ["probe-"],
+
+  "_testSaveDigitFirst": "true: a name starting with one digit and then no digit (3-probe) is a test save too.",
+  "testSaveDigitFirst": false,
+
+  "_pointer": "true: the pointer command (synthetic X11 pointer movement into the game window; no click, no key).",
+  "pointer": false,
+
+  "_modhub": "modhub validate / publish (My Mods to mod.io, from the main menu): the staging folder names each may take, and publishedIds, the folders already on mod.io with their mod.io ids (a first upload of one is refused; an update goes only to that id). Empty: neither takes any folder; modhub status still reads.",
+  "modhub": {
+    "validateFolders": [],
+    "publishFolders": [],
+    "publishedIds": {}
+  }
+}

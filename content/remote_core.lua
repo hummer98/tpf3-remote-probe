@@ -15,7 +15,7 @@ M.LOG = "[remote_probe] "
 
 -- cmd -> true; anything else is answered with an error instead of being guessed at
 M.COMMANDS = { status = true, speed = true, run = true, saves = true, info = true, load = true, save = true, poll = true,
-	newgame = true, screenshot = true, entities = true, window = true, quit = true, event = true, tool = true,
+	newgame = true, entities = true, window = true, quit = true, event = true, tool = true,
 	buy = true, duplicate = true, replace = true, sell = true, depots = true, vehicles = true, money = true,
 	stations = true, lines = true, line = true, connect = true, camera = true, buildTool = true, scriptEvent = true, rename = true,
 	build = true, industryWorkers = true, industryStocks = true, models = true, persons = true, modhubStatus = true,
@@ -1173,19 +1173,32 @@ M.unitWay = unitWay
 -- road: one straight road piece from one point to another (remote_build.lua B.road). snap: an end within this
 -- many metres of a road node joins it (0: never)
 M.ROAD_LIMITS = { snap = 20, defaultSnap = 5, minLength = 1, maxLength = 2000 }
--- the names of test saves (tf3ctl's TEST_SAVE_PREFIXES and one digit first, then no digit: "3-probe"), the shared
--- rules' saves that tools may change freely; every other name is a person's own save. A path counts by its file name
-M.TEST_SAVE_PREFIXES = { "probe-", "aom-ops-", "aom-shot-", "aom-bgm-check-" }
-function M.isTestSaveName(name)
+-- the names of test saves, which tools may change freely; every other name is a person's own save. Which names count
+-- is tf3ctl's configuration (the mod cannot read it): tf3ctl sends its rules with the name, as _testSaveRules =
+-- { prefixes = { "probe-", ... }, digitFirst = true / false } (digitFirst: one digit first, then no digit, "3-probe").
+-- Without rules, or with rules that are not of that form, only TEST_SAVE_DEFAULT's names count. A path counts by its
+-- file name
+M.TEST_SAVE_DEFAULT = { prefixes = { "probe-" }, digitFirst = false }
+function M.testSaveRules(rules)
+	if type(rules) ~= "table" or type(rules.prefixes) ~= "table" then return M.TEST_SAVE_DEFAULT end
+	local prefixes = {}
+	for _, p in ipairs(rules.prefixes) do
+		if type(p) ~= "string" or p == "" then return M.TEST_SAVE_DEFAULT end
+		prefixes[#prefixes + 1] = p
+	end
+	return { prefixes = prefixes, digitFirst = rules.digitFirst == true }
+end
+function M.isTestSaveName(name, rules)
 	if type(name) ~= "string" then return false end
+	rules = M.testSaveRules(rules)
 	name = name:match("^%s*(.-)%s*$")
 	name = name:match("([^/\\]*)$") or ""
 	name = name:gsub("%.sav$", "")
 	if name == "" then return false end
-	for _, p in ipairs(M.TEST_SAVE_PREFIXES) do
+	for _, p in ipairs(rules.prefixes) do
 		if name:sub(1, #p) == p then return true end
 	end
-	return name:match("^%d") ~= nil and name:match("^%d%d") == nil
+	return rules.digitFirst and name:match("^%d") ~= nil and name:match("^%d%d") == nil
 end
 
 -- ignoreErrors is the road command's only: a command of any other name that carries it is refused before its
@@ -1324,7 +1337,7 @@ local function roadOptions(args, p)
 	-- command written without it) does not force a build. The name is tf3ctl's word: a command written by hand can
 	-- name any save, so this is a second fence, not a check of the save itself
 	if args.ignoreErrors == true then
-		if not M.isTestSaveName(args._testSave) then
+		if not M.isTestSaveName(args._testSave, args._testSaveRules) then
 			return nil, "ignoreErrors is for test saves only (tf3ctl names the loaded save; " ..
 				tostring(args._testSave) .. " is no test save's name): nothing sent"
 		end
@@ -1364,7 +1377,7 @@ M.ROAD_NAMED_SAME_M = 0.01 -- the ends that give a named node's point: this near
 local PIECE_KEYS = { from = true, to = true, fromNode = true, toNode = true, type = true, bridge = true, snap = true,
 	tangentFrom = true, tangentTo = true, alignToEdge = true, alignEdge = true }
 local BATCH_KEYS = { dryRun = true, engineCheck = true, removeFields = true, removeBuildings = true, ignoreErrors = true,
-	collisionDetail = true, _testSave = true }
+	collisionDetail = true, _testSave = true, _testSaveRules = true }
 function M.roadBatchRequest(args)
 	args = type(args) == "table" and args or {}
 	local list = args.batch
@@ -1536,7 +1549,7 @@ function M.lightsOffRequest(args)
 	local n = tonumber(args.node)
 	if n == nil or n ~= math.floor(n) or n < 0 or n > 2 ^ 31 then return nil, "node must be a node's entity id (0 or more)" end
 	if args.dryRun ~= nil and type(args.dryRun) ~= "boolean" then return nil, "dryRun must be true or false" end
-	if not M.isTestSaveName(args._testSave) then
+	if not M.isTestSaveName(args._testSave, args._testSaveRules) then
 		return nil, "lightsOff is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave) ..
 			" is no test save's name): nothing sent"
 	end
@@ -3144,38 +3157,45 @@ end
 -- modhub (remote_modhub.lua): the base's MOD hub > My Mods page, from the main menu. It reads the staging area,
 -- re-validates one staging mod, as the page's Re-Validate button does, and uploads one new mod as its Upload
 -- button does (modhubPublish). A new mod page, or a mod made public, is not undone from the game, so the upload is
--- held in narrow bounds: one folder named here, a first upload only (no update of a mod already on mod.io), the
+-- held in narrow bounds: one folder of the configuration's list (below), a mod on mod.io held to its page, the
 -- visibility always given, one upload per launch; tools/tf3ctl.py adds its own checks and a mark on disk.
 
--- the staging folders validate takes: the author's mods already published from that staging area, and the one
--- prepared next. Validating reads the folder and makes the game ask mod.io for the mod's details; the list keeps
--- a typo, or a half-made folder of another project, from starting minutes of validation on the wrong mod.
--- status reads every staging mod.
-M.MODHUB_VALIDATE_FOLDERS = {
-	hummer_construction_altitude_tooltip_1 = true,
-	hummer_cursor_altitude_tooltip_1 = true,
-	hummer_industry_pollution_display_1 = true,
-	hummer_force_unload_default_1 = true,
-}
--- the staging folders publish takes: separate from validate's list, so a folder fit to validate is not fit to
--- upload by that alone. A folder is added only once a person decided it: the first to go up this way, then the
--- author's mods already on mod.io (their updates; each has _metadata/mod.io_fileid.txt, checked by tf3ctl.py).
-M.MODHUB_PUBLISH_FOLDERS = {
-	hummer_force_unload_default_1 = true,
-	hummer_cursor_altitude_tooltip_1 = true,
-	hummer_construction_altitude_tooltip_1 = true,
-	hummer_industry_pollution_display_1 = true,
-}
--- the folders already on mod.io, each held to its mod.io page: a first upload of one is refused, and an update only
--- goes to that id. Without this, a lost or remade _metadata/mod.io_fileid.txt would make such a folder look new to
--- both tf3ctl.py and the game, and a first upload would make a second page. The same table is in tf3ctl.py.
--- After a first upload, add the folder and its new id to both.
-M.MODHUB_PUBLISHED_IDS = {
-	hummer_force_unload_default_1 = "6543965",
-	hummer_cursor_altitude_tooltip_1 = "6523060",
-	hummer_construction_altitude_tooltip_1 = "6536988",
-	hummer_industry_pollution_display_1 = "6536959",
-}
+-- Which staging folders validate and publish take, and which are on mod.io already, is tf3ctl's configuration (the
+-- mod cannot read it): tf3ctl sends its lists with every modhub command, as _modhub = { validateFolders = { ... },
+-- publishFolders = { ... }, publishedIds = { [folder] = "mod.io id" } }. Without them (an older tf3ctl, a command
+-- written by hand) these tables count, empty: validate and publish take no folder.
+-- - validate: validating reads the folder and makes the game ask mod.io for the mod's details; the list keeps a
+--   typo, or a half-made folder of another project, from starting minutes of validation on the wrong mod. status
+--   reads every staging mod.
+-- - publish: separate from validate's list, so a folder fit to validate is not fit to upload by that alone.
+-- - publishedIds: the folders already on mod.io, each held to its mod.io page: a first upload of one is refused, and
+--   an update only goes to that id. Without this, a lost or remade _metadata/mod.io_fileid.txt would make such a
+--   folder look new to both tf3ctl.py and the game, and a first upload would make a second page.
+M.MODHUB_VALIDATE_FOLDERS = {}
+M.MODHUB_PUBLISH_FOLDERS = {}
+M.MODHUB_PUBLISHED_IDS = {}
+-- the lists from args._modhub (sets of folder names, and folder -> id), or these tables'; a list of another form
+-- counts as empty (refuses every folder), never as these tables
+function M.modhubLists(args)
+	local m = type(args) == "table" and args._modhub or nil
+	if m == nil then
+		return { validate = M.MODHUB_VALIDATE_FOLDERS, publish = M.MODHUB_PUBLISH_FOLDERS, ids = M.MODHUB_PUBLISHED_IDS }
+	end
+	if type(m) ~= "table" then return { validate = {}, publish = {}, ids = {} } end
+	local function set(list)
+		local out = {}
+		if type(list) ~= "table" then return out end
+		for _, f in ipairs(list) do if type(f) == "string" and f ~= "" then out[f] = true end end
+		return out
+	end
+	local ids = {}
+	if type(m.publishedIds) == "table" then
+		for f, id in pairs(m.publishedIds) do
+			if type(f) == "string" and type(id) == "string" and id:find("^%d+$") then ids[f] = id end
+		end
+	end
+	return { validate = set(m.validateFolders), publish = set(m.publishFolders), ids = ids }
+end
 M.MODHUB_PUBLISH_SEC = { default = 900, max = 3600 } -- s for the whole publish command (waits, validation, upload)
 M.MODHUB_CHANGELOG_MAX = 5000 -- characters; mod.io takes far more, a longer one here is a mistake
 M.MODHUB_STATUS_WAIT = { default = 30, max = 120 } -- s status waits for mod.io and the staging mods' sync
@@ -3210,6 +3230,17 @@ local function secondsArg(v, lim, what, positive)
 	return n
 end
 
+-- validate's / publish's refusal of a folder not in its list (allowed: a set)
+function M.modhubNotListed(what, allowed, f, key)
+	local names = {}
+	for k in pairs(allowed) do names[#names + 1] = k end
+	if #names == 0 then
+		return what .. " takes no staging folder: tf3ctl's configuration lists none (modhub." .. key .. ")"
+	end
+	table.sort(names)
+	return what .. " takes only these staging folders: " .. table.concat(names, ", ") .. " (not " .. f .. ")"
+end
+
 -- args: folder (only that mod in the list), wait (s to wait for mod.io and the sync; 0: answer at once)
 function M.modhubStatusArgs(args)
 	args = type(args) == "table" and args or {}
@@ -3222,20 +3253,17 @@ function M.modhubStatusArgs(args)
 	local w, err = secondsArg(args.wait, M.MODHUB_STATUS_WAIT, "wait")
 	if not w then return nil, err end
 	out.wait = w
+	out.lists = M.modhubLists(args) -- for each mod's validateAllowed
 	return out
 end
 
--- args: folder (required, from MODHUB_VALIDATE_FOLDERS), timeout (s), messages (how many to list)
+-- args: folder (required, from modhubLists(args).validate), timeout (s), messages (how many to list)
 function M.modhubValidateArgs(args)
 	args = type(args) == "table" and args or {}
 	local f, err = M.stagingFolderArg(args.folder)
 	if not f then return nil, err end
-	if not M.MODHUB_VALIDATE_FOLDERS[f] then
-		local names = {}
-		for k in pairs(M.MODHUB_VALIDATE_FOLDERS) do names[#names + 1] = k end
-		table.sort(names)
-		return nil, "validate takes only these staging folders: " .. table.concat(names, ", ") .. " (not " .. f .. ")"
-	end
+	local allowed = M.modhubLists(args).validate
+	if not allowed[f] then return nil, M.modhubNotListed("validate", allowed, f, "validateFolders") end
 	local t
 	t, err = secondsArg(args.timeout, M.MODHUB_VALIDATE_SEC, "timeout", true)
 	if not t then return nil, err end
@@ -3249,7 +3277,7 @@ function M.modhubValidateArgs(args)
 	return { folder = f, timeout = t, messages = n }
 end
 
--- args: folder (required, from MODHUB_PUBLISH_FOLDERS), public (true / false, required: no default visibility),
+-- args: folder (required, from modhubLists(args).publish), public (true / false, required: no default visibility),
 -- one of firstUpload = true (a new mod page) or update = true with modioId (the mod.io id tools/tf3ctl.py read from
 -- the staging folder's _metadata/mod.io_fileid.txt: the update goes only to that page), changelog (text, required),
 -- dryRun, timeout (s, the whole command), messages (validator messages listed), version ("X.Y.Z", optional) with
@@ -3260,12 +3288,8 @@ function M.modhubPublishArgs(args)
 	args = type(args) == "table" and args or {}
 	local f, err = M.stagingFolderArg(args.folder)
 	if not f then return nil, err end
-	if not M.MODHUB_PUBLISH_FOLDERS[f] then
-		local names = {}
-		for k in pairs(M.MODHUB_PUBLISH_FOLDERS) do names[#names + 1] = k end
-		table.sort(names)
-		return nil, "publish takes only these staging folders: " .. table.concat(names, ", ") .. " (not " .. f .. ")"
-	end
+	local lists = M.modhubLists(args)
+	if not lists.publish[f] then return nil, M.modhubNotListed("publish", lists.publish, f, "publishFolders") end
 	if args.firstUpload ~= nil and args.firstUpload ~= true then return nil, "firstUpload is true or not given" end
 	if args.update ~= nil and args.update ~= true then return nil, "update is true or not given" end
 	if args.firstUpload and args.update then
@@ -3293,7 +3317,7 @@ function M.modhubPublishArgs(args)
 	elseif args.modioId ~= nil then
 		return nil, "modioId is only for an update: a first upload has no mod.io id yet"
 	end
-	local pinned = M.MODHUB_PUBLISHED_IDS[f]
+	local pinned = lists.ids[f]
 	if pinned and args.firstUpload then
 		return nil, f .. " is on mod.io already (mod " .. pinned .. "): a first upload would make a second page"
 	end
@@ -4311,7 +4335,7 @@ function M.runningCostsArgs(args, write)
 		end
 		return out
 	end
-	if not M.isTestSaveName(args._testSave) then
+	if not M.isTestSaveName(args._testSave, args._testSaveRules) then
 		return nil, "runningCostsSet is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave)
 			.. " is no test save's name): nothing written"
 	end
@@ -4319,7 +4343,7 @@ function M.runningCostsArgs(args, write)
 	if not ops then return nil, err end
 	local where = args.where == nil and "script" or args.where
 	if where ~= "script" and where ~= "gui" then return nil, "where must be script or gui" end
-	out.ops, out.where, out.testSave = ops, where, args._testSave
+	out.ops, out.where, out.testSave, out.testSaveRules = ops, where, args._testSave, M.testSaveRules(args._testSaveRules)
 	return out
 end
 
@@ -4344,7 +4368,11 @@ end
 function M.runningCostRequest(req, modelId, a)
 	local ops = {}
 	for _, op in ipairs(a.ops or {}) do ops[#ops + 1] = { field = op.field, set = op.set, scale = op.scale } end
-	return { req = req, model = modelId, ops = ops, testSave = a.testSave }
+	local rules = a.testSaveRules or M.TEST_SAVE_DEFAULT
+	local prefixes = {}
+	for i, x in ipairs(rules.prefixes) do prefixes[i] = x end
+	return { req = req, model = modelId, ops = ops, testSave = a.testSave,
+		testSaveRules = { prefixes = prefixes, digitFirst = rules.digitFirst == true } }
 end
 
 -- the game script checks the request again (a script event can be sent by hand: script-event): the same rules
@@ -4352,7 +4380,7 @@ function M.runningCostRequestChecked(p)
 	if type(p) ~= "table" then return nil, "no request" end
 	local req, model = tonumber(p.req), tonumber(p.model)
 	if req == nil or model == nil or model < 0 or model ~= math.floor(model) then return nil, "req and model must be numbers" end
-	if not M.isTestSaveName(p.testSave) then
+	if not M.isTestSaveName(p.testSave, p.testSaveRules) then
 		return nil, "for test saves only (" .. tostring(p.testSave) .. " is no test save's name): nothing written"
 	end
 	local ops, err = M.runningCostOps(p.ops)

@@ -159,22 +159,35 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py --owner bob coop start --reason "test the new depot with the user" [--minutes 60]   # share the game
   tf3ctl.py --owner bob coop end             # the mark goes; says whether the game was changed during coop
 
+The configuration file ($TF3CTL_CONFIG, else $XDG_CONFIG_HOME/tf3ctl/config.json, else ~/.config/tf3ctl/config.json;
+tools/config.example.json shows every key and its default) turns on what only some setups want: ownerCheck (the
+owner check below), coop, testSavePrefixes / testSaveDigitFirst (which save names count as test saves: probe-* by
+default), modhub.validateFolders / publishFolders / publishedIds (modhub validate and publish: none by default),
+and pointer. Without the file all of them are off. A file that cannot be read gives a warning and the defaults with
+ownerCheck on. `tf3ctl.py config` shows what is in effect.
+
+The debug commands (stock set, steps, money, town develop / size / connect, company init, running-costs writes,
+lights --off, road --ignore-errors) change the save's contents as no player can: their answers carry "saveNote"
+(saving keeps the change).
+
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is shown (status:
-run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes.
-launch / restart with an owner leave $XDG_RUNTIME_DIR/tf3ctl/launched.json (/tmp/tf3ctl-<uid>/ without it): that
+run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes. With
+"ownerCheck": true, launch / restart with an owner leave $XDG_RUNTIME_DIR/tf3ctl/launched.json (/tmp/tf3ctl-<uid>/ without it): that
 owner and the game's pid; it goes when tf3ctl sees the game stopped. While the game runs, a command that changes the
 game (save, quit, load, speed, build, ...; also restart's quit and quit --kill) goes only to the game this --owner
 started: it is refused (exit 4, nothing sent) when the record names another owner, when there is no --owner, and
 when there is no record or its pid is not the running game (a game started outside tf3ctl, e.g. by a person from
-Steam). Reading commands, --dry-run / --list and camera without arguments always go. --other-owner-ok sends anyway,
+Steam). Reading commands, --dry-run / --list and camera without arguments always go. Without ownerCheck none of
+this is refused (launch / restart with an owner still write the record: road --ignore-errors keeps its force
+mark there). --other-owner-ok sends anyway,
 for a client the others agreed may use that game; the answer (otherOwnerOk) and the game's log line say so.
 
-coop start --reason "..." [--minutes 60] (or launch --coop --reason "...") shares the running game between the user
+With "coop": true, coop start --reason "..." [--minutes 60] (or launch --coop --reason "...") shares the running game between the user
 and this --owner: the game this owner started, or one a person started from Steam (never another owner's). The
 launch record then carries "coop": {"with", "reason", "since", "until"[, "modified", "changes"]}; it counts until
 "until", while its pid is the running game. Meanwhile this owner may send camera, window, event, build, road,
 stock set, money and steps (fit too); speed, run and pause only with --user-asked; save only to a test save's
-name (probe-*, aom-ops-*, aom-shot-*, aom-bgm-check-*, one digit first), and with a person's save loaded only with
+name, and with a person's save loaded only with
 --user-asked; nothing else (quit, load, newgame, restart, ...): exit 4, "refused": "coop". A game-changing command
 on a person's save sets "modified" and counts "changes"; status and coop end say so. coop end removes the mark.
 A mark whose until has passed, or a malformed one (no client, until not a finite number or more than 7 days ahead),
@@ -186,8 +199,9 @@ Several tool processes may run at once (e.g. a long run plus status calls): a lo
 command file one after another, each waiting until the mod has picked its command up.
 
 Exit codes: 0 ok, 1 the game answered with an error, 2 no answer / tool error, 3 the game cannot answer where it
-is (menu, loading, main menu, closed: gameState in the output says which), 4 refused: the running game is not this
---owner's (see --owner above; nothing was sent).
+is (menu, loading, main menu, closed: gameState in the output says which), 4 refused, nothing sent: the running
+game is not this --owner's (see --owner above), a test-save-only command on another save, or a command the
+configuration does not enable ("refused": "config").
 
 Environment: TF3_REMOTE_DIR = the exchange folder (default: the newest hello file under Steam's userdata),
 TF3_LOG = the game log, TF3_STEAM = the command that starts Steam, TF3CTL_OWNER = the default --owner,
@@ -249,11 +263,156 @@ class OwnerRefused(ToolError):
     refused = "owner"  # the answer's "refused"
 
 
+class ConfigRefused(OwnerRefused):
+    """A command or option the configuration does not enable; nothing was sent. Exit code 4."""
+    refused = "config"
+
+
 class GameNotReady(ToolError):
     """The mod cannot answer because of where the game is (menu, loading, closed); exit code 3."""
     def __init__(self, msg, state):
         super().__init__(msg)
         self.state = state
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# the configuration file: what only some setups want. Without a file every one of these is off (or the shortest
+# list), so a fresh install has no owner check, no coop, test saves named probe-* only, no mod.io upload and no
+# pointer. A file that cannot be read is the strict side: a warning, the owner check on, all
+# else as without a file (a broken file must not loosen what it meant to keep tight, nor open what it kept closed).
+#
+# $TF3CTL_CONFIG, else $XDG_CONFIG_HOME/tf3ctl/config.json, else ~/.config/tf3ctl/config.json. A JSON object; keys
+# starting with "_" are comments. Any other unknown key, or a value of the wrong kind, makes the file unreadable
+# (a typo must not silently turn a check off).
+
+CONFIG_NAME = "config.json"
+CONFIG_DEFAULTS = {
+    # --owner and the launch record: game-changing commands go only to the game this --owner started
+    "ownerCheck": False,
+    # coop start / end and launch --coop: a person and one client share the running game
+    "coop": False,
+    # saves the test-save-only fences take: names starting with one of these ...
+    "testSavePrefixes": ["probe-"],
+    # ... or with one digit and then no digit ("3-probe")
+    "testSaveDigitFirst": False,
+    # pointer: synthetic X11 pointer events into the game window
+    "pointer": False,
+    # modhub validate / publish: the staging folders each takes, and the folders already on mod.io (folder: id)
+    "modhub": {"validateFolders": [], "publishFolders": [], "publishedIds": {}},
+}
+CONFIG_BROKEN = {"ownerCheck": True}  # over the defaults, when the file cannot be read
+_CONFIG_BOOLS = ("ownerCheck", "coop", "testSaveDigitFirst", "pointer")
+_PLAIN_NAME_RE = re.compile(r"[^/\\,\x00-\x1f]{1,200}")
+
+
+def config_path(env=None):
+    """(path, named): the configuration file's path, and whether TF3CTL_CONFIG named it."""
+    env = os.environ if env is None else env
+    if env.get("TF3CTL_CONFIG"):
+        return env["TF3CTL_CONFIG"], True
+    base = env.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "tf3ctl", CONFIG_NAME), False
+
+
+def _config_defaults():
+    return json.loads(json.dumps(CONFIG_DEFAULTS))  # a deep copy
+
+
+def _config_names(v, what):
+    if not isinstance(v, list) or not all(isinstance(x, str) and _PLAIN_NAME_RE.fullmatch(x) for x in v):
+        raise ValueError("%s must be a list of names (not empty; no '/', '\\', ',' or control characters)" % what)
+    return list(dict.fromkeys(v))
+
+
+def config_values(raw):
+    """The configuration from a parsed file over CONFIG_DEFAULTS; ValueError naming the first problem."""
+    if not isinstance(raw, dict):
+        raise ValueError("not a JSON object")
+    out = _config_defaults()
+    for key, v in raw.items():
+        if key.startswith("_"):
+            continue
+        if key in _CONFIG_BOOLS:
+            if not isinstance(v, bool):
+                raise ValueError("%s must be true or false" % key)
+            out[key] = v
+        elif key == "testSavePrefixes":
+            out[key] = _config_names(v, key)
+        elif key == "modhub":
+            if not isinstance(v, dict):
+                raise ValueError("modhub must be an object")
+            for mk, mv in v.items():
+                if mk.startswith("_"):
+                    continue
+                if mk in ("validateFolders", "publishFolders"):
+                    out["modhub"][mk] = _config_names(mv, "modhub." + mk)
+                elif mk == "publishedIds":
+                    if not isinstance(mv, dict) or not all(
+                            _PLAIN_NAME_RE.fullmatch(f) and isinstance(i, str) and re.fullmatch(r"[0-9]{1,20}", i)
+                            for f, i in mv.items()):
+                        raise ValueError("modhub.publishedIds must map folder names to mod.io ids (digits, as text)")
+                    out["modhub"][mk] = dict(mv)
+                else:
+                    raise ValueError("unknown key modhub.%s" % mk)
+        else:
+            raise ValueError("unknown key %s" % key)
+    return out
+
+
+def load_config(env=None):
+    """(config, info): the configuration and where it came from. info: {"path", "state": "none" (no file: the
+    defaults), "file", or "broken" with "error" (the strict side: CONFIG_BROKEN over the defaults)}. Never raises."""
+    path, named = config_path(env)
+    info = {"path": path}
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        if not named:
+            return _config_defaults(), dict(info, state="none")
+        err = "TF3CTL_CONFIG names a file that does not exist"
+    except (OSError, UnicodeDecodeError) as e:
+        err = str(e)
+    else:
+        try:
+            return config_values(json.loads(text)), dict(info, state="file")
+        except ValueError as e:  # json.JSONDecodeError is one
+            err = str(e)
+    return dict(_config_defaults(), **CONFIG_BROKEN), dict(info, state="broken", error=err)
+
+
+CONFIG, CONFIG_INFO = load_config()
+
+
+def config_warning():
+    """One line for stderr when the configuration file could not be read, else None."""
+    if CONFIG_INFO.get("state") != "broken":
+        return None
+    return ("warning: cannot read the configuration file %s (%s): using the defaults with the owner check on"
+            % (CONFIG_INFO["path"], CONFIG_INFO.get("error")))
+
+
+def config_needed(what, key):
+    """ConfigRefused: what needs "key": true in the configuration file."""
+    return ConfigRefused("%s is off: set \"%s\": true in the configuration file %s to use it; nothing was sent"
+                         % (what, key, CONFIG_INFO["path"]))
+
+
+def test_save_prefixes():
+    return tuple(CONFIG["testSavePrefixes"])
+
+
+def test_save_text():
+    """The test saves' names for a message: "probe-*", or "probe-*, x-*, or one digit first"."""
+    names = ", ".join(p + "*" for p in test_save_prefixes())
+    if CONFIG["testSaveDigitFirst"]:
+        return names + ", or one digit first" if names else "one digit first"
+    return names or "none: testSavePrefixes is empty"
+
+
+def test_save_rules():
+    """The test saves' names for the mod, which checks a test save's name again by these."""
+    return {"prefixes": list(test_save_prefixes()), "digitFirst": bool(CONFIG["testSaveDigitFirst"])}
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -623,9 +782,8 @@ def read_launched():
 # record's pid is the running game. The client then may do what helps a person playing (look, build, test events),
 # but nothing that takes the game away from them or writes their saves.
 
-# saves tf3ctl's clients may write and change freely (the shared rules for test saves): these prefixes, or one digit
-# and then no digit ("3-probe"). Every other name is a person's own save.
-TEST_SAVE_PREFIXES = ("probe-", "aom-ops-", "aom-shot-", "aom-bgm-check-")
+# saves tf3ctl's clients may write and change freely: the configuration's testSavePrefixes, or (testSaveDigitFirst)
+# one digit and then no digit ("3-probe"). Every other name is a person's own save.
 TEST_SAVE_ONE_DIGIT = re.compile(r"[0-9](?![0-9])")
 COOP_MINUTES_MAX = 7 * 24 * 60  # a mark further ahead, NaN or Infinity is no mark (also for the guard outside)
 COOP_UNTIL_MAX_SEC = COOP_MINUTES_MAX * 60
@@ -674,8 +832,7 @@ def loaded_test_save_or_refuse(head, refusal):
     if save is None:
         raise refusal(head + "which save the game loaded is not known (no game log, or the main menu)")
     if not is_test_save(save):
-        raise refusal(head + "the loaded save %r is not a test save's (%s, or one digit first)"
-                      % (save, ", ".join(p + "*" for p in TEST_SAVE_PREFIXES)))
+        raise refusal(head + "the loaded save %r is not a test save's (%s)" % (save, test_save_text()))
     return save
 
 
@@ -864,8 +1021,8 @@ class CoopMarkRefused(OwnerRefused):
 
 
 def is_test_save(name, path_ok=True):
-    """Whether name is a test save's (TEST_SAVE_PREFIXES or one digit first). A loaded save may be given as a path
-    (its file name counts); a name to save to must be a plain name (path_ok=False)."""
+    """Whether name is a test save's (test_save_prefixes, or one digit first with testSaveDigitFirst). A loaded
+    save may be given as a path (its file name counts); a name to save to must be a plain name (path_ok=False)."""
     if not isinstance(name, str) or not name.strip():
         return False
     name = name.strip()
@@ -875,7 +1032,8 @@ def is_test_save(name, path_ok=True):
         name = re.split(r"[/\\]", name)[-1]
     if name.endswith(".sav"):
         name = name[:-4]
-    return name.startswith(TEST_SAVE_PREFIXES) or bool(TEST_SAVE_ONE_DIGIT.match(name))
+    return name.startswith(test_save_prefixes()) or bool(CONFIG["testSaveDigitFirst"]
+                                                         and TEST_SAVE_ONE_DIGIT.match(name))
 
 
 def loaded_save():
@@ -972,8 +1130,8 @@ def coop_check(cmd, args, coop):
     if cmd == "save":
         target = args.get("name")
         if not is_test_save(target, path_ok=False):
-            raise CoopRefused(head + "no save of theirs is written: %r is not a test save's name (%s, or one digit "
-                              "first)" % (target, ", ".join(p + "*" for p in TEST_SAVE_PREFIXES)))
+            raise CoopRefused(head + "no save of theirs is written: %r is not a test save's name (%s)"
+                              % (target, test_save_text()))
         if not test and not USER_ASKED:
             raise CoopRefused(head + "their game (%s) is not saved, not even to a new name: add --user-asked only "
                               "when the user asked for it" % (repr(save) if save else "no test save loaded"))
@@ -982,6 +1140,33 @@ def coop_check(cmd, args, coop):
                           "the user, or end coop with them first (coop end)" % cmd)
     count = not test and cmd not in COOP_UNCOUNTED and args.get("dryRun") is not True
     return {"coop": {"with": who, "save": save, "testSave": test}, "count": count}
+
+
+# The debug commands: they change the save's contents as no player can. They go as any command (some to test saves
+# only: test_save_checks); their answers say that saving keeps the change (saveNote), except a dry run's.
+SAVE_NOTE = "this command changes the save's contents; saving keeps the change"
+# a model's values live in the session, not in the save (whether a save keeps them was not checked)
+RUNNING_COSTS_NOTE = "this command changes the vehicle model for the rest of the session, as no player can"
+DEBUG_COMMANDS = {"stockSet": "stock set", "steps": "steps", "money": "money", "townDevelop": "town develop",
+                  "townSize": "town size", "townConnect": "town connect", "companyInit": "company init",
+                  "runningCostsSet": "running-costs --set-* / --scale-*", "lightsOff": "lights --off"}
+
+
+def debug_command(cmd, args):
+    """The name of the debug command cmd with args is, for a message; None when it is none."""
+    args = args or {}
+    if cmd in DEBUG_COMMANDS:
+        return DEBUG_COMMANDS[cmd]
+    if cmd == "road" and args.get("ignoreErrors") is True:
+        return "road --ignore-errors"
+    return None
+
+
+def note_save_change(cmd, args, res):
+    """A debug command's answer (not a dry run's) gets saveNote."""
+    if isinstance(res, dict) and debug_command(cmd, args) and (args or {}).get("dryRun") is not True:
+        res["saveNote"] = RUNNING_COSTS_NOTE if cmd == "runningCostsSet" else SAVE_NOTE
+    return res
 
 
 def check_game_owner(cmd, args=None):
@@ -1002,6 +1187,8 @@ def check_game_owner(cmd, args=None):
     refusal = coop_mark_refusal(cmd, rec, pids) if rec else None
     if refusal is not None:
         raise refusal  # --other-owner-ok does not send it either
+    if not CONFIG["ownerCheck"]:
+        return None  # one client, or clients that keep out of each other's way themselves
     if rec is None:
         problem = ("%s: the running game (pid %s) was not started by tf3ctl with an --owner (started from Steam "
                    "by a person?)" % (why, ", ".join(map(str, pids))))
@@ -1041,9 +1228,14 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
     test_save = test_save_checks(cmd, args)
     folder = folder or exchange_dir()
     args = dict(args or {})
-    args.pop("_testSave", None)  # only test_save_checks names it
+    for key in ("_testSave", "_testSaveRules", "_modhub"):
+        args.pop(key, None)  # only this function names them
     if test_save is not None:
+        # the mod checks the name again, by the same rules (the configuration's: the mod cannot read the file)
         args["_testSave"] = test_save
+        args["_testSaveRules"] = test_save_rules()
+    if cmd in MODHUB_COMMANDS:
+        args["_modhub"] = modhub_config()  # the folders the mod's validate and publish take
     if OWNER:
         args["_owner"] = OWNER
     if other and other.get("launchedBy"):
@@ -1077,7 +1269,7 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
             res["otherOwnerOk"] = other
         elif other and other.get("coop") and isinstance(res, dict):
             res["coop"] = other["coop"]
-        return res
+        return note_save_change(cmd, args, res)
     finally:
         if final_tag is None:
             remove(answer_files(folder, cid))
@@ -1325,8 +1517,8 @@ def load_args(ns):
         # running-costs writes only once it is loaded from a test save's name
         if (params.get(SELF_MOD, {}).get("gameScript") not in (None, 1) and ns.save is not None
                 and not is_test_save(ns.save)):
-            raise ToolError("--param %s:gameScript=%s goes with test saves only (%s, or one digit first); %r is not one"
-                            % (SELF_MOD, params[SELF_MOD]["gameScript"], ", ".join(p + "*" for p in TEST_SAVE_PREFIXES),
+            raise ToolError("--param %s:gameScript=%s goes with test saves only (%s); %r is not one"
+                            % (SELF_MOD, params[SELF_MOD]["gameScript"], test_save_text(),
                                ns.save))
         args["params"] = params
     if ns.dry_run:
@@ -1426,8 +1618,6 @@ def newgame_args(ns):
         args["industries"] = False
     if ns.list:
         args["list"] = True
-    if getattr(ns, "unsafe", False):
-        args["unsafe"] = True  # the mod refuses a start from inside a save too
     if getattr(ns, "editor", False) and not ns.list:
         args["editor"] = True  # the map editor; the mod takes the official mods and the probe as the base list
     base = load_args(argparse.Namespace(save=None, set_mods=ns.set_mods, add=ns.add, remove=ns.remove,
@@ -1740,6 +1930,8 @@ def coop_note():
 
 
 def cmd_coop(ns):
+    if not CONFIG["coop"]:
+        raise config_needed("coop", "coop")
     if ns.coop_action == "start":
         return coop_start(ns.minutes, ns.reason)
     return coop_end()
@@ -2218,7 +2410,7 @@ def start_args(ns):
     if ns.new:
         return "newgame", newgame_args(argparse.Namespace(
             climate=ns.climate, generator=ns.generator, size=ns.size, year=ns.year, seed=ns.seed,
-            no_towns=ns.no_towns, no_industries=ns.no_industries, list=False, unsafe=False, set_mods=ns.set_mods,
+            no_towns=ns.no_towns, no_industries=ns.no_industries, list=False, set_mods=ns.set_mods,
             add=ns.add, remove=ns.remove, param=ns.param, dry_run=False, tutorial=getattr(ns, "tutorial", False),
             editor=getattr(ns, "editor", False)))
     return None
@@ -2227,11 +2419,13 @@ def start_args(ns):
 def cmd_start(ns, restart):
     plan = start_args(ns)  # refused before anything is quit
     coop = getattr(ns, "coop", False)
+    if coop and not CONFIG["coop"]:
+        raise config_needed("launch --coop", "coop")
     if coop and not OWNER:
         raise ToolError("launch --coop needs --owner (the client that shares the game with the user)")
     if coop:
         coop_args(ns.minutes, ns.reason)  # before anything is started
-    if plan and not OWNER and not OTHER_OWNER_OK:
+    if plan and not OWNER and not OTHER_OWNER_OK and CONFIG["ownerCheck"]:
         # without an owner there is no launch record, so the --load / --new after the launch would be refused
         raise OwnerRefused("refused '%s --%s', nothing started: give --owner, so that the %s after the launch goes "
                            "to the game this owner started" % ("restart" if restart else "launch",
@@ -2272,7 +2466,7 @@ def cmd_start(ns, restart):
     out["launch"] = launch_game(ns.launch_timeout)
     # the probe answered in the main menu: this owner started the game (cmd is "launch" for restart too)
     out["launchedFile"] = write_launched(launched_pid())
-    if plan and not out["launchedFile"].get("written") and not OTHER_OWNER_OK:
+    if plan and not out["launchedFile"].get("written") and not OTHER_OWNER_OK and CONFIG["ownerCheck"]:
         # the record says the game is this owner's; without it the load / newgame would be refused anyway
         out.update(ok=False, error="the game started, but the launch record was not written (%s): the %s was not "
                    "sent" % (out["launchedFile"].get("warning") or out["launchedFile"].get("why"), plan[0]))
@@ -4081,17 +4275,24 @@ def modhub_validate_args(ns):
 # mark goes only when the upload succeeded and the fileid file appeared with the same mod.io id, or by
 # `modhub publish-clear`.
 
-# the same list as the mod's (MODHUB_PUBLISH_FOLDERS): the first mod uploaded this way, and the author's mods
-# already on mod.io (updates only: MODHUB_PUBLISHED_IDS below)
-MODHUB_PUBLISH_FOLDERS = ("hummer_force_unload_default_1", "hummer_cursor_altitude_tooltip_1",
-                          "hummer_construction_altitude_tooltip_1", "hummer_industry_pollution_display_1")
-# the folders already on mod.io, each held to its page (the same table as the mod's MODHUB_PUBLISHED_IDS): a first
-# upload of one is refused and an update goes only to that id, also when _metadata/mod.io_fileid.txt went missing
-# or was remade (then both this tool and the game would take the folder for a new mod and make a second page).
-# After a first upload, add the folder and its new id here and in the mod.
-MODHUB_PUBLISHED_IDS = {"hummer_force_unload_default_1": "6543965", "hummer_cursor_altitude_tooltip_1": "6523060",
-                        "hummer_construction_altitude_tooltip_1": "6536988",
-                        "hummer_industry_pollution_display_1": "6536959"}
+# The configuration's modhub lists (none by default: validate and publish refuse every folder), sent with every
+# modhub command (_modhub) so the mod checks by the same lists:
+# - validateFolders: the staging folders validate takes (a typo, or another project's half-made folder, must not
+#   start minutes of validation on the wrong mod)
+# - publishFolders: the staging folders publish takes (separate: a folder fit to validate is not fit to upload by
+#   that alone; a folder is added only once a person decided it)
+# - publishedIds: the folders already on mod.io, each held to its page: a first upload of one is refused and an
+#   update goes only to that id, also when _metadata/mod.io_fileid.txt went missing or was remade (then both this
+#   tool and the game would take the folder for a new mod and make a second page). After a first upload, add the
+#   folder and its new id there.
+MODHUB_COMMANDS = ("modhubStatus", "modhubValidate", "modhubPublish")
+
+
+def modhub_config():
+    m = CONFIG["modhub"]
+    return {"validateFolders": list(m["validateFolders"]), "publishFolders": list(m["publishFolders"]),
+            "publishedIds": dict(m["publishedIds"])}
+
 # --version X.Y.Z: sent as PublishSettings.additionalMetadata = {version = "X.Y.Z"} (a trial: whether mod.io's
 # file version takes it is not known). It must be mod.json's revision written X*10000 + Y*100 + Z.
 VERSION_RE = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)")
@@ -4320,7 +4521,7 @@ def publish_local_checks(name, folder=None, changelog=None, first_upload=True, p
     if not os.path.isfile(os.path.join(mod_dir, "mod.json")):
         raise ToolError("no staging mod %s: %s has no mod.json" % (name, mod_dir))
     modio_id = read_fileid(name, meta)
-    pinned = MODHUB_PUBLISHED_IDS.get(name)
+    pinned = CONFIG["modhub"]["publishedIds"].get(name)
     if pinned is not None and first_upload:
         raise ToolError("%s is on mod.io already (mod %s): --first-upload would make a second page; nothing was sent"
                         % (name, pinned))
@@ -4401,9 +4602,12 @@ def publish_metadata_checks(name, meta, changelog=None):
 
 def modhub_publish_args(ns):
     """The mod's args for modhubPublish; ToolError for anything the mod would refuse too (said here, before a mark)."""
-    if ns.folder not in MODHUB_PUBLISH_FOLDERS:
-        raise ToolError("publish takes only these staging folders: %s (not %s)" % (", ".join(MODHUB_PUBLISH_FOLDERS),
-                                                                                    ns.folder))
+    folders = CONFIG["modhub"]["publishFolders"]
+    if not folders:
+        raise ToolError("publish takes no staging folder: list the ones it may upload in the configuration file %s "
+                        "(modhub.publishFolders); nothing was sent" % CONFIG_INFO["path"])
+    if ns.folder not in folders:
+        raise ToolError("publish takes only these staging folders: %s (not %s)" % (", ".join(folders), ns.folder))
     if ns.public not in ("yes", "no"):
         raise ToolError("give --public yes or --public no: there is no default visibility")
     if not ns.changelog or not ns.changelog.strip():
@@ -5096,51 +5300,6 @@ def money_args(ns):
     return {"set": ns.set} if ns.set is not None else {"add": ns.add}
 
 
-def screenshots_dir(folder):
-    return os.path.join(os.path.dirname(os.path.normpath(folder)), "screenshots")
-
-
-def cmd_screenshot(ns):
-    """The game's own screenshot (photo mode's takeScreenshot): waits until the new file stops growing."""
-    folder = exchange_dir()
-    shots = screenshots_dir(folder)
-    before = set(glob.glob(os.path.join(shots, "*")))
-    res = send("screenshot", {"scale": ns.scale}, folder=folder)
-    if not res.get("ok"):
-        return res
-    deadline = time.time() + ns.timeout
-    path, last, steady = None, None, 0
-    while time.time() < deadline:
-        new = [p for p in glob.glob(os.path.join(shots, "*")) if p not in before]
-        if new:
-            path = max(new, key=lambda p: mtime(p) or 0)
-            try:
-                size = os.path.getsize(path)
-            except OSError:  # renamed or replaced while we looked
-                size = None
-            # a ~100 MB PNG: done once its size has held still for three looks in a row
-            steady = steady + 1 if size and size == last else 0
-            last = size
-            if steady >= 2:
-                break
-        time.sleep(0.5)
-    else:
-        raise ToolError(f"no new file in {shots} after {ns.timeout:g} s")
-    out = {"ok": True, "path": path, "bytes": os.path.getsize(path)}
-    if ns.preview:
-        # a small JPEG that an assistant can read (the PNG is ~100 MB)
-        try:
-            r = subprocess.run(["magick", path, "-resize", "%dx" % ns.preview_width, ns.preview],
-                               capture_output=True, text=True)
-            err = None if r.returncode == 0 else r.stderr.strip()
-        except OSError as e:  # no ImageMagick: the screenshot itself still worked
-            err = str(e)
-        out["preview"] = None if err else ns.preview
-        if err:
-            out["previewError"] = err
-    return out
-
-
 def recording_dirs():
     """Steam's background game recordings of TF3, newest first (userdata/<id>/gamerecordings/video/bg_3493540_*)."""
     home = os.path.expanduser("~")
@@ -5217,7 +5376,7 @@ def cmd_frame(ns):
         remove([seg])
     age = time.time() - (mtime(chunk) or 0)
     out = {"ok": True, "path": ns.out, "chunk": chunk, "ageSec": round(age, 1),
-           "note": "the picture is %.0f s old, at the recording's resolution (3840x1620 here)" % age}
+           "note": "the picture is %.0f s old, at the recording's resolution" % age}
     if age > STALE_FRAME_SEC:
         out["stale"] = True
         out["warning"] = ("the recording stopped %.0f min ago: the game is closed or background recording is off"
@@ -5373,6 +5532,8 @@ class X11:
 
 
 def cmd_pointer(ns, x11_factory=None, sleep=time.sleep):
+    if not CONFIG["pointer"]:
+        raise config_needed("pointer (synthetic X11 pointer events into the game window)", "pointer")
     x = (x11_factory or X11)()
     try:
         w = x.find(ns.title)
@@ -5511,6 +5672,7 @@ def make_parser():
                    help="send game-changing commands to a game another owner (or a person from Steam) started; only "
                         "when the clients sharing the game agreed. The answer and the game's log say so")
     sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("config", help="the configuration in effect and where it was read from (sends nothing)")
     pl = sub.add_parser("poll", help="how often the mod reads the command file, until the next load")
     pl.add_argument("--idle", type=float)
     pl.add_argument("--active", type=float)
@@ -5558,7 +5720,6 @@ def make_parser():
     ng.add_argument("--list", action="store_true", help="climates and terrain generators the game has")
     ng.add_argument("--dry-run", action="store_true")
     ng.add_argument("--timeout", type=float, default=900)
-    ng.add_argument("--unsafe", action="store_true", help="start it although it crashes the game from inside a save")
     ng.add_argument("--editor", action="store_true", help="the map editor instead of a game (isMapEditor); its mods: "
                     "the official ones (ug_*) and the probe, not the running game's")
     ng.add_argument("--no-company-init", action="store_true", help=NO_COMPANY_INIT_HELP)
@@ -5570,11 +5731,6 @@ def make_parser():
     po.add_argument("pos", metavar="FX,FY", help="fractions of the game window, e.g. 0.5,0.47 (0,0 = top left)")
     po.add_argument("--px", action="store_true", help="the position is in the window's pixels instead")
     po.add_argument("--title", default=TF3_WINDOW_TITLE, help="the game window's title")
-    sc = sub.add_parser("screenshot", help="the game's own screenshot (photo mode, likely without the UI)")
-    sc.add_argument("--scale", type=int, default=1, help="1 (default) = twice the screen size, as photo mode")
-    sc.add_argument("--preview", help="also write a small JPEG here (needs ImageMagick)")
-    sc.add_argument("--preview-width", type=int, default=1600)
-    sc.add_argument("--timeout", type=float, default=60)
     en = sub.add_parser("entities", help="towns, lines, vehicles, stations, industries or warehouses with their ids "
                                          "(a warehouse: its construction, stock list entity, stocks and capacity)")
     en.add_argument("--kind", required=True, choices=["town", "line", "vehicle", "station", "industry", "warehouse"])
@@ -5665,10 +5821,10 @@ def make_parser():
                     "buildings, tracks and the rest still refuse it. Test saves only (changes the game)")
     rd.add_argument("--remove-buildings", action="store_true", help="let the road take town buildings in its way "
                     "(the Context's gatherBuildings). Test saves only (changes the game)")
-    rd.add_argument("--ignore-errors", action="store_true", help="for test saves only: skips the engine's checks "
+    rd.add_argument("--ignore-errors", action="store_true", help="changes the save's contents (saving keeps it); for test saves only: skips the engine's checks "
                     "(the build sent with the engine's ignoreErrors on: built past its non-critical errors; its API "
-                    "says a critical one still refuses it). Refused unless the loaded save is a test save's (probe-*, "
-                    "aom-ops-*, aom-shot-*, aom-bgm-check-*, one digit first; a new game has no name: save it as "
+                    "says a critical one still refuses it). Refused unless the loaded save is a test save's (the "
+                    "configuration's testSavePrefixes, probe-* by default; a new game has no name: save it as "
                     "probe-... and load that), and during coop. The probe's own checks (junction set-ups) still "
                     "refuse. The answer: ignoredErrors, and unforced (the errors a build without it would be refused "
                     "for). With --dry-run: the engine is asked, nothing is built")
@@ -5692,7 +5848,7 @@ def make_parser():
     rd.add_argument("--inspect-node", type=int, metavar="ID", help="read only, alone: what road reads of one node "
                     "(the street system's pieces there, the construction it belongs to and whether it is frozen, its "
                     "junction set-up, the octree's pieces within 1, 5 and 20 m) and what road would do with it")
-    li = sub.add_parser("lights", help="take a road junction's traffic light off, as the node's window does it "
+    li = sub.add_parser("lights", help="changes the save's contents (saving keeps it); take a road junction's traffic light off, as the node's window does it "
                         "(trafficLightPreference NO, sent with createTrafficLightProposal): road does not join a node "
                         "with traffic lights. Test saves only, not in coop (changes the game)")
     li.add_argument("--node", type=int, required=True, metavar="ID", help="the junction's node (road --inspect-node "
@@ -5745,7 +5901,7 @@ def make_parser():
     # town develop / town size: their own options (other dests, so an option given before the word is caught in
     # town_grow_args instead of being dropped)
     tws = tw.add_subparsers(dest="town_action", required=False, metavar="{develop,size,connections,connect}")
-    td = tws.add_parser("develop", help="test saves only: new buildings or street segments at a point "
+    td = tws.add_parser("develop", help="changes the save's contents (saving keeps it); test saves only: new buildings or street segments at a point "
                         "(api.cmd.makeTownDevelopAtCmd), N times one after another; not checked in a game yet")
     td.add_argument("--at", dest="grow_at", required=True, metavar="X,Y",
                     help="metres (for a negative x write --at=-100,50)")
@@ -5756,7 +5912,7 @@ def make_parser():
     td.add_argument("--radius", dest="grow_radius", type=float, help="metres round the point the buildings near it "
                     "are counted in (default %g, a harbour's circle; at most %g)" % (TOWN_GROW_RADIUS, TOWN_GROW_RADIUS_MAX))
     td.add_argument("--dry-run", dest="grow_dry_run", action="store_true", help="the counts, nothing sent")
-    tz = tws.add_parser("size", help="test saves only: a town's size factors, residential, commercial, industrial "
+    tz = tws.add_parser("size", help="changes the save's contents (saving keeps it); test saves only: a town's size factors, residential, commercial, industrial "
                         "(api.cmd.makeTownUpdateSizeCmd); not checked in a game yet")
     tz.add_argument("--entity", dest="grow_entity", type=int, required=True, help="the town (entities --kind town)")
     tz.add_argument("--factors", dest="grow_factors", required=True, metavar="R,C,I",
@@ -5769,7 +5925,7 @@ def make_parser():
     tcs.add_argument("--entity", dest="conn_entity", type=int, help="one town (entities --kind town)")
     tcs.add_argument("--index-base", dest="conn_index_base", type=int, choices=(0, 1),
                      help="how the engine numbers towns in its connections, when the map does not tell")
-    tcn = tws.add_parser("connect", help="test saves only: the map editor's connection commands; --auto detects "
+    tcn = tws.add_parser("connect", help="changes the save's contents (saving keeps it); test saves only: the map editor's connection commands; --auto detects "
                          "the connections over the roads there are (builds nothing), --build makes streets between "
                          "the connected towns and to all industries; not checked in a game yet")
     tcm = tcn.add_mutually_exclusive_group(required=True)
@@ -5879,7 +6035,7 @@ def make_parser():
                                                                "construction with one (as build gives it) or a "
                                                                "vehicle (industry-stocks, stations, entities --kind "
                                                                "warehouse, vehicles)")
-    sks = ssub.add_parser("set", help="set a stock's amount (api.cmd.debug.makeStockSetCargoAmountCmd): test saves only")
+    sks = ssub.add_parser("set", help="changes the save's contents (saving keeps it); set a stock's amount (api.cmd.debug.makeStockSetCargoAmountCmd): test saves only")
     sks.add_argument("--entity", type=int, required=True, help="as stock list")
     sks.add_argument("--stock", type=int, required=True, help="the stock's id as stock list shows it (0-based); -1: "
                                                               "a vehicle's load (with --cargo)")
@@ -5887,7 +6043,7 @@ def make_parser():
     sks.add_argument("--cargo", help="a cargo type's name exactly as stock list shows it (its cargo field); a stock "
                                      "list's stock: optional")
     sks.add_argument("--dry-run", action="store_true", help="check and show the before, send nothing")
-    st = sub.add_parser("steps", help="run the simulation N steps on (api.cmd.debug.makeGamePerformSimulationStepsCmd) "
+    st = sub.add_parser("steps", help="changes the save's contents (saving keeps it); run the simulation N steps on (api.cmd.debug.makeGamePerformSimulationStepsCmd) "
                                       "and answer once they have all run; one step is 200 of game time (20 a day). "
                                       "Pause first (speed 0). Test saves only")
     st.add_argument("count", type=int, help="1-%d" % STEPS_MAX)
@@ -5895,7 +6051,7 @@ def make_parser():
     st.add_argument("--allow-running", action="store_true",
                     help="send while the game is not paused (refused otherwise): the deltas then mix the steps with "
                          "the game's own running, and the wait may end early")
-    mo = sub.add_parser("money", help="set or change the company's balance (a journal entry of category OTHER, "
+    mo = sub.add_parser("money", help="changes the save's contents (saving keeps it); set or change the company's balance (a journal entry of category OTHER, "
                                       "as the sandbox money editor)")
     mg = mo.add_mutually_exclusive_group(required=True)
     mg.add_argument("--set", type=int, help="the balance to have")
@@ -5951,14 +6107,14 @@ def make_parser():
                         "company's level and ticket price multiplier) and what is missing; company init: test saves "
                         "only")
     cos = co.add_subparsers(dest="company_action", required=False, metavar="{init}")
-    ci = cos.add_parser("init", help="test saves only: send the base's start event initNewGameFromMap again, when "
+    ci = cos.add_parser("init", help="changes the save's contents (saving keeps it); test saves only: send the base's start event initNewGameFromMap again, when "
                         "company.gs has no basePopulation, or 0 while the towns have population now (a game started "
                         "with no towns); "
                         "it also resets the towns' cached ratings, the subventions and the notifications")
     ci.add_argument("--dry-run", dest="company_dry_run", action="store_true", help="the states, nothing sent")
     ci.add_argument("--force", dest="company_force", action="store_true", help="send in any case (also after a send "
                     "that timed out, whose event may still run): it resets the company's progression")
-    rc = sub.add_parser("running-costs", help="a vehicle model's running-cost fields (metadata.cost and "
+    rc = sub.add_parser("running-costs", help="(its writes change the game as no player can, for the rest of the session) a vehicle model's running-cost fields (metadata.cost and "
                         ".maintenance) and its vehicles' running cost per year; read only, unless a --set-* / "
                         "--scale-* writes (test saves only, not in coop: it rewrites the model for the rest of the "
                         "session, to see whether the engine bills the new value)")
@@ -6186,12 +6342,19 @@ def make_parser():
 
 def main(argv=None):
     ns = make_parser().parse_args(argv)
-    global OWNER, OTHER_OWNER_OK, USER_ASKED
+    global OWNER, OTHER_OWNER_OK, USER_ASKED, CONFIG, CONFIG_INFO
     OWNER = ns.owner
     OTHER_OWNER_OK = ns.other_owner_ok
     USER_ASKED = getattr(ns, "user_asked", False)
+    CONFIG, CONFIG_INFO = load_config()  # each run reads it again: a long-lived caller (tests) sees a changed file
+    warning = config_warning()
+    if warning:
+        print(warning, file=sys.stderr)
 
     try:
+        if ns.cmd == "config":
+            show({"ok": True, "config": CONFIG, "file": CONFIG_INFO})
+            return 0
         if ns.cmd == "log":
             cmd_log(ns)
             return 0
@@ -6241,16 +6404,13 @@ def main(argv=None):
         elif ns.cmd == "load":
             res = replace_game("load", load_args(ns), ns.dry_run, ns.timeout)
         elif ns.cmd == "newgame":
-            if not (ns.dry_run or ns.list or ns.unsafe or menu_probe(exchange_dir())):
+            if not (ns.dry_run or ns.list or menu_probe(exchange_dir())):
                 # 2026-11-15: app.startGame from inside a running game hit the base's StartGame assertion
                 # `!m_game` and crashed TF3; the mod does not run in the main menu, where it would be allowed
                 raise ToolError("newgame crashes the game when started from inside a save (StartGame asserts that "
-                                "no game is running): use restart --new. --list and --dry-run still work; --unsafe "
-                                "sends it anyway.")
+                                "no game is running): use restart --new. --list and --dry-run still work.")
             res = replace_game("newgame", newgame_args(ns), ns.dry_run or ns.list, ns.timeout,
                                company_init=not ns.no_company_init)
-        elif ns.cmd == "screenshot":
-            res = cmd_screenshot(ns)
         elif ns.cmd == "entities":
             args = {"kind": ns.kind, "limit": ns.limit}
             if ns.grep:
