@@ -1,0 +1,4 @@
+# Left out of `git archive` (the release zip): the mod folder needs none of these to run.
+tests/ export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore

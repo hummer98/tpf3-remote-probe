@@ -1710,6 +1710,7 @@ and saving keeps the change (`running-costs`: the model, for the rest of the ses
 | Check interval after a command and during a run | 0.1 / **0.25** / 0.5 / 1 s | for two minutes after a command and during a `run` |
 | Log amount | Minimal / **Per command** / Detailed | `[remote_probe]` lines in the game log |
 | Label beside the speed buttons | **Show** / Hide | e.g. `×8 real ×3.2 →2045-07-03` for speeds the buttons do not have, and during a `run` |
+| ×8 / ×16 speed buttons | **Show** / Hide | the extra buttons beside the base ones; hide them for screenshots. Only the buttons go: the speed control stays, so `window`, `event`, `tool` and `--via gui` keep working |
 | Game script commands (test saves) | **Off** / On | on: the mod's game script takes `running-costs` writes (`--param hummer_remote_probe:gameScript=2`) |
 
 The settings and the speed label are in English and Japanese (`strings.json`), in the game's language; other
