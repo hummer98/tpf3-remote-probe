@@ -33,12 +33,13 @@ that let a script outside the game drive a running game through small files in t
 - `window`, `tool` and `event` to open windows and send test events through the GUI.
 - `mod`: commands that other mods register in their own `remote_probe_ext.lua`, listed with `mod --list`.
 - `modhub status` / `validate` / `publish` for My Mods and mod.io uploads from the main menu.
-- A configuration file (`~/.config/tf3ctl/config.json`, or `$TF3CTL_CONFIG`): without it every guard is off
-  (owner check, coop, test-save names beyond `probe-`, `pointer`, the modhub folder lists); a broken file stops
-  every command but `config`. `tools/config.example.json` lists every key.
+- A configuration file (`~/.config/tf3ctl/config.json`, or `$TF3CTL_CONFIG`) for what only some setups need:
+  without it there is no owner check and no coop, test saves are `probe-*` only, `pointer` is refused and
+  `modhub validate` / `publish` take no folder; a broken file stops every command but `config`.
+  `tools/config.example.json` lists every key.
 - Several clients on one game: a lock per command, the launching `--owner` recorded in `launched.json`, and
   `coop` for a person and one client sharing the running game.
-- Mod settings for the check intervals, the log amount, the speed label and the game-script commands, in English and
+- Mod settings for the check intervals, the log amount, the speed label, the ×8 / ×16 buttons and the game-script commands, in English and
   Japanese.
 
 [1.0.0]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.0
