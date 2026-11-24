@@ -174,7 +174,7 @@ round, and the rules to keep. Point your agent at it.
 - [docs/KNOWN_BEHAVIOR.md](docs/KNOWN_BEHAVIOR.md): safety notes in full, what was checked in game, notes on the
   game's behaviour.
 - [CHANGELOG.md](CHANGELOG.md).
-- Tests (no game needed): `luajit tests/run.lua` and `python3 -m unittest discover -s tests`.
+- Tests (no game needed; in a clone from GitHub, the release zip has no `tests/`): `luajit tests/run.lua` and `python3 -m unittest discover -s tests`.
 
 ## Bugs and questions
 

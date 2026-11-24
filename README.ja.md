@@ -164,7 +164,7 @@ MOD は自分の命令を足せます。命令の表を返す `content/remote_pr
 - [docs/REFERENCE.ja.md](docs/REFERENCE.ja.md): 全部の命令、設定ファイル、MOD の設定、環境変数、テスト、実装メモ。
 - [docs/KNOWN_BEHAVIOR.ja.md](docs/KNOWN_BEHAVIOR.ja.md): 安全上の注意の全文、ゲーム内で確認したこと、ゲームの振る舞いのメモ。
 - [CHANGELOG.md](CHANGELOG.md) (英語)。
-- テスト (ゲームは要りません): `luajit tests/run.lua` と `python3 -m unittest discover -s tests`。
+- テスト (ゲームは要りません。GitHub から clone したもので。release の zip には `tests/` がありません): `luajit tests/run.lua` と `python3 -m unittest discover -s tests`。
 
 ## 不具合・質問
 
