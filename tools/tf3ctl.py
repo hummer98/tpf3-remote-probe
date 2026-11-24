@@ -356,6 +356,10 @@ def config_values(raw):
                     raise ValueError("unknown key modhub.%s" % mk)
         else:
             raise ValueError("unknown key %s" % key)
+    # coop keeps every other client away from the person's game only through the owner check: without it a
+    # second script could save or quit the person's game mid-coop.
+    if out["coop"] and not out["ownerCheck"]:
+        raise ValueError("coop needs ownerCheck true")
     return out
 
 
@@ -1163,8 +1167,10 @@ def debug_command(cmd, args):
 
 
 def note_save_change(cmd, args, res):
-    """A debug command's answer (not a dry run's) gets saveNote."""
-    if isinstance(res, dict) and debug_command(cmd, args) and (args or {}).get("dryRun") is not True:
+    """A debug command's answer gets saveNote when it did something: not a dry run, not a refusal or error,
+    not one that sent nothing (company init on a game already set up)."""
+    if (isinstance(res, dict) and debug_command(cmd, args) and (args or {}).get("dryRun") is not True
+            and res.get("ok") is True and res.get("sent") is not False):
         res["saveNote"] = RUNNING_COSTS_NOTE if cmd == "runningCostsSet" else SAVE_NOTE
     return res
 

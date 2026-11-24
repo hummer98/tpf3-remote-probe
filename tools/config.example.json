@@ -4,7 +4,7 @@
   "_ownerCheck": "true: launch / restart --owner NAME record who started the game, and game-changing commands go only to the game that owner started (others: exit 4). For several clients (people or scripts) sharing one machine.",
   "ownerCheck": false,
 
-  "_coop": "true: coop start / end and launch --coop, a person and one --owner client sharing the running game (the client may look, build and test, not quit, load or save the person's game). Goes with ownerCheck.",
+  "_coop": "true: coop start / end and launch --coop, a person and one --owner client sharing the running game (the client may look, build and test, not quit, load or save the person's game). Needs ownerCheck true (coop without it makes the file unreadable): the owner check is what keeps other clients off the person's game.",
   "coop": false,
 
   "_testSavePrefixes": "Saves whose names start with one of these are test saves: road --ignore-errors, lights --off and running-costs writes go only to a game loaded from one (and the probe's game script only with one).",

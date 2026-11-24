@@ -6798,7 +6798,9 @@ class ConfigDefaultsTest(unittest.TestCase):
                           ('{"testSavePrefixes": [""]}', "list"), ('{"testSavePrefixes": ["a/b"]}', "list"),
                           ('{"modhub": {"publishFolders": ["x"], "folders": []}}', "unknown key modhub.folders"),
                           ('{"modhub": {"publishedIds": {"x": 5}}}', "mod.io ids"),
-                          ('{"modhub": []}', "modhub must be an object")):
+                          ('{"modhub": []}', "modhub must be an object"),
+                          ('{"coop": true}', "coop needs ownerCheck true"),
+                          ('{"coop": true, "ownerCheck": false}', "coop needs ownerCheck true")):
             self.write_config(text)
             cfg, info = tf3ctl.load_config()
             self.assertEqual(info["state"], "broken", text)
@@ -6814,6 +6816,29 @@ class ConfigDefaultsTest(unittest.TestCase):
             cfg, info = tf3ctl.load_config()
         self.assertEqual((info["state"], cfg["ownerCheck"]), ("broken", True))
         self.assertIn("does not exist", info["error"])
+
+    def test_a_broken_file_refuses_a_game_change_without_owner(self):
+        self.write_config("{not json")
+        tf3ctl.game_pids = lambda: [4242]
+        with contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.write_launched(4242, owner="alice")
+        code, res, err = self.ctl("save", "x")  # main re-reads the file: the owner check is on
+        self.assertEqual(code, 4)
+        self.assertIn("warning: cannot read the configuration file", err)
+        self.assertEqual(os.listdir(self.x), [], "nothing sent")
+
+    def test_save_note_only_on_an_answer_that_did_something(self):
+        for cmd, args in (("stockSet", {}), ("steps", {"count": 1}), ("money", {"add": 1}), ("townDevelop", {}),
+                          ("townSize", {}), ("townConnect", {}), ("companyInit", {}), ("lightsOff", {"node": 1}),
+                          ("road", {"ignoreErrors": True})):
+            self.assertEqual(tf3ctl.note_save_change(cmd, args, {"ok": True})["saveNote"], tf3ctl.SAVE_NOTE, cmd)
+            self.assertNotIn("saveNote", tf3ctl.note_save_change(cmd, dict(args, dryRun=True), {"ok": True}), cmd)
+            self.assertNotIn("saveNote", tf3ctl.note_save_change(cmd, args, {"ok": False, "error": "x"}), cmd)
+        self.assertEqual(tf3ctl.note_save_change("runningCostsSet", {"model": "x"}, {"ok": True})["saveNote"],
+                         tf3ctl.RUNNING_COSTS_NOTE)
+        self.assertNotIn("saveNote", tf3ctl.note_save_change("companyInit", {}, {"ok": True, "sent": False}))
+        for cmd, args in (("road", {}), ("build", {}), ("save", {"name": "x"}), ("runningCosts", {"model": "x"})):
+            self.assertNotIn("saveNote", tf3ctl.note_save_change(cmd, args, {"ok": True}), cmd)
 
     def test_no_owner_check_lets_any_client_change_any_game(self):
         tf3ctl.game_pids = lambda: [4242]

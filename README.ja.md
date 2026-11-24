@@ -1368,7 +1368,7 @@ owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、�
 
 ### ユーザーと同じゲームを使う (`coop`)
 
-設定ファイルで `"coop": true` のとき (初期設定は切れていて、coop の命令は断ります)。
+設定ファイルで `"coop": true` のとき (初期設定は切れていて、coop の命令は断ります)。`"ownerCheck": true` も要ります。
 上の owner の確認は、ほかのクライアントをゲームから遠ざけます。そのため、ユーザーと一緒に遊ぶゲームにも、クライアントは手を出せません。`coop` はそのためのものです。ユーザーと 1 つのクライアント (その `--owner`) が、しばらくの間、動いているゲームを一緒に使います。
 
 ```
@@ -1415,7 +1415,7 @@ tf3ctl.py --owner bob coop end
 | 項目 | 初期設定 | 入れると / 値 |
 |---|---|---|
 | `ownerCheck` | `false` | ゲームを変える命令は、その `--owner` が起動したゲームにだけ届く (下記) |
-| `coop` | `false` | `coop start` / `end` と `launch --coop`。切れていると断ります (終了コード 4、`"refused": "config"`) |
+| `coop` | `false` | `coop start` / `end` と `launch --coop`。切れていると断ります (終了コード 4、`"refused": "config"`)。`ownerCheck` が true であることが要ります。`coop` だけを入れたファイルは、読めないファイルとして扱います |
 | `testSavePrefixes` | `["probe-"]` | 試験用セーブとみなす名前の前置き (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み) |
 | `testSaveDigitFirst` | `false` | 数字 1 文字で始まる名前 (`3-probe`) も試験用セーブにする |
 | `pointer` | `false` | `pointer` 命令 |

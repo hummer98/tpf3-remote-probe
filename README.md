@@ -1494,7 +1494,7 @@ still let the owner who started the game quit it. A game started by hand from St
 
 ### Sharing the game with the user (`coop`)
 
-With `"coop": true` in the configuration file (off by default: the coop commands are refused).
+With `"coop": true` in the configuration file (off by default: the coop commands are refused), which needs `"ownerCheck": true` too.
 The owner check above keeps every other client off a game, which also keeps a client off a game the user is
 playing with it. `coop` is for that: the user and one client (its `--owner`) share the running game for a while.
 
@@ -1565,7 +1565,7 @@ every key with its default and what it does; `tf3ctl.py config` shows what is in
 | Key | Default | On / set |
 |---|---|---|
 | `ownerCheck` | `false` | game-changing commands go only to the game this `--owner` started (below) |
-| `coop` | `false` | `coop start` / `end` and `launch --coop`; off, they are refused (exit 4, `"refused": "config"`) |
+| `coop` | `false` | `coop start` / `end` and `launch --coop`; off, they are refused (exit 4, `"refused": "config"`). Needs `ownerCheck` true: `coop` without it makes the file unreadable |
 | `testSavePrefixes` | `["probe-"]` | the save names that count as test saves (`road --ignore-errors`, `lights --off`, `running-costs` writes) |
 | `testSaveDigitFirst` | `false` | a name with one digit first (`3-probe`) is a test save too |
 | `pointer` | `false` | the `pointer` command |
