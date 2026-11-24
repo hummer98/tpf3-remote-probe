@@ -16,7 +16,7 @@ Transport Fever 3 の MOD (`hummer_remote_probe`) と、コマンドラインの
 そして MOD を直して、もう一周します。
 
 ゲームの GUI の Lua にはソケットが無いので、ツールと MOD はゲームの userdata のフォルダの小さなファイルでやり取りします。
-ツールが命令を書き、MOD が読み (0.25〜2 秒ごと)、実行して答えを書きます。どの命令も JSON のオブジェクトを 1 つ出力します。
+ツールが命令を書き、MOD が読み (0.25〜2 秒ごと)、実行して答えを書きます。命令は JSON のオブジェクトを 1 つ出力します (例外: `log` はログの行をそのまま、`--every` は 1 行に 1 つの JSON、ツールのエラーは理由を stderr にだけ出します)。
 ツールはクリックもキーも送りません。詳しくは[参照](docs/REFERENCE.ja.md#仕組み)の「仕組み」。
 
 ## 必要なもの
@@ -47,7 +47,8 @@ git clone https://github.com/hummer98/tpf3-remote-probe.git hummer_remote_probe_
 (シェルの alias にしてもかまいません)。
 
 **mod.io から**: ゲームの中で Remote Probe を購読します。購読した MOD は mod.io のキャッシュのフォルダに入り、mod.io の
-クライアントは**更新のたびにそのフォルダをまるごと作り直します** (そこで足したもの・変えたものは消えます)。ツールは、
+クライアントは**更新のたびにそのフォルダをまるごと作り直します** (そこで足したもの・変えたものは消えます)。Linux では `~/mod.io/common/10640/mods/<数字>/` の下です。clone と購読の両方で
+入れないでください (同じ modId が 2 つになります)。ツールは、
 そのフォルダの `tools/tf3ctl.py` をそのまま打ってかまいません。ツールに手を入れる、または決まった場所から打つ
 (スクリプト・alias・エージェントへの指示に書く) なら、GitHub から clone してください。
 
@@ -55,6 +56,8 @@ git clone https://github.com/hummer98/tpf3-remote-probe.git hummer_remote_probe_
 
 1. ゲームで、セーブに「Remote Probe」を有効にしてロードします。または、ツールにゲームを起動させます (下の `launch`)。
 2. 答えるか確認します: `python3 tools/tf3ctl.py status`。ゲームのログに `[remote_probe] ready` が出ます。
+   MOD が一度も動いていないうちは、`status` (と `state`、`log`) は終了コード 2 と「no hello file from the mod yet」で
+   止まります。先に `launch` (下) でゲームを起動してください。
 
 ## 最初の一周
 
@@ -62,10 +65,11 @@ git clone https://github.com/hummer98/tpf3-remote-probe.git hummer_remote_probe_
 MOD の modId に読み替えます。
 
 ```
-tf3ctl.py status          # ゲームが答えるか。日付・速度・MOD とその設定・gameState
+tf3ctl.py status          # ゲームが答えるか (初回は launch まで終了コード 2)。日付・速度・MOD とその設定・gameState
 tf3ctl.py config          # どの切り替えが入っているか、どのファイルからか (ファイルが無ければ既定)
 
 # ゲームが動いていないとき: 起動して、メインメニューから自分の MOD を入れた新しいゲームを始める
+# (もう動いているとき: 先に `quit`、または `restart --no-kill --new ...`)
 tf3ctl.py launch --new --size tiny --year 1900 --add my_mod
 
 # 先にエンジンに聞いてから建てる
@@ -74,7 +78,7 @@ tf3ctl.py build --res my_mod::/my_depot.con --at 600,40
 
 tf3ctl.py run --until 1900-03-01      # 指定の日まで進めて止める
 tf3ctl.py vehicles --state            # 値を読む (ほかに lines、stations、industry-stocks、finance など)
-tf3ctl.py log --grep my_mod --tail 40 # ゲームのログ (中の時刻は UTC)
+tf3ctl.py log --grep my_mod --tail 40 # ゲームのログ。自分の MOD が print する文字で grep (時刻は UTC)
 tf3ctl.py quit
 ```
 
@@ -93,7 +97,7 @@ tf3ctl.py quit
 | 分類 | 命令 |
 |---|---|
 | 時間 | `status` (日付・速度・MOD)、`speed N` (UI の 4 倍より上。ゲームの見積もりが上限)、`pause`、`run --days / --months / --until` (そのあと止める)、`steps N` (シミュレーションの歩み、debug の命令)、`poll` (MOD が読む間隔) |
-| ゲーム | `launch` / `restart` (`--load SAVE` か `--new ...`)、`quit`、`load SAVE` (`--add` / `--remove` / `--param`)、`save NAME`、`saves`、`info SAVE` (その MOD と設定)、`newgame` (メインメニューから)、`state` (ログから。MOD 不要)、`company` |
+| ゲーム | `launch` / `restart` (`--load SAVE` か `--new ...`)、`quit`、`load SAVE` (`--add` / `--remove` / `--param`)、`save NAME`、`saves`、`info SAVE` (その MOD と設定)、`newgame` (メインメニューから)、`state` (ゲームのログから。メニューでも使える)、`company` |
 | 読む | `entities`、`stations` (`--catchment`)、`lines` (`--problems`)、`depots`、`vehicles` (`--state`)、`models`、`persons`、`industry-workers`、`industry-stocks`、`finance`、`running-costs`、`around` (ある点の周りの物)、`lanes`、`parcels`、`water`、`reach` (その場所へ行けるか)、`stock list` |
 | 建てる (試験用の地図) | `build` (建物。`--remove`)、`fit` (建物を置ける場所)、`road` (まっすぐ・曲がった 1 本。`--batch`)、`lights --off`、`terrain`、`town` (と `town connections` / `connect` / `develop` / `size`)、`connect` (2 つの端の間の線路・道路。Track Connector を使う) |
 | 車両・所持金・路線 | `buy`、`duplicate`、`replace`、`sell`、`money`、`line create / update / delete`、`rename` |
@@ -137,7 +141,7 @@ MOD は自分の命令を足せます。命令の表を返す `content/remote_pr
 - **オートセーブが、ほかのオートセーブを押し出します。** ゲームが残すオートセーブは、全部のセーブの名前を合わせて数に
   上限があります。試しのゲームのオートセーブも数に入るので、検証を続けると、自分が遊んでいるゲームのオートセーブが
   押し出されます。試しの間はオートセーブの間隔を長くし (`<Steam>/userdata/<Steam の ID>/3493540/local/settings.lua` の
-  `autosaveIntervalMinutes`。ゲームを閉じているときに変える)、終わったら戻すのをおすすめします。
+  `autosaveIntervalMinutes`。ゲームを閉じているときに変える。残す数は `autosaveKeepNumber`)、終わったら戻すのをおすすめします。
 - **クリックもキーも送らない。** ツールはマウスのクリックもキーも送りません。UI が要る確認 (スクロール・ボタン) は、
   MOD に試験用の命令かイベントを足して、`mod` か `event` で送ってください。
 - **止めるとき**は `quit` と `restart --no-kill` を使います。何も付けない `restart` と `quit --kill` は、終わらないゲームを

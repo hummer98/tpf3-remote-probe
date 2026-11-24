@@ -64,7 +64,7 @@ load, newgame, poll and quit only). `tf3ctl.py launch` and `restart` do this for
 
 ## Install
 
-1. Copy this repository's folder into the game's local mods folder, for example
+1. Clone (or copy) this repository into the game's local mods folder (see [Install in the README](../README.md#install)), for example
    `<Steam>/userdata/<your Steam id>/3493540/local/mods/hummer_remote_probe_1/` (the folder holds `mod.json`).
 2. In the game, enable "Remote Probe" for a save and load it. Or let the tool start the game (see `launch` below).
 3. Check that it answers:

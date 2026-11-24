@@ -31,7 +31,9 @@ people, use `--owner <your name>` on every command.
 
 ## Reading answers
 
-- Every command prints **one JSON object** on stdout. Parse it; do not scrape text.
+- Commands print **one JSON object** on stdout. Parse it; do not scrape text. Exceptions: `log` prints the
+  log's lines as text; `vehicles --every` and `persons --every` print one JSON object per line; on exit code `2`
+  stdout may be empty and the reason is on stderr.
 - Exit codes:
   - `0` ok
   - `1` the game answered with an error (read `error`)
@@ -40,7 +42,7 @@ people, use `--owner <your name>` on every command.
   - `3` the game cannot answer where it is (menu, loading, closed): read `gameState`, try `status` again after a
     while, or start the game with `launch` if it is not running
   - `4` refused, nothing was sent (another owner's game, not a test save, off in the config file, or
-    `mod ... --read-only` for a command not tagged `reads`).
+    `mod ... --read-only` for a command not tagged `reads`, and a few more: the answer's `refused` says why).
     Do not retry with a flag that skips the check; tell the person why it was refused.
 - The game log's times are UTC.
 
@@ -52,8 +54,8 @@ python3 tools/tf3ctl.py build --res my_mod::/my_depot.con --at 600,40 --dry-run 
 python3 tools/tf3ctl.py build --res my_mod::/my_depot.con --at 600,40
 python3 tools/tf3ctl.py run --until 1900-02-01
 python3 tools/tf3ctl.py lines                     # line entity ids, stops, vehicles
-python3 tools/tf3ctl.py vehicles --line <id> --state
-python3 tools/tf3ctl.py log --grep my_mod --tail 40
+python3 tools/tf3ctl.py vehicles --line <id> --state  # after `line create` / `buy`; else `vehicles --state`
+python3 tools/tf3ctl.py log --grep my_mod --tail 40   # grep for what the mod prints
 python3 tools/tf3ctl.py saves                     # pick a name not in the list
 python3 tools/tf3ctl.py save probe-my-mod-1
 python3 tools/tf3ctl.py quit
@@ -81,10 +83,11 @@ python3 tools/tf3ctl.py quit
 - **Stopping the game:** `quit`. Always use `restart --no-kill`: a plain `restart` (and `quit --kill`) SIGKILLs
   a game that does not quit, and unsaved progress is lost.
 - **Debug commands** change the save as no player can: `stock set`, `steps`, `money`, `town develop` / `size` /
-  `connect`, `company init`, `running-costs` writes, `lights --off`, `road --ignore-errors`, and
-  `--remove-buildings` on `build` and `road`, `--remove-fields` on `road` (they take town buildings and fields away). Only
+  `connect`, `company init`, `running-costs` writes, `lights --off`, `road --ignore-errors`. Only
   three check the save's name (`road --ignore-errors`, `lights --off`, `running-costs` writes); nothing stops the
   others on a person's save. Their answers carry `saveNote`.
+- `--remove-buildings` on `build` and `road`, and `--remove-fields` on `road`, take town buildings and fields
+  away as a player can when building by hand. No `saveNote`; use them on test saves.
 - **New games start from the main menu** (`launch --new`, `restart --new`). Inside a game, `newgame` only takes
   `--list` / `--dry-run`.
 - **Do not use `--wait-for-start`** unless a person is at the game: the load waits for a click, and meanwhile

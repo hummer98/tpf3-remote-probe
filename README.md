@@ -16,8 +16,9 @@ It is not a bot that plays the game. It is a test harness. The round it is made 
 Then change the mod and go round again.
 
 The game's GUI Lua has no sockets, so the tool and the mod talk through small files in the game's userdata
-folder: the tool writes a command, the mod reads it (every 0.25-2 s), runs it and writes the answer. Every
-command prints one JSON object. The tool never clicks or presses keys. Details: "How it works" in the
+folder: the tool writes a command, the mod reads it (every 0.25-2 s), runs it and writes the answer. Commands
+print one JSON object (exceptions: `log` prints the log's lines, `--every` prints one JSON object per
+line, and a tool error prints its reason on stderr only). The tool never clicks or presses keys. Details: "How it works" in the
 [reference](docs/REFERENCE.md#how-it-works).
 
 ## Requirements
@@ -51,13 +52,16 @@ The folder must hold `mod.json` directly. Run the tool as `python3 hummer_remote
 
 **From mod.io**: subscribe to Remote Probe in the game. The game keeps subscribed mods in mod.io's cache folder,
 and mod.io's client **rebuilds that folder from scratch on every update** (anything you add or change there is
-lost). You may run `tools/tf3ctl.py` from that folder as it is. If you want to change the tool, or run it from a
+lost). On Linux the folder is under `~/mod.io/common/10640/mods/<number>/`. Do not install the mod both ways
+at once (two copies of one modId). You may run `tools/tf3ctl.py` from that folder as it is. If you want to change the tool, or run it from a
 fixed place (a script, an alias, your agent's instructions), clone it from GitHub instead.
 
 Then:
 
 1. In the game, enable "Remote Probe" for a save and load it, or let the tool start the game (`launch`, below).
 2. Check that it answers: `python3 tools/tf3ctl.py status`. The game log shows `[remote_probe] ready`.
+   Before the mod has run once, `status` (and `state`, `log`) stop with exit code 2 and "no hello file from the
+   mod yet": start the game with `launch` (below) first.
 
 ## A first round
 
@@ -65,10 +69,11 @@ The commands below are written as `tf3ctl.py`; run them as `python3 tools/tf3ctl
 `my_mod` stands for your mod's modId.
 
 ```
-tf3ctl.py status          # does the game answer? date, speed, mods and their settings; gameState
+tf3ctl.py status          # does the game answer? (first time: exit 2 until a launch) date, speed, mods and their settings; gameState
 tf3ctl.py config          # which switches are on, and from which file (no file: the defaults)
 
 # the game not running: start it, and a new game from the main menu with your mod
+# (already running: `quit` first, or `restart --no-kill --new ...`)
 tf3ctl.py launch --new --size tiny --year 1900 --add my_mod
 
 # ask the engine first, then build
@@ -77,7 +82,7 @@ tf3ctl.py build --res my_mod::/my_depot.con --at 600,40
 
 tf3ctl.py run --until 1900-03-01      # run to a date and pause
 tf3ctl.py vehicles --state            # read values (also: lines, stations, industry-stocks, finance, ...)
-tf3ctl.py log --grep my_mod --tail 40 # the game log (times in it are UTC)
+tf3ctl.py log --grep my_mod --tail 40 # the game log; grep for what your mod prints (times are UTC)
 tf3ctl.py quit
 ```
 
@@ -97,7 +102,7 @@ One line each; every command has `--help`, and the [reference](docs/REFERENCE.md
 | Group | Commands |
 |---|---|
 | Time | `status` (date, speed, mods), `speed N` (beyond the UI's 4x, capped at the game's estimate), `pause`, `run --days / --months / --until` (then pause), `steps N` (simulation steps, a debug command), `poll` (how often the mod reads) |
-| Game | `launch` / `restart` (with `--load SAVE` or `--new ...`), `quit`, `load SAVE` (with `--add` / `--remove` / `--param`), `save NAME`, `saves`, `info SAVE` (its mods and settings), `newgame` (from the main menu), `state` (from the log, no mod needed), `company` |
+| Game | `launch` / `restart` (with `--load SAVE` or `--new ...`), `quit`, `load SAVE` (with `--add` / `--remove` / `--param`), `save NAME`, `saves`, `info SAVE` (its mods and settings), `newgame` (from the main menu), `state` (from the game log; works in the menu), `company` |
 | Reading | `entities`, `stations` (`--catchment`), `lines` (`--problems`), `depots`, `vehicles` (`--state`), `models`, `persons`, `industry-workers`, `industry-stocks`, `finance`, `running-costs`, `around` (what is near a point), `lanes`, `parcels`, `water`, `reach` (can a place be got to), `stock list` |
 | Building (test maps) | `build` (a construction; `--remove`), `fit` (where a construction fits), `road` (a straight or curved piece; `--batch`), `lights --off`, `terrain`, `town` (and `town connections` / `connect` / `develop` / `size`), `connect` (track or road between two ends, with Track Connector) |
 | Vehicles, money, lines | `buy`, `duplicate`, `replace`, `sell`, `money`, `line create / update / delete`, `rename` |
@@ -141,7 +146,8 @@ Read these before you point the tool, or an agent, at your game.
 - **Autosaves push out other autosaves.** The game keeps only a limited number of autosaves across all saves'
   names. A test game's autosaves count too, so an afternoon of tests can push out the autosaves of your real
   games. While you test, set a long autosave interval (`autosaveIntervalMinutes` in
-  `<Steam>/userdata/<your Steam id>/3493540/local/settings.lua`, changed while the game is closed) and set it back
+  `<Steam>/userdata/<your Steam id>/3493540/local/settings.lua`, changed while the game is closed; the number
+  kept is `autosaveKeepNumber`) and set it back
   afterwards.
 - **No clicks, no keys.** The tool never sends mouse clicks or key presses. If a check needs the UI (a scroll, a
   button), add a test command or event to your mod and send it with `mod` or `event`.
