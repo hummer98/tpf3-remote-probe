@@ -1825,7 +1825,7 @@ end
 -- spec.infosOnly: its reason is in errorState.infos, messages empty. spec.landOnlyOwnOnly: the other way round, only
 -- makeProposalData alone refuses it (the stricter of a dry run's two verdicts). spec.landInfos(x, y) -> true: the
 -- engine's word for it goes in errorState.infos only, critical false, in every context (makeProposalData alone or
--- with a Context, and the build's callback), and the build is refused all the same (2026-11-23, P12: road_depot at
+-- with a Context, and the build's callback), and the build is refused all the same (2026-11-23: road_depot at
 -- (0, 3600) over water: the engine check said critical false, infos "陸上に配置", collisions 6; the build was refused,
 -- its errorState critical false with the same infos, the log "ProposalData error: 陸上に配置");
 -- spec.landInfosBuildOnly: not in makeProposalData alone (the engine's own context); spec.landInfosOwnOnly: only there

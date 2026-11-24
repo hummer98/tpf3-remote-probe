@@ -203,7 +203,7 @@ return function(t)
 		truthy(not g.crashed, g.crashed)
 	end)
 
-	test("road --batch: two one-way two-lane roads out of a four-lane street's end (mod-keeper's case): one proposal", function()
+	test("road --batch: two one-way two-lane roads out of a four-lane street's end: one proposal", function()
 		local WIDE = "::/infrastructure/street/town/town_new_large.street_template"
 		local ONEWAY = "::/infrastructure/street/town/one_way_town_new_medium.street_template"
 		local g = roadWorld({ height = flat, streets = { [WIDE] = { cost = 10, perSide = 2 }, [ONEWAY] = { cost = 10, perSide = "oneWay" } },

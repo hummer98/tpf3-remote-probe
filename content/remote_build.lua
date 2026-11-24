@@ -243,7 +243,7 @@ function M.new(ctx)
 			warnings = warnings,
 			infos = infos and #infos > 0 and infos or nil,
 			-- infos with critical not set: taken as a refusal. The engine puts where a construction may stand (on
-			-- land, on the coast) there and refuses the build all the same (2026-11-23, P12: a depot over water,
+			-- land, on the coast) there and refuses the build all the same (2026-11-23: a depot over water,
 			-- the check critical false with infos "陸上に配置" and the build refused, its errorState the same and the
 			-- game's log "ProposalData error: 陸上に配置"). By the field, not its words (they change with the
 			-- game's language); infos that do not refuse a build are not seen yet
@@ -1537,7 +1537,7 @@ function M.new(ctx)
 	-- what the engine says of a proposal without building it: api.engine.util.proposal.makeProposalData, called
 	-- here in the guiUpdate (the GUI thread: Overpass Builder calls it there with a SimpleProposal alone; Track
 	-- Connector calls it in its game script with the proposal and a Context). Never from a recipe's body (api.util /
-	-- api.gui there killed the game, BUG.md 2026-11-15). Both forms are asked: the proposal alone is judged in the
+	-- api.gui there killed the game, 2026-11-15). Both forms are asked: the proposal alone is judged in the
 	-- engine's own context, which is not the build's (it gathered fields where the build collided, 2026-11-23, and
 	-- it said buildable on water where the build was refused, "陸上に配置", 2026-11-23); with the build's Context
 	-- (player, gatherFields, gatherBuildings, cleanupStreetGraph, as the build sends it) second. Whether that form
@@ -2062,7 +2062,7 @@ function M.new(ctx)
 		end
 		-- --ignore-errors: the engine's check first (the same proposal, not sent), so that the answer says what an
 		-- unforced build would have been refused for; the probe's own checks above (the junction set-ups: a node
-		-- without one killed the game, BUG.md 2026-11-23 01:03) have run all the same and are not skipped
+		-- without one killed the game, 2026-11-23 01:03) have run all the same and are not skipped
 		local force = r.ignoreErrors == true
 		if force then
 			-- a construction's node (its set-up left as it is, NOTE_KEEP): whether the engine joins the new piece's

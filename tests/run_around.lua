@@ -389,7 +389,7 @@ return function(t)
 		truthy(not g.crashed, g.crashed)
 	end)
 
-	-- 2026-11-23 (P12, probe-flat-base): road_depot at (0, 3600) over water. The engine check said buildable,
+	-- 2026-11-23 (probe-flat-base): road_depot at (0, 3600) over water. The engine check said buildable,
 	-- critical false in both contexts, with infos "陸上に配置" and 6 collisions; the build was refused, its errorState
 	-- critical false with the same infos. infos with critical not set are a refusal (by the field, not the words)
 	test("build / road --dry-run --engine-check: infos only (critical not set) refuse it; without infos as before", function()

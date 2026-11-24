@@ -109,7 +109,7 @@ end
 -- --cargo: load only cargoId, at the stops that give it. The base (autoLoadConfig's keepCargo, the cargo filter)
 -- turns load on only at stops that give the cargo; a stop with load on does not unload it, so loading it at every
 -- stop meant it was never delivered (the game's line warning "loaded at stop 1 but cannot be unloaded anywhere",
--- 2026-11-19, BUG.md). Passengers load everywhere as before: they get off at their destination either way. A stop
+-- 2026-11-19). Passengers load everywhere as before: they get off at their destination either way. A stop
 -- that cannot be told (cargo_util missing in the cmd way, or a read that failed) loads, as before, and the returned
 -- note says so; no stop giving it while every stop could be told is an error. cu: M.loadCargoUtil() (tests: a fake).
 -- Returns a note or nil.

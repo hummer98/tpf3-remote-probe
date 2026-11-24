@@ -5697,7 +5697,7 @@ def cmd_frame(ns):
 # pointer: the game's own idea of where the mouse is, set from outside. TF3 runs as an XWayland window; a synthetic
 # EnterNotify + MotionNotify sent to that window moves the game's hover (the placement preview, tooltips) and its
 # drawn cursor, while the real pointer stays where it is. Only these two event types are ever sent: a button or
-# key event would act in the game on its own (2026-11-18, aom-master: pointer movement only, no buttons or keys).
+# key event would act in the game on its own (2026-11-18: pointer movement only, no buttons or keys).
 TF3_WINDOW_TITLE = "Transport Fever 3"
 X_MOTION_NOTIFY, X_ENTER_NOTIFY = 6, 7
 X_POINTER_MOTION_MASK, X_ENTER_WINDOW_MASK = 1 << 6, 1 << 4

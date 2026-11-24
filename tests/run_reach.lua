@@ -352,7 +352,7 @@ return function(t)
 		for _, gg in ipairs({ g, u }) do truthy(not gg.crashed, gg.crashed); eq(#gg.commands, 0) end
 	end)
 
-	-- Road pieces and junctions as ends (2026-11-24, aom-ops: a ground road and a bridge piece with no road between
+	-- Road pieces and junctions as ends (2026-11-24: a ground road and a bridge piece with no road between
 	-- them read as joined with --radius 200-300, the circles round them holding the same nodes). 801 (ground: a CAR
 	-- lane 801:0 -> 801:1, a PERSON lane 801:2 -> 801:3) and 802 (bridge: CAR only), 100 m apart, not joined; 900:0
 	-- a node of something else between them. 803 and 804 meet at junction 850 (their CAR lanes end in 850:0). 805

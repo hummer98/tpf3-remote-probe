@@ -60,7 +60,7 @@ local core = require "hummer_remote_probe::/remote_core.lua"
 -- keeps them checking that it works as before. Every copy of remote_core.lua a fake game boots gets it too
 -- (fake.coreSetup). The mod's real defaults: the "configuration" tests, on a fresh copy (freshCore).
 local CONFIGURED = {
-	testSaveRules = { prefixes = { "probe-", "aom-ops-", "aom-shot-", "aom-bgm-check-" }, digitFirst = true },
+	testSaveRules = { prefixes = { "probe-", "team-", "pics-", "audio-check-" }, digitFirst = true },
 	modhubFolders = { "hummer_force_unload_default_1", "hummer_cursor_altitude_tooltip_1",
 		"hummer_construction_altitude_tooltip_1", "hummer_industry_pollution_display_1" },
 	modhubIds = { hummer_force_unload_default_1 = "6543965", hummer_cursor_altitude_tooltip_1 = "6523060",
@@ -8927,7 +8927,7 @@ test("core.roadRequest ignoreErrors: a test save named (_testSave), boolean only
 		local ok, err = core.roadRequest(args)
 		eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
 	end
-	for _, yes in ipairs({ "probe-a", "aom-ops-1", "aom-shot-x", "aom-bgm-check-2", "3-probe", "7", " probe-a ",
+	for _, yes in ipairs({ "probe-a", "team-1", "pics-x", "audio-check-2", "3-probe", "7", " probe-a ",
 		"/saves/probe-a.sav", "probe-a.sav" }) do
 		truthy(core.isTestSaveName(yes), yes)
 	end
@@ -9007,7 +9007,7 @@ test("road --ignore-errors: refused without a test save named, and on other comm
 	truthy(not g.crashed, g.crashed)
 end)
 
-test("road --ignore-errors: the junction set-up checks still refuse before sending (BUG.md 2026-11-23 01:03)", function()
+test("road --ignore-errors: the junction set-up checks still refuse before sending (2026-11-23 01:03)", function()
 	-- a node without a junction set-up within snap: refused, nothing sent, forced or not
 	local g = roadWorld({ roads = { nodes = { [8001] = { x = 100, y = 0, z = 0 }, [8002] = { x = 0, y = 0, z = 0 } },
 		edges = { [8100] = { node0 = 8002, node1 = 8001 } }, noConfig = { [8001] = true } }, height = function() return 0 end })

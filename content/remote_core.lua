@@ -1368,7 +1368,7 @@ end
 
 -- road --batch: several pieces in one SimpleProposal, so that the engine judges them together (one piece sent
 -- after another was refused where the two together may not be: two one-way roads out of one end of a four-lane
--- street, mod-keeper 2026-11-24). batch: a list of pieces, each with road's own values (from, to, type, bridge,
+-- street, 2026-11-24). batch: a list of pieces, each with road's own values (from, to, type, bridge,
 -- snap, tangentFrom, tangentTo, alignToEdge, alignEdge) and fromNode / toNode (roadPiece); the dry run,
 -- engineCheck, removeFields, removeBuildings, ignoreErrors and collisionDetail (with their fences) go for the whole batch, beside it.
 -- -> { batch = true, pieces, named = { [name] = { x, y, z (nil: the terrain's), at } }, and the options }

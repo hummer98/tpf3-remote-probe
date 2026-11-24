@@ -65,7 +65,7 @@ atexit.register(_remove_test_run_dir)
 # writes another one for a test (main reads the file again at every call); restore with use_config(CONFIGURED).
 CONFIGURED = {
     "ownerCheck": True, "coop": True, "pointer": True,
-    "testSavePrefixes": ["probe-", "aom-ops-", "aom-shot-", "aom-bgm-check-"], "testSaveDigitFirst": True,
+    "testSavePrefixes": ["probe-", "team-", "pics-", "audio-check-"], "testSaveDigitFirst": True,
     "modhub": {
         "validateFolders": ["hummer_construction_altitude_tooltip_1", "hummer_cursor_altitude_tooltip_1",
                             "hummer_industry_pollution_display_1", "hummer_force_unload_default_1"],
@@ -5715,7 +5715,7 @@ class CoopTest(unittest.TestCase):
             self.assertIn("not saved", self.refused("save", {"name": "probe-new"}))
 
     def test_is_test_save(self):
-        for name in ("probe-x", "aom-ops-u6", "aom-shot-1950", "aom-bgm-check-1", "3-probe", "6", "3.sav",
+        for name in ("probe-x", "team-1", "pics-1950", "audio-check-1", "3-probe", "6", "3.sav",
                      "/a/b/probe-x.sav"):
             self.assertTrue(tf3ctl.is_test_save(name), name)
         for name in ("aom-eu-1900", "aom-long-12m", "39-x", "Probe-x", "", None, 3, "autosave_1", "xprobe-"):
@@ -5885,7 +5885,7 @@ class CoopTest(unittest.TestCase):
 
 
 class CoopExpiredTest(unittest.TestCase):
-    """An expired or malformed coop mark on the running game is the strict side (D-20261123-26, like the guard
+    """An expired or malformed coop mark on the running game is the strict side (like the guard
     outside): the launcher and the client send no game-changing command until coop start or coop end; reading
     commands go; the mark is never removed for its time."""
 
@@ -6251,7 +6251,7 @@ class IgnoreErrorsTest(_ForceBase):
         self.assertIn("for test saves only: skips the engine's checks", helptext)
 
     def test_a_test_save_sends_it_with_the_save_named(self):
-        for save in ("probe-flat-base", "aom-ops-ship", "3-probe", "aom-shot-x"):
+        for save in ("probe-flat-base", "team-ship", "3-probe", "pics-x"):
             self.loaded(save)
             a = self.sent("road", self.road("--ignore-errors"))
             self.assertIs(a["ignoreErrors"], True, save)
@@ -6444,7 +6444,7 @@ class RoadBatchTest(_ForceBase):
         self.assertEqual(len(a["batch"]), 3)
         rec = json.loads(read(tf3ctl.launched_path()))
         self.assertEqual((rec["forced"], rec["forcedCount"]), (True, 1))
-        self.refused("save", {"name": "aom-shot-x"}, "probe-force-* names")
+        self.refused("save", {"name": "pics-x"}, "probe-force-* names")
         # a person's save, a new game: refused, nothing sent
         self.loaded("aom-eu-1900")
         e = self.refused("road", self.batch(self.TWO, "--ignore-errors"), "'aom-eu-1900' is not a test save's")
@@ -6468,7 +6468,7 @@ class ForcedSaveTest(_ForceBase):
     names only (2026-11-24): a state built past the engine's checks must not land in a test base or a person's
     save. The mark lives in the launch record, so the next launch has none."""
 
-    OTHER_NAMES = ("probe-flat-base-x", "aom-shot-x", "aom-bgm-check-x", "3-probe", "aom-eu-1900-2", "My Railway",
+    OTHER_NAMES = ("probe-flat-base-x", "pics-x", "audio-check-x", "3-probe", "aom-eu-1900-2", "My Railway",
                    "probe-force-", "probe-force-/x", " probe-force-a", "probe-forced-a", "probe-force")
 
     def record(self):
@@ -6487,7 +6487,7 @@ class ForcedSaveTest(_ForceBase):
         self.sent("road", self.road("--ignore-errors", "--dry-run"))  # a forced dry run builds nothing
         self.assertNotIn("forced", self.record())
         self.assertNotIn("forcedCount", self.record())
-        for name in ("aom-shot-x", "3-probe", "probe-flat-base-x"):
+        for name in ("pics-x", "3-probe", "probe-flat-base-x"):
             self.assertEqual(self.sent("save", {"name": name})["name"], name, "a dry run does not count")
         self.assertEqual(tf3ctl.forced_note(), {})
 
@@ -6504,7 +6504,7 @@ class ForcedSaveTest(_ForceBase):
             self.assertIn("road --ignore-errors, 1 time)", str(e))
         # neither --other-owner-ok nor --user-asked widens it
         tf3ctl.OTHER_OWNER_OK, tf3ctl.USER_ASKED = True, True
-        self.save_refused("aom-shot-x")
+        self.save_refused("pics-x")
         tf3ctl.OWNER = "bob"  # another owner's client on this game, with --other-owner-ok
         self.save_refused("probe-flat-base-x")
         self.assertEqual(self.sent("save", {"name": "probe-force-b"})["name"], "probe-force-b")
@@ -6521,19 +6521,19 @@ class ForcedSaveTest(_ForceBase):
 
     def test_the_next_launch_has_no_mark(self):
         self.sent("road", self.road("--ignore-errors"))
-        self.save_refused("aom-shot-x")
+        self.save_refused("pics-x")
         # the same game, coop start / end: the mark stays
         tf3ctl.coop_start(30, "look at it together")
         self.assertTrue(self.record()["forced"])
         tf3ctl.coop_end()
         self.assertTrue(self.record()["forced"])
-        self.save_refused("aom-shot-x")
+        self.save_refused("pics-x")
         # a new run of the game (restart): a new record, no mark
         tf3ctl.game_pids = lambda: [4243]
         with contextlib.redirect_stderr(io.StringIO()):
             tf3ctl.write_launched(4243, owner="alice")
         self.assertNotIn("forced", self.record())
-        self.assertEqual(self.sent("save", {"name": "aom-shot-x"})["name"], "aom-shot-x")
+        self.assertEqual(self.sent("save", {"name": "pics-x"})["name"], "pics-x")
         self.assertEqual(tf3ctl.forced_note(), {})
 
     def test_a_record_of_another_game_does_not_count(self):
@@ -6541,7 +6541,7 @@ class ForcedSaveTest(_ForceBase):
         # the game quit by hand and was started again from Steam: the old record names a pid not running
         tf3ctl.game_pids = lambda: [5000]
         tf3ctl.OTHER_OWNER_OK = True
-        self.assertEqual(self.sent("save", {"name": "aom-shot-x"})["name"], "aom-shot-x")
+        self.assertEqual(self.sent("save", {"name": "pics-x"})["name"], "pics-x")
         self.assertEqual(tf3ctl.forced_note(), {})
         # ... and a forced build on it has no record to keep the mark in: refused, nothing sent
         e = self.refused("road", self.road("--ignore-errors"), "no launch record of the running game")
@@ -6565,7 +6565,7 @@ class ForcedSaveTest(_ForceBase):
         rec = self.record()
         rec.update(forced="yes", forcedCount="many")
         write(tf3ctl.launched_path(), json.dumps(rec))
-        self.assertIn("1 time)", str(self.save_refused("aom-shot-x")))
+        self.assertIn("1 time)", str(self.save_refused("pics-x")))
 
     def test_a_loaded_probe_force_save_saves_only_to_probe_force_names(self):
         # forced, saved, then restarted (a new record without the mark) and that save loaded again
@@ -6577,16 +6577,16 @@ class ForcedSaveTest(_ForceBase):
         self.loaded("probe-force-j")
         e = self.save_refused("probe-flat-base")
         self.assertIn("the loaded save 'probe-force-j'", str(e))
-        self.save_refused("aom-shot-x")
+        self.save_refused("pics-x")
         self.assertEqual(self.sent("save", {"name": "probe-force-k"})["name"], "probe-force-k")
         note = tf3ctl.forced_note()["forced"]
         self.assertEqual((note["count"], note["loaded"]), (0, "probe-force-j"))
         self.assertIn("probe-force-*", note["textJa"])
         self.loaded("/some/where/probe-force-j.sav")  # a loaded save given as a path counts by its file name
-        self.save_refused("aom-shot-x")
+        self.save_refused("pics-x")
         # another save loaded: as before
         self.loaded("probe-flat-base")
-        self.assertEqual(self.sent("save", {"name": "aom-shot-x"})["name"], "aom-shot-x")
+        self.assertEqual(self.sent("save", {"name": "pics-x"})["name"], "pics-x")
         self.assertEqual(tf3ctl.forced_note(), {})
 
     def test_a_persons_game_after_coop_keeps_the_mark_and_its_record(self):
@@ -6600,7 +6600,7 @@ class ForcedSaveTest(_ForceBase):
         self.assertNotIn("owner", rec)
         self.assertEqual((rec["forced"], rec["forcedCount"], rec["coopChanges"]), (True, 1, 2))
         self.assertIsNotNone(tf3ctl.read_launched()[0])
-        self.save_refused("aom-shot-x")
+        self.save_refused("pics-x")
 
     def test_status_says_so(self):
         self.sent("road", self.road("--ignore-errors"))
@@ -6622,7 +6622,7 @@ class ForcedSaveTest(_ForceBase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
                 unittest.mock.patch.object(tf3ctl, "write_command", lambda *a: self.fail("sent")):
-            code = tf3ctl.main(["--owner", "alice", "--other-owner-ok", "save", "aom-shot-x", "--user-asked"])
+            code = tf3ctl.main(["--owner", "alice", "--other-owner-ok", "save", "pics-x", "--user-asked"])
         self.assertEqual(code, 4)
         res = json.loads(out.getvalue())
         self.assertEqual((res["ok"], res["refused"]), (False, "forced-save"))
@@ -6672,7 +6672,7 @@ class RunningCostsTest(_ForceBase):
         self.sent("runningCosts", {"model": "x"})
 
     def test_a_write_on_a_test_save_names_it(self):
-        for save in ("probe-flat-base", "3-probe", "aom-ops-x"):
+        for save in ("probe-flat-base", "3-probe", "team-x"):
             self.loaded(save)
             a = self.sent("runningCostsSet", self.rc("--scale-running", "2")[1])
             self.assertEqual(a["_testSave"], save)
@@ -6766,7 +6766,7 @@ class LightsTest(_ForceBase):
         self.assertFalse(tf3ctl.changes_game("roadInspect", {"node": 1}))
 
     def test_on_a_test_save_names_it(self):
-        for save in ("probe-flat-base", "3-probe", "aom-ops-x"):
+        for save in ("probe-flat-base", "3-probe", "team-x"):
             self.loaded(save)
             for extra in ((), ("--dry-run",)):
                 a = self.sent("lightsOff", self.la("--node", "9000", "--off", *extra))
@@ -7013,7 +7013,7 @@ class ConfigDefaultsTest(unittest.TestCase):
     def test_test_saves_are_probe_names_only(self):
         for name in ("probe-x", "probe-flat-base", "/s/probe-x.sav"):
             self.assertTrue(tf3ctl.is_test_save(name), name)
-        for name in ("aom-shot-x", "3-probe", "6", "My Railway"):
+        for name in ("pics-x", "3-probe", "6", "My Railway"):
             self.assertFalse(tf3ctl.is_test_save(name), name)
         self.assertEqual(tf3ctl.test_save_text(), "probe-*")
         self.assertEqual(tf3ctl.test_save_rules(), {"prefixes": ["probe-"], "digitFirst": False})
@@ -7076,7 +7076,7 @@ class ConfigDefaultsTest(unittest.TestCase):
                     self.assertRaises(_Past):
                 tf3ctl.send("lightsOff", {"node": 5, "_testSaveRules": {"prefixes": ["x"]}}, folder=self.x)
             with self.assertRaises(_Past):
-                tf3ctl.send("status", {"_testSave": "aom-shot-x"}, folder=self.x)
+                tf3ctl.send("status", {"_testSave": "pics-x"}, folder=self.x)
         self.assertEqual(got[0], ("modhubStatus", {"_modhub": {"validateFolders": [], "publishFolders": [],
                                                                 "publishedIds": {}}}))
         self.assertEqual(got[1][1], {"node": 5, "_testSave": "probe-x",
@@ -7160,7 +7160,7 @@ class FencesTest(_ForceBase):
                                                               "dryRun": True})[1], "a dry run changes nothing")
 
     def test_configured_test_saves_take_them_by_the_four_prefixes_and_the_digit_rule(self):
-        for save in ("probe-flat-base", "aom-ops-x", "aom-shot-x", "aom-bgm-check-x", "3-probe"):
+        for save in ("probe-flat-base", "team-x", "pics-x", "audio-check-x", "3-probe"):
             self.loaded(save)
             sent, res = self.answer("lightsOff", {"node": 5, "dryRun": True})
             self.assertEqual(sent["_testSave"], save)
@@ -7215,7 +7215,7 @@ class FencesTest(_ForceBase):
             tf3ctl.OWNER = None
             self.answer("quit", None)
             # test saves: probe-* only
-            for save in ("aom-shot-x", "3-probe", self.PERSON):
+            for save in ("pics-x", "3-probe", self.PERSON):
                 self.loaded(save)
                 self.refused("road", self.ignore_errors(), "is not a test save's (probe-*)")
                 self.refused("lightsOff", {"node": 5}, "is not a test save's (probe-*)")
@@ -7240,10 +7240,10 @@ class ConfiguredMachineTest(unittest.TestCase):
 
     def test_test_saves_and_their_text_as_before(self):
         use_config(CONFIGURED)
-        for name in ("probe-x", "aom-ops-u6", "aom-shot-1950", "aom-bgm-check-1", "3-probe", "6"):
+        for name in ("probe-x", "team-1", "pics-1950", "audio-check-1", "3-probe", "6"):
             self.assertTrue(tf3ctl.is_test_save(name), name)
         self.assertFalse(tf3ctl.is_test_save("aom-eu-1900"))
-        self.assertEqual(tf3ctl.test_save_text(), "probe-*, aom-ops-*, aom-shot-*, aom-bgm-check-*, or one digit first")
+        self.assertEqual(tf3ctl.test_save_text(), "probe-*, team-*, pics-*, audio-check-*, or one digit first")
         self.assertEqual(tf3ctl.CONFIG_INFO["state"], "file")
         for key in ("ownerCheck", "coop", "pointer"):
             self.assertIs(tf3ctl.CONFIG[key], True, key)

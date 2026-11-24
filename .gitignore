@@ -1,3 +1,4 @@
 __pycache__/
 CLAUDE.local.md
 tests/.tmp/
+.claude/

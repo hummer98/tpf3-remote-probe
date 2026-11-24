@@ -21,7 +21,7 @@
 --     edges: NodeId.new(node, i) of its network's nodes, type.d.tl), else the transport network nodes in a circle
 --     round its position or the point given (api.engine.util.octree.findTransportNetworkNodesInCircle).
 --   A piece or a junction never takes the circle: round a piece the circle holds the nodes of whatever is near,
---     and two pieces with no road between them were found joined (2026-11-24, aom-ops: a ground road and a bridge
+--     and two pieces with no road between them were found joined (2026-11-24: a ground road and a bridge
 --     piece, --radius 200-300). A node two ends share only because both came from circles, or because one end's
 --     circle wider than the default radius holds the other's node, says the circles overlap, not that a path is
 --     there: it is left out of the circle's end and the rest searched; an end with nothing left is not searched
