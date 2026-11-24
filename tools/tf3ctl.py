@@ -199,7 +199,7 @@ order they were made.
 """
 import argparse
 import contextlib
-import fcntl
+import csv
 import filecmp
 import glob
 import json
@@ -214,6 +214,11 @@ import subprocess
 import sys
 import tempfile
 import time
+
+try:
+    import fcntl
+except ImportError:  # Windows: lock_file uses msvcrt.locking there
+    fcntl = None
 
 PREFIX = "remote_probe__"
 APP_ID = "3493540"
@@ -260,13 +265,108 @@ class GameNotReady(ToolError):
 # files
 
 
+def on_windows():
+    """Windows is not tested on a Windows machine: only the paths and command lines are built for it."""
+    return sys.platform == "win32"
+
+
+def windows_steam_registry():
+    """{"SteamPath": ..., "SteamExe": ...} from HKCU\\Software\\Valve\\Steam, with only the values that are there
+    ({} without winreg or the key)."""
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    out = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            for name in ("SteamPath", "SteamExe"):
+                try:
+                    value = winreg.QueryValueEx(key, name)[0]
+                except OSError:
+                    continue
+                if isinstance(value, str) and value:
+                    out[name] = os.path.normpath(value)  # Steam writes c:/program files (x86)/steam
+    except OSError:
+        return {}
+    return out
+
+
+def windows_steam_dirs():
+    """Where Steam may be on Windows: the registry's SteamPath, then the default install folder."""
+    dirs = []
+    reg = windows_steam_registry().get("SteamPath")
+    if reg:
+        dirs.append(reg)
+    pf = os.environ.get("ProgramFiles(x86)")
+    if pf:
+        dirs.append(os.path.join(pf, "Steam"))
+    uniq = []
+    for d in dirs:
+        if os.path.normcase(d) not in [os.path.normcase(u) for u in uniq]:
+            uniq.append(d)
+    return uniq
+
+
 def userdata_roots():
     home = os.path.expanduser("~")
     roots = []
-    for steam in (os.path.join(home, ".local", "share", "Steam"), os.path.join(home, ".steam", "steam"),
-                  os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam")):
+    steams = [os.path.join(home, ".local", "share", "Steam"), os.path.join(home, ".steam", "steam"),
+              os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam")]
+    if on_windows():
+        steams += windows_steam_dirs()
+    for steam in steams:
         roots += glob.glob(os.path.join(steam, "userdata", "*", APP_ID, "local"))
     return roots
+
+
+REPLACE_TRIES = 5
+
+
+def replace_file(src, dst):
+    """os.replace; on Windows it fails with PermissionError while another process (the game reading the file, a
+    virus scanner) has dst open, so there it tries again a few times after a short pause."""
+    for i in range(REPLACE_TRIES):
+        try:
+            return os.replace(src, dst)
+        except PermissionError:
+            if not on_windows() or i == REPLACE_TRIES - 1:
+                raise
+            time.sleep(0.05 * (i + 1))
+
+
+@contextlib.contextmanager
+def lock_file(f):
+    """Holds an exclusive lock on the open file f until the block ends; waits for other tf3ctl processes. POSIX:
+    flock. Windows: msvcrt.locking on the first byte (the same byte in every process, so seek(0) first; locking past
+    the end of an empty file is allowed). Its LK_LOCK gives up after about 10 tries a second apart, so loop."""
+    if fcntl is not None:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+        return
+    import errno
+    import msvcrt
+    while True:
+        f.seek(0)
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            break
+        except OSError as e:
+            if e.errno not in (errno.EDEADLK, getattr(errno, "EDEADLOCK", errno.EDEADLK), errno.EACCES):
+                raise
+    try:
+        yield
+    finally:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def owned_by_me(st):
+    """st (an lstat) belongs to this user. Windows has no uid (st_uid is always 0 there), so nothing is checked."""
+    return not hasattr(os, "getuid") or st.st_uid == os.getuid()
 
 
 def mtime(path):
@@ -300,7 +400,8 @@ def read_json(path):
     """The JSON inside one of the mod's files; ToolError when it cannot be read (yet)."""
     luajit = os.environ.get("LUAJIT", "luajit")
     # the reader comes on stdin ("-"): with -e, luajit would run the path as a second script
-    r = subprocess.run([luajit, "-", path], input=READ_LUA, capture_output=True, text=True, timeout=10)
+    r = subprocess.run([luajit, "-", path], input=READ_LUA, capture_output=True, text=True, encoding="utf-8",
+                       timeout=10)
     if r.returncode != 0:
         raise ToolError(f"cannot read {path}: {r.stderr.strip()}")
     try:
@@ -373,7 +474,7 @@ def write_command(folder, cid, cmd, args):
     tmp = os.path.join(folder, PREFIX + "cmd.%d.tmp" % os.getpid())
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(command_text(cid, cmd, args))
-    os.replace(tmp, path)  # atomic: the game never reads half a command
+    replace_file(tmp, path)  # atomic: the game never reads half a command
 
 
 def answer_files(folder, cid):
@@ -457,7 +558,7 @@ def note_activity(folder, owner, cmd):
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"owner": owner, "cmd": cmd, "time": time.time()}, f)
-        os.replace(tmp, activity_path(folder))
+        replace_file(tmp, activity_path(folder))
     except OSError as e:
         print("warning: could not record who used the game: %s" % e, file=sys.stderr)
         remove([tmp])
@@ -478,12 +579,8 @@ def warn_other_owner(folder, owner, cmd):
 
 @contextlib.contextmanager
 def command_lock(folder):
-    with open(os.path.join(folder, PREFIX + "lock"), "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    with open(os.path.join(folder, PREFIX + "lock"), "a") as f, lock_file(f):
+        yield
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -596,7 +693,7 @@ def read_launched():
     path = launched_path()
     try:
         st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+        if not stat.S_ISREG(st.st_mode) or not owned_by_me(st):
             return None, "the launch record %s is not a file of this user" % path
         with open(path, encoding="utf-8") as f:
             rec = json.load(f)
@@ -1114,7 +1211,7 @@ def wait_new_hello(folder, cid, after_stamp, timeout, why_slow=None):
 
 
 def stdout_log(folder):
-    return os.path.join(os.path.dirname(folder.rstrip("/")), "crash_dump", "stdout.txt")
+    return os.path.join(os.path.dirname(os.path.normpath(folder)), "crash_dump", "stdout.txt")
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1154,9 +1251,29 @@ def seconds_since(stamp):
         return None
 
 
+TF3_EXE_WINDOWS = "TransportFever3.exe"  # [guess] the Windows build's process name: not seen on a Windows machine
+
+
+def windows_game_pids():
+    """The game's processes on Windows, from tasklist's CSV ("name","pid",...); [] when there are none (tasklist
+    then prints an "INFO: No tasks ..." line) or tasklist cannot run."""
+    try:
+        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq " + TF3_EXE_WINDOWS, "/FO", "CSV", "/NH"],
+                           capture_output=True, text=True, errors="replace", timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out = []
+    for row in csv.reader((r.stdout or "").splitlines()):
+        if len(row) >= 2 and row[0].strip().lower() == TF3_EXE_WINDOWS.lower() and row[1].strip().isdigit():
+            out.append(int(row[1].strip()))
+    return out
+
+
 def game_pids():
     """TransportFever3's processes: their threads are named "Main Thread" etc. (pgrep -x TransportFever3 finds
     nothing), so look at the command line."""
+    if on_windows():
+        return windows_game_pids()
     out = []
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
@@ -1175,8 +1292,43 @@ def game_running():
     return bool(game_pids())
 
 
+def windows_kernel32():
+    import ctypes
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def windows_process_start(pid):
+    """Unix time a process started on Windows, from GetProcessTimes (None if unknown)."""
+    import ctypes
+
+    class FILETIME(ctypes.Structure):  # 100 ns steps since 1601-01-01 UTC
+        _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
+
+    try:
+        k32 = windows_kernel32()
+        k32.OpenProcess.restype = ctypes.c_void_p  # a HANDLE: the default int would cut a 64-bit one
+        k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        k32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(FILETIME)] * 4
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    except (OSError, AttributeError, ValueError, TypeError):
+        return None
+    if not handle:
+        return None
+    try:
+        times = [FILETIME() for _ in range(4)]  # creation, exit, kernel, user
+        if not k32.GetProcessTimes(handle, *[ctypes.byref(t) for t in times]):
+            return None
+        ticks = (times[0].high << 32) | times[0].low
+        return ticks / 1e7 - 11644473600 if ticks else None
+    finally:
+        k32.CloseHandle(handle)
+
+
 def process_start(pid):
     """Unix time a process started, from /proc (None if unknown)."""
+    if on_windows():
+        return windows_process_start(pid)
     try:
         with open("/proc/%d/stat" % pid) as f:
             fields = f.read().rsplit(")", 1)[1].split()
@@ -1497,7 +1649,11 @@ LAUNCHED_NAME = "launched.json"
 
 
 def launched_path():
-    """$XDG_RUNTIME_DIR/tf3ctl/launched.json, or /tmp/tf3ctl-<uid>/launched.json without XDG_RUNTIME_DIR."""
+    """$XDG_RUNTIME_DIR/tf3ctl/launched.json, or /tmp/tf3ctl-<uid>/launched.json without XDG_RUNTIME_DIR. Windows
+    (no uid): %LOCALAPPDATA%\\tf3ctl\\launched.json, or tf3ctl in the temporary folder without LOCALAPPDATA."""
+    if not hasattr(os, "getuid"):
+        folder = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "tf3ctl")
+        return os.path.join(folder, LAUNCHED_NAME)
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     folder = os.path.join(runtime, "tf3ctl") if runtime else "/tmp/tf3ctl-%d" % os.getuid()
     return os.path.join(folder, LAUNCHED_NAME)
@@ -1511,9 +1667,9 @@ def _own_private_dir(folder):
     except FileExistsError:
         pass
     st = os.lstat(folder)
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+    if not stat.S_ISDIR(st.st_mode) or not owned_by_me(st):
         raise OSError("%s is not a folder of this user" % folder)
-    if stat.S_IMODE(st.st_mode) != 0o700:
+    if hasattr(os, "getuid") and stat.S_IMODE(st.st_mode) != 0o700:  # Windows: chmod sets only read-only
         os.chmod(folder, 0o700)
 
 
@@ -1544,7 +1700,7 @@ def _write_record(record):
             json.dump(record, f)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        replace_file(tmp, path)
         tmp = None
     finally:
         if tmp:
@@ -1575,12 +1731,8 @@ def launched_lock():
     """One read-change-write of the launch record at a time (coop start / end, the change count)."""
     folder = os.path.dirname(launched_path())
     _own_private_dir(folder)
-    with open(os.path.join(folder, ".launched.lock"), "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    with open(os.path.join(folder, ".launched.lock"), "a") as f, lock_file(f):
+        yield
 
 
 def _clock(t):
@@ -1800,7 +1952,7 @@ def _quit_game(timeout=QUIT_TIMEOUT_SEC, kill=False, force=False):
                                                                  (time.time() - float(other["time"])) // 60))
     for pid in [p for p in game_pids() if p in asked]:  # not a game somebody started meanwhile
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))  # Windows: SIGTERM is TerminateProcess
         except ProcessLookupError:
             pass
     if not wait_exit(15):
@@ -2001,7 +2153,7 @@ def write_replacing(path, data):
             f.flush()
             os.fsync(f.fileno())
         shutil.copymode(path, tmp)
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     except BaseException:
         _remove_quietly(tmp)
         raise
@@ -2017,7 +2169,7 @@ def copy_backup(profile, backup):
             os.fsync(f.fileno())
         if not filecmp.cmp(profile, tmp, shallow=False):
             raise ToolError("--lang: the backup of %s did not come out equal to it" % profile)
-        os.replace(tmp, backup)
+        replace_file(tmp, backup)
     except BaseException:
         _remove_quietly(tmp)
         raise
@@ -2035,14 +2187,12 @@ def profile_lock(profile):
         finally:
             _profile_lock_depth[0] -= 1
         return
-    with open(profile + PROFILE_LOCK_SUFFIX, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with open(profile + PROFILE_LOCK_SUFFIX, "a") as f, lock_file(f):
         _profile_lock_depth[0] = 1
         try:
             yield
         finally:
             _profile_lock_depth[0] = 0
-            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def set_profile_language(lang, profile=None):
@@ -2156,6 +2306,27 @@ def profile_note():
         return {}
 
 
+def steam_command():
+    """The command that starts Steam, as a list: TF3_STEAM when it names a file, as one argument (it may hold
+    spaces: C:\\Program Files (x86)\\Steam\\steam.exe), else TF3_STEAM split on spaces (flatpak run ...). Without
+    it: steam, or on Windows the registry's SteamExe (then <ProgramFiles(x86)>\\Steam\\steam.exe)."""
+    env = os.environ.get("TF3_STEAM")
+    if env and env.strip():
+        if os.path.isfile(env):
+            return [env]
+        if on_windows():  # posix=False keeps the backslashes; the quotes around a part are taken off
+            return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] == '"' else p for p in shlex.split(env, posix=False)]
+        return env.split()
+    if on_windows():
+        exe = windows_steam_registry().get("SteamExe")
+        if exe:
+            return [exe]
+        for d in windows_steam_dirs():
+            if os.path.isfile(os.path.join(d, "steam.exe")):
+                return [os.path.join(d, "steam.exe")]
+    return ["steam"]
+
+
 def launch_game(timeout=LAUNCH_TIMEOUT_SEC):
     """Starts the game through Steam with startup.lua, and waits until the probe answers in the main menu."""
     if game_pids():
@@ -2163,7 +2334,7 @@ def launch_game(timeout=LAUNCH_TIMEOUT_SEC):
     remove_launched()  # a record of a game that is gone now (quit by hand, crashed)
     kept = keep_last_log()
     started = time.time()
-    steam = os.environ.get("TF3_STEAM", "steam").split()
+    steam = steam_command()
     try:
         subprocess.Popen(steam + ["-applaunch", APP_ID, "--script", STARTUP_SCRIPT], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -4199,7 +4370,7 @@ def clear_pending():
 def staging_dir(folder=None):
     """<user data>/staging_area: next to the exchange folder, as the game's stdout.txt is (stdout_log)."""
     folder = folder or exchange_dir()
-    return os.path.join(os.path.dirname(folder.rstrip("/")), "staging_area")
+    return os.path.join(os.path.dirname(os.path.normpath(folder)), "staging_area")
 
 
 def png_size(path):
@@ -6185,6 +6356,13 @@ def make_parser():
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):  # Windows' console code page cannot show every name in the answers
+        enc = (getattr(stream, "encoding", None) or "").lower().replace("-", "").replace("_", "")
+        if hasattr(stream, "reconfigure") and enc != "utf8":  # an UTF-8 stream (Linux) is left as it is
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
     ns = make_parser().parse_args(argv)
     global OWNER, OTHER_OWNER_OK, USER_ASKED
     OWNER = ns.owner
