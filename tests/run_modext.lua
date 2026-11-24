@@ -192,6 +192,8 @@ return { api = 1, commands = {
 		local bad = call(g, 9022, "modChange", SAMPLE_ID, "speed", "{ speed = 9 }")
 		eq(bad.ok, false); eq(bad.kind, "error"); truthy(bad.error:find("0 to 4"), bad.error)
 		eq(g.speedup, 0)
+		-- a refused modChange is not the last action: it stays the one before
+		eq(run(g, 9026, "status", "{}").lastAction.id, 9020)
 		-- a read command needs no modChange, but may come as one
 		eq(call(g, 9023, "modChange", SAMPLE_ID, "hello").ok, true)
 		-- a refused modChange is not the last action
@@ -300,5 +302,59 @@ return { api = 1, commands = {
 		eq(answers[2].kind, "noExt")
 		x.handlers.modRead({ id = 3, args = { mod = "good", command = "a" } })
 		eq(answers[3].ok, true); eq(answers[3].result, 1)
+	end)
+
+	local function bareExt(requires, installed)
+		local answers, said = {}, {}
+		local x = dofile(root .. "/content/remote_modext.lua").new({ core = core, mod = "hummer_remote_probe",
+			answer = function(id, p) answers[id] = p end,
+			failWith = function(id, msg, extra) local p = { ok = false, error = msg }; for k, v in pairs(extra or {}) do p[k] = v end; answers[id] = p end,
+			appTime = function() return 0 end, try = function(fn) local ok, v = pcall(fn); return ok and v or nil end,
+			say = function(m) said[#said + 1] = m end, now = function() return {} end, requires = requires,
+			installed = function() return installed end })
+		return x, answers, said
+	end
+
+	test("mod commands: each require function's missing file is told by its own words", function()
+		-- two require functions that word a missing file differently, neither with the usual words
+		local function rq1(path)
+			if path == "bad::/remote_probe_ext.lua" then error("[string \"bad\"]:3: '=' expected near 'x'") end
+			error("resource " .. path .. " is unknown")
+		end
+		local function rq2(path)
+			if path == "good::/remote_probe_ext.lua" then return { commands = { a = { tag = "reads", run = function() return 2 end } } } end
+			error("module '" .. path .. "' gone")
+		end
+		local x, answers = bareExt({ rq1, rq2 }, { "good", "bad", "other" })
+		x.handlers.modList({ id = 1, args = {} })
+		eq(answers[1].checked, 3)
+		eq(#answers[1].mods, 1); eq(answers[1].mods[1].mod, "good")
+		-- "bad" fails in rq1 with a compile error (not rq1's missing shape): broken; "other" is missing in both
+		eq(#answers[1].broken, 1); eq(answers[1].broken[1].mod, "bad")
+		x.handlers.modRead({ id = 2, args = { mod = "other", command = "a" } })
+		eq(answers[2].kind, "noExt")
+		x.handlers.modRead({ id = 3, args = { mod = "good", command = "a" } })
+		eq(answers[3].result, 2)
+	end)
+
+	test("mod commands: a table or an answer that raises when read is that mod's error, not the list's", function()
+		local trap = setmetatable({}, { __index = function() error("trapped read") end })
+		local badKey = setmetatable({}, { __tostring = function() error("no string for you") end,
+			__lt = function() error("no order") end })
+		local function rq(path)
+			if path == "trap::/remote_probe_ext.lua" then return trap end
+			if path == "good::/remote_probe_ext.lua" then
+				return { commands = { a = { tag = "reads", run = function() return { [badKey] = 1, [setmetatable({}, getmetatable(badKey))] = 2 } end } } }
+			end
+			error("resource " .. path .. " is unknown")
+		end
+		local x, answers = bareExt({ rq }, { "good", "trap" })
+		x.handlers.modList({ id = 1, args = {} })
+		eq(answers[1].ok, true)
+		eq(#answers[1].mods, 1); eq(answers[1].mods[1].mod, "good")
+		eq(#answers[1].broken, 1); eq(answers[1].broken[1].mod, "trap")
+		truthy(answers[1].broken[1].error:find("trapped read"), answers[1].broken[1].error)
+		x.handlers.modRead({ id = 2, args = { mod = "good", command = "a" } })
+		eq(answers[2].ok, false); eq(answers[2].kind, "badResult")
 	end)
 end

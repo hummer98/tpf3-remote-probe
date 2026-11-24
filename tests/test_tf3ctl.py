@@ -6751,10 +6751,6 @@ class LightsTest(_ForceBase):
         self.assertEqual(got, [("lightsOff", {"node": 9000, "dryRun": True}, tf3ctl.BUILD_TIMEOUT_SEC)])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ModCommandTest(unittest.TestCase):
     """mod --list / mod <modId> <command> [JSON]: the arguments, and modRead first, modChange when the mod says so."""
 
@@ -6798,6 +6794,14 @@ class ModCommandTest(unittest.TestCase):
             res = tf3ctl.cmd_mod(self.ns(*argv))
         return res, sent
 
+    def test_list_takes_the_timeout_given(self):
+        _, sent = self.run_mod([{"ok": True, "mods": []}], "--list")
+        self.assertEqual(sent, [("modList", {}, tf3ctl.MOD_LIST_TIMEOUT_SEC)])
+        _, sent = self.run_mod([{"ok": True, "mods": []}], "--list", "--timeout", "15")
+        self.assertEqual(sent, [("modList", {}, 15)])
+        _, sent = self.run_mod([{"ok": True, "result": 1}], "m", "c")
+        self.assertEqual(sent[0][2], tf3ctl.MOD_TIMEOUT_SEC)
+
     def test_reads_once_and_changes_twice(self):
         res, sent = self.run_mod([{"ok": True, "result": 1}], "m", "c")
         self.assertEqual([c for c, _, _ in sent], ["modRead"])
@@ -6826,3 +6830,7 @@ class ModCommandTest(unittest.TestCase):
             code = tf3ctl.main(["--owner", "alice", "mod", "m", "c"])
         self.assertEqual(code, 4)
         self.assertIn("refused 'modChange'", json.loads(out.getvalue())["error"])
+
+
+if __name__ == "__main__":
+    unittest.main()

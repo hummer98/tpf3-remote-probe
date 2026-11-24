@@ -4666,6 +4666,7 @@ def cmd_modhub_publish_clear(ns):
 
 
 MOD_TIMEOUT_SEC = 30
+MOD_LIST_TIMEOUT_SEC = 60  # a list requires every candidate mod's file once
 MOD_EXT_TIMEOUT_MAX = 120  # the mod's core.EXT_TIMEOUT_MAX: how long a command may defer its answer
 MOD_EXT_MARGIN_SEC = 5  # the mod's own timeout comes this much before the tool's, so its error answer arrives
 
@@ -4685,8 +4686,8 @@ def mod_call_args(ns):
             raise ToolError("the arguments are not JSON: %s" % e)
         if not isinstance(call_args, (dict, list)):
             raise ToolError("the arguments must be a JSON object or list, e.g. '{\"speed\": 0}'")
-    t = ns.timeout
-    if t is None or not (MOD_EXT_MARGIN_SEC + 1 <= t <= MOD_EXT_TIMEOUT_MAX + MOD_EXT_MARGIN_SEC):
+    t = MOD_TIMEOUT_SEC if ns.timeout is None else ns.timeout
+    if not (MOD_EXT_MARGIN_SEC + 1 <= t <= MOD_EXT_TIMEOUT_MAX + MOD_EXT_MARGIN_SEC):
         raise ToolError("--timeout must be between %d and %d seconds" % (MOD_EXT_MARGIN_SEC + 1,
                                                                       MOD_EXT_TIMEOUT_MAX + MOD_EXT_MARGIN_SEC))
     return "modRead", {"mod": ns.mod_id, "command": ns.mod_command, "args": call_args,
@@ -4699,10 +4700,11 @@ def cmd_mod(ns):
     in CHANGES_GAME, so the owner check (and coop) decide over it as over every game-changing command."""
     wire, args = mod_call_args(ns)
     if wire == "modList":
-        return send("modList", args, timeout=60)
-    res = send("modRead", args, timeout=ns.timeout)
+        return send("modList", args, timeout=MOD_LIST_TIMEOUT_SEC if ns.timeout is None else ns.timeout)
+    t = MOD_TIMEOUT_SEC if ns.timeout is None else ns.timeout
+    res = send("modRead", args, timeout=t)
     if isinstance(res, dict) and res.get("needsChange") is True:
-        res = send("modChange", args, timeout=ns.timeout)
+        res = send("modChange", args, timeout=t)
     return res
 
 
@@ -6176,9 +6178,9 @@ def make_parser():
     mx.add_argument("mod_json", nargs="?", metavar="JSON", help="the command's arguments: a JSON object or list "
                     "(default {})")
     mx.add_argument("--list", action="store_true", help="the mods with commands, and their commands (read only)")
-    mx.add_argument("--timeout", type=float, default=MOD_TIMEOUT_SEC, help="seconds to wait for the answer "
-                    "(default %d; the mod gives a command that defers its answer %d s less)"
-                    % (MOD_TIMEOUT_SEC, MOD_EXT_MARGIN_SEC))
+    mx.add_argument("--timeout", type=float, help="seconds to wait for the answer (default %d, %d for a list; the "
+                    "mod gives a command that defers its answer %d s less)"
+                    % (MOD_TIMEOUT_SEC, MOD_LIST_TIMEOUT_SEC, MOD_EXT_MARGIN_SEC))
     mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate, publish "
                                        "(one new mod, or an update of one on mod.io)")
     msub = mh.add_subparsers(dest="action", required=True)

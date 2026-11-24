@@ -28,7 +28,7 @@ function M.new(ctx)
 	local appTime, fineTime = ctx.appTime, ctx.fineTime or ctx.appTime
 	-- (other mods load their own modules with the plain require; ug_require is for the base's files)
 	local reqs = ctx.requires or { require, ug_require }
-	local E = { cache = {}, pending = {}, missingShape = nil }
+	local E = { cache = {}, pending = {}, missingShapes = nil }
 	local handlers = {}
 
 	local function pathOf(modId) return modId .. "::/" .. core.EXT_FILE end
@@ -40,29 +40,35 @@ function M.new(ctx)
 		return (s:gsub(plainPattern(modId), "<mod>"))
 	end
 
+	-- false and the errors, each with the index in reqs of the function that raised it (each function words a
+	-- missing file its own way)
 	local function requireAll(path)
 		local errs = {}
-		for _, rq in ipairs(reqs) do
+		for i, rq in ipairs(reqs) do
 			if type(rq) == "function" then
 				local ok, m = pcall(rq, path)
 				if ok then return true, m end
-				errs[#errs + 1] = tostring(m)
+				errs[#errs + 1] = { fn = i, err = tostring(m) }
 			end
 		end
 		return false, errs
 	end
 
-	local function missingShape()
-		if E.missingShape == nil then
+	-- per require function: the shape of its error for a file that is surely missing (the probe's own)
+	local function missingShapes()
+		if E.missingShapes == nil then
 			local path = ctx.mod .. "::/remote_probe_ext_none.lua"
 			local ok, errs = requireAll(path)
-			E.missingShape = (not ok and errs[1]) and shape(errs[1], path, ctx.mod) or false
+			E.missingShapes = {}
+			if not ok then
+				for _, e in ipairs(errs) do E.missingShapes[e.fn] = shape(e.err, path, ctx.mod) end
+			end
 		end
-		return E.missingShape
+		return E.missingShapes
 	end
 
-	local function isMissing(err, path, modId)
-		local ms = missingShape()
+	local function isMissing(e, path, modId)
+		local ms, err = missingShapes()[e.fn], e.err
 		if ms and shape(err, path, modId) == ms then return true end
 		local low = tostring(err):lower()
 		if not low:find(core.EXT_FILE, 1, true) then return false end -- (another file of the mod missing: broken)
@@ -85,11 +91,15 @@ function M.new(ctx)
 			for _, e in ipairs(got) do
 				if not isMissing(e, path, modId) then missing = false end
 			end
-			local why = table.concat(got, "; ")
+			local texts = {}
+			for _, e in ipairs(got) do texts[#texts + 1] = e.err end
+			local why = table.concat(texts, "; ")
 			if #got == 0 then why = "no require function to load it with" end
 			entry = missing and { none = why } or { broken = why }
 		else
-			local t, err = core.extTable(got)
+			-- (under pcall: a table whose metatable raises on a read is broken, not an error of the whole list)
+			local okT, t, err = pcall(core.extTable, got)
+			if not okT then t, err = nil, "reading its table raised an error: " .. tostring(t) end
 			entry = t and { ext = t } or { broken = err }
 		end
 		E.cache[modId] = entry
@@ -152,7 +162,9 @@ function M.new(ctx)
 			if err ~= nil then return failJob(job, "error", tostring(err)) end
 			return failJob(job, "noAnswer", "the command returned nothing (return a table or a value, or nil and a message)")
 		end
-		local bad = core.extResultError(res)
+		-- (under pcall: the check sorts keys, and a key's __tostring or __lt may raise)
+		local okB, bad = pcall(core.extResultError, res)
+		if not okB then bad = "checking it raised an error: " .. tostring(bad) end
 		if bad then return failJob(job, "badResult", "the command's answer cannot be written as JSON: " .. bad) end
 		local okJ, text = pcall(core.json, res)
 		if not okJ then return failJob(job, "badResult", "the command's answer cannot be written as JSON: " .. tostring(text)) end
@@ -260,7 +272,8 @@ function M.new(ctx)
 		end
 		if not ok then return failJob(job, "error", "the command raised an error: " .. tostring(res)) end
 		if job.deferred then return end -- (finish answers, or the timeout in step)
-		deliver(job, res, msg)
+		local okD, errD = pcall(deliver, job, res, msg)
+		if not okD then failJob(job, "badResult", "the command's answer could not be written: " .. tostring(errD)) end
 	end
 
 	function handlers.modRead(c) return call(c, false) end
@@ -282,7 +295,7 @@ function M.new(ctx)
 	local self = { handlers = handlers }
 	self.step = step
 	function self.reset()
-		E.cache, E.pending, E.missingShape = {}, {}, nil
+		E.cache, E.pending, E.missingShapes = {}, {}, nil
 	end
 	return self
 end

@@ -1459,8 +1459,9 @@ game: 0-4, answered from the engine's callback). Copy the folder into the game's
   modules) is not reachable from it yet. A file is required once per load: a changed file needs a new load, and a
   new file a restart of the game (the game caches mod files at start).
 - **Which mods are looked in.** Those the user profile lists as installed and those with settings in the running
-  game, not the official ones (`ug_*`). The GUI cannot tell which mods are enabled for the save; a mod that is not
-  has no file to require, and is left out like a mod without the file. `broken` lists the files that are there but do
+  game, not the official ones (`ug_*`). The GUI cannot tell which mods are enabled for the save. A mod that is not
+  enabled is expected to have no file to require, and then is left out like a mod without the file (not checked in
+  game yet: if the game resolved such a file, its top-level code would run there). `broken` lists the files that are there but do
   not work (they do not compile, raise, return no table, or ask for a newer `api`).
 - **The answer.** `run` returns the answer, or `nil, "message"` for an error. The tool prints
   `{ "ok": true, "mod", "command", "tag", "result": <the answer>, "seconds" }`. To answer later (from an engine
