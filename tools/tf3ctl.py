@@ -6,8 +6,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
 ("function data() return {...} end"), read here with luajit in an empty environment.
 
   tf3ctl.py status
-  tf3ctl.py speed 16            # beyond the UI's 4x; 0 pauses
-  tf3ctl.py run --months 2 --speed 16
+  tf3ctl.py speed 8             # beyond the UI's 4x, capped at the game's estimate (getEstimatedMaximumGameSpeed);
+            # 0 pauses
+  tf3ctl.py run --months 2 --speed 4
   tf3ctl.py saves
   tf3ctl.py info "probe"
   tf3ctl.py load "probe" --param example_mod:treePollution=3 [--add MOD] [--remove MOD] [--dry-run]
@@ -49,7 +50,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py town connections [--entity 801]   # read only: towns the engine counts as connected, each industry's
             # town (the closest one)
   tf3ctl.py town connect --auto | --build [--entity 801,802] [--pairs 801:802] [--default] [--no-keep] [--dry-run]
-            # test saves only: the map editor's Auto-detect connections / Generate (streets to all industries)
+            # meant for test saves (not checked): the map editor's Auto-detect connections / Generate (streets to all industries)
   tf3ctl.py company                         # read only: the base's company progression (basePopulation, level,
             # ticket price multiplier) and what is missing
   tf3ctl.py running-costs --model bus_1900        # read only: metadata.cost / .maintenance (runningCosts,
@@ -61,10 +62,11 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--columns 4]   # read only: the finance table's rows
             # per carrier (MAINTENANCE / VEHICLE = the running costs), and calculateBalance of the fleet and vehicles
   tf3ctl.py mod --list | mod <modId>   # read only: the mods that ship remote_probe_ext.lua and their commands
-            # (name, description, tag reads / changes)
+            # (name, description, tag reads / changes; the tag is the mod's own claim). --list requires every
+            # such mod's file, so their top-level code runs in the game; mod <modId> requires that one only
   tf3ctl.py mod <modId> <command> ['{"key": 1}'] [--timeout 30]   # run one of them; a command tagged changes (or
             # untagged) goes past the owner check as every game-changing command does
-  tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's start event (initNewGameFromMap) sent
+  tf3ctl.py company init [--dry-run] [--force]   # meant for test saves: the base's start event (initNewGameFromMap) sent
             # again when basePopulation is missing or 0 while towns have population (a start with no towns)
   tf3ctl.py fit --res R --at x,y [--radius 100] [--size W,D] [--mouth DX,DY [--link 8,40]] [--houses N] [--check 3]   # where
             # it fits: around's list searched here, the best few asked of the engine (dry runs); builds nothing;
@@ -118,7 +120,7 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # trafficLightPreference YES / NO / AUTO), octree hits
   tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only, not in coop: the junction's traffic light
             # taken off as the node's window does it (trafficLightPreference NO); then road joins the node
-            # one straight road piece, no click: test saves only; an end within --snap m of a road node joins it
+            # one straight road piece, no click: meant for test saves; an end within --snap m of a road node joins it
   tf3ctl.py road --from 1500,-300 --to 1620,-300 --ignore-errors [--dry-run]   # for test saves only: skips the
             # engine's checks (ignoreErrors); refused unless a test save is loaded (not a new game), and refused
             # during coop. Answers ignoredErrors (sent forced), and unforced: what a build without it would get
@@ -137,19 +139,20 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # a new test game); first needs from the economy's lowest tier unless --needs / --no-needs. Answers the
             # town's entity, name, position, population, the engine's proposal, the needs read back
   tf3ctl.py town develop --at 120,-40 [--count 30] [--streets] [--upgrade] [--radius 250] [--dry-run]
-            # test saves only: makeTownDevelopAtCmd N times (1-200), one after another; answers sent / succeeded /
+            # meant for test saves: makeTownDevelopAtCmd N times (1-200), one after another; answers sent / succeeded /
             # failed and the town buildings (residential, commercial, industrial) before / after, all and near
-  tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] [--dry-run]   # test saves only: the town's
+  tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] [--dry-run]   # meant for test saves: the town's
             # size factors (makeTownUpdateSizeCmd); answers the factors and the town's buildings before / after
   tf3ctl.py stock list --entity 51          # read only: a stock list's stocks (ids 0-based), counts per cargo; an
             # industry, town building or warehouse, a station, a construction with one under it (a warehouse's, as
             # build gives it: entities --kind warehouse lists them), or a vehicle (its load per cargo, stock -1)
-  tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]   # debug command: test saves
-            # only; a vehicle's load: --stock -1 --cargo NAME. Answers before / after and the engine's success
-  tf3ctl.py steps 500 [--dry-run]           # debug command: the simulation 1-10000 steps on; test saves only.
+  tf3ctl.py stock set --entity 51 --stock 0 --amount 100 [--cargo COAL] [--dry-run]   # debug command: meant
+            # for test saves; a vehicle's load: --stock -1 --cargo NAME. Answers before / after and the engine's success
+  tf3ctl.py steps 500 [--dry-run]           # debug command: the simulation 1-10000 steps on; meant for test saves.
             # Pause first (refused while running, unless --allow-running). Waits until all the steps ran
             # (1 step = 200 game time, 20 a day; 1000 steps about 15 s), then answers before / after / waitedSec
-  tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key
+  tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer only (hover, preview): no click, no key; needs
+            # "pointer": true in the configuration file; Linux (X11) only
   tf3ctl.py connect --from 801 --to 802 --road [--template ::/infrastructure/street/...street_template]
             # without --build: the route, its length, bridges and tunnels, slope, the dry run's cost and verdict
   tf3ctl.py modhub status [--folder F] | modhub validate F   # My Mods in the main menu (read; re-validate)
@@ -172,7 +175,8 @@ ownerCheck on. `tf3ctl.py config` shows what is in effect.
 
 The debug commands (stock set, steps, money, town develop / size / connect, company init, running-costs writes,
 lights --off, road --ignore-errors) change the save's contents as no player can: their answers carry "saveNote"
-(saving keeps the change).
+(saving keeps the change). They are meant for test saves, but only road --ignore-errors, lights --off and
+running-costs writes check that a test save (testSavePrefixes) is loaded; the others go to any save.
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is shown (status:
 run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes. With
@@ -204,16 +208,22 @@ command file one after another, each waiting until the mod has picked its comman
 
 Exit codes: 0 ok, 1 the game answered with an error, 2 no answer / tool error, 3 the game cannot answer where it
 is (menu, loading, main menu, closed: gameState in the output says which), 4 refused, nothing sent: the running
-game is not this --owner's (see --owner above), a test-save-only command on another save, or a command the
-configuration does not enable ("refused": "config").
+game is not this --owner's (see --owner above), road --ignore-errors / lights --off / a running-costs write on a
+save that is not a test save, or a command the configuration does not enable ("refused": "config").
 
 Environment: TF3_REMOTE_DIR = the exchange folder (default: the newest hello file under Steam's userdata),
 TF3_LOG = the game log, TF3_STEAM = the command that starts Steam, TF3CTL_OWNER = the default --owner,
 LUAJIT = the luajit binary, TF3_PROFILE = the game's profile.lua (default: next to the exchange folder, else the newest
 under Steam's userdata), TF3_GAME_DIR = the game's install folder (for the languages --lang may pick),
-TF3CTL_OTHER_BACKUPS = backups of profile.lua made by other tools (files or folders, separated by ':'; a folder counts
-while a file is in it): while one exists, --lang and the restore refuse, so the backups are put back in the reverse
-order they were made.
+TF3CTL_OTHER_BACKUPS = backups of profile.lua made by other tools (files or folders, separated by os.pathsep: ':', ';'
+on Windows; a folder counts while a file is in it): while one exists, --lang and the restore refuse, so the backups are
+put back in the reverse order they were made. TF3_ASSUME_RUNNING = any non-empty value: take the game as running
+without the process list (state is never closed / crashed, the main menu's hello is not checked against the
+process start; for tests, or where the process list cannot show the game); the owner check still looks for the pid.
+
+Windows: a minimal port, not tested on a Windows machine (please report problems in an issue or a pull request).
+The configuration file is ~/.config/tf3ctl/config.json there too; frame (it looks for Steam's recordings in Linux's
+Steam folders only) and pointer (X11) are Linux only.
 """
 import argparse
 import contextlib
@@ -405,6 +415,26 @@ def config_warning():
         return None
     return ("warning: cannot read the configuration file %s (%s): using the defaults with the owner check on"
             % (CONFIG_INFO["path"], CONFIG_INFO.get("error")))
+
+
+TEST_SAVE_PREFIX_MIN = 3  # a 1-2 character prefix ("a", "3-") is the start of many a player's save name
+
+
+def test_save_warnings():
+    """Lines for stderr (and the config command) when testSavePrefixes makes the test-save check useless: an empty
+    list refuses the checked commands on every save, a very short prefix lets them reach a player's saves."""
+    out = []
+    prefixes = test_save_prefixes()
+    if not prefixes:
+        out.append("warning: testSavePrefixes is empty: road --ignore-errors, lights --off and running-costs writes "
+                   + ("go only to saves named with one digit first" if CONFIG["testSaveDigitFirst"]
+                      else "are refused on every save"))
+    for p in prefixes:
+        if len(p) < TEST_SAVE_PREFIX_MIN:
+            out.append("warning: testSavePrefixes has %r, shorter than %d characters: many save names start with "
+                       "it, so road --ignore-errors, lights --off and running-costs writes may reach a player's save"
+                       % (p, TEST_SAVE_PREFIX_MIN))
+    return out
 
 
 def config_needed(what, key):
@@ -5050,6 +5080,10 @@ MOD_TIMEOUT_SEC = 30
 MOD_LIST_TIMEOUT_SEC = 60  # a list requires every candidate mod's file once
 MOD_EXT_TIMEOUT_MAX = 120  # the mod's core.EXT_TIMEOUT_MAX: how long a command may defer its answer
 MOD_EXT_MARGIN_SEC = 5  # the mod's own timeout comes this much before the tool's, so its error answer arrives
+# a list's --timeout: below 5 s the mod's poll (every 2 s when idle) leaves next to no time to require the files;
+# above 10 minutes a hung require is better seen as hung than waited for
+MOD_LIST_TIMEOUT_MIN = 5
+MOD_LIST_TIMEOUT_MAX = 600
 
 
 def mod_call_args(ns):
@@ -5057,6 +5091,10 @@ def mod_call_args(ns):
     if ns.list or ns.mod_command is None:
         if ns.mod_command is not None or ns.mod_json is not None:
             raise ToolError("mod --list takes at most a mod's id (mod --list, or mod <modId>)")
+        # (refused like a command's --timeout below; NaN fails both comparisons, so it is refused too)
+        if ns.timeout is not None and not (MOD_LIST_TIMEOUT_MIN <= ns.timeout <= MOD_LIST_TIMEOUT_MAX):
+            raise ToolError("--timeout for a list must be between %d and %d seconds" % (MOD_LIST_TIMEOUT_MIN,
+                                                                                    MOD_LIST_TIMEOUT_MAX))
         return "modList", ({"mod": ns.mod_id} if ns.mod_id else {})
     if ns.mod_json is None:
         call_args = {}
@@ -5949,11 +5987,13 @@ def make_parser():
     ng.add_argument("--editor", action="store_true", help="the map editor instead of a game (isMapEditor); its mods: "
                     "the official ones (ug_*) and the probe, not the running game's")
     ng.add_argument("--no-company-init", action="store_true", help=NO_COMPANY_INIT_HELP)
-    fr = sub.add_parser("frame", help="the game's picture with UI, from Steam's background recording")
+    fr = sub.add_parser("frame", help="the game's picture with UI, from Steam's background recording (Linux only: "
+                        "it looks in Linux's Steam folders)")
     fr.add_argument("--out", required=True, help="image to write (.png or .jpg)")
     fr.add_argument("--crop", help="WxH+X+Y in the recording's pixels, e.g. 1150x170+2690+1450 for the speed row")
     po = sub.add_parser("pointer", help="move the game's mouse pointer (hover, placement preview) without the real "
-                        "one; pointer movement only, never a click or a key")
+                        "one; pointer movement only, never a click or a key. Needs \"pointer\": true in the "
+                        "configuration file; Linux (X11) only")
     po.add_argument("pos", metavar="FX,FY", help="fractions of the game window, e.g. 0.5,0.47 (0,0 = top left)")
     po.add_argument("--px", action="store_true", help="the position is in the window's pixels instead")
     po.add_argument("--title", default=TF3_WINDOW_TITLE, help="the game window's title")
@@ -6127,7 +6167,7 @@ def make_parser():
     # town develop / town size: their own options (other dests, so an option given before the word is caught in
     # town_grow_args instead of being dropped)
     tws = tw.add_subparsers(dest="town_action", required=False, metavar="{develop,size,connections,connect}")
-    td = tws.add_parser("develop", help="changes the save's contents (saving keeps it); test saves only: new buildings or street segments at a point "
+    td = tws.add_parser("develop", help="changes the save's contents (saving keeps it); meant for test saves (not checked): new buildings or street segments at a point "
                         "(api.cmd.makeTownDevelopAtCmd), N times one after another; not checked in a game yet")
     td.add_argument("--at", dest="grow_at", required=True, metavar="X,Y",
                     help="metres (for a negative x write --at=-100,50)")
@@ -6138,7 +6178,7 @@ def make_parser():
     td.add_argument("--radius", dest="grow_radius", type=float, help="metres round the point the buildings near it "
                     "are counted in (default %g, a harbour's circle; at most %g)" % (TOWN_GROW_RADIUS, TOWN_GROW_RADIUS_MAX))
     td.add_argument("--dry-run", dest="grow_dry_run", action="store_true", help="the counts, nothing sent")
-    tz = tws.add_parser("size", help="changes the save's contents (saving keeps it); test saves only: a town's size factors, residential, commercial, industrial "
+    tz = tws.add_parser("size", help="changes the save's contents (saving keeps it); meant for test saves (not checked): a town's size factors, residential, commercial, industrial "
                         "(api.cmd.makeTownUpdateSizeCmd); not checked in a game yet")
     tz.add_argument("--entity", dest="grow_entity", type=int, required=True, help="the town (entities --kind town)")
     tz.add_argument("--factors", dest="grow_factors", required=True, metavar="R,C,I",
@@ -6151,7 +6191,7 @@ def make_parser():
     tcs.add_argument("--entity", dest="conn_entity", type=int, help="one town (entities --kind town)")
     tcs.add_argument("--index-base", dest="conn_index_base", type=int, choices=(0, 1),
                      help="how the engine numbers towns in its connections, when the map does not tell")
-    tcn = tws.add_parser("connect", help="changes the save's contents (saving keeps it); test saves only: the map editor's connection commands; --auto detects "
+    tcn = tws.add_parser("connect", help="changes the save's contents (saving keeps it); meant for test saves (not checked): the map editor's connection commands; --auto detects "
                          "the connections over the roads there are (builds nothing), --build makes streets between "
                          "the connected towns and to all industries; not checked in a game yet")
     tcm = tcn.add_mutually_exclusive_group(required=True)
@@ -6261,7 +6301,7 @@ def make_parser():
                                                                "construction with one (as build gives it) or a "
                                                                "vehicle (industry-stocks, stations, entities --kind "
                                                                "warehouse, vehicles)")
-    sks = ssub.add_parser("set", help="changes the save's contents (saving keeps it); set a stock's amount (api.cmd.debug.makeStockSetCargoAmountCmd): test saves only")
+    sks = ssub.add_parser("set", help="changes the save's contents (saving keeps it); set a stock's amount (api.cmd.debug.makeStockSetCargoAmountCmd): meant for test saves (not checked)")
     sks.add_argument("--entity", type=int, required=True, help="as stock list")
     sks.add_argument("--stock", type=int, required=True, help="the stock's id as stock list shows it (0-based); -1: "
                                                               "a vehicle's load (with --cargo)")
@@ -6271,7 +6311,7 @@ def make_parser():
     sks.add_argument("--dry-run", action="store_true", help="check and show the before, send nothing")
     st = sub.add_parser("steps", help="changes the save's contents (saving keeps it); run the simulation N steps on (api.cmd.debug.makeGamePerformSimulationStepsCmd) "
                                       "and answer once they have all run; one step is 200 of game time (20 a day). "
-                                      "Pause first (speed 0). Test saves only")
+                                      "Pause first (speed 0). Meant for test saves (not checked)")
     st.add_argument("count", type=int, help="1-%d" % STEPS_MAX)
     st.add_argument("--dry-run", action="store_true", help="check and show the game time, send nothing")
     st.add_argument("--allow-running", action="store_true",
@@ -6333,7 +6373,7 @@ def make_parser():
                         "company's level and ticket price multiplier) and what is missing; company init: test saves "
                         "only")
     cos = co.add_subparsers(dest="company_action", required=False, metavar="{init}")
-    ci = cos.add_parser("init", help="changes the save's contents (saving keeps it); test saves only: send the base's start event initNewGameFromMap again, when "
+    ci = cos.add_parser("init", help="changes the save's contents (saving keeps it); meant for test saves (not checked): send the base's start event initNewGameFromMap again, when "
                         "company.gs has no basePopulation, or 0 while the towns have population now (a game started "
                         "with no towns); "
                         "it also resets the towns' cached ratings, the subventions and the notifications")
@@ -6505,15 +6545,18 @@ def make_parser():
     cn.add_argument("--clear", action="store_true", help="with --build: knock down town buildings in the way")
     cn.add_argument("--timeout", type=float, default=120, help="seconds for the whole command (10-1800)")
     mx = sub.add_parser("mod", help="other mods' commands: those a mod ships in remote_probe_ext.lua (--list, or a "
-                        "mod's id alone, reads which there are); a command tagged changes goes past the owner check")
+                        "mod's id alone, reads which there are); a command tagged changes goes past the owner check "
+                        "(the tag is the mod's own claim: one tagged reads is sent without it)")
     mx.add_argument("mod_id", nargs="?", metavar="MOD_ID", help="the mod's id (its mod.json modId)")
     mx.add_argument("mod_command", nargs="?", metavar="COMMAND", help="one of the mod's commands")
     mx.add_argument("mod_json", nargs="?", metavar="JSON", help="the command's arguments: a JSON object or list "
                     "(default {})")
-    mx.add_argument("--list", action="store_true", help="the mods with commands, and their commands (read only)")
-    mx.add_argument("--timeout", type=float, help="seconds to wait for the answer (default %d, %d for a list; the "
-                    "mod gives a command that defers its answer %d s less)"
-                    % (MOD_TIMEOUT_SEC, MOD_LIST_TIMEOUT_SEC, MOD_EXT_MARGIN_SEC))
+    mx.add_argument("--list", action="store_true", help="the mods with commands, and their commands (read only; it "
+                    "requires every candidate mod's remote_probe_ext.lua, so their top-level code runs in the game)")
+    mx.add_argument("--timeout", type=float, help="seconds to wait for the answer (default %d, %d-%d; for a list %d, "
+                    "%d-%d; the mod gives a command that defers its answer %d s less)"
+                    % (MOD_TIMEOUT_SEC, MOD_EXT_MARGIN_SEC + 1, MOD_EXT_TIMEOUT_MAX + MOD_EXT_MARGIN_SEC,
+                       MOD_LIST_TIMEOUT_SEC, MOD_LIST_TIMEOUT_MIN, MOD_LIST_TIMEOUT_MAX, MOD_EXT_MARGIN_SEC))
     mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate, publish "
                                        "(one new mod, or an update of one on mod.io)")
     msub = mh.add_subparsers(dest="action", required=True)
@@ -6593,10 +6636,16 @@ def main(argv=None):
     warning = config_warning()
     if warning:
         print(warning, file=sys.stderr)
+    for line in test_save_warnings():
+        print(line, file=sys.stderr)
 
     try:
         if ns.cmd == "config":
-            show({"ok": True, "config": CONFIG, "file": CONFIG_INFO})
+            out = {"ok": True, "config": CONFIG, "file": CONFIG_INFO}
+            notes = test_save_warnings()
+            if notes:
+                out["warnings"] = notes
+            show(out)
             return 0
         if ns.cmd == "log":
             cmd_log(ns)

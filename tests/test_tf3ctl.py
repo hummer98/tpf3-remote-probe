@@ -6929,6 +6929,35 @@ class ConfigDefaultsTest(unittest.TestCase):
         self.assertFalse(tf3ctl.is_test_save("probe-x"))
         self.assertEqual(tf3ctl.test_save_text(), "shot-*, or one digit first")
 
+    def test_an_empty_or_short_prefix_list_is_warned_on_stderr_and_in_config(self):
+        # the defaults: no warning anywhere
+        self.assertEqual(tf3ctl.test_save_warnings(), [])
+        code, res, err = self.ctl("config")
+        self.assertEqual((code, "warnings" in res, err), (0, False, ""))
+        # an empty list: the checked commands are refused on every save
+        self.write_config('{"testSavePrefixes": []}')
+        tf3ctl.CONFIG, tf3ctl.CONFIG_INFO = tf3ctl.load_config()
+        code, res, err = self.ctl("config")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(res["warnings"]), 1)
+        self.assertIn("testSavePrefixes is empty", res["warnings"][0])
+        self.assertIn("refused on every save", res["warnings"][0])
+        self.assertIn("testSavePrefixes is empty", err)
+        # with the digit rule on, the digit saves are still test saves
+        self.write_config('{"testSavePrefixes": [], "testSaveDigitFirst": true}')
+        tf3ctl.CONFIG, tf3ctl.CONFIG_INFO = tf3ctl.load_config()
+        self.assertIn("one digit first", tf3ctl.test_save_warnings()[0])
+        # one and two characters are warned, three are not
+        self.write_config('{"testSavePrefixes": ["a", "ab", "abc"]}')
+        tf3ctl.CONFIG, tf3ctl.CONFIG_INFO = tf3ctl.load_config()
+        warnings = tf3ctl.test_save_warnings()
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("'a'", warnings[0])
+        self.assertIn("'ab'", warnings[1])
+        code, res, err = self.ctl("config")
+        self.assertEqual(res["warnings"], warnings)
+        self.assertEqual(err.count("warning: testSavePrefixes"), 2)
+
     def test_the_mod_gets_the_test_save_rules_and_the_modhub_lists_with_the_command(self):
         got = []
 
@@ -7136,7 +7165,10 @@ class ModCommandTest(unittest.TestCase):
                            (("m", "c", "3"), "object or list"), (("m", "c", '"s"'), "object or list"),
                            (("m", "c", "--timeout", "5"), "between 6 and 125"),
                            (("m", "c", "--timeout", "126"), "between 6 and 125"),
-                           (("m", "c", "--timeout", "nan"), "between 6 and 125")):
+                           (("m", "c", "--timeout", "nan"), "between 6 and 125"),
+                           (("--list", "--timeout", "4"), "between 5 and 600"),
+                           (("--list", "--timeout", "601"), "between 5 and 600"),
+                           (("--list", "--timeout", "nan"), "between 5 and 600")):
             with self.assertRaises(tf3ctl.ToolError) as cm:
                 tf3ctl.mod_call_args(self.ns(*argv))
             self.assertIn(text, str(cm.exception), argv)
