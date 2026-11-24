@@ -7,7 +7,7 @@ Transport Fever 3 の MOD (`hummer_remote_probe`) と、コマンドラインの
 保存 (他の MOD や MOD の設定を変えて)、メインメニューからの新しいゲーム、ウィンドウを開く、車両の売買、路線づくり、
 2 つの端の間に線路や道路を引くこと (Track Connector MOD を使う)、ゲームのログを読むこと。
 
-人がキーボードの前にいなくても MOD を確かめるために作りました。試験用のセーブを設定を変えてロードし、数か月進めて止め、
+人がキーボードの前にいなくても MOD を確認するために作りました。試験用のセーブを設定を変えてロードし、数か月進めて止め、
 ログを読む、を繰り返す使い方です。人がシェルから使っても、試験のスクリプトや AI エージェントから使ってもかまいません。
 
 **試験用のセーブで使ってください。** コマンドで別のセーブをロードでき (保存していない進行は失われる)、会社の所持金を変え、
@@ -43,8 +43,13 @@ MOD は速度ボタンのレシピを、同じボタンと ×8 / ×16 のボタ�
 
 ## 必要なもの
 
-- Steam 版の Transport Fever 3 (build 40444 で試験)、Linux。ツールは `fcntl` と Linux のプロセス一覧を使うので、
-  このままでは Windows で動きません。
+- Steam 版の Transport Fever 3 (build 40444 で試験)、Linux。
+- Windows: 最小限の対応だけで、**Windows の実機では確認していません**。パス・ロック・プロセス一覧 (`tasklist`)・
+  コマンドラインは Windows 向けにも組んであるので、`launch`・`status`・読む命令は動くはずです。動かないところは
+  issue か pull request で知らせてください。`frame` と `pointer` は Linux だけです: `frame` は Steam の録画を
+  Linux の Steam のフォルダ (`~/.local/share/Steam`、`~/.steam/steam`) だけで探し、`pointer` は X11 のイベントを
+  送ります。設定ファイルは Windows でも `~/.config/tf3ctl/config.json` です (`%LOCALAPPDATA%` の下ではありません)。
+  起動の記録は、Windows では `%LOCALAPPDATA%\tf3ctl` に置きます。
 - Python 3.8 以上と、`PATH` 上の `luajit` (ツールは MOD の Lua のファイルを luajit で読みます)。
 - 任意: `frame` に `ffmpeg` と Steam のバックグラウンド録画。
 - 任意: `connect` に Track Connector MOD (mod.io、modId `ethan_track_connector`、revision 3 / v1.3 に合わせて作成、ゲーム内ではまだ動かしていない)。セーブで
@@ -58,7 +63,7 @@ MOD は速度ボタンのレシピを、同じボタンと ×8 / ×16 のボタ�
 1. このリポジトリのフォルダを、ゲームのローカルの MOD フォルダに写します。例:
    `<Steam>/userdata/<Steam の ID>/3493540/local/mods/hummer_remote_probe_1/` (その中に `mod.json`)。
 2. ゲームで、セーブに「Remote Probe」を有効にしてロードします。または、ツールでゲームを起動します (下の `launch`)。
-3. 答えるか確かめます:
+3. 答えるか確認します:
 
 ```
 python3 tools/tf3ctl.py status
@@ -71,22 +76,26 @@ python3 tools/tf3ctl.py status
 どのコマンドも JSON のオブジェクトを 1 つ出力します。終了コード: 0 成功、1 ゲームがエラーを返した、2 応答なしか
 ツールのエラー、3 ゲームが今いる場所では答えられない (メニュー、ロード中、probe のないメインメニュー、終了。
 `gameState` が示す)、4 断った (何も送っていない): 動いているゲームはこの `--owner` のものではない (「ゲームを変えるのは起動した owner だけ」)、
-試験用セーブだけの命令を別のセーブに送ろうとした、設定ファイルで入れていない命令 (「設定ファイル」)。
+試験用セーブかを確認する命令 (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み) を別のセーブに
+送ろうとした、設定ファイルで入れていない命令 (「設定ファイル」)。
 
 ### 時間と速度
 
 ```
 python3 tools/tf3ctl.py status                        # 日付、速度、実測の倍率、MOD とその設定
-python3 tools/tf3ctl.py speed 16                      # UI の 4 倍を超える (上限あり、「安全上の注意」)。0 で停止
+python3 tools/tf3ctl.py speed 8                       # UI の 4 倍を超える (ゲームの見積もりまで)。0 で停止
 python3 tools/tf3ctl.py pause
-python3 tools/tf3ctl.py run --months 2 --speed 16     # --days N / --until YYYY-MM-DD も。その後は速度 0
+python3 tools/tf3ctl.py run --months 2 --speed 4      # --days N / --until YYYY-MM-DD も。その後は速度 0
 python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # コマンドファイルを読む間隔 (次のロードまで)
 ```
+
+`speed` と `run --speed` は、ゲーム自身の見積もり (`getEstimatedMaximumGameSpeed`、「安全上の注意」) を上限にします。
+それより大きい数を指定しても、見積もりの速度になります。見積もりの高さはセーブによって違います。
 
 ゲームの画面では、本体の ⏸ ▶ ▶▶ ▶▶▶ (0/1/2/4) の右に、同じ見た目の ×8 と ×16 のボタンを足します。いまの速度の
 ボタンが、本体のボタンと同じように光ります。×8 / ×16 のボタンは、その速度をそのまま指定します。ゲームの見積もりの
 上限より上でも止めません (`speed` は上限で止めますが、ボタンはプレイヤーが自分で選ぶものなので)。本体のボタンを
-押せば、本体の速度に戻ります。横の表示 (`×16 実測×3.2`) は、本体のボタンにない 8 と 16 でも今までどおり出ます。
+押せば、本体の速度に戻ります。横の表示 (`×8 実測×3.2`) は、本体のボタンにない 8 と 16 でも今までどおり出ます。
 
 ### セーブと新しいゲーム
 
@@ -130,7 +139,7 @@ python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-indust
 
 ```
 python3 tools/tf3ctl.py company                       # 読むだけ: 本体の会社の成長の状態と、足りないもの
-python3 tools/tf3ctl.py company init [--dry-run] [--force]   # 試験用のセーブだけ: 始まりの出来事をもう一度送る
+python3 tools/tf3ctl.py company init [--dry-run] [--force]   # 試験用のセーブ向け: 始まりの出来事をもう一度送る
 ```
 
 - `company` は `::/game_mechanics/company/company.gs` の状態 (`basePopulation`・`version`・`companies`) と
@@ -147,8 +156,8 @@ python3 tools/tf3ctl.py company init [--dry-run] [--force]   # 試験用のセ�
   出来事が今の町を数えたことしか示しません)。置いたばかりの町では `basePopulation` が小さく決まり、ランクが早く
   上がります。マップエディタとミッションでは断ります。
 - 本体ではこの出来事で会社の成長と町の評価の控え・補助金・通知も初めからになり、ゲームの速度が 1 になり (本体の新しい
-  ゲームの始まりと同じ)、ようこその印も立ちます。ほかの MOD のスクリプトも受けることがあるので、試験用のセーブだけで
-  使います。待ちきれずに終わった送信のあとは、`--force` なしの次の送信を断ります (その出来事があとで動くことがあり、
+  ゲームの始まりと同じ)、ようこその印も立ちます。ほかの MOD のスクリプトも受けることがあるので、試験用のセーブで
+  使います (読み込んでいるセーブを tf3ctl は確認しません)。待ちきれずに終わった送信のあとは、`--force` なしの次の送信を断ります (その出来事があとで動くことがあり、
   二度目で会社の成長がまた初めからになるため)。
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): 送った出来事がスクリプトに届くか (スクリプトは出来事の名前で
   受け取りを登録し、本体のどれもこの名前を登録していない)、止めているときにも処理されるか。
@@ -174,7 +183,7 @@ SIGKILL します (`--no-kill` で諦める。「安全上の注意」)。新し
 (tiny 16x16、small 32x32 (既定)、medium 44x44、large 56x56、veryLarge 64x64、または WxH)、`--year` (既定 1900)、
 `--seed`、`--generator` (既定: 本体の新規ゲーム画面と同じ選び方の先頭)、`--no-towns`、`--no-industries`、MOD の指定は
 `load` と同じ。メインメニューには「今のゲーム」が無いので、MOD はこの MOD と `--add` / `--set-mods` で指定したものに
-なります。ack の plan で確かめてください。
+なります。ack の plan で確認してください。
 新しいゲームは、本体のチュートリアルをオフにして始めます (`:guideSystemConfig.tutorial=1`)。進める人がいないためです。
 `--tutorial` を付けると本体の既定 (オン) のまま、`--param :guideSystemConfig.tutorial=N` を明示すればそれが優先です。
 `newgame` コマンドも同じです。
@@ -193,7 +202,7 @@ MOD の文が英語に落ちるかを見るためです。ゲームは言語を 
 `state` と `status` に `profileBackup` が出ます。控えを取る・書き換える・戻すは `profile.lua.tf3ctl-lock` (ファイルの
 隣に残ります) のロックの中で行うので、2つの tf3ctl が同時に動いても、書き換えたファイルを元として控えることはありません。
 `restart` が quit のあとで戻す・書き換えるのに失敗したときは、`quit` と同じく quit の結果と `profileError` を出して
-終了コード 1 になります (ゲームは止まったままです)。別の道具が `profile.lua` の写しを持つなら、`TF3CTL_OTHER_BACKUPS`
+終了コード 1 になります (ゲームは止まったままです)。別のツールが `profile.lua` の写しを持つなら、`TF3CTL_OTHER_BACKUPS`
 にその場所を書いてください。それがあるあいだは (フォルダは中にファイルがあるときだけ) `--lang` も戻すことも断るので、
 写しは作ったのと逆の順で戻ります。扱っていないこと: tf3ctl を通らずにゲームが終わったあと (落ちた、ゲームのメニュー
 から終えた) に Steam から起動すると、`--lang` の言語のまま始まります。次の tf3ctl の `launch` / `restart` / `quit`
@@ -209,6 +218,7 @@ MOD の文が英語に落ちるかを見るためです。ゲームは言語を 
 ```
 python3 tools/tf3ctl.py log --grep remote_probe --tail 40   # ゲームの stdout.txt
 python3 tools/tf3ctl.py keep-log [--list]                   # stdout.txt を今 crash_dump/logs へ写す。写しの一覧
+python3 tools/tf3ctl.py clean                               # 交換フォルダから probe のファイルを消す (答え: removed、gameState)
 python3 tools/tf3ctl.py entities --kind town --grep ems     # ID と名前: town・line・vehicle・station・industry・warehouse
 python3 tools/tf3ctl.py entities --kind warehouse           # 読むだけ: WAREHOUSE の entity ごとに construction・stockList・stocks・capacity
 python3 tools/tf3ctl.py industry-workers [--entity 51]      # 読むだけ: 定員・そこを行き先にする住民の数・直近の到着 (workers のスクリプト)・生産性・最寄りの町
@@ -228,8 +238,8 @@ python3 tools/tf3ctl.py build-tool --menu rail [--res ...]   # 先にツール�
 python3 tools/tf3ctl.py pointer 0.5,0.47 [--px]          # ゲームの中のポインタだけを動かす。窓の中の割合で指定
 ```
 
-`camera` の返事は、動かした後に読み直した値です。数は先に確かめます。NaN・無限大・1e6 を超える中心・1〜1e5 の外の
-距離・±2π を超える angle・±π/2 を超える pitch は断ります。`--entity` は entity があるかを確かめます。メインメニューでは断ります。
+`camera` の返事は、動かした後に読み直した値です。数は先に確認します。NaN・無限大・1e6 を超える中心・1〜1e5 の外の
+距離・±2π を超える angle・±π/2 を超える pitch は断ります。`--entity` は entity があるかを確認します。メインメニューでは断ります。
 
 `build-tool` は、建設メニューの 1 つの建物の配置ツールを開きます。本体のイベント 2 つを、速度ボタン経由で順に送ります
 (次を送る前にメニューが開くよう、1.5 秒あけます)。まず `setMenuFilter` にその建物のタグ
@@ -247,10 +257,11 @@ resName は実在する必要があります (`api.res.constructionRep`)。そ�
 建設メニューの項目が見つからないと出て、絞り込んだメニューは空でした)。開いたのはツールバーと同じイベントです。`--menu rail` は
 `openRail` を送ります (鉄道のボタンと同じ)。鉄道メニューが開き、最初の品目の駅舎がそのまま配置ツールになります。`--menu` だけなら
 このイベントだけを送り、戻すフィルタはありません。`--res` も渡すと、1.5 秒ずつあけてフィルタと選択が続きます。それで指定の建物が
-選ばれるかは、まだ確かめていません。
+選ばれるかは、まだ確認していません。
 
 配置の予告とツールチップは、マウスの下に建設案ができたときだけ出ます。なので、ゲームのポインタが 3D の画面の上にある必要があります。
-`pointer FX,FY` で、人の手なしにそこへ置けます。ゲームの窓に X11 の合成イベント `EnterNotify` と `MotionNotify` を送ります
+`pointer FX,FY` で、人の手なしにそこへ置けます。設定ファイルに `"pointer": true` が無いと使えません (断って終了コード 4、
+「設定ファイル」を参照)。Linux (X11) だけです。ゲームの窓に X11 の合成イベント `EnterNotify` と `MotionNotify` を送ります
 (ctypes で libX11 を使います。TF3 は XWayland で動いています)。ゲームの中のポインタと予告は動き、本物のポインタは動きません。
 ボタンやキーのイベントは決して送りません。表紙の撮り方: `camera --set` で場所を写し、`build-tool --menu rail`、`pointer 0.5,0.47`、
 `frame`。メニューは、セーブを読み直して (保存せずに) 片付けます。会社のお金が 0 だと、ツールチップはコストの代わりに資金不足と出ます。
@@ -288,7 +299,7 @@ python3 tools/tf3ctl.py line delete 21 [--sell-vehicles]
 ```
 
 車両の返事には、前後の残高、払った額、部品ごとの店の価格 (`metadata.cost`。送る前と返事のときに読む)、部品ごとの
-`purchaseTime`、車両の残存価値が入ります。車両の価格を変える MOD を確かめるのに足ります。一時停止して使ってください。
+`purchaseTime`、車両の残存価値が入ります。車両の価格を変える MOD を確認するのに足ります。一時停止して使ってください。
 そうしないと、運賃や維持費も差に入ります (ゲームの時間が動いたら `warning` が付きます)。
 
 ### 2 つの端の間の線路と道路 (`connect`)
@@ -336,7 +347,7 @@ python3 tools/tf3ctl.py connect --from A --to B [--track standard|high_speed|sim
 - まず経路沿いの土地を読み (1 フレームに数ブロックずつ)、それから経路を計画します。合わせて数秒から数分かかります。ツールは進み具合を stderr に出し、`--timeout` (既定 120 秒) に 30 秒を足しただけ
   待ちます。`connect` は一度に 1 つだけです。
 - Track Connector の状態は全員で 1 つです。`connect` の最中にプレイヤーがそのツールを使うと (逆も)、選んだ端と経路を
-  上書きします。`connect` は建てる前と後に、状態が自分の端と経路のままかを確かめ、違えばエラーで終わります。送った設定はその状態に残り、
+  上書きします。`connect` は建てる前と後に、状態が自分の端と経路のままかを確認し、違えばエラーで終わります。送った設定はその状態に残り、
   Track Connector の線路ツールは次にそこから始まります (道路ツールは state の設定を読みません)。
 - 後でセーブから Track Connector を外すとき: その `severityRemove` は Warning です。建てたものは本体の種類の普通の線路や
   道路なので残ります (`--track` / `--template` で別の MOD の種類を使ったら、その MOD が要ります)。Track Connector の
@@ -353,9 +364,9 @@ python3 tools/tf3ctl.py build --remove-all                # この読み込み�
 python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engine-check --collision-detail   # ProposalData を丸ごと
 ```
 
-**テスト用のセーブで使います。** `build` は建物 (`.con`: 車庫、駅、アセット、産業、別の MOD の建物) を1つ、クリックも
+**試験用のセーブで使います** (セーブは確認しません)。`build` は建物 (`.con`: 車庫、駅、アセット、産業、別の MOD の建物) を1つ、クリックも
 キーも使わずに置きます。`ConstructionEntity` を1つ入れた `SimpleProposal` を、プローブの GUI スクリプトから
-`api.cmd.makeWorldBuildProposalCmd` でエンジンに送ります (MOD が自分の道具で建てるのと同じ道)。エンジンはプレイヤーが
+`api.cmd.makeWorldBuildProposalCmd` でエンジンに送ります (MOD が自分のツールで建てるのと同じ道)。エンジンはプレイヤーが
 建てるときと同じく調べます (衝突・地形・所持金)。断られた建物は建ちません (`ignoreErrors` は切ってあります)。
 プレイヤーや町のものを壊して建てることはしません。
 
@@ -451,10 +462,10 @@ python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engi
   道路、または自分の自由な腕) と `joinedPieces` が付きます。建てたあとの `joins` は、道路の出入り口ごとに `node`・
   `wasThere` (その node が建てる前から道路のものだった: 建造物が既存の node を使った)・`nodesHere` (0.5 m 以内の別の道路の
   node: 一つにならず横に並んだ node) です。「建てる前から」の node は、`--at` から 150 m 以内の道路の node です。
-- `--remove-buildings`: Context の `gatherBuildings` を有効にし、邪魔な町の建物を取り除いて建てます (プレイヤーの道具と
+- `--remove-buildings`: Context の `gatherBuildings` を有効にし、邪魔な町の建物を取り除いて建てます (プレイヤーのツールと
   同じ)。エンジンが挙げたもの (`CollisionInfo.buildingEntities`) を `buildingsInWay` に出します。`--join-streets`:
   Context の `cleanupStreetGraph` を有効にします。道路の端を既存の道路の node にちょうど重ねたとき、一つの node になるかを
-  見るためのものです (`joins`)。どちらもゲームを変えるので、試験用のセーブでだけ使ってください。`--dry-run` とは一緒に
+  見るためのものです (`joins`)。どちらもゲームを変えるので、試験用のセーブで使ってください (セーブは確認しません)。`--dry-run` とは一緒に
   使えません (dry-run はエンジンに何も聞かないので、断ります)。**ゲーム内では未確認**
   (2026-11-23 に書いたもの): エンジンがどう扱うか。答えにも `contextNote` で書きます。
 - ゲームを変えるコマンドです (`line`・`connect` と同じ)。ほかのクライアントにはいつもの警告が出ます。1つずつ
@@ -485,7 +496,7 @@ python3 tools/tf3ctl.py build --res <産業の resName> --at 800,600 --no-owner 
   自分で埋める場合も同じ値になります。`--no-fill-modules` を付けると、渡したとおりに送ります (ある MOD の料金所は
   `name` と `variant` だけを送ります。`metadata` 無しで送ったモジュールは `moduleWarnings` に挙げます)。埋める設定のとき、
   metadata が渡されず読めもしない (moduleRep.get が失敗した・`asTable` の無いエンジンの値) モジュールがあれば、全体を
-  断ります。港のモジュールのスクリプトは `mod.metadata.platform` を確かめずに読むためです。空の `modules` も断ります。答えの `params.modules` には、スロット・名前・variant・metadata と updateScript を
+  断ります。港のモジュールのスクリプトは `mod.metadata.platform` を確認せずに読むためです。空の `modules` も断ります。答えの `params.modules` には、スロット・名前・variant・metadata と updateScript を
   送ったか・何を埋めたか (`filled`) が入ります。
 - 建てたあと、駅を持つ建物 (港) の答えには `terminals` (全部の駅の terminal の数、`STATION.terminals`) と
   `stationTerminals` が入ります。0 のときは、モジュールがスロットに乗っていないかもしれない、という `warning` が付きます。
@@ -509,19 +520,19 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 --bridge concrete [--dry-run --engine-check]
 python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
-python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # 試験用のセーブだけ: 交差点の信号を外す
+python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # 試験用のセーブだけ (確認する): 交差点の信号を外す
 python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車線 (「道路の車線」を参照)
 ```
 
 - 2点 (x,y[,z]、メートル。z が無ければ地形の高さ) の間に、まっすぐな道路を1本、クリック無しで建てます。
   `SimpleStreetProposal` (新しい edge 1本と新しい node。番号は `type.d.tl` のとおり -1 から下へ) を
   `api.cmd.makeWorldBuildProposalCmd` で送ります。`build` が建物を送るのと同じ形です (同じ context: 何も壊さない、
-  エラーを無視しない)。ゲームを変えるので、テスト用のセーブでだけ使ってください。
+  エラーを無視しない)。ゲームを変えるので、試験用のセーブで使ってください (確認するのは `--ignore-errors` のときだけ)。
 - `--bridge RES` は、その種類の橋として道路を建てます。RES は `api.res.bridgeTypeRep` の resName (MOD のものは
   `<modId>::/infrastructure/bridge/<名前>.bridge`) か、バニラの橋のファイル名 (`concrete` なら
   `::/infrastructure/bridge/concrete.bridge`)。edge の種類 `BRIDGE` と、その種類の番号 (`bridgeTypeRep.find`) を
   `typeIndex` に入れて送ります。ゲームの橋の edge もこの2つで橋を持っています (`BaseEdge.type` / `typeIndex`)。
-  プレイヤーの道路の道具は橋の種類を道具の側で選んでいるので、proposal のふつうの edge をエンジンが高さを見て橋に変える
+  プレイヤーの道路のツールは橋の種類をツールの側で選んでいるので、proposal のふつうの edge をエンジンが高さを見て橋に変える
   ことは無いと見て (ゲーム内では未確認)、ここで入れます。ゲームが知らない種類は、そこにある名前の一部を添えて断ります。carriers が読めて
   `ROAD` が無い種類も断ります。どちらも何も送りません (dry-run も)。答えの `bridge`: `name`、`id`、`carriers`、
   `carriesRoad` (読めなければ `carriersNote`)、`availability` / `available` (書くだけで断らない)、建てたあとは `built`
@@ -588,7 +599,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   `collisions`。結果に id が無いとき、30 秒たってもコールバックが来ないときは、2点の間の道路を探します。探すときは、送る前からあった道路を除きます。建てたと言われたのに新しい
   道路が見つからないときは `warning` を付けます。template や `BaseEdgeType` / `RoadType` の enum が読めないときは、
   何も送らずに断ります。
-- `--dry-run` は何も送らず、エンジンにも聞きません。プローブが確かめた計画だけを返します (`checked: false`、
+- `--dry-run` は何も送らず、エンジンにも聞きません。プローブが確認した計画だけを返します (`checked: false`、
   `engineCheck: "not asked (use --engine-check)"`)。ほかの dry-run と同じく、安全に使えます。
 - `--dry-run --engine-check` (`--engine-check` は `--dry-run` と一緒にだけ使う): 建てるときに送るのと同じ proposal
   (設定も含む) も作り、
@@ -597,21 +608,21 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   エンジンの `cost`・`errors`・`warnings`・`collisions`・`critical`、`balance`。エンジンが断るものは `ok: false` で、文言が
   `error` に入ります。`makeProposalData` が無いか、どちらの形でもエラーになるときは、プローブの計画だけを返します
   (`checked: false`、`engineCheck: "not available: ..."`)。エンジンの評価は pcall で守れないネイティブのコードを通る
-  (そこで assertion が出るとゲームが終わる) ので、tf3ctl はこれをゲームを変える命令に数えます。統括から時間をもらって、
-  テスト用のセーブでだけ使ってください。
+  (そこで assertion が出るとゲームが終わる) ので、tf3ctl はこれをゲームを変える命令に数えます。ゲームの時間をもらって、
+  試験用のセーブで使ってください (セーブは確認しません)。
   `verdict` は `buildable`・`buildable with warnings`・`refused` のどれかです (`engineContexts`・`contextsDisagree` は `build` と同じ)。proposal だけの形しか答えないときは、エンジンは build の
   context ではなく、自分の context で判定します (どちらかは `engineContext`)。その context は畑を取り除くので、道に畑がある
   ときは警告 (「3 個の畑が取り除かれます」) だけになりますが、`--remove-fields` の無い build ではその畑と衝突します
   (2026-11-23、伐採場のそばの道路)。そのときは答えに `caution` が付きます。
 - `--remove-fields`: 道にある畑を取り除いて建てます。build の context で畑を集めます (`gatherFields`。Track Connector と
   同じ。建物は集めない)。エンジンが畑を取り除いて建てます。畑以外 (建物・線路・ほかの建造物) は、今までどおり断り
-  ます。これを付けずに衝突で断られた道路には `hint` が付きます。ゲームを変えるので、テスト用のセーブでだけ使ってください。
+  ます。これを付けずに衝突で断られた道路には `hint` が付きます。ゲームを変えるので、試験用のセーブで使ってください (セーブは確認しません)。
   **ゲーム内では未確認** (2026-11-23 に書いたもの): 取り除かれるのが畑だけか (建物・線路・産業の一部は断られるか)、
   伐採場のそばで邪魔をしていた entity が畑だったか、エンジン自身の context が畑を集めるか (警告からの見立て)。答えにも
   `removeFieldsNote` で書きます。`--remove-fields` を付けた dry-run の `caution` は、畑以外の警告なら本番で衝突しうる、と
   言います。
-- `--remove-buildings`: Context の `gatherBuildings` を有効にします (邪魔な町の建物を取り除く。プレイヤーの道具と同じ)。
-  試験用のセーブでだけ。ゲーム内では未確認。dry-run の engine-check がエンジン自身の context で判定したとき
+- `--remove-buildings`: Context の `gatherBuildings` を有効にします (邪魔な町の建物を取り除く。プレイヤーのツールと同じ)。
+  試験用のセーブ向け (セーブは確認しません)。ゲーム内では未確認。dry-run の engine-check がエンジン自身の context で判定したとき
   (`engineContext`) はこれが効いていないので、`removeBuildingsNote` で「hits の町の建物は本番では取り除かれうる」と言います。衝突で断られたとき (建てるとき、dry-run の engine-check) は、`build` と
   同じく `hits` に邪魔な物が入ります。
 - `--ignore-errors` (**試験用のセーブだけ。エンジンの検査を外します**): `makeWorldBuildProposalCmd` の `ignoreErrors` を
@@ -694,7 +705,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): 特に、`api.type.NodeAndEntity` / `SegmentAndEntity` / `PlayerOwned`
   がその名前で届くか (`api.type.Proposal.*` も試す)、初期のままの `streetEdge` で足りるか、建物の node を、設定に
   触らずに端としてエンジンが受け付け、そこで新しい道路のレーンをつなぐか (2026-11-23 に書いた。それまで伐採場の外側の端と
-  内側の端は断られた)、guiUpdate で makeProposalData が Overpass Builder の道具と同じように答えるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
+  内側の端は断られた)、guiUpdate で makeProposalData が Overpass Builder のツールと同じように答えるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
   どうなるか (proposal に交差の node は入れていない: エンジンが足すか、断るか、重ねるか)。
 
 ### 長方形の範囲の地面 (`terrain`)
@@ -787,7 +798,7 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   外で効くか、`landUse2CargoNeeds` が効くか、需要のコマンド、道路や建物のある場所にエンジンがどう答えるか、
   作った直後の人口。
 
-### 町のつながり (`town connections`・`town connect`: 試験用のセーブだけ)
+### 町のつながり (`town connections`・`town connect`: 試験用のセーブ向け)
 
 ```
 python3 tools/tf3ctl.py town connections [--entity 801] [--index-base 0|1]   # 読むだけ
@@ -815,14 +826,15 @@ python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): マップエディタの外のゲームで動くか、番号の振り方、`--build` が
   今ある道路に何をするか。
 
-### 町を1か所で育てる (`town develop`・`town size`: 試験用のセーブだけ)
+### 町を1か所で育てる (`town develop`・`town size`: 試験用のセーブ向け)
 
 ```sh
 python3 tools/tf3ctl.py town develop --at 120,-40 --count 30 [--streets] [--upgrade] [--radius 250] [--dry-run]
 python3 tools/tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] [--dry-run]
 ```
 
-- **試験用のセーブだけで使ってください。** プレイヤーには置けない建物を足します。港や駅の円に、`steps` で何年も
+- **試験用のセーブで使ってください。** 読み込んでいるセーブを tf3ctl は確認しません。答えに `saveNote` が付きます。
+  プレイヤーには置けない建物を足します。港や駅の円に、`steps` で何年も
   進めずに住宅や店を置くためのものです。ゲームを変える命令として、ほかのクライアントに警告が出ます (dry run も)。
   オプションは語のあとに書きます (`town develop --dry-run ...`)。語の前に普通の `town` のオプションがあると断るので、
   そこに書いた `--dry-run` が落ちることはありません。
@@ -849,7 +861,7 @@ python3 tools/tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] 
 - **ゲーム内では未確認** (2026-11-22 に書いたもの): guiUpdate の状態にこれらの関数があり、ゲームの中でエンジンが受けるか、
   develop がどこにどれだけの速さで建てるか、`--update-all` がすぐに建てるか。
 
-### 在庫とシミュレーションの歩み (`stock`・`steps`: debug の命令、試験用のセーブだけ)
+### 在庫とシミュレーションの歩み (`stock`・`steps`: debug の命令、試験用のセーブ向け)
 
 ```sh
 python3 tools/tf3ctl.py stock list --entity 51                       # 読むだけ
@@ -859,7 +871,8 @@ python3 tools/tf3ctl.py speed 0                                      # 先に一
 python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
 ```
 
-- **試験用のセーブだけで使ってください。** ゲームの debug の命令 (`api.cmd.debug`) を送り、プレイヤーにはできない形で
+- **試験用のセーブで使ってください。** 読み込んでいるセーブを tf3ctl は確認しません。答えに `saveNote` が付きます。
+  ゲームの debug の命令 (`api.cmd.debug`) を送り、プレイヤーにはできない形で
   ゲームを変えます (貨物が湧く、時計と関係なくシミュレーションが進む)。試験用の地図での待ち時間 (港の在庫が貯まる、
   車両が満載で着く、町が育つ) を短くするためのものです。ゲームを変える命令として、ほかのクライアントに警告が出ます
   (dry run も)。
@@ -1101,7 +1114,7 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   id・種類・名前・位置・数)。空いていても家が足りなかった候補の数は `tooFewHouses` です。試す候補は 200000 個までです
   (それぞれ近くの物とだけ比べます。家 1600 戸の町で 85000 個がおよそ 2 秒)。途中で止まったときは `complete` が false
   になり、`searched` (どこまで外へ探したか) が付き、誤りの文もその距離で書きます。格子の点は 100 万個まで
-  (`--radius` / `--step`)。`--check 0` は、探した一番の候補を確かめずに返します (`checked: false`)。
+  (`--radius` / `--step`)。`--check 0` は、探した一番の候補を確認せずに返します (`checked: false`)。
 - 箱は octree のもの (軸にそろった箱。斜めの物は大きく出る) で、幅は推測です。探すのは候補を絞るためで、決めるのは
   エンジンの確認です。水際 (港) は見ていません。
 - **ゲーム内で確認済み** (2026-11-23): `--mouth` なしで町の近くに道路の車庫を探し、返った `build` で 1 回で建った。
@@ -1227,7 +1240,7 @@ python3 tools/tf3ctl.py modhub publish-clear --yes
 `publish FOLDER` は、ページの「アップロード」「更新」のボタンと同じく staging の MOD を mod.io に上げます。
 **最初のアップロード** (`--first-upload` を付ける。新しい MOD のページを作る) か、前に上げた mod.io のページの
 **更新** (`--first-upload` を付けない) のどちらかです。ページはどちらも同じ呼び出し (`ModPublishHelper.publish`) で、
-mod.io に MOD があるときだけボタンの名前を「Update」にします。この道具は、どちらのつもりかを推し量りません。新しい
+mod.io に MOD があるときだけボタンの名前を「Update」にします。このツールは、どちらのつもりかを推し量りません。新しい
 MOD のページや公開にした MOD はゲームからは戻せないので、次のどれか1つでも外れると何も送りません。
 
 - フォルダが、設定ファイルの `modhub.publishFolders` にある (validate の一覧とは別。初期設定は空。tf3ctl が命令と
@@ -1243,7 +1256,7 @@ MOD のページや公開にした MOD はゲームからは戻せないので�
   found」)。
 - `_metadata/modinfo.json` があり、項目が上限に収まる (バイトでなく文字数で数える)。`name` (mod.io の名前) は 50 以下、
   `summary` は 250 以下 (mod.io の上限。長い名前は、mod.io がアップロードを始めてから断る「code 13009」)。`description` と
-  `--changelog` は 50000 以下 (道具の歯止め。mod.io は上限を書いていない)。name・summary・description が空でなく、`tags` は
+  `--changelog` は 50000 以下 (ツールの歯止め。mod.io は上限を書いていない)。name・summary・description が空でなく、`tags` は
   あれば文字列のリスト。`--dry-run` は各項目の長さと上限を返す (`local.metadata`)。
 - 「送った」の印 (下) が無い。
 - 更新のときだけ: `mod.json` の `revision` が整数で、そのページに前に上げたものより大きい。前の版は、
@@ -1253,11 +1266,11 @@ MOD のページや公開にした MOD はゲームからは戻せないので�
   revision があるときはそれと同じでなければ断る。
 - `--version X.Y.Z` (付けなくてもよい。最初のアップロードでも更新でも): 頭に 0 の付かない整数で、Y と Z は 0〜99、
   `mod.json` の `revision` を X*10000 + Y*100 + Z と読んだものと同じ (revision 10003 なら 1.0.3 だけ、revision 1 なら
-  0.0.1 だけ)。MOD も、道具が送る revision とあらためて比べる。MOD の dry-run が送らないと答えたとき (ゲームに入って
-  いる remote_probe が古く、無視した) は、道具がアップロードを断る。
+  0.0.1 だけ)。MOD も、ツールが送る revision とあらためて比べる。MOD の dry-run が送らないと答えたとき (ゲームに入って
+  いる remote_probe が古く、無視した) は、ツールがアップロードを断る。
 - `--update-metadata` (付けなくてもよい。更新のときだけ。`--first-upload` と一緒なら断る): 下の `updateMetadata` を参照。
   MOD の dry-run が、頼んだのと違う `updateMetadata` を送ると答えたとき (ゲームに入っている remote_probe が古く、いつも
-  true を送る) は、道具がアップロードを断る。
+  true を送る) は、ツールがアップロードを断る。
 - ゲームの中で、最初のアップロード: MOD が Ready、`modhubId` が無効で mod.io に中身が無い (新規)。更新: MOD が Ready、
   `modhubId` が fileid のファイルの id で、mod.io にその MOD の中身がある (無いとページは「mod.io で消された、新しく
   作る」と出すので断る)。mod.io で公開の MOD に `--public no` は断る (そのときページの「Set Public」の欄は押せない。
@@ -1277,7 +1290,7 @@ name・summary・description を送るか) と、`updateMetadataNote` か、`--u
 `--update-metadata` が無いときの注意は、modinfo.json の name が mod.io の題と違えば、それも書きます (題は変わらない)。
 `--version` のときは、MOD が送る `additionalMetadata`
 (`{"version": "X.Y.Z"}`) も入ります。`--dry-run` が無いときも、
-道具はまず同じ dry-run を回し (そこで断られれば何も残らない)、それから **「送った」の印**
+ツールはまず同じ dry-run を回し (そこで断られれば何も残らない)、それから **「送った」の印**
 `$XDG_STATE_HOME/tf3ctl/publish_pending.json` (無ければ `~/.local/state/tf3ctl/`。フォルダ・owner・時刻・公開か・最初か更新か・mod.io の id・updateMetadata・revision・version) を書き、
 そのあとでアップロードを送ります。印があるあいだは、どの publish も断ります。印が消えるのは、(1) アップロードが部分的な
 エラー無しで成功し、ゲームが返した mod.io の id と同じ中身の fileid のファイルが (60 秒以内に) できたとき (更新ではファイルが前から
@@ -1297,7 +1310,7 @@ mod.io での公開の状態)、`updateMetadata` (name・summary・description �
 `additionalMetadata = {version = "X.Y.Z"}` も (API の説明は「アップロードのメタデータに混ぜる自由な追加の情報」。ページは
 セーブデータのときだけ使う)。付けないときは additionalMetadata を設定しません。答えに全部入ります。
 
-`updateMetadata` だけはページと違います。ページはどちらも true です (初期値。新規の MOD では欄は押せない)。この道具は、
+`updateMetadata` だけはページと違います。ページはどちらも true です (初期値。新規の MOD では欄は押せない)。このツールは、
 最初のアップロードでは true (新しいページに要る)、**更新では `--update-metadata` を付けない限り false** を送ります。
 true だと、ゲームは mod.io のページの name・summary・description を modinfo.json のもので置き換え、ほかの方法で mod.io に
 書いた説明文 (mod.io の API で入れた長い HTML など) が消えるためです。`--update-metadata` は name か summary を変える
@@ -1327,6 +1340,8 @@ python3 tools/tf3ctl.py mod my_mod                       # 読むだけ: その 
 python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}' [--timeout 30]   # 1つ呼ぶ: 答えは JSON
 ```
 
+`--timeout` は、命令なら 6〜125 秒 (初期設定 30)、一覧なら 5〜600 秒 (初期設定 60) です。外の値は断ります。
+
 プローブはバニラの命令を中継します。その上に、MOD が自分の命令を足せます。足すには、ファイルを1つ
 `content/remote_probe_ext.lua` (`<modId>::/remote_probe_ext.lua` として require される) に置き、命令の表を返します:
 
@@ -1353,6 +1368,12 @@ return {
   1 つずつ呼びます。速度ボタンのレシピの中でしか動かないもの (窓を開く、バニラの車両のモジュール) には、まだ届きません。
   ファイルはロードごとに 1 回だけ require します。ファイルを変えたらロードし直し、新しいファイルを足したらゲームの
   再起動が要ります (ゲームは起動のときに MOD のファイルを読み込む)。
+- **`mod --list` は、どの MOD のファイルも動かします.** 命令の一覧を作るために、プローブは見る MOD (下) の
+  `remote_probe_ext.lua` を全部 require します。そのため、使うつもりの無い MOD のものでも、ファイルの一番外の
+  コードがゲームの GUI の Lua 状態で動きます。1 つの MOD を指定したとき (`mod my_mod`、`mod my_mod hello`) は、
+  その MOD のファイルだけを require します。
+- **札は MOD の自己申告です.** `tag = "reads"` は MOD の作者が言うことで、プローブは確認しません。
+  `reads` の札でゲームを変える命令は、`status` と同じく owner の検査なしで送られます。
 - **どの MOD を見るか.** ユーザーのプロファイルが入れたものとして挙げる MOD と、動いているゲームに設定がある MOD。
   公式の MOD (`ug_*`) は見ません。セーブで有効な MOD かどうかは GUI から分かりません。有効でない MOD には require
   できるファイルが無いと見ており、そのときはファイルの無い MOD と同じく一覧から外れます (ゲーム内では未確認。もし
@@ -1411,7 +1432,7 @@ return {
 ### 誰がゲームを起動したか (`launched.json`)
 
 owner (`--owner` か `TF3CTL_OWNER`) を付けた `launch` と `restart` は、動いているゲームを起動した owner と
-そのプロセス ID を小さなファイルに残します。tf3ctl 自身がゲームを変えるコマンドの前に読みます (上)。同じマシンの別の道具も
+そのプロセス ID を小さなファイルに残します。tf3ctl 自身がゲームを変えるコマンドの前に読みます (上)。同じマシンの別のツールも
 読めます (たとえば、ゲームが動いている間ゲームを変えるコマンドを止める見張りが、これを読んで、起動した owner の quit だけは通す)。人が Steam から起動したゲームにはありません。
 
 - 場所: `$XDG_RUNTIME_DIR/tf3ctl/launched.json`。`XDG_RUNTIME_DIR` が無ければ `/tmp/tf3ctl-<uid>/launched.json`。
@@ -1461,7 +1482,12 @@ tf3ctl.py --owner bob coop end
   一番新しいもの)。控えは同じ場所に `.tf3ctl-backup` を足した名前。
 - `TF3_GAME_DIR`: ゲームのインストール先。`--lang` で選べる言語を見るため (既定: userdata のある Steam の
   `steamapps/common/Transport Fever 3`)。
-- `TF3CTL_OTHER_BACKUPS`: 別の道具による `profile.lua` の控え (ファイルかフォルダ)。`:` で区切る (`--lang` を参照)。
+- `TF3CTL_OTHER_BACKUPS`: 別のツールによる `profile.lua` の控え (ファイルかフォルダ)。`os.pathsep` で区切る
+  (`:`。Windows では `;`) (`--lang` を参照)。
+- `TF3_ASSUME_RUNNING`: 空でない値なら、プロセス一覧を見ずにゲームが動いているとみなします。`state` は終了・落ちた
+  とは読まず (ログで決める)、メインメニューの hello がゲームのプロセスの起動より新しいかも確認しません。テスト用と、
+  プロセス一覧にゲームが出ない環境 (コンテナ、別のマシン) 向けです。ゲームのプロセス id が要るほかの検査
+  (owner の検査) は、これまでどおりプロセスを探します。
 - `TF3CTL_CONFIG`、`XDG_CONFIG_HOME`: 設定ファイル (「設定ファイル」を参照)。
 - `XDG_STATE_HOME`: `modhub publish` の印の置き場所 (`tf3ctl/publish_pending.json`。既定 `~/.local/state`)。
 
@@ -1469,7 +1495,7 @@ tf3ctl.py --owner bob coop end
 
 `tools/tf3ctl.py` は `$TF3CTL_CONFIG`、なければ `$XDG_CONFIG_HOME/tf3ctl/config.json`、なければ
 `~/.config/tf3ctl/config.json` を読みます。ファイルがなければ下の項目はすべて切れたままで、1 人が 1 つのゲームを
-動かすのに向きます。複数のクライアント・MOD のアップロード・テスト用の道具を使う環境では、要るものだけを入れます。
+動かすのに向きます。複数のクライアント・MOD のアップロード・テスト用のツールを使う環境では、要るものだけを入れます。
 すべての項目と初期設定と働きは `tools/config.example.json` に、いま効いている値と読んだ場所は `tf3ctl.py config` で
 見られます。
 
@@ -1488,9 +1514,11 @@ MOD はこのファイルを読めないので、試験用セーブの名前と 
 それで確認します (送られなければ `probe-` だけ、modhub のフォルダはなし)。
 
 **デバッグ命令**は、プレイヤーにはできない形でゲームを変えます: `stock set`・`steps`・`money`・`town develop` /
-`size` / `connect`・`company init`・`running-costs` の書き込み・`lights --off`・`road --ignore-errors`。答え (dry run
-を除く) に `saveNote` が付きます: セーブの中身が変わり、保存すると変更が残ります (`running-costs` は、その起動の
-間の車両の型)。それぞれの検査 (試験用セーブだけ、coop の間は断る、など) は前のままです。
+`size` / `connect`・`company init`・`running-costs` の書き込み・`lights --off`・`road --ignore-errors`。どれも
+試験用のセーブ向けですが、読み込んだセーブの名前 (`testSavePrefixes`) を確認するのは `road --ignore-errors`・
+`lights --off`・`running-costs` の書き込みの 3 つだけです (coop の間も断ります)。ほかは、デバッグのツールとして
+どのセーブにも届きます (owner の検査はふつうどおり)。答え (dry run を除く) に `saveNote` が付きます: セーブの中身が
+変わり、保存すると変更が残ります (`running-costs` は、その起動の間の車両の型)。
 
 `screenshot` と `newgame --unsafe` は外しました。`screenshot` は写真モードの外ではファイルを書かず (`frame` を
 使ってください)、`--unsafe` はゲームを落とすだけでした (新しいゲームはメインメニューから `launch` / `restart --new`
@@ -1503,7 +1531,7 @@ MOD はこのファイルを読めないので、試験用セーブの名前と 
 | 普段の確認間隔 | 1 / **2** / 5 / 10 秒 | しばらくコマンドが来ていないときに、コマンドファイルを読む間隔 (1 回の読み込みに数ミリ秒) |
 | コマンド直後と run 中の確認間隔 | 0.1 / **0.25** / 0.5 / 1 秒 | コマンドを受けてから 2 分間と `run` の実行中 |
 | ログの量 | 最小 / **コマンドごと** / 詳細 | ゲームのログの `[remote_probe]` の行 |
-| 速度ボタンの横に表示 | **表示する** / 表示しない | 速度ボタンにない速度と `run` の実行中に、例えば `×16 実測×3.2 →2045-07-03` |
+| 速度ボタンの横に表示 | **表示する** / 表示しない | 速度ボタンにない速度と `run` の実行中に、例えば `×8 実測×3.2 →2045-07-03` |
 | ゲームスクリプトの命令（試験用のセーブ） | **オフ** / オン | オン: この MOD のゲームスクリプトが `running-costs` の書き込みを受ける (`--param hummer_remote_probe:gameScript=2`) |
 
 設定の文言と速度の表示は、英語と日本語です (`strings.json`)。ゲームの言語で切り替わり、ほかの言語では英語になります。
@@ -1513,7 +1541,7 @@ MOD はこのファイルを読めないので、試験用セーブの名前と 
 ## 安全上の注意
 
 - **`newgame` はゲームの途中からは使えません。** 本体の `StartGame` はゲームが動いていないことを前提にしていて、
-  TF3 が落ちました (2026-11-15)。セーブの中で通るのは `newgame --list` と `--dry-run` だけです (始めるのは道具も MOD も
+  TF3 が落ちました (2026-11-15)。セーブの中で通るのは `newgame --list` と `--dry-run` だけです (始めるのはツールも MOD も
   断ります)。新しいゲームは、メインメニューから `restart --new` か `launch --new` で始めます。
 - **車両の価格の試験には `--via gui` (既定) を使ってください。** `--via cmd` はエンジンのコマンドだけを送り、
   `purchaseTime` を 0 のままにします。エンジンは補わないので、車両は「ゲームの開始時に買った」扱いになり、値下がり
@@ -1527,22 +1555,23 @@ MOD はこのファイルを読めないので、試験用セーブの名前と 
 - **どのウィンドウもツールとして開けるわけではありません。** 通知の一覧のレシピは、本体のボタンが渡す引数を要する
   ので、ただツールとして積むと nil の呼び出しに当たり、GUI が読み直されました (2026-11-17)。そのため
   `tool notifications` は、代わりに本体のイベント `openNotificationLog` / `closeNotificationLog` を送ります。
-  `tool --module` で他のモジュールを指す前に、その本体のボタンが何を渡しているかを確かめてください。
+  `tool --module` で他のモジュールを指す前に、その本体のボタンが何を渡しているかを確認してください。
 - **`quit --kill` と `restart` は、終わらないゲームを SIGKILL します。** 保存していない進行は失われます
   (`restart --no-kill` で諦める)。別の `--owner` が 10 分以内に変えたゲームは、`--force` が無ければどちらも殺しません。
 - **ロードすると、保存していない進行は失われます。** ロードは「ゲーム開始」ボタンを待たずに始まります (本体のロード
   画面はボタンを待つ。`--wait-for-start` でその動きにする)。`--wait-for-start` を付けると、人がボタンを押すまで
-  読み込みの画面で止まり、その間 MOD は命令を受けられません (`quit` もできない。道具はボタンを押さない)。人が
-  その場にいるときだけ使ってください。待っている間は道具が stderr にそのことを出し、押した後の答えには `note` が
+  読み込みの画面で止まり、その間 MOD は命令を受けられません (`quit` もできない。ツールはボタンを押さない)。人が
+  その場にいるときだけ使ってください。待っている間はツールが stderr にそのことを出し、押した後の答えには `note` が
   入ります。ロードの待ちが時間切れになったときは、ボタン待ちのはずだと出ます。
 - `line delete` は、車両のいる路線を `--sell-vehicles` が無ければ断ります。本体のミッションと保護された entity の
   確認は省いています (試験用のセーブ向けのため)。
-- `stock set` と `steps` はゲームの debug の命令です。試験用のセーブだけで使ってください (試験用のセーブと
-  プレイヤーのセーブを見分ける仕組みはありません。ゲーム内では未確認)。
+- `stock set`・`steps` とほかの debug の命令は、どのセーブにも届きます。読み込んだセーブが試験用かを確認するのは
+  `road --ignore-errors`・`lights --off`・`running-costs` の書き込みだけです。ほかの命令も試験用のセーブで使って
+  ください。答えに `saveNote` が付きます (セーブの中身が変わり、保存すると変更が残る)。
 - `money` は「その他」の仕訳として帳簿に残り、収支の表やグラフに出ます。
 - `buy` は、年代の外のモデルも買えます (店の可否の確認は通しません)。
 
-## ゲーム内で確かめたこと
+## ゲーム内で確認したこと
 
 確認済み (build 40444、2026-11-15〜2026-11-17):
 
@@ -1556,7 +1585,7 @@ MOD はこのファイルを読めないので、試験用セーブの名前と 
 - `buy --via cmd` と `depots` の返事の形。gui 経路の以前の版は、店の価格で買った。
 - `frame`。
 
-まだ確かめていないこと:
+まだ確認していないこと:
 
 - 今の形 (速度ボタンのレシピで動く) の `buy`・`duplicate`・`replace`・`sell` の `--via gui` と、一時停止中にその
   レシピが回るか。
@@ -1574,7 +1603,7 @@ MOD はこのファイルを読めないので、試験用セーブの名前と 
 - `town` は全部 (「町を1つ」を参照)。
 - `town connections` と `town connect` は全部 (「町のつながり」を参照)。
 - `company` と `company init` は全部 (「セーブと新しいゲーム」の会社の成長)。
-- `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブだけで使う。
+- `stock` と `steps` は全部 (「在庫とシミュレーションの歩み」を参照)。試験用のセーブ向け。
 - `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。
 - `lanes` と `around --lanes` は全部 (読むだけ、「道路の車線」を参照)。
 - `around` は全部 (読むだけ、「ある点の周りにある物」を参照)。`build` / `road` の `hits`・`--remove-buildings`・
@@ -1600,8 +1629,8 @@ python3 -m unittest discover -s tests -p 'test_*.py'   # tf3ctl.py: 偽のゲー
 - **交換フォルダ。** `recordings` を最初に使います。本体は `mod_presets` の全ファイルを MOD プリセットとして並べる
   (拡張子で絞らない) ので、そこに置いたファイルがプレイヤーのプリセット一覧に出ました。本体の GUI は `recordings` も
   `keyframes` も一覧にしません (どちらもデバッグ用のカメラツールが使う)。`saveUserdata` はファイルを上書きしないので、
-  答えは毎回新しい名前で書き、ツールが古いものを消します。`clean` は probe のファイルを全部消します (ゲームが動いて
-  いなければ、今のロードの分も)。
+  答えは毎回新しい名前で書き、ツールが古いものを消します。`clean` は probe のファイルを全部消します (ロードが動いて
+  いないとき、つまりゲームが終わった・落ちた・メインメニュー・起動中のときは、今のロードの hello とコマンドファイルも)。
 - **返事。** どのコマンドにも、返事は必ず 1 回です。例外: 待っている間にロードや新しいゲームでスクリプトが入れ替わると、
   返事は来ず、ツールの時間切れで終わります。非同期のもの (車両、路線、所持金) は、60 秒でそこまでの内容を返して終わり
   ます (ツールは 90 秒待つ)。`state` は MOD が要りません (ゲームのログとプロセスを読む)。返事のリストは、空でも `[]`
@@ -1927,7 +1956,7 @@ time = -1、category OTHER) を `makeJournalBookAssetCmd` で送ります。所�
   `hummer_remote_probe.lines`。`--via cmd` は `Line.Stop` を自前で組み、ホームを `lineSystem.getBestLineAssignment`
   で決めます (見つからなければ本体と同じく 0/0 にして notes に書く)。積み荷は旅客駅なら旅客、それ以外は `--cargo`
   だけ。待ち時間は、鉄道を含まない道路か路面電車の駅は 30 秒、他は 60 秒。
-- 送る前に確かめること (どちらの経路も): 停車駅が 2 つ以上、隣り合う停車駅 (最後と最初も) が同じグループでない、
+- 送る前に確認すること (どちらの経路も): 停車駅が 2 つ以上、隣り合う停車駅 (最後と最初も) が同じグループでない、
   どのグループも自社か持ち主なしで駅とホームがある、全停車駅に共通の乗り物の種類がある。組み立てた後、全停車駅の駅と
   ホームが実在すること。どれかに当たれば何も送りません。本体は駅の無いグループに -1 を送りうるが、エンジンの
   アサーションに当たるおそれがあるためです。`load` / `maxLoad` は、本体と同じく貨物の種類ごとに 1 つずつ作ります。
@@ -1976,7 +2005,7 @@ octree で読みます。エンジンが産業の construction とは別に持�
   イベントを送ること (Track Connector は両方を自分の GUI スクリプトからしている)。
 - `guiUpdate` から planner の coroutine の中でするエンジンの呼び出し: octree、`terrain.getHeightAt` / `isOnWater`、
   octree が返したものの component。street system の呼び出しは node である entity にだけします (それ以外を聞くとエンジンが
-  assertion で落ちる)。端は経路を送る直前にもう一度確かめます。
+  assertion で落ちる)。端は経路を送る直前にもう一度確認します。
 - `streetConnectorSystem.getConstructionEntityForStation` (無ければ、駅のまわりでその駅を持つ construction を探す) と、
   道路の piece の `roadTemplate` (読めなければ、ゲームの年の田舎道を使う)。
 - `api.engine.util.getYear` (無ければゲーム時間の暦の日付) と、street template の `availability`: どちらかが読めないときは、

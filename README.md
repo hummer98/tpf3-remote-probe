@@ -43,8 +43,13 @@ load, newgame, poll and quit only). `tf3ctl.py launch` and `restart` do this for
 
 ## Requirements
 
-- Transport Fever 3 (tested on build 40444) through Steam, on Linux. The tool uses `fcntl` and the Linux process
-  list, so it does not run on Windows as it is.
+- Transport Fever 3 (tested on build 40444) through Steam, on Linux.
+- Windows: a minimal port only, **not tested on a Windows machine**. The tool builds its paths, locks, process
+  list (`tasklist`) and command lines for Windows, so `launch`, `status` and the reading commands are meant to work
+  there; please report what does not in an issue or a pull request. `frame` and `pointer` are Linux only: `frame`
+  looks for Steam's recordings in Linux's Steam folders only (`~/.local/share/Steam`, `~/.steam/steam`), and
+  `pointer` sends X11 events. The configuration file is `~/.config/tf3ctl/config.json` on Windows too (not under
+  `%LOCALAPPDATA%`); the launch record goes to `%LOCALAPPDATA%\tf3ctl` there.
 - Python 3.8 or newer, and `luajit` on the `PATH` (the tool reads the mod's Lua files with it).
 - Optional: `ffmpeg` and Steam's background game recording for `frame`.
 - Optional: the Track Connector mod (on mod.io, modId `ethan_track_connector`, written against revision 3 / v1.3, not yet run with it in a game) for
@@ -71,23 +76,28 @@ The game log then shows `[remote_probe] ready`.
 All commands print one JSON object. Exit codes: 0 ok, 1 the game answered with an error, 2 no answer or a tool
 error, 3 the game cannot answer where it is (a menu, loading, the main menu without the probe, closed; the
 `gameState` field says which), 4 refused, nothing sent: the running game is not this `--owner`'s (see
-"Only the owner who started the game changes it"), a test-save-only command on another save, or a command
+"Only the owner who started the game changes it"), one of the commands that check for a test save
+(`road --ignore-errors`, `lights --off`, `running-costs` writes) on another save, or a command
 the configuration file does not enable (see "Configuration file").
 
 ### Time and speed
 
 ```
 python3 tools/tf3ctl.py status                        # date, speed, measured rate, mods and their settings
-python3 tools/tf3ctl.py speed 16                      # beyond the UI's 4x (capped, see Safety); 0 pauses
+python3 tools/tf3ctl.py speed 8                       # beyond the UI's 4x, up to the game's estimate; 0 pauses
 python3 tools/tf3ctl.py pause
-python3 tools/tf3ctl.py run --months 2 --speed 16     # or --days N / --until YYYY-MM-DD; then speed 0
+python3 tools/tf3ctl.py run --months 2 --speed 4      # or --days N / --until YYYY-MM-DD; then speed 0
 python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # how often the mod reads the command file, until the next load
 ```
+
+`speed` and `run --speed` are capped at the game's own estimate of what it can sustain
+(`getEstimatedMaximumGameSpeed`, see Safety): a number above it gives that estimate, not more. How high the
+estimate is depends on the save.
 
 In game, the mod adds ×8 and ×16 buttons to the right of the base ⏸ ▶ ▶▶ ▶▶▶ (0/1/2/4), in the same style. The
 current speed lights up as with the base buttons. A ×8 / ×16 button sets that speed as it is, even above the game's
 estimated maximum (unlike `speed`, which caps: the player chose it). A base button goes back to the base speeds. The
-label beside them (`×16 real ×3.2`) still shows for 8 and 16, which the base buttons do not have.
+label beside them (`×8 real ×3.2`) still shows for 8 and 16, which the base buttons do not have.
 
 ### Saves and new games
 
@@ -135,7 +145,7 @@ a warning, the game is started either way.
 
 ```
 python3 tools/tf3ctl.py company                       # read only: the base's company progression and what is missing
-python3 tools/tf3ctl.py company init [--dry-run] [--force]   # test saves only: send the start event again
+python3 tools/tf3ctl.py company init [--dry-run] [--force]   # meant for test saves: send the start event again
 ```
 
 - `company` reads the state of `::/game_mechanics/company/company.gs` (`basePopulation`, `version`, `companies`)
@@ -154,7 +164,7 @@ python3 tools/tf3ctl.py company init [--dry-run] [--force]   # test saves only: 
   give a small `basePopulation`, and the ranks then come sooner. Refused in the map editor and in a mission.
 - In the base this event also resets the company's progression and the towns' cached ratings, the subventions and
   the notifications, sets the game speed to 1 (as a base new game starts) and the welcome flag, and other mods'
-  scripts may listen to it: test saves only. After a send that timed out, another is refused unless `--force`:
+  scripts may listen to it: meant for test saves (tf3ctl does not check which save is loaded). After a send that timed out, another is refused unless `--force`:
   its event may still run later, and a second one would reset the progression again.
 - **Not checked in game yet** (written 2026-11-23): whether a sent event reaches the scripts at all (they subscribe
   to event names, and none of the base's subscribes to this one), and whether the game runs it while paused.
@@ -217,6 +227,7 @@ A game started by hand from Steam skips this: run `keep-log` before starting it.
 ```
 python3 tools/tf3ctl.py log --grep remote_probe --tail 40   # the game's stdout.txt
 python3 tools/tf3ctl.py keep-log [--list]                   # copy stdout.txt to crash_dump/logs now; list the copies
+python3 tools/tf3ctl.py clean                               # remove the probe's files from the exchange folders (answer: removed, gameState)
 python3 tools/tf3ctl.py entities --kind town --grep ems     # ids and names: town, line, vehicle, station, industry, warehouse
 python3 tools/tf3ctl.py entities --kind warehouse           # read only: each WAREHOUSE entity with its construction, stockList, stocks and capacity
 python3 tools/tf3ctl.py industry-workers [--entity 51]      # read only: capacity, sims headed there, last visitors (workers script), productivity, nearest town
@@ -260,7 +271,8 @@ station, as the placing tool. `--menu` alone sends only that event, with no filt
 filter and the select follow it 1.5 s apart; whether that then picks the given construction is not checked yet.
 
 The placement preview and its tooltip only appear when there is a proposal under the mouse, so the game's pointer
-has to be over the 3D view: `pointer FX,FY` puts it there without a person. It sends the game window synthetic
+has to be over the 3D view: `pointer FX,FY` puts it there without a person. It is off unless the configuration
+file has `"pointer": true` (see "Configuration file"); without it the command is refused (exit 4). Linux only (X11). It sends the game window synthetic
 X11 `EnterNotify` and `MotionNotify` events (through libX11 with ctypes; TF3 runs under XWayland): the game's hover
 and its drawn cursor move, the real pointer does not. It never sends a button or key event. For a cover shot:
 `camera --set` to the place, `build-tool --menu rail`, `pointer 0.5,0.47`, then `frame`; reload the save (unsaved)
@@ -372,7 +384,7 @@ python3 tools/tf3ctl.py build --remove-all                # all it built since t
 python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engine-check --collision-detail   # the whole ProposalData
 ```
 
-**For test saves.** `build` puts one construction (a `.con`: a depot, a station, an asset, an industry, another
+**Meant for test saves** (not checked). `build` puts one construction (a `.con`: a depot, a station, an asset, an industry, another
 mod's construction) at a point, with no click and no key: a `SimpleProposal` with one `ConstructionEntity` goes to
 the engine as `api.cmd.makeWorldBuildProposalCmd` from the probe's GUI script, the way a mod's own tool builds. The
 engine checks it as it checks a player's build (collisions, terrain, money); a refused build is not built
@@ -484,7 +496,7 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
 - `--remove-buildings`: the Context's `gatherBuildings` on, so the town buildings in the way go, as with the
   player's tools; `buildingsInWay` lists those the engine names (`CollisionInfo.buildingEntities`).
   `--join-streets`: the Context's `cleanupStreetGraph` on, to see whether a road end put right on an old road node
-  becomes that node (`joins`). Test saves only (they change the game), and not with `--dry-run` (refused: a dry run
+  becomes that node (`joins`). Meant for test saves (they change the game; not checked), and not with `--dry-run` (refused: a dry run
   asks the engine nothing). **Not checked in a game yet** (written
   2026-11-23): what the engine does with either; the answer's `contextNote` says so.
 - It changes the game (as `line` and `connect`), so other clients get the usual warning; one build at a time is
@@ -540,14 +552,15 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 --bridge concrete [--dry-run --engine-check]
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
-python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only: a junction's light off
+python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only (checked): a junction's light off
 python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lanes (see "A road's lanes")
 ```
 
 - Builds one straight road piece between two points (x,y[,z], metres; no z: the terrain's height), with no click:
   a `SimpleStreetProposal` (one new edge and its new nodes, numbered down from -1, as `type.d.tl` describes it)
   sent as `api.cmd.makeWorldBuildProposalCmd`, the way `build` sends a construction (the same context: nothing
-  knocked down, errors not ignored). Changes the game: test saves only.
+  knocked down, errors not ignored). Changes the game: meant for test saves (not checked, except
+  `--ignore-errors`).
 - `--bridge RES` builds the piece as a bridge of that type: a bridge type's resName as `api.res.bridgeTypeRep`
   knows it (a mod's: `<modId>::/infrastructure/bridge/<name>.bridge`), or a base bridge's file name (`concrete` is
   `::/infrastructure/bridge/concrete.bridge`). The piece goes with its edge type `BRIDGE` and `typeIndex` the
@@ -637,7 +650,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   would refuse is `ok: false` with its messages in `error`. When `makeProposalData` is not there or raises both
   ways, the answer is the probe's own plan (`checked: false`, `engineCheck: "not available: ..."`). The engine's
   evaluation runs native code a `pcall` cannot guard (an assertion there would end the game), so tf3ctl counts
-  this as changing the game: ask for the game first, test saves only.
+  this as changing the game: ask for the game first, and keep it to test saves (not checked).
   `verdict` is `buildable`, `buildable with warnings` or `refused` (`engineContexts` and `contextsDisagree` as
   `build`'s). Where only the proposal alone answers, the engine judges it in its own context, not the build's
   (`engineContext` says which): that one gathers farm fields, so a field in
@@ -646,13 +659,13 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
 - `--remove-fields` lets the road take farm fields in its way: the build's context gathers fields
   (`gatherFields`, as Track Connector's does; buildings are still not gathered), so the engine removes them and
   builds. Anything else in the way (buildings, tracks, constructions) is still refused. A road refused for a
-  collision without it gets a `hint`. Changes the game: test saves only. **Not checked in a game yet**
+  collision without it gets a `hint`. Changes the game: meant for test saves (not checked). **Not checked in a game yet**
   (written 2026-11-23): that only fields go (buildings, tracks and an industry's own parts still refuse it), that
   the forest's entities in the way were its fields, and that the engine's own context gathers fields (a guess from
   its warning); the answer says so (`removeFieldsNote`). With `--remove-fields` the dry run's `caution` says a
   warning of anything but fields may still be a collision in the build.
 - `--remove-buildings`: the Context's `gatherBuildings` on (town buildings in the way go, as with the player's
-  tools). Test saves only; not checked in a game yet. A dry run's engine check judged in the engine's own context
+  tools). Meant for test saves (the save is not checked); not checked in a game yet. A dry run's engine check judged in the engine's own context
   (`engineContext`) did not use it: `removeBuildingsNote` says town buildings among its `hits` may still go. A refusal for a collision (a build, or a dry run's engine
   check) names what is in the way in `hits`, as `build` does.
 - `--ignore-errors` (**for test saves only: skips the engine's checks**): the build is sent with
@@ -846,7 +859,7 @@ python3 tools/tf3ctl.py town --at 0,0 --name "Plain" --no-needs
   whether it works outside the map editor, whether `landUse2CargoNeeds` takes, the needs command, how the engine
   answers a place with roads or buildings on it, the population right after.
 
-### Town connections (`town connections`, `town connect`: test saves only)
+### Town connections (`town connections`, `town connect`: meant for test saves)
 
 ```
 python3 tools/tf3ctl.py town connections [--entity 801] [--index-base 0|1]   # read only
@@ -875,14 +888,15 @@ python3 tools/tf3ctl.py town connect --build [--entity 801,802] [--pairs 801:802
 - **Not checked in game yet** (written 2026-11-23): whether these work in a game outside the map editor, the
   numbering, and what `--build` does to the roads there are.
 
-### Growing a town at a point (`town develop`, `town size`: test saves only)
+### Growing a town at a point (`town develop`, `town size`: meant for test saves)
 
 ```sh
 python3 tools/tf3ctl.py town develop --at 120,-40 --count 30 [--streets] [--upgrade] [--radius 250] [--dry-run]
 python3 tools/tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] [--dry-run]
 ```
 
-- **Use these on test saves only.** They add buildings no player could place, to give a harbour's or station's
+- **Use these on test saves.** tf3ctl does not check which save is loaded; the answers carry `saveNote`. They add
+  buildings no player could place, to give a harbour's or station's
   circle its houses and shops without running years of `steps`. They warn other clients as game-changing commands
   (their dry runs too). Options go after the word (`town develop --dry-run ...`): one of the plain `town`'s given
   before it is refused, so a `--dry-run` there is never dropped.
@@ -911,7 +925,7 @@ python3 tools/tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] 
 - **Not checked in game yet** (written 2026-11-22): whether the guiUpdate state has these functions and the engine
   takes them in a game, what a develop builds where and how fast, whether `--update-all` builds at once.
 
-### Stocks and simulation steps (`stock`, `steps`: debug commands, test saves only)
+### Stocks and simulation steps (`stock`, `steps`: debug commands, meant for test saves)
 
 ```sh
 python3 tools/tf3ctl.py stock list --entity 51                       # read only
@@ -921,7 +935,8 @@ python3 tools/tf3ctl.py speed 0                                      # pause fir
 python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
 ```
 
-- **Use these on test saves only.** They send the game's debug commands (`api.cmd.debug`), which change the game
+- **Use these on test saves.** tf3ctl does not check which save is loaded; the answers carry `saveNote`. They
+  send the game's debug commands (`api.cmd.debug`), which change the game
   as no player can: cargo appears from nowhere, the simulation runs on without the clock. They are meant to cut the
   waiting on maps made for tests (a harbour's stock filling up, a vehicle arriving full, a town growing). They warn
   other clients as game-changing commands (their dry runs too).
@@ -1433,6 +1448,8 @@ python3 tools/tf3ctl.py mod my_mod                       # read only: that mod's
 python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}' [--timeout 30]   # run one: its JSON answer
 ```
 
+`--timeout` is 6-125 s for a command (default 30) and 5-600 s for a list (default 60); a value outside is refused.
+
 The probe relays the base game; a mod can add commands of its own on top of it. A mod does so by shipping one file,
 `content/remote_probe_ext.lua` (required as `<modId>::/remote_probe_ext.lua`), that returns a table of commands:
 
@@ -1459,6 +1476,11 @@ game: 0-4, answered from the engine's callback). Copy the folder into the game's
   there, one command at a time. What only works in the speed control's recipe (opening windows, the base's vehicle
   modules) is not reachable from it yet. A file is required once per load: a changed file needs a new load, and a
   new file a restart of the game (the game caches mod files at start).
+- **`mod --list` runs every such mod's file.** To list the commands, the probe requires the `remote_probe_ext.lua`
+  of every mod it looks in (below), so each one's top-level code runs in the game's GUI Lua state, whether or not
+  you meant to use that mod. Asking one mod (`mod my_mod`, `mod my_mod hello`) requires only that mod's file.
+- **The tag is the mod's own claim.** `tag = "reads"` is what the mod's author says the command does; the probe does
+  not check it. A command tagged `reads` that changes the game is sent like `status`, without the owner check.
 - **Which mods are looked in.** Those the user profile lists as installed and those with settings in the running
   game, not the official ones (`ug_*`). The GUI cannot tell which mods are enabled for the save. A mod that is not
   enabled is expected to have no file to require, and then is left out like a mod without the file (not checked in
@@ -1614,7 +1636,12 @@ tf3ctl.py --owner bob coop end
   Steam's userdata). Its backup is the same path plus `.tf3ctl-backup`.
 - `TF3_GAME_DIR`: the game's install folder, for the languages `--lang` may pick (default: `steamapps/common/Transport
   Fever 3` of the Steam that has the userdata).
-- `TF3CTL_OTHER_BACKUPS`: other tools' backups of `profile.lua` (files or folders), separated by `:` (see `--lang`).
+- `TF3CTL_OTHER_BACKUPS`: other tools' backups of `profile.lua` (files or folders), separated by `os.pathsep`
+  (`:`; `;` on Windows) (see `--lang`).
+- `TF3_ASSUME_RUNNING`: any non-empty value makes the tool take the game as running without looking at the
+  process list: `state` never reads closed or crashed (the log decides), and the main menu's hello is not checked
+  against the game process's start. For tests and for setups where the process list does not show the game (a
+  container, another machine). Other checks that need the game's process id (the owner check) still look for it.
 - `TF3CTL_CONFIG`, `XDG_CONFIG_HOME`: the configuration file (see "Configuration file").
 - `XDG_STATE_HOME`: where `modhub publish` keeps its mark (`tf3ctl/publish_pending.json`; default `~/.local/state`).
 
@@ -1640,9 +1667,11 @@ check). The mod cannot read the file: tf3ctl sends the test saves' names and the
 that needs them, and the mod checks by those (without them: `probe-` only, no modhub folder).
 
 **Debug commands** change the game as no player can: `stock set`, `steps`, `money`, `town develop` / `size` /
-`connect`, `company init`, `running-costs` writes, `lights --off` and `road --ignore-errors`. Their answers (not a dry
-run's) carry `saveNote`: the save's contents changed, and saving keeps the change (`running-costs`: the model, for
-the rest of the session). Their own fences (test saves only, not during coop, ...) stay as they were.
+`connect`, `company init`, `running-costs` writes, `lights --off` and `road --ignore-errors`. They are meant for
+test saves, but only three check the loaded save's name (`testSavePrefixes`): `road --ignore-errors`,
+`lights --off` and `running-costs` writes (also refused during coop). The others go to any save, as a debug tool
+does, with the usual owner check. Their answers (not a dry run's) carry `saveNote`: the save's contents changed,
+and saving keeps the change (`running-costs`: the model, for the rest of the session).
 
 `screenshot` and `newgame --unsafe` are gone: `screenshot` wrote no file outside photo mode (use `frame`), and
 `--unsafe` only crashed the game (start new games from the main menu: `launch` / `restart --new`).
@@ -1654,7 +1683,7 @@ the rest of the session). Their own fences (test saves only, not during coop, ..
 | Idle check interval | 1 / **2** / 5 / 10 s | how often the command file is read when no command came for a while (one read takes a few ms) |
 | Check interval after a command and during a run | 0.1 / **0.25** / 0.5 / 1 s | for two minutes after a command and during a `run` |
 | Log amount | Minimal / **Per command** / Detailed | `[remote_probe]` lines in the game log |
-| Label beside the speed buttons | **Show** / Hide | e.g. `×16 real ×3.2 →2045-07-03` for speeds the buttons do not have, and during a `run` |
+| Label beside the speed buttons | **Show** / Hide | e.g. `×8 real ×3.2 →2045-07-03` for speeds the buttons do not have, and during a `run` |
 | Game script commands (test saves) | **Off** / On | on: the mod's game script takes `running-costs` writes (`--param hummer_remote_probe:gameScript=2`) |
 
 The settings and the speed label are in English and Japanese (`strings.json`), in the game's language; other
@@ -1688,8 +1717,9 @@ languages get English. The name, summary, description and cover in the game's mo
   after the click carries a `note`, and a load that times out names the button as the likely cause.
 - `line delete` refuses a line with vehicles unless `--sell-vehicles` is given. It skips the base checks for
   missions and protected entities (it is meant for test saves).
-- `stock set` and `steps` are the game's debug commands: use them on test saves only (nothing tells a test
-  save from a player's; they are not checked in game yet).
+- `stock set`, `steps` and the other debug commands go to any save: only `road --ignore-errors`, `lights --off`
+  and `running-costs` writes check that a test save is loaded. Use the rest on test saves too; their answers
+  carry `saveNote` (the save's contents changed, saving keeps it).
 - `money` books an "other" journal entry, which shows in the finance tables and charts.
 - `buy` can buy models outside their years (the store's availability check is not applied).
 
@@ -1728,7 +1758,7 @@ Not checked yet:
 - `town`, entirely (see "One town").
 - `town connections` and `town connect`, entirely (see "Town connections").
 - `company` and `company init`, entirely (see the new game's company progression under "Saves and new games").
-- `stock` and `steps`, entirely (see "Stocks and simulation steps"): test saves only.
+- `stock` and `steps`, entirely (see "Stocks and simulation steps"): meant for test saves.
 - `parcels`, entirely (read only, see "Town building parcels along a road").
 - `lanes` and `around --lanes`, entirely (read only, see "A road's lanes").
 - `around`, entirely (read only, see "What stands near a point"); `build` / `road` `hits`, `--remove-buildings`,
@@ -1754,8 +1784,8 @@ mod's code, and was checked against no running copy of it.
 - **Exchange folder.** `recordings` is used first. The base lists every file in `mod_presets` as a mod preset (no
   extension filter), so files there showed up in the player's preset list; nothing in the base GUI lists
   `recordings` or `keyframes` (the debug camera tool uses them). `saveUserdata` never overwrites a file, so every
-  answer gets a new name and the tool removes old ones. `clean` removes every probe file (the current load's too
-  when the game is not running).
+  answer gets a new name and the tool removes old ones. `clean` removes every probe file (the current load's hello
+  and command file too when no load is running: the game closed or crashed, at the main menu, or starting).
 - **Answers.** Every command gets exactly one answer. Exception: when a load or new game replaces the script while
   a command waits, no answer comes and the tool times out. Asynchronous commands (vehicles, lines, money) give up
   after 60 s with what they have; the tool waits 90 s for them. `state` needs no mod: it reads the game's log and
