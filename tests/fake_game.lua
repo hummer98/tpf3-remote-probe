@@ -3072,7 +3072,7 @@ M.DAY_TICKS = DAY_TICKS
 -- spec.stepsPerFrame: the steps run on after the callback, this many a frame (as the engine runs them on), and
 -- spec.stepsStall: no more of them run after that many (a game that stops part way).
 -- g.debugCmds: every debug command sent, as made (nargs: the arguments make got). A stock id or cargo the list does
--- not have is the engine's assertion (g.crashed).
+-- not have, or a load set into a vehicle whose line is none (-1, not a number), is the engine's assertion (g.crashed).
 function M.installDebug(g, spec)
 	spec = spec or {}
 	local lists = spec.stockLists or {}
@@ -3182,6 +3182,11 @@ function M.installDebug(g, spec)
 		if cmd.stock == -1 then
 			local c = g.fleet[cmd.entity]
 			if not c then crash("ASSERT: no transport vehicle " .. tostring(cmd.entity)) end
+			-- a load into a vehicle with no line: the engine's fatal assertion (DataLogger.cpp:573, 2026-11-24). The
+			-- game's is not stopped by pcall (it froze): a test must check g.crashed, not only an answer's ok = false
+			if type(c.line) ~= "number" or c.line < 0 then
+				crash("ASSERT: DataLogger.cpp:573 transportVehicle.line.GetId() >= 0 at " .. tostring(cmd.entity))
+			end
 			local id = cargoId[cmd.cargoType]
 			if id == nil then crash("ASSERT: no cargo type " .. tostring(cmd.cargoType)) end
 			c.live = c.live or {}

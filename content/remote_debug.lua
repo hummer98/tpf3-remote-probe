@@ -164,7 +164,11 @@ function M.new(ctx)
 					end)) }
 				end
 			end
-			return { kind = "vehicle", entity = e, stock = -1, cargo = core.array(cargo) }
+			-- its line as remote_vehicles reads it (TRANSPORT_VEHICLE.line, a number): nil when none (-1) or when it
+			-- does not read as one (a userdata, a raising field), so that misfit refuses on the safe side
+			local line = tonumber(core.field(tv, "line"))
+			if line ~= nil and (line < 0 or line % 1 ~= 0) then line = nil end
+			return { kind = "vehicle", entity = e, stock = -1, line = line, cargo = core.array(cargo) }
 		end
 		if construction then
 			return nil, "construction " .. e .. " has no stock list under it (no warehouse, industry or town building "
@@ -245,6 +249,12 @@ function M.new(ctx)
 		end
 		if h.kind == "vehicle" then
 			if r.stock ~= -1 then return "a vehicle's load is set with stock -1 (and cargo)" end
+			-- a load put into a vehicle with no line was the engine's fatal assertion right after the command
+			-- (DataLogger.cpp:573 transportVehicle.line.GetId() >= 0; two ships, 2026-11-24), which pcall does not stop
+			if h.line == nil then
+				return "vehicle " .. h.entity .. " has no line: a load set into a vehicle without a line crashed the "
+					.. "game (engine assertion transportVehicle.line.GetId() >= 0, 2026-11-24); give it a line first"
+			end
 			for _, c in ipairs(h.cargo) do
 				if c.cargo == r.cargo then
 					if r.amount > c.capacity then

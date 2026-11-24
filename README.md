@@ -940,7 +940,10 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   module (bulk, liquid, flatbed, goods). A stock of capacity 0 is left out, so stock 0 is the mixed one only when
   there is a universal module: read the ids with `stock list`. A warehouse without modules has no stocks. A vehicle has no stock list: `kind` is `vehicle`, with `cargo` per cargo type it has
   room for (`capacity`, `count`; passengers left out and refused, as the base panel does), set with
-  `--stock -1 --cargo NAME`. `--cargo` takes the `cargo` field exactly as `stock list` shows it. Ids come from `industry-stocks`, `stations`,
+  `--stock -1 --cargo NAME`. **A vehicle must be on a line**: a load set into a vehicle with no line crashed the game
+  (engine assertion `transportVehicle.line.GetId() >= 0`, two ships, 2026-11-24), so `stock set` refuses it, dry run
+  too, before anything is sent (`stock list` shows the vehicle's `line`). Ships on a line have not crashed so far; other
+  carriers are not measured. `--cargo` takes the `cargo` field exactly as `stock list` shows it. Ids come from `industry-stocks`, `stations`,
   `entities --kind warehouse` (or `build`'s answer) and `vehicles`; `window --warehouse NAME` opens a warehouse's
   window by the name `entities --kind warehouse` shows. **Not checked in game yet**: a warehouse's stock list
   (read from the base's sources, not measured), and whether its WAREHOUSE entity has a name to pick it by.

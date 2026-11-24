@@ -876,7 +876,9 @@ python3 tools/tf3ctl.py steps 500 [--dry-run] [--allow-running]
   専用のモジュール (bulk・liquid・flatbed・goods) は 1 つずつ stock になります。capacity が 0 の stock は入らないので、
   stock 0 が混合になるのは汎用のモジュールがあるときだけです。番号は `stock list` で見てください。モジュールの無い倉庫には stock がありません。
   車両には在庫の一覧が無いので、`kind` が `vehicle` になり、積める貨物の種類ごとの `cargo` (`capacity`・`count`)
-  が出ます (乗客は本体のパネルと同じく外し、断ります)。決めるのは `--stock -1 --cargo NAME`。`--cargo` には
+  が出ます (乗客は本体のパネルと同じく外し、断ります)。決めるのは `--stock -1 --cargo NAME`。**車両は路線に付けてから**:
+  路線のない車両に積み荷を入れるとゲームが落ちたので (エンジンの assert `transportVehicle.line.GetId() >= 0`、船 2 隻、
+  2026-11-24)、`stock set` は `--dry-run` でも送る前に断ります (`stock list` に車両の `line` が出ます)。路線に付けた船ではこれまで落ちていません。船以外は測っていません。`--cargo` には
   `stock list` の `cargo` をそのまま渡します。id は `industry-stocks`・`stations`・`entities --kind warehouse`
   (または `build` の答え)・`vehicles` で分かります。`window --warehouse NAME` は、`entities --kind warehouse` に出る名前で
   倉庫の窓を開きます。**ゲーム内では未確認**: 倉庫の在庫の一覧 (本体のソースから読んだもの。計測はまだ)、倉庫の WAREHOUSE

@@ -10523,15 +10523,17 @@ test("core.debugFunction: there or not by nil only (a locked callable table coun
 end)
 
 -- a game with an industry (51: a coal output stock and a mixed input stock), a station's stock list (411, a group's
--- station), an industry 55 whose stocks are on another entity (56), and a vehicle 601 with room for 30 coal
+-- station), an industry 55 whose stocks are on another entity (56), a vehicle 601 on line 701 with room for 30
+-- coal, and 603 as 601 with no line (a load set into it is the engine's assertion)
 local function debugGame(spec, opts)
 	opts = opts or {}
 	opts.industries = opts.industries or {
 		[51] = { name = "Coal mine", stocks = { { type = 1, cargoType = 1, capacity = 400, count = 37 },
 			{ type = 0, cargoType = -1, cargoTypes = { 1, 2 }, capacity = 50, count = 4 } } },
 		[55] = { name = "Farm", stockList = 56 } }
-	opts.fleet = opts.fleet or { [601] = { vehicles = {}, line = -1, depot = 301, capacities = { 0, 30 },
+	opts.fleet = opts.fleet or { [601] = { vehicles = {}, line = 701, depot = 301, capacities = { 0, 30 },
 		live = { loaded = { [1] = 3 } } },
+		[603] = { vehicles = {}, line = -1, depot = 301, capacities = { 0, 30 }, live = { loaded = {} } },
 		[602] = { vehicles = {}, line = -1, depot = 301, capacities = { 40, 30 }, live = { loaded = { [0] = 12 } } } }
 	local g = vehicleGame(opts)
 	spec = spec or {}
@@ -10628,6 +10630,63 @@ test("stockSet: what the stock cannot take is refused before anything is sent; d
 	truthy(s.ok, s.error); eq(s.sent, false); eq(s.count, 50)
 	eq(#g.debugCmds, 0, "a dry run sends nothing"); eq(g.updateCount, 1000)
 	truthy(not g.crashed, g.crashed)
+end)
+
+-- regression (2026-11-24, two ships in a game): a load set into a vehicle with no line was the engine's fatal
+-- assertion DataLogger.cpp:573 transportVehicle.line.GetId() >= 0 right after the command
+test("stockSet: a vehicle with no line is refused before anything is sent, dry run too; one on a line is sent", function()
+	local g = debugGame()
+	local a = debugRun(g, 2401, "stockSet", '{ entity = 603, stock = -1, amount = 10, cargo = "COAL" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("has no line", 1, true), a.error)
+	truthy(tostring(a.error):find("give it a line first", 1, true), a.error)
+	local d = debugRun(g, 2402, "stockSet", '{ entity = 603, stock = -1, amount = 10, cargo = "COAL", dryRun = true }')
+	eq(d.ok, false); truthy(tostring(d.error):find("has no line", 1, true), d.error)
+	eq(#g.debugCmds, 0, "nothing sent"); truthy(not g.crashed, g.crashed)
+	-- stock list shows the line (none for 603) and only reads
+	local l = debugRun(g, 2403, "stockList", "{ entity = 603 }")
+	truthy(l.ok, l.error); eq(l.line, nil)
+	local l2 = debugRun(g, 2404, "stockList", "{ entity = 601 }")
+	truthy(l2.ok, l2.error); eq(l2.line, 701)
+	-- on a line: sent, read back, no assertion
+	local v = debugRun(g, 2405, "stockSet", '{ entity = 601, stock = -1, amount = 20, cargo = "COAL" }')
+	truthy(v.ok, v.error); eq(v.sent, true); eq(v.after, 20); eq(#g.debugCmds, 1)
+	local vd = debugRun(g, 2406, "stockSet", '{ entity = 601, stock = -1, amount = 5, cargo = "COAL", dryRun = true }')
+	truthy(vd.ok, vd.error); eq(vd.sent, false); eq(#g.debugCmds, 1)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("stockSet: a vehicle's line that does not read as an id (nil, userdata, a raising field, a fraction) is refused", function()
+	for i, line in ipairs({ "nil", "userdata", "raises", "fraction" }) do
+		local g = debugGame()
+		local e = 603
+		local get = api.engine.getComponent
+		if line == "nil" then g.fleet[e].line = nil
+		elseif line == "userdata" then g.fleet[e].line = newproxy(false)
+		elseif line == "fraction" then g.fleet[e].line = 70.5
+		else
+			-- the component's line field raises when read; the rest reads as before
+			api.engine.getComponent = function(id, kind)
+				local c = get(id, kind)
+				if id ~= e or kind ~= api.type.ComponentType.TRANSPORT_VEHICLE or c == nil then return c end
+				return setmetatable({}, { __index = function(_, k)
+					if k == "line" then error("no line field") end
+					return c[k]
+				end })
+			end
+		end
+		local a = debugRun(g, 2410 + i, "stockSet", '{ entity = 603, stock = -1, amount = 10, cargo = "COAL" }')
+		api.engine.getComponent = get
+		eq(a.ok, false, line); truthy(tostring(a.error):find("has no line", 1, true), line .. ": " .. tostring(a.error))
+		eq(#g.debugCmds, 0, line .. ": nothing sent"); truthy(not g.crashed, g.crashed)
+	end
+end)
+
+test("fake: a load set into a vehicle with no line is the engine's assertion, as in the game", function()
+	local g = debugGame()
+	local cmd = api.cmd.debug.makeStockSetCargoAmountCmd(603, -1, 10, "COAL")
+	pcall(api.cmd.sendCommand, cmd, function() end)
+	pcall(frames, g, 3)
+	truthy(g.crashed and tostring(g.crashed):find("transportVehicle.line", 1, true), tostring(g.crashed))
 end)
 
 -- warehouses (2026-11-23): build gives the construction; its one subconstruction has WAREHOUSE, whose stockList
