@@ -420,6 +420,21 @@ class FileHandlingTest(unittest.TestCase):
         self.assertEqual(tf3ctl.newest_recordings([old, live])[0], live)
         self.assertEqual(tf3ctl.newest_recordings([]), [])
 
+    def test_frame_reads_ffmpeg_as_utf8_and_replaces_what_does_not_decode(self):
+        rec = tempfile.mkdtemp()
+        write(os.path.join(rec, "init-stream0.m4s"), "i")
+        write(os.path.join(rec, "chunk-stream0-00001.m4s"), "c")
+        ns = tf3ctl.argparse.Namespace(crop=None, out=os.path.join(rec, "f.png"))
+        with unittest.mock.patch.object(tf3ctl, "recording_dirs", lambda: [rec]), \
+                unittest.mock.patch.object(tf3ctl.subprocess, "run",
+                                           return_value=subprocess.CompletedProcess([], 1, "", "bad")) as run:
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.cmd_frame(ns)
+        self.assertIn("bad", str(cm.exception))
+        self.assertEqual((run.call_args.kwargs.get("encoding"), run.call_args.kwargs.get("errors")),
+                         ("utf-8", "replace"))
+        shutil.rmtree(rec, ignore_errors=True)
+
     def test_frame_refuses_a_malformed_crop(self):
         ns = tf3ctl.argparse.Namespace(crop="1150X170+0+0", out="/tmp/x.png")
         with self.assertRaises(tf3ctl.ToolError):
@@ -3928,6 +3943,17 @@ class LaunchedFileTest(unittest.TestCase):
             raise PermissionError(13, "Access is denied")
         with unittest.mock.patch.object(tf3ctl.os, "kill", refused):
             self.assertEqual(tf3ctl.quit_game(timeout=0.3, kill=True)["how"], "kill")
+        # refused and the game stays: the error says why
+        pids[:] = [1]
+        tf3ctl.write_launched(1, owner="alice")
+
+        def denied(pid, sig):
+            raise PermissionError(13, "Access is denied")
+        with unittest.mock.patch.object(tf3ctl.os, "kill", denied), \
+                unittest.mock.patch.object(tf3ctl, "wait_exit", lambda timeout: False):
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                tf3ctl.quit_game(timeout=0.3, kill=True)
+        self.assertIn("still running after SIGKILL; kill refused: [Errno 13] Access is denied", str(cm.exception))
 
     def test_a_quit_that_failed_keeps_it(self):
         tf3ctl.game_pids = lambda: [1]
@@ -6951,6 +6977,7 @@ class ConfigDefaultsTest(unittest.TestCase):
         self.assertEqual(len(res["warnings"]), 1)
         self.assertIn("testSavePrefixes is empty", res["warnings"][0])
         self.assertIn("refused on every save", res["warnings"][0])
+        self.assertIn("save during coop", res["warnings"][0])
         self.assertIn("testSavePrefixes is empty", err)
         # with the digit rule on, the digit saves are still test saves
         self.write_config('{"testSavePrefixes": [], "testSaveDigitFirst": true}')
@@ -7174,6 +7201,7 @@ class ModCommandTest(unittest.TestCase):
                            (("m", "c", "3"), "object or list"), (("m", "c", '"s"'), "object or list"),
                            (("m", "c", "--timeout", "5"), "between 6 and 125"),
                            (("m", "c", "--timeout", "126"), "between 6 and 125"),
+                           (("m", "--timeout", "4"), "between 5 and 600"),  # one mod, no command: a list
                            (("m", "c", "--timeout", "nan"), "between 6 and 125"),
                            (("--list", "--timeout", "4"), "between 5 and 600"),
                            (("--list", "--timeout", "601"), "between 5 and 600"),

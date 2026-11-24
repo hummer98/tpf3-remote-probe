@@ -219,7 +219,8 @@ TF3CTL_OTHER_BACKUPS = backups of profile.lua made by other tools (files or fold
 on Windows; a folder counts while a file is in it): while one exists, --lang and the restore refuse, so the backups are
 put back in the reverse order they were made. TF3_ASSUME_RUNNING = any non-empty value: take the game as running
 without the process list (state is never closed / crashed, the main menu's hello is not checked against the
-process start; for tests, or where the process list cannot show the game); the owner check still looks for the pid.
+process start; for tests, or where the process list cannot show the game). The owner check and the coop mark's
+refusals still look for the game's process: when the list does not show it, they let every command through.
 
 Windows: a minimal port, not tested on a Windows machine (please report problems in an issue or a pull request).
 The configuration file is ~/.config/tf3ctl/config.json there too; frame (it looks for Steam's recordings in Linux's
@@ -422,6 +423,9 @@ def config_warning():
 
 
 TEST_SAVE_PREFIX_MIN = 3  # a 1-2 character prefix ("a", "3-") is the start of many a player's save name
+# everything a test save's name decides (is_test_save's callers), for the warnings
+TEST_SAVE_USES = ("road --ignore-errors, lights --off and running-costs writes, save during coop, loads with "
+                  "gameScript=2, and which coop commands count as changes")
 
 
 def test_save_warnings():
@@ -430,14 +434,14 @@ def test_save_warnings():
     out = []
     prefixes = test_save_prefixes()
     if not prefixes:
-        out.append("warning: testSavePrefixes is empty: road --ignore-errors, lights --off and running-costs writes "
-                   + ("go only to saves named with one digit first" if CONFIG["testSaveDigitFirst"]
-                      else "are refused on every save"))
+        out.append("warning: testSavePrefixes is empty: what needs a test save (%s) " % TEST_SAVE_USES
+                   + ("takes only saves named with one digit first" if CONFIG["testSaveDigitFirst"]
+                      else "is refused on every save, and every coop change counts"))
     for p in prefixes:
         if len(p) < TEST_SAVE_PREFIX_MIN:
             out.append("warning: testSavePrefixes has %r, shorter than %d characters: many save names start with "
-                       "it, so road --ignore-errors, lights --off and running-costs writes may reach a player's save"
-                       % (p, TEST_SAVE_PREFIX_MIN))
+                       "it, so a player's save may count as a test save (%s)" % (p, TEST_SAVE_PREFIX_MIN,
+                                                                             TEST_SAVE_USES))
     return out
 
 
@@ -2193,13 +2197,15 @@ def _quit_game(timeout=QUIT_TIMEOUT_SEC, kill=False, force=False):
                         "the game (--force kills it anyway)" % (why, other.get("owner") or "someone without --owner",
                                                                  other.get("cmd"),
                                                                  (time.time() - float(other["time"])) // 60))
+    refused = []
     for pid in [p for p in game_pids() if p in asked]:  # not a game somebody started meanwhile
         try:
             os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))  # Windows: SIGTERM is TerminateProcess
-        except OSError:  # gone already; on Windows a process that is exiting refuses with access denied
-            pass
+        except OSError as e:  # gone already; on Windows a process that is exiting refuses with access denied
+            refused.append(e)  # wait_exit decides; kept to say why, should the game stay
     if not wait_exit(15):
-        raise ToolError("the game is still running after SIGKILL")
+        raise ToolError("the game is still running after SIGKILL"
+                        + "".join("; kill refused: %s" % e for e in refused))
     return {"ok": True, "how": "kill", "quitProblem": err}
 
 
@@ -6033,7 +6039,7 @@ def make_parser():
     bt.add_argument("--menu", choices=BUILD_MENUS, help="first open this toolbar menu (its own button's event), which "
                     "picks its first item as the placing tool; the only way seen to open the tool (2026-11-18)")
     bd = sub.add_parser("build", help="put one construction (.con) on the map at a point, as a mod's tool builds "
-                                       "(no click); or take away ones the probe built. Test saves only")
+                                       "(no click); or take away ones the probe built. Meant for test saves (not checked)")
     bd.add_argument("--res", help="the construction's resName: a mod's content/<dir>/x.con.lua is <modId>::/<dir>/x.con, "
                     "a base game one ::/depots/... (on a miss the answer lists names like it)")
     bd.add_argument("--at", metavar="X,Y[,Z]", help="where (metres); no Z: the terrain's height there (under water "
@@ -6061,12 +6067,12 @@ def make_parser():
                     "each box in the way meets the proposal's own (collisionDetail.overlaps: x, y, z). Off by default "
                     "(the answer grows)")
     bd.add_argument("--remove-buildings", action="store_true", help="let it take the town buildings in its way (the "
-                    "Context's gatherBuildings, as the player's tools do; the answer's buildingsInWay). Test saves only")
+                    "Context's gatherBuildings, as the player's tools do; the answer's buildingsInWay). Meant for test saves (not checked)")
     bd.add_argument("--join-streets", action="store_true", help="the Context's cleanupStreetGraph: whether its road "
                     "end put on an old road node becomes that node (the answer's joins: wasThere, nodesHere). Not "
-                    "checked in a game yet. Test saves only")
+                    "checked in a game yet. Meant for test saves (not checked)")
     rd = sub.add_parser("road", help="build one straight road piece between two points, as a mod's tool builds (no "
-                                      "click; a SimpleStreetProposal). Test saves only")
+                                      "click; a SimpleStreetProposal). Meant for test saves (not checked)")
     rd.add_argument("--from", dest="from_", metavar="X,Y[,Z]",
                     help="one end (metres); no Z: the terrain's height there (required, but with --inspect-node)")
     rd.add_argument("--to", metavar="X,Y[,Z]", help="the other end (required, but with --inspect-node)")
@@ -6093,9 +6099,9 @@ def make_parser():
                     "(the answer grows)")
     rd.add_argument("--remove-fields", action="store_true", help="let the road take farm fields in its way (the "
                     "context's gatherFields, as the base's tools: the engine warns that fields will be removed); "
-                    "buildings, tracks and the rest still refuse it. Test saves only (changes the game)")
+                    "buildings, tracks and the rest still refuse it. Meant for test saves (not checked; changes the game)")
     rd.add_argument("--remove-buildings", action="store_true", help="let the road take town buildings in its way "
-                    "(the Context's gatherBuildings). Test saves only (changes the game)")
+                    "(the Context's gatherBuildings). Meant for test saves (not checked; changes the game)")
     rd.add_argument("--ignore-errors", action="store_true", help="changes the save's contents (saving keeps it); for test saves only: skips the engine's checks "
                     "(the build sent with the engine's ignoreErrors on: built past its non-critical errors; its API "
                     "says a critical one still refuses it). Refused unless the loaded save is a test save's (the "
@@ -6379,8 +6385,8 @@ def make_parser():
     ist.add_argument("--grep", help="a part of the name, any case")
     ist.add_argument("--all-params", action="store_true", help="every param of the construction too")
     co = sub.add_parser("company", help="read only: the base's company progression (company.gs basePopulation, the "
-                        "company's level and ticket price multiplier) and what is missing; company init: test saves "
-                        "only")
+                        "company's level and ticket price multiplier) and what is missing; company init: meant for test saves "
+                        "(not checked)")
     cos = co.add_subparsers(dest="company_action", required=False, metavar="{init}")
     ci = cos.add_parser("init", help="changes the save's contents (saving keeps it); meant for test saves (not checked): send the base's start event initNewGameFromMap again, when "
                         "company.gs has no basePopulation, or 0 while the towns have population now (a game started "
@@ -6618,7 +6624,8 @@ def make_parser():
     sub.add_parser("state", help="where the game is (menu, loading, ...), from its log; needs no mod")
     sub.add_parser("restore-profile", help="put profile.lua back from the backup launch / restart --lang made (not "
                                            "while the game runs)")
-    sub.add_parser("clean", help="remove every probe file; the current load's too when the game is not running")
+    sub.add_parser("clean", help="remove every probe file; the current load's too when the game is closed, has "
+                   "crashed, or is at the main menu or starting")
     lg = sub.add_parser("log", help="lines of the game's stdout.txt")
     lg.add_argument("--grep")
     lg.add_argument("--tail", type=int, default=50)
