@@ -1641,7 +1641,8 @@ tf3ctl.py --owner bob coop end
 - `TF3_ASSUME_RUNNING`: any non-empty value makes the tool take the game as running without looking at the
   process list: `state` never reads closed or crashed (the log decides), and the main menu's hello is not checked
   against the game process's start. For tests and for setups where the process list does not show the game (a
-  container, another machine). Other checks that need the game's process id (the owner check) still look for it.
+  container, another machine). The owner check and the coop mark's refusals still look for the game's process:
+  when the process list does not show it, they pass every command (nothing is refused for `ownerCheck` or coop).
 - `TF3CTL_CONFIG`, `XDG_CONFIG_HOME`: the configuration file (see "Configuration file").
 - `XDG_STATE_HOME`: where `modhub publish` keeps its mark (`tf3ctl/publish_pending.json`; default `~/.local/state`).
 
@@ -1656,7 +1657,7 @@ every key with its default and what it does; `tf3ctl.py config` shows what is in
 |---|---|---|
 | `ownerCheck` | `false` | game-changing commands go only to the game this `--owner` started (below) |
 | `coop` | `false` | `coop start` / `end` and `launch --coop`; off, they are refused (exit 4, `"refused": "config"`). Needs `ownerCheck` true: `coop` without it makes the file unreadable |
-| `testSavePrefixes` | `["probe-"]` | the save names that count as test saves (`road --ignore-errors`, `lights --off`, `running-costs` writes) |
+| `testSavePrefixes` | `["probe-"]` | the save names that count as test saves: the checks of `road --ignore-errors`, `lights --off` and `running-costs` writes, where `save` may write during coop, which loads may take `--param hummer_remote_probe:gameScript=2`, and which coop commands count as changes to a person's game |
 | `testSaveDigitFirst` | `false` | a name with one digit first (`3-probe`) is a test save too |
 | `pointer` | `false` | the `pointer` command |
 | `modhub.validateFolders` / `publishFolders` / `publishedIds` | empty | the staging folders `modhub validate` / `publish` take, and the folders already on mod.io with their ids |

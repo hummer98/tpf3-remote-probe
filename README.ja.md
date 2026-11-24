@@ -520,7 +520,7 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 --bridge concrete [--dry-run --engine-check]
 python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
-python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # 試験用のセーブだけ (確認する): 交差点の信号を外す
+python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # 試験用のセーブだけ (tf3ctl が確認します): 交差点の信号を外す
 python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車線 (「道路の車線」を参照)
 ```
 
@@ -1364,34 +1364,34 @@ return {
 0〜4、エンジンのコールバックから答える)。フォルダをゲームの MOD のフォルダに `remote_probe_ext_sample_1` として写し、
 プローブと一緒にセーブで有効にすると、`mod --list` に出ます。
 
-- **どこで動くか.** プローブは、ゲームの GUI の Lua 状態の `guiUpdate` の中でファイルを require し、そこで `run` を
+- **どこで動くか。** プローブは、ゲームの GUI の Lua 状態の `guiUpdate` の中でファイルを require し、そこで `run` を
   1 つずつ呼びます。速度ボタンのレシピの中でしか動かないもの (窓を開く、バニラの車両のモジュール) には、まだ届きません。
   ファイルはロードごとに 1 回だけ require します。ファイルを変えたらロードし直し、新しいファイルを足したらゲームの
   再起動が要ります (ゲームは起動のときに MOD のファイルを読み込む)。
-- **`mod --list` は、どの MOD のファイルも動かします.** 命令の一覧を作るために、プローブは見る MOD (下) の
+- **`mod --list` は、どの MOD のファイルも動かします。** 命令の一覧を作るために、プローブは見る MOD (下) の
   `remote_probe_ext.lua` を全部 require します。そのため、使うつもりの無い MOD のものでも、ファイルの一番外の
   コードがゲームの GUI の Lua 状態で動きます。1 つの MOD を指定したとき (`mod my_mod`、`mod my_mod hello`) は、
   その MOD のファイルだけを require します。
-- **札は MOD の自己申告です.** `tag = "reads"` は MOD の作者が言うことで、プローブは確認しません。
+- **札は MOD の自己申告です。** `tag = "reads"` は MOD の作者が言うことで、プローブは確認しません。
   `reads` の札でゲームを変える命令は、`status` と同じく owner の検査なしで送られます。
-- **どの MOD を見るか.** ユーザーのプロファイルが入れたものとして挙げる MOD と、動いているゲームに設定がある MOD。
+- **どの MOD を見るか。** ユーザーのプロファイルが入れたものとして挙げる MOD と、動いているゲームに設定がある MOD。
   公式の MOD (`ug_*`) は見ません。セーブで有効な MOD かどうかは GUI から分かりません。有効でない MOD には require
   できるファイルが無いと見ており、そのときはファイルの無い MOD と同じく一覧から外れます (ゲーム内では未確認。もし
   ゲームがそのファイルを読めるなら、ファイルの一番外のコードがゲームの中で動きます)。`broken` には、ファイルはあるが動かないもの
   (コンパイルできない、エラーを投げる、表を返さない、新しい `api` を求める) が出ます。
-- **答え.** `run` は答えを返します。エラーは `nil, "文"` で返します。ツールは
+- **答え。** `run` は答えを返します。エラーは `nil, "文"` で返します。ツールは
   `{ "ok": true, "mod", "command", "tag", "result": <答え>, "seconds" }` を出します。後から答える (エンジンの
   コールバックから) ときは、`local finish = ctx.defer()` を呼び、あとで `finish(result)` か `finish(nil, "文")` を 1 回
   呼びます。`--timeout` より 5 秒短い時間のうちに来なければ時間切れのエラーになり、その後の `finish` は無視します。
-- **エラーは答えになる.** `run` の中の Lua のエラー、`nil` の答え、JSON にできない答え (関数、userdata、自分を含む表、
+- **エラーは答えになる。** `run` の中の Lua のエラー、`nil` の答え、JSON にできない答え (関数、userdata、自分を含む表、
   NaN、20 段より深い、1,000,000 文字より長い)、無い命令や MOD は、どれも `{ "ok": false, "error", "kind" }` で返り
   (`kind`: `noExt`・`broken`・`noCommand`・`error`・`noAnswer`・`badResult`・`timeout`)、プローブは動き続けます。
   `pcall` で捕まえられないものは MOD の側の責任です: MOD が呼ぶ api の中のエンジンの assertion、終わらない繰り返し。
-- **owner の検査.** 札が `reads` の命令は `status` と同じに送ります。それ以外は、まず読むだけの形 (`modRead`) で送り、
+- **owner の検査。** 札が `reads` の命令は `status` と同じに送ります。それ以外は、まず読むだけの形 (`modRead`) で送り、
   MOD は何も動かさずに断り (`needsChange`)、ツールが `modChange` で送り直します。`modChange` はゲームを変える命令と
   数えます: `"ownerCheck": true` のときは、この `--owner` が起動したゲームにだけ送り (「ゲームを変えるのは起動した owner だけ」)、`coop` が通す命令には
   入らず、`status` の `lastAction` に出ます。
-- **`ctx`.** `mod`・`command`・`id`・`tag`・`owner` (`--owner`)・`timeout`。`log(msg[, level])` (MOD の名前つきでゲームの
+- **`ctx`。** `mod`・`command`・`id`・`tag`・`owner` (`--owner`)・`timeout`。`log(msg[, level])` (MOD の名前つきでゲームの
   ログに 1 行)、`try(fn)` (fn の値、エラーなら nil)、`call(fn, ...)` (pcall)、`array(t)` (空の表を `[]` と書く)、
   `now()` (ゲームの時刻・日付・速度、`status` と同じ)、`appTime()`・`clock()`、`exists(e)`・`component(e, "NAME")`・
   `name(e)` (ある entity だけ。間違った id で引かない)、`sendCommand(cmd, onDone)` (`api.cmd.sendCommand`、`onDone` は
@@ -1486,8 +1486,9 @@ tf3ctl.py --owner bob coop end
   (`:`。Windows では `;`) (`--lang` を参照)。
 - `TF3_ASSUME_RUNNING`: 空でない値なら、プロセス一覧を見ずにゲームが動いているとみなします。`state` は終了・落ちた
   とは読まず (ログで決める)、メインメニューの hello がゲームのプロセスの起動より新しいかも確認しません。テスト用と、
-  プロセス一覧にゲームが出ない環境 (コンテナ、別のマシン) 向けです。ゲームのプロセス id が要るほかの検査
-  (owner の検査) は、これまでどおりプロセスを探します。
+  プロセス一覧にゲームが出ない環境 (コンテナ、別のマシン) 向けです。owner の検査と coop の印による拒否は、
+  これまでどおりゲームのプロセスを探します。プロセス一覧にゲームが出ないと、この 2 つはどの命令も通します
+  (`ownerCheck` でも coop でも断りません)。
 - `TF3CTL_CONFIG`、`XDG_CONFIG_HOME`: 設定ファイル (「設定ファイル」を参照)。
 - `XDG_STATE_HOME`: `modhub publish` の印の置き場所 (`tf3ctl/publish_pending.json`。既定 `~/.local/state`)。
 
@@ -1503,7 +1504,7 @@ tf3ctl.py --owner bob coop end
 |---|---|---|
 | `ownerCheck` | `false` | ゲームを変える命令は、その `--owner` が起動したゲームにだけ届く (下記) |
 | `coop` | `false` | `coop start` / `end` と `launch --coop`。切れていると断ります (終了コード 4、`"refused": "config"`)。`ownerCheck` が true であることが要ります。`coop` だけを入れたファイルは、読めないファイルとして扱います |
-| `testSavePrefixes` | `["probe-"]` | 試験用セーブとみなす名前の前置き (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み) |
+| `testSavePrefixes` | `["probe-"]` | 試験用セーブとみなす名前の前置き。`road --ignore-errors`・`lights --off`・`running-costs` の書き込みの検査のほか、coop の間に `save` が書ける名前、`--param hummer_remote_probe:gameScript=2` を付けて読み込めるセーブ、coop の命令を人のゲームへの変更として数えるかにも効きます |
 | `testSaveDigitFirst` | `false` | 数字 1 文字で始まる名前 (`3-probe`) も試験用セーブにする |
 | `pointer` | `false` | `pointer` 命令 |
 | `modhub.validateFolders` / `publishFolders` / `publishedIds` | 空 | `modhub validate` / `publish` が受け付ける staging のフォルダと、mod.io にすでにあるフォルダとその id |
