@@ -476,6 +476,25 @@ class SmallFixes(unittest.TestCase):
             self.assertEqual(T.read_json("x.lua"), {"name": "駅"})
         self.assertEqual(run.call_args.kwargs.get("encoding"), "utf-8")
 
+    def test_read_json_without_luajit_or_when_it_hangs_is_a_tool_error(self):
+        with unittest.mock.patch.dict(os.environ, {"LUAJIT": os.path.join(tempfile.gettempdir(), "no-such-luajit")}):
+            with self.assertRaises(T.ToolError) as cm:
+                T.read_json("x.lua")
+        self.assertIn("did not run", str(cm.exception))
+        with unittest.mock.patch.object(T.subprocess, "run", side_effect=subprocess.TimeoutExpired(["luajit"], 10)):
+            with self.assertRaises(T.ToolError) as cm:
+                T.read_json("x.lua")
+        self.assertIn("did not run", str(cm.exception))
+        # try_read takes a failed read for a file still being written; a reader that cannot run must not wait
+        with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as f:
+            f.write("return {}")
+        try:
+            with unittest.mock.patch.object(T.subprocess, "run", side_effect=FileNotFoundError(2, "luajit")):
+                with self.assertRaises(T.ReaderFailed):
+                    T.try_read(f.name)
+        finally:
+            os.unlink(f.name)
+
     def test_main_reconfigures_a_non_utf8_console(self):
         class Stream(io.StringIO):
             def __init__(self, encoding):

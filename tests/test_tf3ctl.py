@@ -3919,6 +3919,15 @@ class LaunchedFileTest(unittest.TestCase):
         with unittest.mock.patch.object(tf3ctl.os, "kill", lambda pid, sig: pids.clear()):
             self.assertEqual(tf3ctl.quit_game(timeout=0.3, kill=True)["how"], "kill")
         self.assertFalse(os.path.exists(self.path))
+        # the kill refused (access denied, as Windows answers for a process already exiting) but the game went
+        pids[:] = [1]
+        tf3ctl.write_launched(1, owner="alice")
+
+        def refused(pid, sig):
+            pids.clear()
+            raise PermissionError(13, "Access is denied")
+        with unittest.mock.patch.object(tf3ctl.os, "kill", refused):
+            self.assertEqual(tf3ctl.quit_game(timeout=0.3, kill=True)["how"], "kill")
 
     def test_a_quit_that_failed_keeps_it(self):
         tf3ctl.game_pids = lambda: [1]

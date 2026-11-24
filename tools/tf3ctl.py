@@ -279,6 +279,10 @@ class ToolError(Exception):
     pass
 
 
+class ReaderFailed(ToolError):
+    """luajit, which reads the mod's files, could not be started or hung: waiting longer will not help."""
+
+
 class OwnerRefused(ToolError):
     """A game-changing command for a game this --owner did not start; nothing was sent. Exit code 4."""
     refused = "owner"  # the answer's "refused"
@@ -599,8 +603,11 @@ def read_json(path):
     """The JSON inside one of the mod's files; ToolError when it cannot be read (yet)."""
     luajit = os.environ.get("LUAJIT", "luajit")
     # the reader comes on stdin ("-"): with -e, luajit would run the path as a second script
-    r = subprocess.run([luajit, "-", path], input=READ_LUA, capture_output=True, text=True, encoding="utf-8",
-                       timeout=10)
+    try:
+        r = subprocess.run([luajit, "-", path], input=READ_LUA, capture_output=True, text=True, encoding="utf-8",
+                           timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:  # no luajit on PATH (common on Windows), or it hung
+        raise ReaderFailed(f"cannot read {path}: luajit ({luajit}) did not run: {e}")
     if r.returncode != 0:
         raise ToolError(f"cannot read {path}: {r.stderr.strip()}")
     try:
@@ -615,6 +622,8 @@ def try_read(path):
         return None
     try:
         return read_json(path)
+    except ReaderFailed:  # not a half-written file: a wait for the answer would only run into its timeout
+        raise
     except ToolError:
         return None
 
@@ -2187,7 +2196,7 @@ def _quit_game(timeout=QUIT_TIMEOUT_SEC, kill=False, force=False):
     for pid in [p for p in game_pids() if p in asked]:  # not a game somebody started meanwhile
         try:
             os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))  # Windows: SIGTERM is TerminateProcess
-        except ProcessLookupError:
+        except OSError:  # gone already; on Windows a process that is exiting refuses with access denied
             pass
     if not wait_exit(15):
         raise ToolError("the game is still running after SIGKILL")
@@ -5628,7 +5637,7 @@ def cmd_frame(ns):
                 out.write(a.read())
                 out.write(b.read())
             r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", seg] + vf + ["-update", "1", ns.out],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode == 0 and os.path.exists(ns.out):
                 break
             last_err = r.stderr.strip()
