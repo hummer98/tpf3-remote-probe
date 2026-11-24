@@ -1608,7 +1608,8 @@ tf3ctl.py --owner bob coop end
   is required (1-200 characters), `--minutes` is 1-10080 (7 days). Renewing keeps the change count of the mark.
 - While it counts, this owner may send what helps the user: every reading command, `camera`, `window` (not
   `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`, other mods' commands
-  (`mod`, sent as `modChange`). This holds on the user's own saves too.
+  (`mod`, sent as `modChange`). This holds on the user's own saves too. What a mod's command (or an `event`)
+  does is up to that mod: tf3ctl's refusals below cover tf3ctl's own commands, not a mod command that saves.
 - Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`.
 - `save` only to a test save's name (`testSavePrefixes`, and with `testSaveDigitFirst` one digit first,
   `3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that

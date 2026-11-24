@@ -1472,6 +1472,7 @@ tf3ctl.py --owner bob coop end
 
 - `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。延長しても、印の変更の回数は引き継ぎます。
 - 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`、ほかの MOD の命令 (`mod`。`modChange` で送るもの)。ユーザーのセーブでも同じです。
+  MOD の命令 (と `event`) が何をするかは、その MOD 次第です。下の拒否は tf3ctl 自身の命令に効くもので、保存する MOD の命令は止めません。
 - `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`。
 - `save` は試験用のセーブの名前にだけ (`testSavePrefixes`。`testSaveDigitFirst` なら数字 1 文字で始まる名前 `3-probe` も)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
 - ほかは断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`、`tool`、`buy`、`line`、`terrain`、`town`、`modhub` など。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。
