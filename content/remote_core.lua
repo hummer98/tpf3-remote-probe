@@ -4738,4 +4738,144 @@ function M.collisionOverlaps(mine, hits)
 	return #out > 0 and M.array(out) or nil
 end
 
+---------------------------------------------------------------------------------------------------------------------
+-- other mods' commands (remote_modext.lua): a mod that ships EXT_FILE gets its own commands through the probe
+-- (tf3ctl mod --list, tf3ctl mod <modId> <command> [JSON]). The pure parts are here: the file's table checked, the
+-- call's arguments, and whether an answer can be written as JSON.
+
+M.EXT_FILE = "remote_probe_ext.lua"
+M.EXT_API = 1 -- the form of EXT_FILE this probe reads; a file asking for a newer one is refused, not guessed at
+M.EXT_TAGS = { reads = true, changes = true }
+M.EXT_NAME_MAX = 64
+M.EXT_DESCRIPTION_MAX = 500
+M.EXT_TIMEOUT_DEFAULT = 20 -- seconds a deferred answer may take, unless the call asks for another
+M.EXT_TIMEOUT_MAX = 120
+M.EXT_RESULT_MAX = 1000000 -- characters of JSON in one answer (saveUserdata writes it as one Lua string)
+-- modList reads only; modRead runs a command tagged reads and refuses one tagged changes (nothing run), which the
+-- tool then sends again as modChange: so a command that changes the game always arrives as a command name the
+-- tool's owner check and the mod's "who used the game" know as changing, without either looking into the file
+M.COMMANDS.modList = true
+M.COMMANDS.modRead = true
+M.COMMANDS.modChange = true
+M.CHANGES_GAME.modChange = true
+
+local function extName(s)
+	return type(s) == "string" and s ~= "" and #s <= M.EXT_NAME_MAX and s:match("^[%w_%.%-]+$") ~= nil
+end
+M.extName = extName
+
+-- raw: what requiring a mod's EXT_FILE returned. Returns { api, commands = { [name] = { run, tag, changes,
+-- description, notes } }, notes } or nil and why. A command without a tag, or with one this probe does not know,
+-- counts as changing the game: the safe side.
+function M.extTable(raw)
+	if type(raw) ~= "table" then
+		return nil, M.EXT_FILE .. " returned " .. type(raw) .. ", not a table (return { api = 1, commands = { ... } })"
+	end
+	local apiV = raw.api
+	if apiV ~= nil and (type(apiV) ~= "number" or apiV % 1 ~= 0 or apiV < 1) then
+		return nil, "api must be a whole number from 1 (got " .. tostring(apiV) .. ")"
+	end
+	apiV = apiV or 1
+	if apiV > M.EXT_API then
+		return nil, "written for ext api " .. apiV .. "; this remote probe reads api " .. M.EXT_API .. " (update the probe)"
+	end
+	if type(raw.commands) ~= "table" then return nil, "commands must be a table of name = { run = function, ... }" end
+	local out, notes = { api = apiV, commands = {} }, {}
+	for name, c in pairs(raw.commands) do
+		if not extName(name) then
+			notes[#notes + 1] = "command " .. tostring(name) .. " left out: a name is 1-" .. M.EXT_NAME_MAX
+				.. " letters, digits, _ . -"
+		elseif type(c) ~= "table" or type(c.run) ~= "function" then
+			notes[#notes + 1] = "command " .. name .. " left out: it has no run function"
+		else
+			local e = { run = c.run, description = "", tag = c.tag, notes = {} }
+			if type(c.description) == "string" then
+				e.description = c.description:sub(1, M.EXT_DESCRIPTION_MAX)
+			elseif c.description ~= nil then
+				e.notes[#e.notes + 1] = "description is not a string"
+			end
+			if c.tag == nil then
+				e.tag = "changes"
+				e.notes[#e.notes + 1] = "no tag: taken as changes"
+			elseif not M.EXT_TAGS[c.tag] then
+				e.notes[#e.notes + 1] = "tag " .. tostring(c.tag) .. " is not reads or changes: taken as changes"
+				e.tag = "changes"
+			end
+			e.changes = e.tag ~= "reads"
+			out.commands[name] = e
+		end
+	end
+	if next(out.commands) == nil then
+		return nil, "no usable command" .. (#notes > 0 and (" (" .. table.concat(notes, "; ") .. ")") or "")
+	end
+	table.sort(notes)
+	out.notes = notes
+	return out
+end
+
+-- the list entry of one mod's commands, sorted by name
+function M.extListEntry(modId, t)
+	local names = {}
+	for name in pairs(t.commands) do names[#names + 1] = name end
+	table.sort(names)
+	local cmds = {}
+	for _, name in ipairs(names) do
+		local c = t.commands[name]
+		cmds[#cmds + 1] = { name = name, description = c.description, tag = c.tag, changes = c.changes,
+			notes = #c.notes > 0 and M.array(c.notes) or nil }
+	end
+	return { mod = modId, api = t.api, commands = M.array(cmds), notes = #t.notes > 0 and M.array(t.notes) or nil }
+end
+
+-- modRead / modChange args: mod, command, args (a table, given to the command as it came), timeout (seconds)
+function M.extCallArgs(a)
+	a = a or {}
+	if not extName(a.mod) then return nil, "give the mod's id (mod --list shows the mods with commands)" end
+	if not extName(a.command) then return nil, "give the command's name (mod --list shows them)" end
+	local args = a.args
+	if args == nil then args = {} end
+	if type(args) ~= "table" then return nil, "the command's arguments must be a JSON object or list" end
+	local timeout = M.EXT_TIMEOUT_DEFAULT
+	if a.timeout ~= nil then
+		timeout = tonumber(a.timeout)
+		if timeout == nil or timeout ~= timeout or timeout < 1 or timeout > M.EXT_TIMEOUT_MAX then
+			return nil, string.format("timeout must be between 1 and %d seconds", M.EXT_TIMEOUT_MAX)
+		end
+	end
+	return { mod = a.mod, command = a.command, args = args, timeout = timeout }
+end
+
+-- Why v cannot go into an answer as JSON, or nil when it can. The encoder above writes anything (a function as its
+-- name, a cycle as "<cycle>"), so an ext's answer is checked first: a wrong answer is an error, not a wrong value.
+function M.extResultError(v)
+	local seen = {}
+	local function walk(x, path, depth)
+		local t = type(x)
+		if t == "boolean" or t == "string" then return nil end
+		if t == "number" then
+			if x ~= x or x == math.huge or x == -math.huge then return path .. " is not a finite number" end
+			return nil
+		end
+		if t ~= "table" then return path .. " is a " .. t .. ", which JSON has no form for" end
+		if seen[x] then return path .. " is a table that holds itself (a cycle)" end
+		if depth > 20 then return path .. " is nested more than 20 deep" end
+		seen[x] = true
+		local keys = {}
+		for k in pairs(x) do keys[#keys + 1] = k end
+		table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+		for _, k in ipairs(keys) do
+			local kt = type(k)
+			if kt ~= "string" and not (kt == "number" and k % 1 == 0 and k == k) then
+				return path .. " has a key of type " .. kt
+			end
+			local err = walk(x[k], kt == "number" and (path .. "[" .. string.format("%d", k) .. "]") or (path .. "." .. k), depth + 1)
+			if err then return err end
+		end
+		seen[x] = nil -- (a table met twice side by side is fine: only one holding itself is not)
+		return nil
+	end
+	if v == nil then return "result is nil" end
+	return walk(v, "result", 0)
+end
+
 return M

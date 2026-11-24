@@ -11862,6 +11862,9 @@ dofile(root .. "/tests/run_runcost.lua")({ test = test, eq = eq, truthy = truthy
 -- build / road --collision-detail (tests/run_collision.lua)
 dofile(root .. "/tests/run_collision.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core,
 	buildWorld = buildWorld, buildRun = buildRun, roadWorld = roadWorld, roadRun = roadRun, RAMP = RAMP })
+-- other mods' commands: modList, modRead, modChange (tests/run_modext.lua)
+dofile(root .. "/tests/run_modext.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
+	newGame = newGame, send = send, frames = frames, final = final, answerText = answerText, FIRST = FIRST, SAVES = SAVES })
 
 print(string.format("\n%d passed, %d failed", passes, failures))
 RP_TEST_FAILURES = failures -- the outer run (top of this file) cleans up and exits with it

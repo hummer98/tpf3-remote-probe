@@ -60,6 +60,10 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # answer has before, the writes (the engine's error word for word) and after, in both Lua states
   tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--columns 4]   # read only: the finance table's rows
             # per carrier (MAINTENANCE / VEHICLE = the running costs), and calculateBalance of the fleet and vehicles
+  tf3ctl.py mod --list | mod <modId>   # read only: the mods that ship remote_probe_ext.lua and their commands
+            # (name, description, tag reads / changes)
+  tf3ctl.py mod <modId> <command> ['{"key": 1}'] [--timeout 30]   # run one of them; a command tagged changes (or
+            # untagged) goes past the owner check as every game-changing command does
   tf3ctl.py company init [--dry-run] [--force]   # test saves only: the base's start event (initNewGameFromMap) sent
             # again when basePopulation is missing or 0 while towns have population (a start with no towns)
   tf3ctl.py fit --res R --at x,y [--radius 100] [--size W,D] [--mouth DX,DY [--link 8,40]] [--houses N] [--check 3]   # where
@@ -225,9 +229,11 @@ RECENT_SEC = 600  # another owner's game-changing command this recent gets a war
 CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "event", "tool", "buy", "duplicate",
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
-                "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect", "runningCostsSet", "lightsOff"}  # window: what the player sees  # poll: only the mod's file reads
+                "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect", "runningCostsSet", "lightsOff",
+                "modChange"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
+# modChange: another mod's command tagged "changes" (or untagged); modList and modRead (tagged "reads") only read.
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -4659,6 +4665,47 @@ def cmd_modhub_publish_clear(ns):
     return out
 
 
+MOD_TIMEOUT_SEC = 30
+MOD_EXT_TIMEOUT_MAX = 120  # the mod's core.EXT_TIMEOUT_MAX: how long a command may defer its answer
+MOD_EXT_MARGIN_SEC = 5  # the mod's own timeout comes this much before the tool's, so its error answer arrives
+
+
+def mod_call_args(ns):
+    """(wire command, args) for mod: modList, or modRead with the command's own JSON arguments."""
+    if ns.list or ns.mod_command is None:
+        if ns.mod_command is not None or ns.mod_json is not None:
+            raise ToolError("mod --list takes at most a mod's id (mod --list, or mod <modId>)")
+        return "modList", ({"mod": ns.mod_id} if ns.mod_id else {})
+    if ns.mod_json is None:
+        call_args = {}
+    else:
+        try:
+            call_args = json.loads(ns.mod_json)  # (NaN / Infinity: to_lua refuses them)
+        except ValueError as e:
+            raise ToolError("the arguments are not JSON: %s" % e)
+        if not isinstance(call_args, (dict, list)):
+            raise ToolError("the arguments must be a JSON object or list, e.g. '{\"speed\": 0}'")
+    t = ns.timeout
+    if t is None or not (MOD_EXT_MARGIN_SEC + 1 <= t <= MOD_EXT_TIMEOUT_MAX + MOD_EXT_MARGIN_SEC):
+        raise ToolError("--timeout must be between %d and %d seconds" % (MOD_EXT_MARGIN_SEC + 1,
+                                                                      MOD_EXT_TIMEOUT_MAX + MOD_EXT_MARGIN_SEC))
+    return "modRead", {"mod": ns.mod_id, "command": ns.mod_command, "args": call_args,
+                       "timeout": t - MOD_EXT_MARGIN_SEC}
+
+
+def cmd_mod(ns):
+    """Another mod's commands. A command runs as modRead first: the mod runs it there only when the mod tagged it
+    reads, and otherwise answers needsChange without running anything; it then goes again as modChange, a command
+    in CHANGES_GAME, so the owner check (and coop) decide over it as over every game-changing command."""
+    wire, args = mod_call_args(ns)
+    if wire == "modList":
+        return send("modList", args, timeout=60)
+    res = send("modRead", args, timeout=ns.timeout)
+    if isinstance(res, dict) and res.get("needsChange") is True:
+        res = send("modChange", args, timeout=ns.timeout)
+    return res
+
+
 def cmd_modhub(ns):
     """My Mods in the main menu: status (read only), validate (one staging mod), publish (one new mod, or an update
     of the mod.io page of the folder's fileid)."""
@@ -6122,6 +6169,16 @@ def make_parser():
     cn.add_argument("--build", action="store_true", help="build it (default: only plan and check it)")
     cn.add_argument("--clear", action="store_true", help="with --build: knock down town buildings in the way")
     cn.add_argument("--timeout", type=float, default=120, help="seconds for the whole command (10-1800)")
+    mx = sub.add_parser("mod", help="other mods' commands: those a mod ships in remote_probe_ext.lua (--list, or a "
+                        "mod's id alone, reads which there are); a command tagged changes goes past the owner check")
+    mx.add_argument("mod_id", nargs="?", metavar="MOD_ID", help="the mod's id (its mod.json modId)")
+    mx.add_argument("mod_command", nargs="?", metavar="COMMAND", help="one of the mod's commands")
+    mx.add_argument("mod_json", nargs="?", metavar="JSON", help="the command's arguments: a JSON object or list "
+                    "(default {})")
+    mx.add_argument("--list", action="store_true", help="the mods with commands, and their commands (read only)")
+    mx.add_argument("--timeout", type=float, default=MOD_TIMEOUT_SEC, help="seconds to wait for the answer "
+                    "(default %d; the mod gives a command that defers its answer %d s less)"
+                    % (MOD_TIMEOUT_SEC, MOD_EXT_MARGIN_SEC))
     mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate, publish "
                                        "(one new mod, or an update of one on mod.io)")
     msub = mh.add_subparsers(dest="action", required=True)
@@ -6400,6 +6457,8 @@ def main(argv=None):
             res = cmd_connect(ns)
         elif ns.cmd == "modhub":
             res = cmd_modhub(ns)
+        elif ns.cmd == "mod":
+            res = cmd_mod(ns)
         elif ns.cmd == "coop":
             res = cmd_coop(ns)
     except OwnerRefused as e:

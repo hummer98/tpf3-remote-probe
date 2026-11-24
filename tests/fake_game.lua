@@ -17,6 +17,28 @@ table.insert(package.loaders or package.searchers, 2, function(name)
 	if rel then return assert(loadfile(here .. "/content/" .. rel)) end
 end)
 
+-- other mods' remote_probe_ext.lua (remote_modext.lua): M.extMods[modId] = the file's text, { file = path }, or a
+-- table to hand out as it is; a mod not listed has no such file. A text that does not compile fails the require
+-- with the compiler's message, as a broken file would.
+M.extMods = {}
+table.insert(package.loaders or package.searchers, 2, function(name)
+	local modId = name:match("^([^:]+)::/remote_probe_ext%.lua$")
+	if not modId or modId == "hummer_remote_probe" then return nil end
+	local src = M.extMods[modId]
+	if src == nil then return "\n\tno file " .. name .. " (fake: the mod ships none)" end
+	if type(src) == "table" and src.file then
+		local fn, err = loadfile(src.file)
+		if not fn then error("error loading module '" .. name .. "':\n\t" .. tostring(err), 0) end
+		return fn
+	end
+	if type(src) == "string" then
+		local fn, err = loadstring(src, "=" .. name)
+		if not fn then error("error loading module '" .. name .. "':\n\t" .. tostring(err), 0) end
+		return fn
+	end
+	return function() return src end
+end)
+
 -- base GUI modules the vehicle commands require (vehicle_react_util.tl, vehicle_util.tl): fakes set per game in
 -- M.guiModules; an absent one fails to load, as a missing file would
 -- M.reactOnly: modules that load only in a react state (M.inReact, set by a test around a recipe's join), as the
@@ -1644,6 +1666,11 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_parcels.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_runcost.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_reach.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_modext.lua"] = nil
+		for k in pairs(package.loaded) do
+			if type(k) == "string" and k:match("::/remote_probe_ext%.lua$") then package.loaded[k] = nil end
+		end
+		M.extMods = opts.extMods or {}
 		package.loaded["hummer_remote_probe::/remote.script.lua"] = nil
 		-- opts.modhub.firstUploadOf: a folder the tests upload as new although the mod holds it to a mod.io page
 		-- (MODHUB_PUBLISHED_IDS), taken out of that table in this game's own copy of remote_core.lua
@@ -3831,6 +3858,9 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 		} }
 	end
 	local g = M.new(dir, { saves = saves, maxSpeed = 40, menu = arg[3] == "menu", modhub = modhub,
+		-- the sample of a mod's own commands (examples/remote_probe_ext_sample), for tf3ctl mod
+		installed = { "example_mod", "hummer_remote_probe_ext_sample" },
+		extMods = { hummer_remote_probe_ext_sample = { file = here .. "/examples/remote_probe_ext_sample/content/remote_probe_ext.lua" } },
 		entities = { TOWN = { 11, 12 }, LINE = { 21 } }, names = { [11] = "Emsworth", [12] = "Emsworth Bay", [21] = "Bus 1" },
 		positions = { [11] = { 0, 0 } },
 		industries = { [51] = { name = "Coal mine", construction = 5100, capacity = 12, workers = 5, productivity = 1, pos = { 300, 0 },

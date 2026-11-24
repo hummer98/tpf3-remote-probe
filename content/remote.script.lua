@@ -169,11 +169,16 @@ local function stepOpens()
 	end
 end
 
-local function fail(id, msg)
+-- extra: more fields of the error answer (other mods' commands, remote_modext.lua, say what kind of error it was)
+local function failWith(id, msg, extra)
 	G.failedId = id
 	say("command " .. tostring(id) .. " failed: " .. tostring(msg))
-	answer(id, { ok = false, error = tostring(msg) }, "error")
+	local p = { ok = false, error = tostring(msg) }
+	for k, v in pairs(extra or {}) do if p[k] == nil then p[k] = v end end
+	answer(id, p, "error")
 end
+
+local function fail(id, msg) return failWith(id, msg) end
 
 ---------------------------------------------------------------------------------------------------------------------
 -- game state
@@ -1274,6 +1279,21 @@ handlers.reach = reach.handle
 local runcost = (ug_require or require)(MOD .. "::/remote_runcost.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say, findModel = vehicles.findModel, gsState = function() return G.gsState end })
 for k, fn in pairs(runcost.handlers) do handlers[k] = fn end
+-- other mods' commands (remote_modext.lua): modList reads which mods ship remote_probe_ext.lua and their commands;
+-- modRead / modChange call one, in this GUI state
+local modext = (ug_require or require)(MOD .. "::/remote_modext.lua").new({ core = core, answer = answer,
+	failWith = failWith, appTime = appTime, fineTime = fineTime, try = try, say = say, now = now, mod = MOD,
+	installed = function()
+		local names = {}
+		local list = try(function() return app.getUserProfile():getModRep():getInstalledMods() end)
+		for _, id in ipairs(core.toList(list)) do
+			local n = core.field(id, "name")
+			if type(n) == "string" then names[#names + 1] = n end
+		end
+		return names
+	end,
+	modParams = function() return core.plain(try(function() return api.engine.config.getModParams() end)) end })
+for k, fn in pairs(modext.handlers) do handlers[k] = fn end
 lines.walkBetween = reach.walkBetween -- (stations --catchment: whether a building can be walked to its station)
 
 -- args: entity (one industry; none: all). Read only. Per industry: its capacity (PERSON_CAPACITY), the sims that
@@ -1503,6 +1523,7 @@ local function init()
 		company.reset()
 		townConnect.reset()
 		runcost.reset()
+		modext.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1625,6 +1646,7 @@ local function step()
 	company.step()
 	townConnect.step()
 	runcost.step()
+	modext.step()
 	stepFinish()
 	stepRun()
 	stepBuildTool()

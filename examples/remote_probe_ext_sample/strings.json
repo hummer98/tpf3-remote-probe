@@ -1,0 +1,10 @@
+{
+	"en": {
+		"mod_name": "Remote Probe extension sample",
+		"mod_desc": "A sample of a mod's own commands for Remote Probe (tf3ctl mod): hello (reads) and speed (changes the game)."
+	},
+	"ja": {
+		"mod_name": "Remote Probe extension sample",
+		"mod_desc": "Remote Probe の MOD の命令 (tf3ctl mod) の見本: hello (読むだけ) と speed (ゲームを変える)。"
+	}
+}

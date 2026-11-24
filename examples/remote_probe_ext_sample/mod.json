@@ -1,0 +1,15 @@
+{
+	"modId": "hummer_remote_probe_ext_sample",
+	"revision": 1,
+	"severityAdd": "None",
+	"severityRemove": "None",
+	"visible": true,
+	"cosmetic": false,
+	"dependencies": null,
+	"incompatibilities": null,
+	"options": null,
+	"preRunScript": { "fileName": "" },
+	"runScript": { "fileName": "" },
+	"postRunScript": { "fileName": "" },
+	"params": []
+}

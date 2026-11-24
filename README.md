@@ -1424,6 +1424,68 @@ stays, and `quit`, `load` and `newgame` are refused while the mod is still Publi
   holds after an upload (it is only shown, never compared); whether `--version` (additionalMetadata) reaches the
   version of the file on mod.io (without it the game sent "1.0" for revision 10003).
 
+### Other mods' commands (`mod`)
+
+```
+python3 tools/tf3ctl.py mod --list                       # read only: the mods with commands, and their commands
+python3 tools/tf3ctl.py mod my_mod                       # read only: that mod's commands (or why it has none)
+python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}' [--timeout 30]   # run one: its JSON answer
+```
+
+The probe relays the base game; a mod can add commands of its own on top of it. A mod does so by shipping one file,
+`content/remote_probe_ext.lua` (required as `<modId>::/remote_probe_ext.lua`), that returns a table of commands:
+
+```lua
+return {
+	api = 1, -- the form of this file (this probe reads 1; a newer one is refused)
+	commands = {
+		hello = {
+			tag = "reads", -- "reads": only reads the game. "changes", none or anything else: changes the game
+			description = "the game's date, and the arguments back",
+			run = function(args, ctx) -- args: the JSON arguments as a Lua table ({} when none were given)
+				return { date = ctx.now().date, args = args } -- the answer: a table or a value JSON can hold
+			end,
+		},
+	},
+}
+```
+
+`examples/remote_probe_ext_sample/` is a whole mod with two commands, `hello` (reads) and `speed` (changes the
+game: 0-4, answered from the engine's callback). Copy the folder into the game's mod folder as
+`remote_probe_ext_sample_1`, enable it for the save with the probe, and `mod --list` shows it.
+
+- **Where it runs.** The probe requires the file in the game's GUI Lua state, in its `guiUpdate`, and calls `run`
+  there, one command at a time. What only works in the speed control's recipe (opening windows, the base's vehicle
+  modules) is not reachable from it yet. A file is required once per load: a changed file needs a new load, and a
+  new file a restart of the game (the game caches mod files at start).
+- **Which mods are looked in.** Those the user profile lists as installed and those with settings in the running
+  game, not the official ones (`ug_*`). The GUI cannot tell which mods are enabled for the save; a mod that is not
+  has no file to require, and is left out like a mod without the file. `broken` lists the files that are there but do
+  not work (they do not compile, raise, return no table, or ask for a newer `api`).
+- **The answer.** `run` returns the answer, or `nil, "message"` for an error. The tool prints
+  `{ "ok": true, "mod", "command", "tag", "result": <the answer>, "seconds" }`. To answer later (from an engine
+  callback), call `local finish = ctx.defer()` and then `finish(result)` or `finish(nil, "message")` once; without it
+  within `--timeout` less 5 seconds the answer is a timeout error, and a later `finish` is ignored.
+- **Errors are answers.** A Lua error in `run`, a `nil` answer, an answer JSON cannot hold (a function, a
+  userdata, a table that holds itself, NaN, more than 20 deep, more than 1,000,000 characters), a missing command or
+  mod: each comes back as `{ "ok": false, "error", "kind" }` (`kind`: `noExt`, `broken`, `noCommand`, `error`,
+  `noAnswer`, `badResult`, `timeout`), and the probe goes on. What `pcall` cannot catch is the mod's own: an engine
+  assertion in an api call it makes, or a loop that never ends.
+- **The owner check.** A command tagged `reads` is sent like `status`. Any other is sent first as a read (`modRead`),
+  which the mod refuses without running anything (`needsChange`), and then again as `modChange`, which counts as
+  changing the game: it goes only to the game this `--owner` started ("Only the owner who started the game changes
+  it"), it is not one of the commands `coop` lets through, and `status` shows it as `lastAction`.
+- **`ctx`.** `mod`, `command`, `id`, `tag`, `owner` (the `--owner`), `timeout`; `log(msg[, level])` (a line in the
+  game's log with the mod's name); `try(fn)` (fn's value, or nil when it raised); `call(fn, ...)` (pcall);
+  `array(t)` (an empty table written as `[]`); `now()` (game time, date, speed, as `status`); `appTime()`, `clock()`;
+  `exists(e)`, `component(e, "NAME")`, `name(e)` (only for entities that exist, so no lookup on a wrong id);
+  `sendCommand(cmd, onDone)` (`api.cmd.sendCommand` with `onDone` under pcall); `defer()`.
+- No new globals in the file: the game logs a global made by a mod's file as an error.
+- **Not checked in game:** whether a require of a mod's missing file, or of a mod not enabled for the save, fails
+  quietly and with which words (the probe compares it with its own missing file, and also takes "not found" and
+  similar words); whether the profile's installed mods are listed by modId in a game (not only in the menu); the
+  sample mod as a whole.
+
 ### Several clients at once
 
 Several tool processes may run at once (a long `run` plus `status` calls, say): a lock makes them write the single

@@ -1318,6 +1318,66 @@ Publishing のあいだは `quit`・`load`・`newgame` を断るので、ゲー�
   (表示するだけで、比べには使わない)。`--version` (additionalMetadata) が mod.io のファイルの版に入るのか (付けない
   ときは、revision 10003 でゲームが「1.0」を送った)。
 
+### ほかの MOD の命令 (`mod`)
+
+```
+python3 tools/tf3ctl.py mod --list                       # 読むだけ: 命令を持つ MOD と、その命令の一覧
+python3 tools/tf3ctl.py mod my_mod                       # 読むだけ: その MOD の命令 (無ければその理由)
+python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}' [--timeout 30]   # 1つ呼ぶ: 答えは JSON
+```
+
+プローブはバニラの命令を中継します。その上に、MOD が自分の命令を足せます。足すには、ファイルを1つ
+`content/remote_probe_ext.lua` (`<modId>::/remote_probe_ext.lua` として require される) に置き、命令の表を返します:
+
+```lua
+return {
+	api = 1, -- このファイルの形 (このプローブが読むのは 1。新しい形は断る)
+	commands = {
+		hello = {
+			tag = "reads", -- "reads": ゲームを読むだけ。"changes"・無し・ほかの値: ゲームを変える
+			description = "the game's date, and the arguments back",
+			run = function(args, ctx) -- args: JSON の引数を Lua の表にしたもの (無ければ {})
+				return { date = ctx.now().date, args = args } -- 答え: 表か、JSON にできる値
+			end,
+		},
+	},
+}
+```
+
+`examples/remote_probe_ext_sample/` は、命令が2つある MOD の見本です。`hello` (読むだけ) と `speed` (ゲームを変える:
+0〜4、エンジンのコールバックから答える)。フォルダをゲームの MOD のフォルダに `remote_probe_ext_sample_1` として写し、
+プローブと一緒にセーブで有効にすると、`mod --list` に出ます。
+
+- **どこで動くか.** プローブは、ゲームの GUI の Lua 状態の `guiUpdate` の中でファイルを require し、そこで `run` を
+  1 つずつ呼びます。速度ボタンのレシピの中でしか動かないもの (窓を開く、バニラの車両のモジュール) には、まだ届きません。
+  ファイルはロードごとに 1 回だけ require します。ファイルを変えたらロードし直し、新しいファイルを足したらゲームの
+  再起動が要ります (ゲームは起動のときに MOD のファイルを読み込む)。
+- **どの MOD を見るか.** ユーザーのプロファイルが入れたものとして挙げる MOD と、動いているゲームに設定がある MOD。
+  公式の MOD (`ug_*`) は見ません。セーブで有効な MOD かどうかは GUI から分かりません。有効でない MOD には require
+  できるファイルが無いので、ファイルの無い MOD と同じく一覧から外れます。`broken` には、ファイルはあるが動かないもの
+  (コンパイルできない、エラーを投げる、表を返さない、新しい `api` を求める) が出ます。
+- **答え.** `run` は答えを返します。エラーは `nil, "文"` で返します。ツールは
+  `{ "ok": true, "mod", "command", "tag", "result": <答え>, "seconds" }` を出します。後から答える (エンジンの
+  コールバックから) ときは、`local finish = ctx.defer()` を呼び、あとで `finish(result)` か `finish(nil, "文")` を 1 回
+  呼びます。`--timeout` より 5 秒短い時間のうちに来なければ時間切れのエラーになり、その後の `finish` は無視します。
+- **エラーは答えになる.** `run` の中の Lua のエラー、`nil` の答え、JSON にできない答え (関数、userdata、自分を含む表、
+  NaN、20 段より深い、1,000,000 文字より長い)、無い命令や MOD は、どれも `{ "ok": false, "error", "kind" }` で返り
+  (`kind`: `noExt`・`broken`・`noCommand`・`error`・`noAnswer`・`badResult`・`timeout`)、プローブは動き続けます。
+  `pcall` で捕まえられないものは MOD の側の責任です: MOD が呼ぶ api の中のエンジンの assertion、終わらない繰り返し。
+- **owner の検査.** 札が `reads` の命令は `status` と同じに送ります。それ以外は、まず読むだけの形 (`modRead`) で送り、
+  MOD は何も動かさずに断り (`needsChange`)、ツールが `modChange` で送り直します。`modChange` はゲームを変える命令と
+  数えます: この `--owner` が起動したゲームにだけ送り (「ゲームを変えるのは起動した owner だけ」)、`coop` が通す命令には
+  入らず、`status` の `lastAction` に出ます。
+- **`ctx`.** `mod`・`command`・`id`・`tag`・`owner` (`--owner`)・`timeout`。`log(msg[, level])` (MOD の名前つきでゲームの
+  ログに 1 行)、`try(fn)` (fn の値、エラーなら nil)、`call(fn, ...)` (pcall)、`array(t)` (空の表を `[]` と書く)、
+  `now()` (ゲームの時刻・日付・速度、`status` と同じ)、`appTime()`・`clock()`、`exists(e)`・`component(e, "NAME")`・
+  `name(e)` (ある entity だけ。間違った id で引かない)、`sendCommand(cmd, onDone)` (`api.cmd.sendCommand`、`onDone` は
+  pcall の中)、`defer()`。
+- ファイルの中で新しいグローバルを作らないでください。MOD のファイルが作ったグローバルを、ゲームはエラーとして記録します。
+- **ゲーム内では未確認:** MOD の無いファイルや、セーブで有効でない MOD のファイルの require が、静かに、どんな文で
+  失敗するか (プローブは自分の無いファイルのときの文と比べ、"not found" などの語でも見分ける)。ゲームの中で
+  プロファイルの入っている MOD が modId で挙がるか (メニューでだけでなく)。見本の MOD そのもの。
+
 ### 複数のクライアント
 
 ツールは複数同時に動かせます (長い `run` と `status` など)。コマンドファイルは 1 つなので、ロックで順に書きます。
