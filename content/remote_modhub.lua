@@ -191,10 +191,10 @@ function M.new(ctx)
 		return core.toList(ids)
 	end
 
-	local function readMod(h, b, id, limit)
+	local function readMod(h, b, id, limit, lists)
 		local value = str(core.field(id, "value"))
 		local e = { value = value, folder = core.stagingFolder(value) }
-		e.validateAllowed = e.folder ~= nil and core.MODHUB_VALIDATE_FOLDERS[e.folder] == true
+		e.validateAllowed = e.folder ~= nil and (lists or core.modhubLists()).validate[e.folder] == true
 		local info = try(function() return api.modhub.getModInfoForInstalledMod(b.staging, id) end)
 		e.title = str(core.field(info, "title"))
 		e.listVisible = bool(core.field(info, "visible")) -- the local mod's own visible (mod.json), not mod.io's
@@ -276,7 +276,7 @@ function M.new(ctx)
 		out.stagingError = err
 		local mods = {}
 		for _, id in ipairs(ids) do
-			local e = readMod(H.helper, b, id, 0)
+			local e = readMod(H.helper, b, id, 0, job.args.lists)
 			if job.args.folder == nil or e.folder == job.args.folder then mods[#mods + 1] = e end
 		end
 		out.mods = core.array(mods)

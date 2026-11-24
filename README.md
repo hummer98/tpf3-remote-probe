@@ -46,7 +46,7 @@ load, newgame, poll and quit only). `tf3ctl.py launch` and `restart` do this for
 - Transport Fever 3 (tested on build 40444) through Steam, on Linux. The tool uses `fcntl` and the Linux process
   list, so it does not run on Windows as it is.
 - Python 3.8 or newer, and `luajit` on the `PATH` (the tool reads the mod's Lua files with it).
-- Optional: `ffmpeg` and Steam's background game recording for `frame`; ImageMagick for `screenshot --preview`.
+- Optional: `ffmpeg` and Steam's background game recording for `frame`.
 - Optional: the Track Connector mod (on mod.io, modId `ethan_track_connector`, written against revision 3 / v1.3, not yet run with it in a game) for
   `connect`, enabled for the save.
 - Not together with Time Warp (mod.io 6453396, modId `mobarzik_faster_game_speed`): both replace the same speed
@@ -70,8 +70,9 @@ The game log then shows `[remote_probe] ready`.
 
 All commands print one JSON object. Exit codes: 0 ok, 1 the game answered with an error, 2 no answer or a tool
 error, 3 the game cannot answer where it is (a menu, loading, the main menu without the probe, closed; the
-`gameState` field says which), 4 refused: the running game is not this `--owner`'s (nothing was sent; see
-"Only the owner who started the game changes it").
+`gameState` field says which), 4 refused, nothing sent: the running game is not this `--owner`'s (see
+"Only the owner who started the game changes it"), a test-save-only command on another save, or a command
+the configuration file does not enable (see "Configuration file").
 
 ### Time and speed
 
@@ -664,7 +665,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   `ignoredErrors: true` (it was sent forced, whether or not there was an error to pass: `unforced.refused` says
   that), `testSave` and `ignoreErrorsNote`; built, it has `edge`, `edges` and `nodes` as any road.
   tf3ctl refuses it (exit 4, `"refused": "ignore-errors"`, nothing sent) unless the loaded save (read from the
-  game's log) has a test save's name (`probe-*`, `aom-ops-*`, `aom-shot-*`, `aom-bgm-check-*`, one digit first),
+  game's log) has a test save's name (`testSavePrefixes` in the configuration file, `probe-*` by default),
   and whenever the running game carries a coop mark (active, expired or malformed). A new game has no save name
   yet: save it under a test save's name and load that save first. The mod checks the save's name again (tf3ctl
   sends it), and refuses `ignoreErrors` on every command but `road`. The probe's own checks are not skipped: an end
@@ -1304,8 +1305,8 @@ along with `publish`, `abortPublish` and `PublishSettings` appearing only in the
   every 15 s. It waits up to 30 s for mod.io to be ready and up to 60 s for the mod to leave Sync; a mod in
   Publishing or HasResult (an upload has it) is not touched. A mod the helper does not know yet counts as in Sync,
   as on the page. `--timeout` covers the whole command, these waits included; past it a running validation is
-  aborted (`abortValidation`, as the page does when it closes). Only the folders listed in `MODHUB_VALIDATE_FOLDERS`
-  (content/remote_core.lua) are taken; edit the list for your own mods.
+  aborted (`abortValidation`, as the page does when it closes). Only the folders listed in `modhub.validateFolders`
+  of the configuration file are taken (none by default).
 - Making the helper makes the game sync the staging mods with mod.io: read requests to mod.io, no writes.
 - The helper is made once, by the first modhub command that finds mod.io ready. If `ModPublishHelper.new` fails, the
   probe keeps that error and does not try again while the game stays in the main menu: every later modhub command
@@ -1326,9 +1327,9 @@ before (without `--first-upload`). The page uses the same call for both (`ModPub
 the button "Update" when mod.io holds the mod; this tool never guesses which one is meant. A new mod page or a
 public mod cannot be undone from the game, so every one of these must hold, or nothing is sent:
 
-- The folder is in both lists of folders publish takes: `MODHUB_PUBLISH_FOLDERS` in `tools/tf3ctl.py` and in
-  `content/remote_core.lua` (separate from validate's list). Edit both for your own mod. A folder already on mod.io
-  is also held to its mod.io id in `MODHUB_PUBLISHED_IDS` (both files): `--first-upload` is refused for it, and an
+- The folder is in `modhub.publishFolders` of the configuration file (separate from validate's list; none by
+  default, and tf3ctl sends the list with the command, so the mod checks it too). A folder already on mod.io
+  is also held to its mod.io id in `modhub.publishedIds`: `--first-upload` is refused for it, and an
   update only goes when its fileid file holds that id (a lost fileid file would otherwise make it look new).
 - `--public yes|no` (no default) and a non-empty `--changelog` are given.
 - `_metadata/mod.io_fileid.txt` in the staging folder (the game writes it after the first upload, with the mod.io
@@ -1435,6 +1436,7 @@ used in the last 10 minutes unless `--force` is given.
 
 ### Only the owner who started the game changes it
 
+With `"ownerCheck": true` in the configuration file (off by default: then nothing here is refused).
 While the game runs, a command that changes the game (everything counted as such: `save`, `quit`, `load`,
 `newgame`, `speed`, `run`, `build`, `line`, `event`, `window`, `modhub validate` / `publish`, ...; also the quit
 inside `restart`) is sent only when `launched.json` (below) names this `--owner` and its pid is the running game.
@@ -1492,6 +1494,7 @@ still let the owner who started the game quit it. A game started by hand from St
 
 ### Sharing the game with the user (`coop`)
 
+With `"coop": true` in the configuration file (off by default: the coop commands are refused), which needs `"ownerCheck": true` too.
 The owner check above keeps every other client off a game, which also keeps a client off a game the user is
 playing with it. `coop` is for that: the user and one client (its `--owner`) share the running game for a while.
 
@@ -1509,8 +1512,8 @@ tf3ctl.py --owner bob coop end
   `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`. This holds on the user's own
   saves too.
 - Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`.
-- `save` only to a test save's name: `probe-*`, `aom-ops-*`, `aom-shot-*`, `aom-bgm-check-*`, or one digit first
-  (`3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that
+- `save` only to a test save's name (`testSavePrefixes`, and with `testSaveDigitFirst` one digit first,
+  `3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that
   kind, a new game, or unknown), a save to a new test name needs `--user-asked` too.
 - Everything else is refused: `quit` (also `--kill`, and the quit of `restart`), `load`, `newgame`, `tool`, `buy`,
   `line`, `terrain`, `town`, `modhub`, ... Exit 4, `"refused": "coop"`, nothing sent; the message says why.
@@ -1549,7 +1552,37 @@ tf3ctl.py --owner bob coop end
 - `TF3_GAME_DIR`: the game's install folder, for the languages `--lang` may pick (default: `steamapps/common/Transport
   Fever 3` of the Steam that has the userdata).
 - `TF3CTL_OTHER_BACKUPS`: other tools' backups of `profile.lua` (files or folders), separated by `:` (see `--lang`).
+- `TF3CTL_CONFIG`, `XDG_CONFIG_HOME`: the configuration file (see "Configuration file").
 - `XDG_STATE_HOME`: where `modhub publish` keeps its mark (`tf3ctl/publish_pending.json`; default `~/.local/state`).
+
+## Configuration file
+
+`tools/tf3ctl.py` reads `$TF3CTL_CONFIG`, else `$XDG_CONFIG_HOME/tf3ctl/config.json`, else
+`~/.config/tf3ctl/config.json`. Without the file every switch is off, which suits one person with one game; a
+setup with several clients, mod uploads or test tooling turns on what it needs. `tools/config.example.json` lists
+every key with its default and what it does; `tf3ctl.py config` shows what is in effect and where it came from.
+
+| Key | Default | On / set |
+|---|---|---|
+| `ownerCheck` | `false` | game-changing commands go only to the game this `--owner` started (below) |
+| `coop` | `false` | `coop start` / `end` and `launch --coop`; off, they are refused (exit 4, `"refused": "config"`). Needs `ownerCheck` true: `coop` without it makes the file unreadable |
+| `testSavePrefixes` | `["probe-"]` | the save names that count as test saves (`road --ignore-errors`, `lights --off`, `running-costs` writes) |
+| `testSaveDigitFirst` | `false` | a name with one digit first (`3-probe`) is a test save too |
+| `pointer` | `false` | the `pointer` command |
+| `modhub.validateFolders` / `publishFolders` / `publishedIds` | empty | the staging folders `modhub validate` / `publish` take, and the folders already on mod.io with their ids |
+
+Keys starting with `_` are comments. Any other unknown key, or a value of the wrong kind, makes the file
+unreadable: tf3ctl then prints a warning and runs with the defaults and `ownerCheck` on (a typo never loosens a
+check). The mod cannot read the file: tf3ctl sends the test saves' names and the modhub lists with each command
+that needs them, and the mod checks by those (without them: `probe-` only, no modhub folder).
+
+**Debug commands** change the game as no player can: `stock set`, `steps`, `money`, `town develop` / `size` /
+`connect`, `company init`, `running-costs` writes, `lights --off` and `road --ignore-errors`. Their answers (not a dry
+run's) carry `saveNote`: the save's contents changed, and saving keeps the change (`running-costs`: the model, for
+the rest of the session). Their own fences (test saves only, not during coop, ...) stay as they were.
+
+`screenshot` and `newgame --unsafe` are gone: `screenshot` wrote no file outside photo mode (use `frame`), and
+`--unsafe` only crashed the game (start new games from the main menu: `launch` / `restart --new`).
 
 ## Mod settings
 
@@ -1568,8 +1601,8 @@ languages get English. The name, summary, description and cover in the game's mo
 ## Safety
 
 - **`newgame` does not work from inside a game.** The base `StartGame` expects no game to be running and TF3
-  crashed (2026-11-15). In a save only `newgame --list` and `--dry-run` are safe (`--unsafe` sends it anyway and
-  crashes). Start new games with `restart --new` or `launch --new`, from the main menu.
+  crashed (2026-11-15). In a save only `newgame --list` and `--dry-run` go (the tool and the mod refuse a
+  start). Start new games with `restart --new` or `launch --new`, from the main menu.
 - **Use `--via gui` (the default) for vehicle price tests.** `--via cmd` sends bare engine commands and leaves
   `purchaseTime` at 0; the engine does not fill it in, so the vehicle counts as bought at the start of the game and
   costs only its fully depreciated value (store price 48441, spent 261 in one test). The cmd way also must send
@@ -1711,8 +1744,8 @@ mod's code, and was checked against no running copy of it.
   (`userdata/<id>/gamerecordings/video/bg_3493540_*`) with ffmpeg: with the UI, a few seconds old, at the
   recording's resolution, without focusing the window or sending keys. The recording folder is chosen by its last
   written chunk, not by its mtime: Steam trims old chunks out of a stopped recording, which bumps that folder's
-  mtime, and once picked a recording stopped 81 minutes earlier. `screenshot` (`api.gui.camera.takeScreenshot`)
-  wrote no file in a test (it seems to be for photo mode).
+  mtime, and once picked a recording stopped 81 minutes earlier. The game's own `takeScreenshot` wrote no file
+  in a test (it seems to be for photo mode), so the `screenshot` command was taken out.
 - **`window`** opens with `react.fireEvent(nil, "selectEntity", {entity})`, as the base statistics and line
   windows do. Events can only be fired from inside react, so the GUI script writes the request into the GUI save
   data (`api.gui.game.setGuiSaveData`, kept per mod in C++) and the speed buttons' recipe reads it in

@@ -58,6 +58,28 @@ def _remove_test_run_dir():
 
 
 atexit.register(_remove_test_run_dir)
+
+# The configuration file tf3ctl reads (TF3CTL_CONFIG): the tests were written against a setup with every switch on,
+# several test-save prefixes, the digit rule and four modhub folders, and run with that configuration, so they keep
+# checking that such a setup works as before. ConfigDefaultsTest checks the defaults without a file. use_config
+# writes another one for a test (main reads the file again at every call); restore with use_config(CONFIGURED).
+CONFIGURED = {
+    "ownerCheck": True, "coop": True, "pointer": True,
+    "testSavePrefixes": ["probe-", "aom-ops-", "aom-shot-", "aom-bgm-check-"], "testSaveDigitFirst": True,
+    "modhub": {
+        "validateFolders": ["hummer_construction_altitude_tooltip_1", "hummer_cursor_altitude_tooltip_1",
+                            "hummer_industry_pollution_display_1", "hummer_force_unload_default_1"],
+        "publishFolders": ["hummer_force_unload_default_1", "hummer_cursor_altitude_tooltip_1",
+                           "hummer_construction_altitude_tooltip_1", "hummer_industry_pollution_display_1"],
+        "publishedIds": {"hummer_force_unload_default_1": "6543965", "hummer_cursor_altitude_tooltip_1": "6523060",
+                         "hummer_construction_altitude_tooltip_1": "6536988",
+                         "hummer_industry_pollution_display_1": "6536959"}},
+}
+CONFIG_DIR = tempfile.mkdtemp()
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+with open(CONFIG_FILE, "w", encoding="utf-8") as _f:
+    json.dump(CONFIGURED, _f)
+os.environ["TF3CTL_CONFIG"] = CONFIG_FILE
 spec = importlib.util.spec_from_file_location("tf3ctl", os.path.join(ROOT, "tools", "tf3ctl.py"))
 tf3ctl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tf3ctl)
@@ -86,6 +108,20 @@ def _check_game_owner_unless_real(cmd, args=None):
 
 
 tf3ctl.check_game_owner = _check_game_owner_unless_real
+
+
+def use_config(cfg):
+    """Writes cfg as the configuration file and reads it into tf3ctl (main reads it again too)."""
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f)
+    tf3ctl.CONFIG, tf3ctl.CONFIG_INFO = tf3ctl.load_config()
+
+
+def configured(**modhub):
+    """CONFIGURED with some modhub lists replaced."""
+    cfg = json.loads(json.dumps(CONFIGURED))
+    cfg["modhub"].update(modhub)
+    return cfg
 
 
 
@@ -1179,11 +1215,11 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(code, 1, res)
         self.assertIn("no such entity", res["error"])
 
-    def test_9y_screenshot_waits_for_the_file(self):
-        code, res = self.ctl("screenshot", "--scale", "0", "--timeout", "10")
-        self.assertEqual(code, 0, res)
-        self.assertTrue(res["path"].endswith("_0.png"), res)
-        self.assertTrue(os.path.exists(res["path"]))
+    def test_9y_screenshot_and_newgame_unsafe_are_gone(self):
+        for argv in (["screenshot"], ["newgame", "--size", "tiny", "--unsafe"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                tf3ctl.main(argv)
+            self.assertEqual(cm.exception.code, 2, argv)
 
     def test_8_town_connections_and_connect(self):
         code, res = self.ctl("town", "connections")
@@ -1216,26 +1252,11 @@ class EndToEndTest(unittest.TestCase):
         for key in ("townFrequency", "populationDensity", "industryDensity", "maxNumberPerArea"):
             self.assertIsInstance(loc[key], (int, float), key)
         self.assertEqual(res["plan"]["timeOfDaySeconds"], 14 * 3600)
-        code, res = self.ctl("newgame", "--size", "tiny")
-        self.assertEqual(code, 2, "refused: it crashes the game from inside a save")
         before = tf3ctl.current_stamp(self.dir)
-        code, res = self.ctl("--owner", "t", "newgame", "--size", "tiny", "--year", "1930", "--timeout", "30", "--unsafe")
-        self.assertEqual(code, 0, res)
-        self.assertNotEqual(res["hello"]["stamp"], before)
-        self.assertEqual(res["hello"]["state"]["date"]["year"], 1930)
-        # the start event gave the new game its basePopulation (the fake's town, 140): company init sends nothing
-        ci = res["companyInit"]
-        self.assertTrue(ci["ok"], ci)
-        self.assertIs(ci["sent"], False)
-        self.assertTrue(ci["alreadyInitialized"])
-        self.assertEqual(ci["before"]["company"]["basePopulation"], 140, "the fake's residential capacity")
-        code, res = self.ctl("company")
-        self.assertEqual(code, 0, res)
-        self.assertTrue(res["company"]["initialized"])
-        code, res = self.ctl("--owner", "t", "company", "init")
-        self.assertEqual(code, 0, res)
-        self.assertIs(res["sent"], False, "already there: nothing sent")
-        self.assertTrue(res["alreadyInitialized"])
+        code, res = self.ctl("newgame", "--size", "tiny")
+        self.assertEqual(code, 2, "refused: it crashes the game from inside a save (a start from the main menu: "
+                         "launch / restart --new, LaunchEndToEndTest)")
+        self.assertEqual(tf3ctl.current_stamp(self.dir), before, "nothing started")
         code, res = self.ctl("newgame", "--climate", "arctic", "--dry-run")
         self.assertEqual(code, 1)
         self.assertIn("known:", res["error"])
@@ -1462,7 +1483,6 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(cmd, "newgame")
         self.assertEqual(args, {"year": 1900, "size": "small", "mods": {"add": ["a"]},
                                 "params": {"": {"guideSystemConfig.tutorial": 1}}}, "tutorial off by default")
-        self.assertNotIn("unsafe", args, "from the main menu it needs no unsafe")
         cmd, args = tf3ctl.start_args(self._ns(new=True, tutorial=True))
         self.assertNotIn("params", args, "--tutorial: the base default (On) stays")
         cmd, args = tf3ctl.start_args(self._ns(new=True, param=[":guideSystemConfig.tutorial=2", ":map.size=3"]))
@@ -1476,7 +1496,7 @@ class QuitLaunchTest(unittest.TestCase):
 
     def test_newgame_command_starts_without_the_tutorial_too_but_not_its_list(self):
         ns = tf3ctl.argparse.Namespace(climate=None, generator=None, size="tiny", year=None, seed=None,
-                                       no_towns=False, no_industries=False, list=False, unsafe=False, set_mods=None,
+                                       no_towns=False, no_industries=False, list=False, set_mods=None,
                                        add=[], remove=[], param=[], dry_run=True, tutorial=False)
         self.assertEqual(tf3ctl.newgame_args(ns)["params"], {"": {"guideSystemConfig.tutorial": 1}})
         ns.list = True
@@ -4147,9 +4167,9 @@ class ModhubPublishTest(unittest.TestCase):
                 a["settings"] = {"updateMetadata": (args or {}).get("updateMetadata")}
             return a
         tf3ctl.send = fake_send
-        # force unload stands for a new mod here: out of the tool's table of folders held to a mod.io page
-        self.saved_pins = tf3ctl.MODHUB_PUBLISHED_IDS
-        tf3ctl.MODHUB_PUBLISHED_IDS = {k: v for k, v in self.saved_pins.items() if k != FU}
+        # force unload stands for a new mod here: out of the configuration's folders held to a mod.io page
+        self.saved_pins = dict(CONFIGURED["modhub"]["publishedIds"])
+        use_config(configured(publishedIds={k: v for k, v in self.saved_pins.items() if k != FU}))
         self.saved_wait = tf3ctl.FILEID_WAIT_SEC
         tf3ctl.FILEID_WAIT_SEC = 0.5
 
@@ -4162,7 +4182,7 @@ class ModhubPublishTest(unittest.TestCase):
 
     def tearDown(self):
         tf3ctl.send = self.real_send
-        tf3ctl.MODHUB_PUBLISHED_IDS = self.saved_pins
+        use_config(CONFIGURED)
         tf3ctl.FILEID_WAIT_SEC = self.saved_wait
         with contextlib.suppress(OSError):
             os.remove(tf3ctl.history_path())
@@ -4743,20 +4763,14 @@ class ModhubPublishUpdateTest(unittest.TestCase):
         res = self.run_publish(*(self.UPDATE + ("--dry-run",)))
         self.assertEqual((res["update"]["previousRevision"], res["update"]["previousFrom"]), (10001, "publish_history.jsonl"))
 
-    def test_the_publish_list_is_the_mods_and_holds_the_author_s_mods_on_mod_io(self):
-        self.assertEqual(set(tf3ctl.MODHUB_PUBLISH_FOLDERS), {
-            FU, "hummer_cursor_altitude_tooltip_1", "hummer_construction_altitude_tooltip_1",
-            "hummer_industry_pollution_display_1"})
+    def test_the_publish_list_is_the_configuration_s_and_holds_its_mods_on_mod_io(self):
+        # the mod holds no list of its own: it gets the configuration's with every modhub command
         with open(os.path.join(ROOT, "content", "remote_core.lua"), encoding="utf-8") as f:
             lua = f.read()
-        block = re.search(r"M\.MODHUB_PUBLISH_FOLDERS = \{(.*?)\}", lua, re.S).group(1)
-        self.assertEqual(set(re.findall(r"([A-Za-z0-9_]+) = true", block)), set(tf3ctl.MODHUB_PUBLISH_FOLDERS))
+        for table in ("MODHUB_VALIDATE_FOLDERS", "MODHUB_PUBLISH_FOLDERS", "MODHUB_PUBLISHED_IDS"):
+            self.assertIn("M.%s = {}\n" % table, lua, table)
         # one of them as an update: its fileid goes to the mod; as a first upload it is refused (it has a page)
-        self.assertEqual(self.saved_pins, {FU: "6543965", "hummer_cursor_altitude_tooltip_1": "6523060",
-                                           "hummer_construction_altitude_tooltip_1": "6536988",
-                                           "hummer_industry_pollution_display_1": "6536959"})
-        pins = re.search(r"M\.MODHUB_PUBLISHED_IDS = \{(.*?)\}", lua, re.S).group(1)
-        self.assertEqual(dict(re.findall(r'([A-Za-z0-9_]+) = "([0-9]+)"', pins)), self.saved_pins)
+        use_config(CONFIGURED)
         name = "hummer_cursor_altitude_tooltip_1"
         make_staging(self.root, name, fileid="6523060", revision=2)
         self.refused("would make a second page", *(self.UPDATE + ("--first-upload",)), folder=name)
@@ -4766,7 +4780,7 @@ class ModhubPublishUpdateTest(unittest.TestCase):
         self.assertEqual((self.sent[0][1]["folder"], self.sent[0][1]["modioId"]), (name, "6523060"))
 
     def test_a_folder_on_mod_io_is_held_to_its_page_even_without_its_fileid(self):
-        tf3ctl.MODHUB_PUBLISHED_IDS = self.saved_pins  # the real table
+        use_config(CONFIGURED)  # force unload held to its page again
         name = "hummer_industry_pollution_display_1"
         meta = make_staging(self.root, name, revision=10002)  # no fileid file: it would look new
         self.refused("is on mod.io already (mod 6536959): --first-upload would make a second page", *self.FULL,
@@ -4878,14 +4892,16 @@ class ModhubPublishEndToEndTest(unittest.TestCase):
             time.sleep(0.05)
         os.environ["TF3_REMOTE_DIR"] = cls.dir
         os.environ["TF3_ASSUME_RUNNING"] = "1"
-        # the fake game's first upload is force unload (the fake game takes it out of the mod's table too)
-        cls.saved_pins = tf3ctl.MODHUB_PUBLISHED_IDS
-        tf3ctl.MODHUB_PUBLISHED_IDS = {k: v for k, v in cls.saved_pins.items() if k != FU}
+        # the fake game's first upload is force unload: out of the configuration's folders held to a page (which
+        # the mod gets with each command)
+        cls.saved_pins = True
+        use_config(configured(publishedIds={k: v for k, v in CONFIGURED["modhub"]["publishedIds"].items()
+                                            if k != FU}))
 
     @classmethod
     def tearDownClass(cls):
         if "saved_pins" in cls.__dict__:
-            tf3ctl.MODHUB_PUBLISHED_IDS = cls.saved_pins
+            use_config(CONFIGURED)
         cls.game.kill()
         cls.game.wait()
         cls.game.stderr.close()
@@ -6706,6 +6722,357 @@ class LightsTest(_ForceBase):
         with unittest.mock.patch.object(tf3ctl, "send", fake_send), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(tf3ctl.main(["--owner", "alice", "lights", "--node", "9000", "--off", "--dry-run"]), 0)
         self.assertEqual(got, [("lightsOff", {"node": 9000, "dryRun": True}, tf3ctl.BUILD_TIMEOUT_SEC)])
+
+
+class _Past(Exception):
+    """Raised by a stand-in once a command got past the check a test looks at."""
+
+
+class ConfigDefaultsTest(unittest.TestCase):
+    """Without a configuration file (a fresh install): no owner check, no coop, test saves named probe-* only, no
+    modhub validate or publish, no pointer. A file that cannot be read: the strict side (a warning, the owner check on, all else as without a file)."""
+
+    def setUp(self):
+        self.saved = {k: getattr(tf3ctl, k) for k in ("game_pids", "OWNER", "OTHER_OWNER_OK", "USER_ASKED",
+                                                       "exchange_dir")}
+        self.home = tempfile.mkdtemp()
+        self.env = unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.home})
+        self.env.start()
+        os.environ.pop("TF3CTL_CONFIG", None)
+        tf3ctl.CONFIG, tf3ctl.CONFIG_INFO = tf3ctl.load_config()
+        self.x = tempfile.mkdtemp()  # an exchange folder: a refused command leaves nothing in it
+        tf3ctl.exchange_dir = lambda: self.x
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK, tf3ctl.USER_ASKED = None, False, False
+
+    def tearDown(self):
+        self.env.stop()
+        for k, v in self.saved.items():
+            setattr(tf3ctl, k, v)
+        use_config(CONFIGURED)
+        shutil.rmtree(self.home, ignore_errors=True)
+        shutil.rmtree(self.x, ignore_errors=True)
+
+    def ctl(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = tf3ctl.main(list(argv))
+        return code, (json.loads(out.getvalue()) if out.getvalue().strip() else None), err.getvalue()
+
+    def write_config(self, text):
+        os.makedirs(os.path.join(self.home, "tf3ctl"), exist_ok=True)
+        write(os.path.join(self.home, "tf3ctl", "config.json"), text)
+
+    def test_no_file_is_the_defaults_and_its_place_follows_xdg(self):
+        self.assertEqual(tf3ctl.CONFIG_INFO, {"path": os.path.join(self.home, "tf3ctl", "config.json"),
+                                              "state": "none"})
+        self.assertEqual(tf3ctl.CONFIG, {"ownerCheck": False, "coop": False, "testSavePrefixes": ["probe-"],
+                                         "testSaveDigitFirst": False, "pointer": False,
+                                         "modhub": {"validateFolders": [], "publishFolders": [],
+                                                    "publishedIds": {}}})
+        self.assertIsNone(tf3ctl.config_warning())
+        home = os.path.expanduser("~")
+        self.assertEqual(tf3ctl.config_path({}), (os.path.join(home, ".config", "tf3ctl", "config.json"), False))
+        self.assertEqual(tf3ctl.config_path({"XDG_CONFIG_HOME": "/x"}), ("/x/tf3ctl/config.json", False))
+        self.assertEqual(tf3ctl.config_path({"XDG_CONFIG_HOME": "/x", "TF3CTL_CONFIG": "/y.json"}), ("/y.json", True))
+        code, res, err = self.ctl("config")
+        self.assertEqual((code, res["file"]["state"], res["config"]["coop"], err), (0, "none", False, ""))
+
+    def test_the_example_file_is_the_defaults(self):
+        with unittest.mock.patch.dict(os.environ, {"TF3CTL_CONFIG": os.path.join(ROOT, "tools", "config.example.json")}):
+            cfg, info = tf3ctl.load_config()
+        self.assertEqual((info["state"], cfg), ("file", tf3ctl._config_defaults()))
+        self.assertEqual(cfg, tf3ctl.CONFIG_DEFAULTS)
+
+    def test_a_file_sets_what_it_names_and_the_rest_stays_default(self):
+        self.write_config('{"_about": "a comment", "pointer": true, "testSavePrefixes": ["shot-", "probe-"], '
+                          '"modhub": {"_why": "x", "publishFolders": ["my_mod_1"]}}')
+        cfg, info = tf3ctl.load_config()
+        self.assertEqual(info["state"], "file")
+        self.assertEqual((cfg["pointer"], cfg["ownerCheck"], cfg["testSavePrefixes"]), (True, False, ["shot-", "probe-"]))
+        self.assertEqual(cfg["modhub"], {"validateFolders": [], "publishFolders": ["my_mod_1"], "publishedIds": {}})
+
+    def test_a_file_that_cannot_be_read_is_the_strict_side(self):
+        for text, why in (("{not json", "Expecting"), ("[]", "not a JSON object"),
+                          ('{"debug": true}', "unknown key debug"), ('{"coop": "yes"}', "coop must be true or false"),
+                          ('{"ownerCheck": 0}', "ownerCheck must be"), ('{"testSavePrefixes": "probe-"}', "list"),
+                          ('{"testSavePrefixes": [""]}', "list"), ('{"testSavePrefixes": ["a/b"]}', "list"),
+                          ('{"modhub": {"publishFolders": ["x"], "folders": []}}', "unknown key modhub.folders"),
+                          ('{"modhub": {"publishedIds": {"x": 5}}}', "mod.io ids"),
+                          ('{"modhub": []}', "modhub must be an object"),
+                          ('{"coop": true}', "coop needs ownerCheck true"),
+                          ('{"coop": true, "ownerCheck": false}', "coop needs ownerCheck true")):
+            self.write_config(text)
+            cfg, info = tf3ctl.load_config()
+            self.assertEqual(info["state"], "broken", text)
+            self.assertIn(why, info["error"], text)
+            self.assertEqual(cfg, dict(tf3ctl._config_defaults(), ownerCheck=True), text)
+        code, res, err = self.ctl("config")
+        self.assertEqual((code, res["file"]["state"], res["config"]["ownerCheck"]), (0, "broken", True))
+        self.assertIn("warning: cannot read the configuration file %s" % os.path.join(self.home, "tf3ctl",
+                                                                                      "config.json"), err)
+        self.assertIn("the owner check on", err)
+        # a file TF3CTL_CONFIG names that is not there: the same
+        with unittest.mock.patch.dict(os.environ, {"TF3CTL_CONFIG": os.path.join(self.home, "missing.json")}):
+            cfg, info = tf3ctl.load_config()
+        self.assertEqual((info["state"], cfg["ownerCheck"]), ("broken", True))
+        self.assertIn("does not exist", info["error"])
+
+    def test_a_broken_file_refuses_a_game_change_without_owner(self):
+        self.write_config("{not json")
+        tf3ctl.game_pids = lambda: [4242]
+        with contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.write_launched(4242, owner="alice")
+        code, res, err = self.ctl("save", "x")  # main re-reads the file: the owner check is on
+        self.assertEqual(code, 4)
+        self.assertIn("warning: cannot read the configuration file", err)
+        self.assertEqual(os.listdir(self.x), [], "nothing sent")
+
+    def test_save_note_only_on_an_answer_that_did_something(self):
+        for cmd, args in (("stockSet", {}), ("steps", {"count": 1}), ("money", {"add": 1}), ("townDevelop", {}),
+                          ("townSize", {}), ("townConnect", {}), ("companyInit", {}), ("lightsOff", {"node": 1}),
+                          ("road", {"ignoreErrors": True})):
+            self.assertEqual(tf3ctl.note_save_change(cmd, args, {"ok": True})["saveNote"], tf3ctl.SAVE_NOTE, cmd)
+            self.assertNotIn("saveNote", tf3ctl.note_save_change(cmd, dict(args, dryRun=True), {"ok": True}), cmd)
+            self.assertNotIn("saveNote", tf3ctl.note_save_change(cmd, args, {"ok": False, "error": "x"}), cmd)
+        self.assertEqual(tf3ctl.note_save_change("runningCostsSet", {"model": "x"}, {"ok": True})["saveNote"],
+                         tf3ctl.RUNNING_COSTS_NOTE)
+        self.assertNotIn("saveNote", tf3ctl.note_save_change("companyInit", {}, {"ok": True, "sent": False}))
+        for cmd, args in (("road", {}), ("build", {}), ("save", {"name": "x"}), ("runningCosts", {"model": "x"})):
+            self.assertNotIn("saveNote", tf3ctl.note_save_change(cmd, args, {"ok": True}), cmd)
+
+    def test_no_owner_check_lets_any_client_change_any_game(self):
+        tf3ctl.game_pids = lambda: [4242]
+        for owner in (None, "alice"):
+            tf3ctl.OWNER = owner
+            for cmd, args in (("save", {"name": "x"}), ("quit", None), ("speed", {"speed": 2})):
+                self.assertIsNone(tf3ctl.check_game_owner(cmd, args), (owner, cmd))  # no launch record at all
+        with contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.write_launched(4242, owner="bob")
+        self.assertIsNone(tf3ctl.check_game_owner("save", {"name": "x"}), "another owner's game")
+        # launch --load without an owner is not refused up front
+        launched = []
+        with unittest.mock.patch.object(tf3ctl, "launch_game", lambda t: launched.append(t) or {"ok": True}), \
+                unittest.mock.patch.object(tf3ctl, "game_pids", lambda: []), \
+                unittest.mock.patch.object(tf3ctl, "replace_game", lambda *a, **k: {"ok": True}), \
+                unittest.mock.patch.object(tf3ctl, "check_profile_start", lambda lang: None):
+            code, res, _ = self.ctl("launch", "--load", "probe-x")
+        self.assertEqual((code, len(launched), res["load"]), (0, 1, {"ok": True}), res)
+
+    def test_coop_is_refused_until_the_configuration_enables_it(self):
+        launched = []
+        with unittest.mock.patch.object(tf3ctl, "launch_game", lambda t: launched.append(t)):
+            for argv in (["--owner", "a", "coop", "start", "--reason", "x"], ["--owner", "a", "coop", "end"],
+                         ["--owner", "a", "launch", "--coop", "--reason", "x"]):
+                code, res, err = self.ctl(*argv)
+                self.assertEqual((code, res["refused"]), (4, "config"), argv)
+                self.assertIn('set "coop": true in the configuration file', res["error"])
+        self.assertEqual(launched, [], "nothing started")
+
+    def test_test_saves_are_probe_names_only(self):
+        for name in ("probe-x", "probe-flat-base", "/s/probe-x.sav"):
+            self.assertTrue(tf3ctl.is_test_save(name), name)
+        for name in ("aom-shot-x", "3-probe", "6", "My Railway"):
+            self.assertFalse(tf3ctl.is_test_save(name), name)
+        self.assertEqual(tf3ctl.test_save_text(), "probe-*")
+        self.assertEqual(tf3ctl.test_save_rules(), {"prefixes": ["probe-"], "digitFirst": False})
+        ns = tf3ctl.make_parser().parse_args(["load", "3-probe", "--param", "hummer_remote_probe:gameScript=2"])
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            tf3ctl.load_args(ns)
+        self.assertIn("goes with test saves only (probe-*); '3-probe' is not one", str(cm.exception))
+        # the configuration's names instead, and the digit rule
+        self.write_config('{"testSavePrefixes": ["shot-"], "testSaveDigitFirst": true}')
+        tf3ctl.CONFIG, tf3ctl.CONFIG_INFO = tf3ctl.load_config()
+        self.assertTrue(tf3ctl.is_test_save("shot-1") and tf3ctl.is_test_save("3-probe"))
+        self.assertFalse(tf3ctl.is_test_save("probe-x"))
+        self.assertEqual(tf3ctl.test_save_text(), "shot-*, or one digit first")
+
+    def test_the_mod_gets_the_test_save_rules_and_the_modhub_lists_with_the_command(self):
+        got = []
+
+        def capture(folder, cid, cmd, args):
+            got.append((cmd, args))
+            raise _Past()
+
+        tf3ctl.game_pids = lambda: []
+        with unittest.mock.patch.object(tf3ctl, "write_command", capture), \
+                unittest.mock.patch.object(tf3ctl, "cleanup", lambda folder: None):
+            with self.assertRaises(_Past):
+                tf3ctl.send("modhubStatus", {"_modhub": {"publishFolders": ["sneaked_in"]}}, folder=self.x)
+            with unittest.mock.patch.object(tf3ctl, "test_save_checks", lambda cmd, args: "probe-x"), \
+                    self.assertRaises(_Past):
+                tf3ctl.send("lightsOff", {"node": 5, "_testSaveRules": {"prefixes": ["x"]}}, folder=self.x)
+            with self.assertRaises(_Past):
+                tf3ctl.send("status", {"_testSave": "aom-shot-x"}, folder=self.x)
+        self.assertEqual(got[0], ("modhubStatus", {"_modhub": {"validateFolders": [], "publishFolders": [],
+                                                                "publishedIds": {}}}))
+        self.assertEqual(got[1][1], {"node": 5, "_testSave": "probe-x",
+                                     "_testSaveRules": {"prefixes": ["probe-"], "digitFirst": False}})
+        self.assertEqual(got[2][1], {}, "only send names them")
+
+    def test_modhub_validate_and_publish_take_no_folder(self):
+        sent = []
+        with unittest.mock.patch.object(tf3ctl, "send", lambda *a, **k: sent.append(a) or {"ok": True}):
+            code, _, err = self.ctl("modhub", "publish", "hummer_force_unload_default_1", "--public", "yes",
+                                    "--changelog", "x", "--first-upload", "--dry-run")
+        self.assertEqual(code, 2)
+        self.assertIn("publish takes no staging folder: list the ones it may upload in the configuration file", err)
+        self.assertEqual(sent, [], "nothing sent, no mark")
+        self.assertFalse(os.path.exists(tf3ctl.pending_path()))
+
+    def test_pointer_is_refused_until_the_configuration_enables_it(self):
+        code, res, _ = self.ctl("pointer", "0.5,0.5")
+        self.assertEqual((code, res["refused"]), (4, "config"))
+        self.assertIn('"pointer": true', res["error"])
+
+
+class FencesTest(_ForceBase):
+    """The fences as they stood before the configuration file, with the CONFIGURED file (every switch on, the four
+    prefixes and the digit rule), and what changes without a file. A person's save: aom-eu-1900-2 (no test save's
+    name). The game: pid 4242, launched by alice."""
+
+    PERSON = "aom-eu-1900-2"
+
+    def tearDown(self):
+        use_config(CONFIGURED)
+        super().tearDown()
+
+    def answer(self, cmd, args):
+        """Through send with the mod faked: (the args written for the mod, the answer)."""
+        got = []
+        with unittest.mock.patch.object(tf3ctl, "write_command", lambda f, cid, c, a: got.append((c, a))), \
+                unittest.mock.patch.object(tf3ctl, "cleanup", lambda f: None), \
+                unittest.mock.patch.object(tf3ctl, "note_activity", lambda *a: None), \
+                unittest.mock.patch.object(tf3ctl, "wait_pickup", lambda f, c: None), \
+                unittest.mock.patch.object(tf3ctl, "wait_answer", lambda *a: {"ok": True}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            res = tf3ctl.send(cmd, args, folder=self.x)
+        self.assertEqual(len(got), 1, cmd)
+        return got[0][1], res
+
+    def coop(self, minutes=30):
+        rec, _ = tf3ctl.read_launched()
+        now = time.time()
+        rec["coop"] = {"with": "alice", "reason": "test", "since": now, "until": now + minutes * 60}
+        tf3ctl._write_record(rec)
+
+    def ignore_errors(self):
+        return self.road("--ignore-errors")
+
+    def test_configured_a_persons_save_refuses_the_test_save_commands(self):
+        self.loaded(self.PERSON)
+        self.refused("road", self.ignore_errors(), "is not a test save's")
+        self.refused("road", self.road("--ignore-errors", "--dry-run", "--engine-check"), "is not a test save's")
+        self.refused("lightsOff", {"node": 5}, "is not a test save's")
+        self.refused("lightsOff", {"node": 5, "dryRun": True}, "is not a test save's")
+        self.refused("runningCostsSet", {"model": "bus", "ops": [{"field": "runningCosts", "scale": 2}]},
+                     "is not a test save's")
+        ns = tf3ctl.make_parser().parse_args(["load", self.PERSON, "--param", "hummer_remote_probe:gameScript=2"])
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.load_args(ns)
+
+    def test_configured_a_persons_save_takes_what_had_no_fence(self):
+        # (before the configuration file too: tf3ctl has no check of the save for these; their help says test saves)
+        self.loaded(self.PERSON)
+        for cmd, args in (("stockSet", {"entity": 1, "stock": 0, "amount": 5}), ("money", {"add": 1}),
+                          ("steps", {"count": 5}), ("townDevelop", {"town": 1}), ("companyInit", {}),
+                          ("build", {"res": "x"}), ("road", self.road("--remove-buildings")),
+                          ("road", self.road("--remove-fields")), ("save", {"name": self.PERSON}),
+                          ("save", {"name": "aom-eu-1900"})):
+            sent, res = self.answer(cmd, args)
+            self.assertEqual(sent.get("_owner"), "alice", cmd)
+        self.assertEqual(self.answer("money", {"add": 1})[1]["saveNote"], tf3ctl.SAVE_NOTE)
+        self.assertNotIn("saveNote", self.answer("build", {"res": "x"})[1])
+        self.assertNotIn("saveNote", self.answer("stockSet", {"entity": 1, "stock": 0, "amount": 5,
+                                                              "dryRun": True})[1], "a dry run changes nothing")
+
+    def test_configured_test_saves_take_them_by_the_four_prefixes_and_the_digit_rule(self):
+        for save in ("probe-flat-base", "aom-ops-x", "aom-shot-x", "aom-bgm-check-x", "3-probe"):
+            self.loaded(save)
+            sent, res = self.answer("lightsOff", {"node": 5, "dryRun": True})
+            self.assertEqual(sent["_testSave"], save)
+            self.assertEqual(sent["_testSaveRules"], {"prefixes": CONFIGURED["testSavePrefixes"], "digitFirst": True})
+        self.loaded("3-probe")
+        sent, res = self.answer("road", self.ignore_errors())
+        self.assertEqual(res["saveNote"], tf3ctl.SAVE_NOTE)
+        # and once forced, saves go to probe-force-* names only
+        self.refused("save", {"name": "3-probe"}, "probe-force-* names")
+        self.refused("save", {"name": self.PERSON}, "probe-force-* names")
+
+    def test_configured_coop_refuses_saving_quitting_and_loading(self):
+        self.loaded(self.PERSON)
+        self.coop()
+        self.refused("save", {"name": self.PERSON}, "not a test save's name")
+        self.refused("save", {"name": "probe-x"}, "add --user-asked")
+        for cmd, args in (("quit", None), ("load", {"save": "probe-x"}), ("newgame", {}), ("tool", {"name": "x"})):
+            self.refused(cmd, args, "is theirs to do")
+        self.refused("speed", {"speed": 2}, "add --user-asked")
+        self.refused("road", self.ignore_errors(), "coop mark")
+        self.refused("lightsOff", {"node": 5}, "is theirs to do")
+        tf3ctl.USER_ASKED = True
+        self.refused("save", {"name": self.PERSON}, "not a test save's name")
+        for cmd, args in (("quit", None), ("load", {"save": "probe-x"})):
+            self.refused(cmd, args, "is theirs to do")
+        self.assertEqual(self.answer("save", {"name": "probe-x"})[0]["name"], "probe-x")
+        self.assertEqual(self.answer("speed", {"speed": 2})[0]["speed"], 2)
+        tf3ctl.USER_ASKED = False
+        # looking, building and the test commands go (counted as changes of the person's game)
+        for cmd, args in (("camera", {"set": "1,2"}), ("build", {"res": "x"}), ("stockSet", {"entity": 1}),
+                          ("money", {"add": 1}), ("steps", {"count": 5})):
+            self.answer(cmd, args)
+        self.assertGreater(tf3ctl.read_launched()[0]["coop"].get("changes", 0), 0)
+
+    def test_configured_owner_check_refuses_other_clients(self):
+        for owner in ("bob", None):
+            tf3ctl.OWNER = owner
+            for cmd, args in (("save", {"name": "probe-x"}), ("quit", None), ("stockSet", {"entity": 1}),
+                              ("build", {"res": "x"})):
+                self.refused(cmd, args, "started by alice" if owner is None else "not by bob")
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True
+        self.assertEqual(self.answer("save", {"name": "probe-x"})[0]["_otherOwnerOk"], "alice")
+
+    def test_without_a_file_the_owner_check_and_the_extra_names_are_gone_the_rest_holds(self):
+        os.remove(CONFIG_FILE)
+        try:
+            tf3ctl.CONFIG, tf3ctl.CONFIG_INFO = tf3ctl.load_config({"XDG_CONFIG_HOME": self.x})
+            self.assertEqual(tf3ctl.CONFIG_INFO["state"], "none")
+            # any client changes the game
+            tf3ctl.OWNER = "bob"
+            self.answer("save", {"name": "probe-x"})
+            tf3ctl.OWNER = None
+            self.answer("quit", None)
+            # test saves: probe-* only
+            for save in ("aom-shot-x", "3-probe", self.PERSON):
+                self.loaded(save)
+                self.refused("road", self.ignore_errors(), "is not a test save's (probe-*)")
+                self.refused("lightsOff", {"node": 5}, "is not a test save's (probe-*)")
+            self.loaded("probe-flat-base")
+            self.assertEqual(self.answer("lightsOff", {"node": 5})[0]["_testSaveRules"],
+                             {"prefixes": ["probe-"], "digitFirst": False})
+            # a coop mark left on the running game still holds (none can be made without "coop": true)
+            self.loaded(self.PERSON)
+            self.coop()
+            tf3ctl.OWNER = "alice"
+            self.refused("save", {"name": self.PERSON}, "not a test save's name")
+            self.refused("quit", None, "is theirs to do")
+        finally:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(CONFIGURED, f)
+
+
+
+class ConfiguredMachineTest(unittest.TestCase):
+    """With every switch on and the four prefixes and the digit rule (the CONFIGURED file the other tests run
+    with): the names and texts as before the configuration file."""
+
+    def test_test_saves_and_their_text_as_before(self):
+        use_config(CONFIGURED)
+        for name in ("probe-x", "aom-ops-u6", "aom-shot-1950", "aom-bgm-check-1", "3-probe", "6"):
+            self.assertTrue(tf3ctl.is_test_save(name), name)
+        self.assertFalse(tf3ctl.is_test_save("aom-eu-1900"))
+        self.assertEqual(tf3ctl.test_save_text(), "probe-*, aom-ops-*, aom-shot-*, aom-bgm-check-*, or one digit first")
+        self.assertEqual(tf3ctl.CONFIG_INFO["state"], "file")
+        for key in ("ownerCheck", "coop", "pointer"):
+            self.assertIs(tf3ctl.CONFIG[key], True, key)
 
 
 if __name__ == "__main__":

@@ -486,16 +486,6 @@ function handlers.poll(c)
 	say(string.format("polling: idle %g s, active %g s", G.pollIdle, G.pollActive), 2)
 end
 
--- args: scale (the base photo mode uses 1: twice the screen size, ~100 MB PNG at 5120x2160). The game writes
--- <userdata>/screenshots/<date>_img_N.png on its own time; the tool waits for the file. A GUI API: safe here,
--- since this script runs on the main thread.
-function handlers.screenshot(c)
-	local scale = tonumber(c.args.scale or 1)
-	if not scale or scale ~= math.floor(scale) or scale < 0 or scale > 4 then return fail(c.id, "scale must be 0-4") end
-	api.gui.camera.takeScreenshot(scale)
-	answer(c.id, { ok = true, scale = scale, unixTime = os.time and os.time() or nil })
-end
-
 -- towns, lines, vehicles, stations, industries, warehouses: { id, name } (vehicles, stations and lines: the
 -- player's own)
 local function entitiesOf(kind)
@@ -699,7 +689,7 @@ local function cameraNow()
 end
 
 -- args: none (read), set (x,y[,distance[,angle[,pitch]]], the rest kept), entity, or focus (x,y,z) + distance.
--- A GUI API on the main thread, as screenshot. Answers what the camera reads after the move.
+-- A GUI API on the main thread (this script runs there). Answers what the camera reads after the move.
 function handlers.camera(c)
 	local a, cam = c.args, api.gui.camera
 	local given = (a.set ~= nil and 1 or 0) + (a.entity ~= nil and 1 or 0) + (a.focus ~= nil and 1 or 0)
@@ -1070,9 +1060,9 @@ function handlers.newgame(c)
 	local catalog = climateCatalog()
 	-- this script only runs inside a save, and there app.startGame hits the base's StartGame assertion
 	-- `!m_game` and crashes the game (2026-11-15): only the list and the plan are safe
-	if not G.menu and not c.args.list and not c.args.dryRun and not c.args.unsafe then
+	if not G.menu and not c.args.list and not c.args.dryRun then
 		return fail(c.id, "newgame cannot start from inside a save: the base's StartGame asserts that no game is "
-			.. "running and the game crashes (list and dryRun still work; unsafe = true sends it anyway)")
+			.. "running and the game crashes (list and dryRun still work; start a new game from the main menu)")
 	end
 	if c.args.list then return answer(c.id, { ok = true, climates = catalog, sizes = core.MAP_SIZES }) end
 	local current, mods
