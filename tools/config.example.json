@@ -1,5 +1,5 @@
 {
-  "_about": "tf3ctl's configuration file. Copy it to $XDG_CONFIG_HOME/tf3ctl/config.json (~/.config/tf3ctl/config.json), or name it in TF3CTL_CONFIG, and change what you need. Every value here is the default, the same as having no file. Keys starting with _ are comments; any other unknown key, or a value of the wrong kind, makes the whole file unreadable: tf3ctl then warns and runs with the defaults and ownerCheck on. tf3ctl.py config shows what is in effect.",
+  "_about": "tf3ctl's configuration file. Copy it to $XDG_CONFIG_HOME/tf3ctl/config.json (~/.config/tf3ctl/config.json), or name it in TF3CTL_CONFIG, and change what you need. Every value here is the default, the same as having no file. Keys starting with _ are comments; any other unknown key, or a value of the wrong kind, makes the whole file unreadable: tf3ctl then runs no command (exit 2, nothing sent) until it is fixed; only tf3ctl.py config answers, with the reason. tf3ctl.py config shows what is in effect.",
 
   "_ownerCheck": "true: launch / restart --owner NAME record who started the game, and game-changing commands go only to the game that owner started (others: exit 4). For several clients (people or scripts) sharing one machine.",
   "ownerCheck": false,

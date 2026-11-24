@@ -73,11 +73,12 @@ python3 tools/tf3ctl.py status
 
 ## 使い方
 
-どのコマンドも JSON のオブジェクトを 1 つ出力します。終了コード: 0 成功、1 ゲームがエラーを返した、2 応答なしか
-ツールのエラー、3 ゲームが今いる場所では答えられない (メニュー、ロード中、probe のないメインメニュー、終了。
+どのコマンドも JSON のオブジェクトを 1 つ出力します。終了コード: 0 成功、1 ゲームがエラーを返した、2 応答なし・
+ツールのエラー・読めない設定ファイル (「設定ファイル」)、3 ゲームが今いる場所では答えられない (メニュー、ロード中、probe のないメインメニュー、終了。
 `gameState` が示す)、4 断った (何も送っていない): 動いているゲームはこの `--owner` のものではない (「ゲームを変えるのは起動した owner だけ」)、
 試験用セーブかを確認する命令 (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み) を別のセーブに
-送ろうとした、設定ファイルで入れていない命令 (「設定ファイル」)。
+送ろうとした、設定ファイルで入れていない命令 (「設定ファイル」)、札が `reads` でない命令への `mod ... --read-only`
+(`"refused": "not-read-only"`)。
 
 ### 時間と速度
 
@@ -1338,9 +1339,12 @@ Publishing のあいだは `quit`・`load`・`newgame` を断るので、ゲー�
 python3 tools/tf3ctl.py mod --list                       # 読むだけ: 命令を持つ MOD と、その命令の一覧
 python3 tools/tf3ctl.py mod my_mod                       # 読むだけ: その MOD の命令 (無ければその理由)
 python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}' [--timeout 30]   # 1つ呼ぶ: 答えは JSON
+python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}' --read-only      # 札が reads のときだけ呼ぶ
 ```
 
 `--timeout` は、命令なら 6〜125 秒 (初期設定 30)、一覧なら 5〜600 秒 (初期設定 60) です。外の値は断ります。
+`--list` は単独で使います。後ろに MOD の id・命令・JSON があると、何も送らずにエラーで終わります (終了コード 2。
+1 つの MOD の命令は `mod my_mod`)。`--read-only` は値を取らない旗で、命令と一緒にだけ使えます。
 
 プローブはバニラの命令を中継します。その上に、MOD が自分の命令を足せます。足すには、ファイルを1つ
 `content/remote_probe_ext.lua` (`<modId>::/remote_probe_ext.lua` として require される) に置き、命令の表を返します:
@@ -1389,8 +1393,15 @@ return {
   `pcall` で捕まえられないものは MOD の側の責任です: MOD が呼ぶ api の中のエンジンの assertion、終わらない繰り返し。
 - **owner の検査。** 札が `reads` の命令は `status` と同じに送ります。それ以外は、まず読むだけの形 (`modRead`) で送り、
   MOD は何も動かさずに断り (`needsChange`)、ツールが `modChange` で送り直します。`modChange` はゲームを変える命令と
-  数えます: `"ownerCheck": true` のときは、この `--owner` が起動したゲームにだけ送り (「ゲームを変えるのは起動した owner だけ」)、`coop` が通す命令には
-  入らず、`status` の `lastAction` に出ます。
+  数えます: `"ownerCheck": true` のときは、この `--owner` が起動したゲームにだけ送り (「ゲームを変えるのは起動した owner だけ」)、`coop` の間は
+  `event` と同じに通り、`status` の `lastAction` に出ます。
+- **`--read-only`。** 札が `reads` の命令だけを動かします。それ以外は、MOD が何も動かさずに `needsChange` と答え、
+  ツールは送り直しません: 終了コード 4、`"refused": "not-read-only"`。`mod --list` と同じく owner の検査なしで送ります。
+  札は MOD の自己申告のままです (上): `--read-only` は MOD をその申告に縛るだけで、命令が実際に何をするかは確かめません。
+- **外のガードのために。** 命令の形だけで (答えを見ずに) 決めるガードが、ゲームを変えない命令として通してよい形は
+  次の 2 つです: `mod --list` (単独)、`mod <modId> <命令> [JSON] --read-only` (旗はこの綴りのまま、`mod` の後ろの
+  どこでも)。`mod <modId>` (1 つの MOD の一覧) も読むだけですが、この形には入れません: ガードはほかの `mod` の
+  命令と同じに止めます。
 - **`ctx`。** `mod`・`command`・`id`・`tag`・`owner` (`--owner`)・`timeout`。`log(msg[, level])` (MOD の名前つきでゲームの
   ログに 1 行)、`try(fn)` (fn の値、エラーなら nil)、`call(fn, ...)` (pcall)、`array(t)` (空の表を `[]` と書く)、
   `now()` (ゲームの時刻・日付・速度、`status` と同じ)、`appTime()`・`clock()`、`exists(e)`・`component(e, "NAME")`・
@@ -1460,7 +1471,7 @@ tf3ctl.py --owner bob coop end
 ```
 
 - `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。延長しても、印の変更の回数は引き継ぎます。
-- 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`。ユーザーのセーブでも同じです。
+- 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`、ほかの MOD の命令 (`mod`。`modChange` で送るもの)。ユーザーのセーブでも同じです。
 - `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`。
 - `save` は試験用のセーブの名前にだけ (`testSavePrefixes`。`testSaveDigitFirst` なら数字 1 文字で始まる名前 `3-probe` も)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
 - ほかは断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`、`tool`、`buy`、`line`、`terrain`、`town`、`modhub` など。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。
@@ -1488,7 +1499,8 @@ tf3ctl.py --owner bob coop end
   とは読まず (ログで決める)、メインメニューの hello がゲームのプロセスの起動より新しいかも確認しません。テスト用と、
   プロセス一覧にゲームが出ない環境 (コンテナ、別のマシン) 向けです。owner の検査と coop の印による拒否は、
   これまでどおりゲームのプロセスを探します。プロセス一覧にゲームが出ないと、この 2 つはどの命令も通します
-  (`ownerCheck` でも coop でも断りません)。
+  (`ownerCheck` でも coop でも断りません)。`road --ignore-errors` のあとの強制の印 (保存は `probe-force-*` の名前だけ)
+  も同じで、プロセスが見えないと効きません。
 - `TF3CTL_CONFIG`、`XDG_CONFIG_HOME`: 設定ファイル (「設定ファイル」を参照)。
 - `XDG_STATE_HOME`: `modhub publish` の印の置き場所 (`tf3ctl/publish_pending.json`。既定 `~/.local/state`)。
 
@@ -1498,7 +1510,7 @@ tf3ctl.py --owner bob coop end
 `~/.config/tf3ctl/config.json` を読みます。ファイルがなければ下の項目はすべて切れたままで、1 人が 1 つのゲームを
 動かすのに向きます。複数のクライアント・MOD のアップロード・テスト用のツールを使う環境では、要るものだけを入れます。
 すべての項目と初期設定と働きは `tools/config.example.json` に、いま効いている値と読んだ場所は `tf3ctl.py config` で
-見られます。
+見られます。`status` の答えにも `"config": {"path", "state"}` (`"file"`、またはファイルが無く初期設定の `"none"`) が付きます。
 
 | 項目 | 初期設定 | 入れると / 値 |
 |---|---|---|
@@ -1509,8 +1521,11 @@ tf3ctl.py --owner bob coop end
 | `pointer` | `false` | `pointer` 命令 |
 | `modhub.validateFolders` / `publishFolders` / `publishedIds` | 空 | `modhub validate` / `publish` が受け付ける staging のフォルダと、mod.io にすでにあるフォルダとその id |
 
-`_` で始まる項目は注釈です。ほかの知らない項目や、型の違う値があると、ファイル全体を読めないものとして扱い、
-警告を出して、初期設定に `ownerCheck` だけを入れた状態で動きます (書き間違いで検査がゆるむことはありません)。
+`_` で始まる項目は注釈です。ほかの知らない項目、型の違う値、JSON として読めない中身、`ownerCheck` の無い `coop`、
+`TF3CTL_CONFIG` が指す無いファイルは、ファイル全体を読めないものとして扱い、tf3ctl はどの命令も動かしません。
+理由を stderr と JSON (`"ok": false`、`"refused": "config-broken"`、`"config": {"path", "state": "broken", "error"}`) に出し、
+何も送らずに終了コード 2 で終わります (書き間違いで検査がゆるむことも、気づかれずに動き続けることもありません)。
+`tf3ctl.py config` だけは、直すために、読めないときも答えます (`"ok": false`、`"file": {..., "state": "broken", "error"}`、終了コード 2)。
 MOD はこのファイルを読めないので、試験用セーブの名前と modhub の一覧は、要る命令ごとに tf3ctl が送り、MOD は
 それで確認します (送られなければ `probe-` だけ、modhub のフォルダはなし)。
 

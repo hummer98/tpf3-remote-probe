@@ -73,12 +73,14 @@ The game log then shows `[remote_probe] ready`.
 
 ## Usage
 
-All commands print one JSON object. Exit codes: 0 ok, 1 the game answered with an error, 2 no answer or a tool
-error, 3 the game cannot answer where it is (a menu, loading, the main menu without the probe, closed; the
-`gameState` field says which), 4 refused, nothing sent: the running game is not this `--owner`'s (see
+All commands print one JSON object. Exit codes: 0 ok, 1 the game answered with an error, 2 no answer, a tool
+error, or a configuration file that cannot be read (see "Configuration file"), 3 the game cannot answer where it
+is (a menu, loading, the main menu without the probe, closed; the `gameState` field says which), 4 refused,
+nothing sent: the running game is not this `--owner`'s (see
 "Only the owner who started the game changes it"), one of the commands that check for a test save
-(`road --ignore-errors`, `lights --off`, `running-costs` writes) on another save, or a command
-the configuration file does not enable (see "Configuration file").
+(`road --ignore-errors`, `lights --off`, `running-costs` writes) on another save, a command
+the configuration file does not enable (see "Configuration file"), or `mod ... --read-only` for a command its mod
+does not tag `reads` (`"refused": "not-read-only"`).
 
 ### Time and speed
 
@@ -1446,9 +1448,12 @@ stays, and `quit`, `load` and `newgame` are refused while the mod is still Publi
 python3 tools/tf3ctl.py mod --list                       # read only: the mods with commands, and their commands
 python3 tools/tf3ctl.py mod my_mod                       # read only: that mod's commands (or why it has none)
 python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}' [--timeout 30]   # run one: its JSON answer
+python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}' --read-only      # run it only if tagged reads
 ```
 
 `--timeout` is 6-125 s for a command (default 30) and 5-600 s for a list (default 60); a value outside is refused.
+`--list` stands alone: with a mod's id, a command or JSON after it the tool stops with an error (exit 2) and sends
+nothing (one mod's commands: `mod my_mod`). `--read-only` takes no value and goes with a command only.
 
 The probe relays the base game; a mod can add commands of its own on top of it. A mod does so by shipping one file,
 `content/remote_probe_ext.lua` (required as `<modId>::/remote_probe_ext.lua`), that returns a table of commands:
@@ -1498,7 +1503,15 @@ game: 0-4, answered from the engine's callback). Copy the folder into the game's
 - **The owner check.** A command tagged `reads` is sent like `status`. Any other is sent first as a read (`modRead`),
   which the mod refuses without running anything (`needsChange`), and then again as `modChange`, which counts as
   changing the game: with `"ownerCheck": true` it goes only to the game this `--owner` started ("Only the owner who
-  started the game changes it"), it is not one of the commands `coop` lets through, and `status` shows it as `lastAction`.
+  started the game changes it"), during coop it goes as `event` does, and `status` shows it as `lastAction`.
+- **`--read-only`.** Only a command its mod tags `reads` runs. Any other is answered `needsChange` by the mod
+  without running, and the tool does not send it again: exit 4, `"refused": "not-read-only"`. It goes without the
+  owner check, as `mod --list` does. The tag is still the mod's own claim (above): `--read-only` holds a mod to what
+  it says, not to what its command does.
+- **For a guard outside.** A guard that decides by a command's shape alone (not by its answer) may let these two
+  forms through as not changing the game: `mod --list` (alone), and `mod <modId> <command> [JSON] --read-only`
+  (the flag spelled exactly, anywhere after `mod`). `mod <modId>` (one mod's list) also only reads, but is not one
+  of these forms: a guard holds it like any other `mod` command.
 - **`ctx`.** `mod`, `command`, `id`, `tag`, `owner` (the `--owner`), `timeout`; `log(msg[, level])` (a line in the
   game's log with the mod's name); `try(fn)` (fn's value, or nil when it raised); `call(fn, ...)` (pcall);
   `array(t)` (an empty table written as `[]`); `now()` (game time, date, speed, as `status`); `appTime()`, `clock()`;
@@ -1594,8 +1607,8 @@ tf3ctl.py --owner bob coop end
   another client's mark counts (`--other-owner-ok` changes neither). Again by the same owner renews it. `--reason`
   is required (1-200 characters), `--minutes` is 1-10080 (7 days). Renewing keeps the change count of the mark.
 - While it counts, this owner may send what helps the user: every reading command, `camera`, `window` (not
-  `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`. This holds on the user's own
-  saves too.
+  `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`, other mods' commands
+  (`mod`, sent as `modChange`). This holds on the user's own saves too.
 - Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`.
 - `save` only to a test save's name (`testSavePrefixes`, and with `testSaveDigitFirst` one digit first,
   `3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that
@@ -1643,6 +1656,8 @@ tf3ctl.py --owner bob coop end
   against the game process's start. For tests and for setups where the process list does not show the game (a
   container, another machine). The owner check and the coop mark's refusals still look for the game's process:
   when the process list does not show it, they pass every command (nothing is refused for `ownerCheck` or coop).
+  The forced mark after `road --ignore-errors` (saving only to `probe-force-*` names) is the same: it does not
+  hold when the process cannot be seen.
 - `TF3CTL_CONFIG`, `XDG_CONFIG_HOME`: the configuration file (see "Configuration file").
 - `XDG_STATE_HOME`: where `modhub publish` keeps its mark (`tf3ctl/publish_pending.json`; default `~/.local/state`).
 
@@ -1651,7 +1666,8 @@ tf3ctl.py --owner bob coop end
 `tools/tf3ctl.py` reads `$TF3CTL_CONFIG`, else `$XDG_CONFIG_HOME/tf3ctl/config.json`, else
 `~/.config/tf3ctl/config.json`. Without the file every switch is off, which suits one person with one game; a
 setup with several clients, mod uploads or test tooling turns on what it needs. `tools/config.example.json` lists
-every key with its default and what it does; `tf3ctl.py config` shows what is in effect and where it came from.
+every key with its default and what it does; `tf3ctl.py config` shows what is in effect and where it came from,
+and `status` carries `"config": {"path", "state"}` (`"file"`, or `"none"`: no file, the defaults).
 
 | Key | Default | On / set |
 |---|---|---|
@@ -1662,10 +1678,14 @@ every key with its default and what it does; `tf3ctl.py config` shows what is in
 | `pointer` | `false` | the `pointer` command |
 | `modhub.validateFolders` / `publishFolders` / `publishedIds` | empty | the staging folders `modhub validate` / `publish` take, and the folders already on mod.io with their ids |
 
-Keys starting with `_` are comments. Any other unknown key, or a value of the wrong kind, makes the file
-unreadable: tf3ctl then prints a warning and runs with the defaults and `ownerCheck` on (a typo never loosens a
-check). The mod cannot read the file: tf3ctl sends the test saves' names and the modhub lists with each command
-that needs them, and the mod checks by those (without them: `probe-` only, no modhub folder).
+Keys starting with `_` are comments. Any other unknown key, a value of the wrong kind, JSON that does not parse,
+`coop` without `ownerCheck`, or a file `TF3CTL_CONFIG` names that is not there makes the file unreadable: tf3ctl
+then runs no command at all. It prints the reason on stderr and as JSON (`"ok": false`, `"refused":
+"config-broken"`, `"config": {"path", "state": "broken", "error"}`), sends nothing and exits with 2, so a typo
+neither loosens a check nor goes on unnoticed. Only `tf3ctl.py config` still answers (`"ok": false`,
+`"file": {..., "state": "broken", "error"}`, exit 2), to show what to fix. The mod cannot read the file: tf3ctl
+sends the test saves' names and the modhub lists with each command that needs them, and the mod checks by those
+(without them: `probe-` only, no modhub folder).
 
 **Debug commands** change the game as no player can: `stock set`, `steps`, `money`, `town develop` / `size` /
 `connect`, `company init`, `running-costs` writes, `lights --off` and `road --ignore-errors`. They are meant for

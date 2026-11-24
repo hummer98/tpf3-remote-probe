@@ -170,8 +170,11 @@ The configuration file ($TF3CTL_CONFIG, else $XDG_CONFIG_HOME/tf3ctl/config.json
 tools/config.example.json shows every key and its default) turns on what only some setups want: ownerCheck (the
 owner check below), coop, testSavePrefixes / testSaveDigitFirst (which save names count as test saves: probe-* by
 default), modhub.validateFolders / publishFolders / publishedIds (modhub validate and publish: none by default),
-and pointer. Without the file all of them are off. A file that cannot be read gives a warning and the defaults with
-ownerCheck on. `tf3ctl.py config` shows what is in effect.
+and pointer. Without the file all of them are off. A file that cannot be read (not JSON, an unknown key, a value of
+the wrong kind, coop without ownerCheck, ...) stops every command: nothing is sent, the reason goes to stderr and as
+JSON ("refused": "config-broken"), exit 2. Only `tf3ctl.py config` still answers then (exit 2, "file": {"state":
+"broken", "error"}), to see what to fix. `tf3ctl.py config` shows what is in effect, and status carries "config":
+{"path", "state": "file" or "none"}.
 
 The debug commands (stock set, steps, money, town develop / size / connect, company init, running-costs writes,
 lights --off, road --ignore-errors) change the save's contents as no player can: their answers carry "saveNote"
@@ -194,10 +197,10 @@ With "coop": true, coop start --reason "..." [--minutes 60] (or launch --coop --
 and this --owner: the game this owner started, or one a person started from Steam (never another owner's). The
 launch record then carries "coop": {"with", "reason", "since", "until"[, "modified", "changes"]}; it counts until
 "until", while its pid is the running game. Meanwhile this owner may send camera, window, event, build, road,
-stock set, money and steps (fit too); speed, run and pause only with --user-asked; save only to a test save's
-name, and with a person's save loaded only with
---user-asked; nothing else (quit, load, newgame, restart, ...): exit 4, "refused": "coop". A game-changing command
-on a person's save sets "modified" and counts "changes"; status and coop end say so. coop end removes the mark.
+stock set, money, steps and other mods' commands (mod; fit too); speed, run and pause only with --user-asked;
+save only to a test save's name, and with a person's save loaded only with --user-asked; nothing else (quit,
+load, newgame, restart, ...): exit 4, "refused": "coop". A game-changing command on a person's save sets
+"modified" and counts "changes"; status and coop end say so. coop end removes the mark.
 A mark whose until has passed, or a malformed one (no client, until not a finite number or more than 7 days ahead),
 on the running game is the strict side: the user may still be playing, so its launcher and client send no
 game-changing command (exit 4, "refused": "coop-expired" / "coop-invalid"; not with --other-owner-ok either) until
@@ -206,10 +209,11 @@ coop start extends or rewrites it, or coop end removes it. Its time running out 
 Several tool processes may run at once (e.g. a long run plus status calls): a lock makes them write the single
 command file one after another, each waiting until the mod has picked its command up.
 
-Exit codes: 0 ok, 1 the game answered with an error, 2 no answer / tool error, 3 the game cannot answer where it
-is (menu, loading, main menu, closed: gameState in the output says which), 4 refused, nothing sent: the running
-game is not this --owner's (see --owner above), road --ignore-errors / lights --off / a running-costs write on a
-save that is not a test save, or a command the configuration does not enable ("refused": "config").
+Exit codes: 0 ok, 1 the game answered with an error, 2 no answer / tool error / a configuration file that cannot
+be read, 3 the game cannot answer where it is (menu, loading, main menu, closed: gameState in the output says which),
+4 refused, nothing sent: the running game is not this --owner's (see --owner above), road --ignore-errors / lights
+--off / a running-costs write on a save that is not a test save, a command the configuration does not enable
+("refused": "config"), or mod --read-only for a command its mod does not tag reads ("refused": "not-read-only").
 
 Environment: TF3_REMOTE_DIR = the exchange folder (default: the newest hello file under Steam's userdata),
 TF3_LOG = the game log, TF3_STEAM = the command that starts Steam, TF3CTL_OWNER = the default --owner,
@@ -220,7 +224,8 @@ on Windows; a folder counts while a file is in it): while one exists, --lang and
 put back in the reverse order they were made. TF3_ASSUME_RUNNING = any non-empty value: take the game as running
 without the process list (state is never closed / crashed, the main menu's hello is not checked against the
 process start; for tests, or where the process list cannot show the game). The owner check and the coop mark's
-refusals still look for the game's process: when the list does not show it, they let every command through.
+refusals still look for the game's process: when the list does not show it, they let every command through; so
+does the forced mark after road --ignore-errors (saving only to probe-force-* names).
 
 Windows: a minimal port, not tested on a Windows machine (please report problems in an issue or a pull request).
 The configuration file is ~/.config/tf3ctl/config.json there too; frame (it looks for Steam's recordings in Linux's
@@ -294,6 +299,12 @@ class ConfigRefused(OwnerRefused):
     refused = "config"
 
 
+class NotReadOnly(OwnerRefused):
+    """mod ... --read-only for a command the mod does not tag reads: the mod ran nothing, and it is not sent again
+    as a change. Exit code 4."""
+    refused = "not-read-only"
+
+
 class GameNotReady(ToolError):
     """The mod cannot answer because of where the game is (menu, loading, closed); exit code 3."""
     def __init__(self, msg, state):
@@ -304,8 +315,9 @@ class GameNotReady(ToolError):
 # ---------------------------------------------------------------------------------------------------------------
 # the configuration file: what only some setups want. Without a file every one of these is off (or the shortest
 # list), so a fresh install has no owner check, no coop, test saves named probe-* only, no mod.io upload and no
-# pointer. A file that cannot be read is the strict side: a warning, the owner check on, all
-# else as without a file (a broken file must not loosen what it meant to keep tight, nor open what it kept closed).
+# pointer. A file that cannot be read stops every command but config (main): running on with a guess would either
+# loosen what the file meant to keep tight or open what it kept closed, and a warning on stderr goes unread by the
+# scripts that send most commands.
 #
 # $TF3CTL_CONFIG, else $XDG_CONFIG_HOME/tf3ctl/config.json, else ~/.config/tf3ctl/config.json. A JSON object; keys
 # starting with "_" are comments. Any other unknown key, or a value of the wrong kind, makes the file unreadable
@@ -326,7 +338,9 @@ CONFIG_DEFAULTS = {
     # modhub validate / publish: the staging folders each takes, and the folders already on mod.io (folder: id)
     "modhub": {"validateFolders": [], "publishFolders": [], "publishedIds": {}},
 }
-CONFIG_BROKEN = {"ownerCheck": True}  # over the defaults, when the file cannot be read
+# over the defaults, when the file cannot be read: main refuses every command then, but a caller importing the
+# module and calling its functions directly still gets the strict side
+CONFIG_BROKEN = {"ownerCheck": True}
 _CONFIG_BOOLS = ("ownerCheck", "coop", "testSaveDigitFirst", "pointer")
 _PLAIN_NAME_RE = re.compile(r"[^/\\,\x00-\x1f]{1,200}")
 
@@ -391,7 +405,8 @@ def config_values(raw):
 
 def load_config(env=None):
     """(config, info): the configuration and where it came from. info: {"path", "state": "none" (no file: the
-    defaults), "file", or "broken" with "error" (the strict side: CONFIG_BROKEN over the defaults)}. Never raises."""
+    defaults), "file", or "broken" with "error" (main then refuses every command but config; the config returned is
+    CONFIG_BROKEN over the defaults, for callers of the module's functions)}. Never raises."""
     path, named = config_path(env)
     info = {"path": path}
     try:
@@ -414,12 +429,12 @@ def load_config(env=None):
 CONFIG, CONFIG_INFO = load_config()
 
 
-def config_warning():
-    """One line for stderr when the configuration file could not be read, else None."""
+def config_broken_text():
+    """The reason every command but config stops, when the configuration file could not be read; else None."""
     if CONFIG_INFO.get("state") != "broken":
         return None
-    return ("warning: cannot read the configuration file %s (%s): using the defaults with the owner check on"
-            % (CONFIG_INFO["path"], CONFIG_INFO.get("error")))
+    return ("cannot read the configuration file %s (%s): nothing was sent; fix or remove the file "
+            "(tf3ctl.py config shows the problem)" % (CONFIG_INFO["path"], CONFIG_INFO.get("error")))
 
 
 TEST_SAVE_PREFIX_MIN = 3  # a 1-2 character prefix ("a", "3-") is the start of many a player's save name
@@ -443,6 +458,12 @@ def test_save_warnings():
                        "it, so a player's save may count as a test save (%s)" % (p, TEST_SAVE_PREFIX_MIN,
                                                                              TEST_SAVE_USES))
     return out
+
+
+def config_note():
+    """For status: which configuration is in effect ("file", or "none": the defaults), so a caller sees whether the
+    fences it counts on are on."""
+    return {"config": {"path": CONFIG_INFO["path"], "state": CONFIG_INFO["state"]}}
 
 
 def config_needed(what, key):
@@ -939,7 +960,8 @@ COOP_MINUTES_MAX = 7 * 24 * 60  # a mark further ahead, NaN or Infinity is no ma
 COOP_UNTIL_MAX_SEC = COOP_MINUTES_MAX * 60
 COOP_REASON_MAX = 200
 # what the coop client may send (after the reading commands, which always go): a person keeps the game itself
-COOP_ALLOWED = {"camera", "window", "event", "build", "road", "stockSet", "money", "steps"}
+# modChange: another mod's command, the same as event (a test command a mod ships); a save stays refused by "save"
+COOP_ALLOWED = {"camera", "window", "event", "build", "road", "stockSet", "money", "steps", "modChange"}
 COOP_USER_ASKED = {"speed", "run"}  # pause is speed 0: only when the person asked (--user-asked)
 COOP_UNCOUNTED = {"camera", "window", "speed", "save"}  # they leave the world as it was
 LOADED_ANCHORS = (b"Application startup", b"Loading game from file", b"Start new game")
@@ -5103,9 +5125,13 @@ MOD_LIST_TIMEOUT_MAX = 600
 
 def mod_call_args(ns):
     """(wire command, args) for mod: modList, or modRead with the command's own JSON arguments."""
+    # --list stands alone: a guard outside that lets "mod --list" through by its shape must not let a command
+    # ride along with it, so anything after it is an error before anything is sent
+    if ns.list and (ns.mod_id is not None or ns.mod_command is not None or ns.mod_json is not None):
+        raise ToolError("mod --list takes nothing else (one mod's commands: mod <modId>)")
+    if ns.read_only and ns.mod_command is None:
+        raise ToolError("--read-only goes with a command: mod <modId> <command> [JSON] --read-only")
     if ns.list or ns.mod_command is None:
-        if ns.mod_command is not None or ns.mod_json is not None:
-            raise ToolError("mod --list takes at most a mod's id (mod --list, or mod <modId>)")
         # (refused like a command's --timeout below; NaN fails both comparisons, so it is refused too)
         if ns.timeout is not None and not (MOD_LIST_TIMEOUT_MIN <= ns.timeout <= MOD_LIST_TIMEOUT_MAX):
             raise ToolError("--timeout for a list must be between %d and %d seconds" % (MOD_LIST_TIMEOUT_MIN,
@@ -5131,13 +5157,18 @@ def mod_call_args(ns):
 def cmd_mod(ns):
     """Another mod's commands. A command runs as modRead first: the mod runs it there only when the mod tagged it
     reads, and otherwise answers needsChange without running anything; it then goes again as modChange, a command
-    in CHANGES_GAME, so the owner check (and coop) decide over it as over every game-changing command."""
+    in CHANGES_GAME, so the owner check (and coop) decide over it as over every game-changing command. With
+    --read-only it is not sent again: NotReadOnly instead, so a caller (or a guard) can count on a read."""
     wire, args = mod_call_args(ns)
     if wire == "modList":
         return send("modList", args, timeout=MOD_LIST_TIMEOUT_SEC if ns.timeout is None else ns.timeout)
     t = MOD_TIMEOUT_SEC if ns.timeout is None else ns.timeout
     res = send("modRead", args, timeout=t)
     if isinstance(res, dict) and res.get("needsChange") is True:
+        if ns.read_only:
+            raise NotReadOnly("refused: %s %s is not tagged reads by its mod (tag %s), and --read-only does not send "
+                              "it again as a change; the mod ran nothing"
+                              % (ns.mod_id, ns.mod_command, res.get("tag") or "none"))
         res = send("modChange", args, timeout=t)
     return res
 
@@ -6561,13 +6592,20 @@ def make_parser():
     cn.add_argument("--timeout", type=float, default=120, help="seconds for the whole command (10-1800)")
     mx = sub.add_parser("mod", help="other mods' commands: those a mod ships in remote_probe_ext.lua (--list, or a "
                         "mod's id alone, reads which there are); a command tagged changes goes past the owner check "
-                        "(the tag is the mod's own claim: one tagged reads is sent without it)")
+                        "(the tag is the mod's own claim: one tagged reads is sent without it). With --read-only "
+                        "only a command tagged reads runs, anything else is refused (exit 4) without running. "
+                        "Forms a guard outside may let through by their shape: 'mod --list' alone, and "
+                        "'mod <modId> <command> [JSON] --read-only'; 'mod <modId>' (one mod's list) is not one of "
+                        "them")
     mx.add_argument("mod_id", nargs="?", metavar="MOD_ID", help="the mod's id (its mod.json modId)")
     mx.add_argument("mod_command", nargs="?", metavar="COMMAND", help="one of the mod's commands")
     mx.add_argument("mod_json", nargs="?", metavar="JSON", help="the command's arguments: a JSON object or list "
                     "(default {})")
     mx.add_argument("--list", action="store_true", help="the mods with commands, and their commands (read only; it "
-                    "requires every candidate mod's remote_probe_ext.lua, so their top-level code runs in the game)")
+                    "requires every candidate mod's remote_probe_ext.lua, so their top-level code runs in the game). "
+                    "Alone: with a mod's id, a command or JSON it is an error and nothing is sent")
+    mx.add_argument("--read-only", action="store_true", help="run the command only if its mod tags it reads; "
+                    "otherwise refuse (exit 4) and do not send it again as a change (the tag is the mod's own claim)")
     mx.add_argument("--timeout", type=float, help="seconds to wait for the answer (default %d, %d-%d; for a list %d, "
                     "%d-%d; the mod gives a command that defers its answer %d s less)"
                     % (MOD_TIMEOUT_SEC, MOD_EXT_MARGIN_SEC + 1, MOD_EXT_TIMEOUT_MAX + MOD_EXT_MARGIN_SEC,
@@ -6649,9 +6687,14 @@ def main(argv=None):
     OTHER_OWNER_OK = ns.other_owner_ok
     USER_ASKED = getattr(ns, "user_asked", False)
     CONFIG, CONFIG_INFO = load_config()  # each run reads it again: a long-lived caller (tests) sees a changed file
-    warning = config_warning()
-    if warning:
-        print(warning, file=sys.stderr)
+    broken = config_broken_text()
+    if broken:
+        print("error: " + broken, file=sys.stderr)
+        if ns.cmd == "config":  # the one command that answers: it shows what to fix
+            show({"ok": False, "error": broken, "config": None, "file": CONFIG_INFO})
+        else:
+            show({"ok": False, "error": broken, "refused": "config-broken", "config": CONFIG_INFO})
+        return 2
     for line in test_save_warnings():
         print(line, file=sys.stderr)
 
@@ -6688,6 +6731,7 @@ def main(argv=None):
         if ns.cmd == "status":
             res = send("status")
             if isinstance(res, dict):
+                res.update(config_note())
                 res.update(profile_note())
                 res.update(coop_note())
                 res.update(forced_note())
@@ -6879,7 +6923,8 @@ def main(argv=None):
     except GameNotReady as e:
         print("error: " + str(e), file=sys.stderr)
         out = {"ok": False, "error": str(e), "gameState": e.state}
-        show(dict(out, **profile_note(), **coop_note(), **forced_note()) if ns.cmd == "status" else out)
+        show(dict(out, **config_note(), **profile_note(), **coop_note(), **forced_note()) if ns.cmd == "status"
+             else out)
         return 3
     except ToolError as e:
         print("error: " + str(e), file=sys.stderr)

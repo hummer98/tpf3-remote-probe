@@ -422,6 +422,7 @@ class FileHandlingTest(unittest.TestCase):
 
     def test_frame_reads_ffmpeg_as_utf8_and_replaces_what_does_not_decode(self):
         rec = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, rec, True)  # also when an assertion fails
         write(os.path.join(rec, "init-stream0.m4s"), "i")
         write(os.path.join(rec, "chunk-stream0-00001.m4s"), "c")
         ns = tf3ctl.argparse.Namespace(crop=None, out=os.path.join(rec, "f.png"))
@@ -433,7 +434,6 @@ class FileHandlingTest(unittest.TestCase):
         self.assertIn("bad", str(cm.exception))
         self.assertEqual((run.call_args.kwargs.get("encoding"), run.call_args.kwargs.get("errors")),
                          ("utf-8", "replace"))
-        shutil.rmtree(rec, ignore_errors=True)
 
     def test_frame_refuses_a_malformed_crop(self):
         ns = tf3ctl.argparse.Namespace(crop="1150X170+0+0", out="/tmp/x.png")
@@ -1166,6 +1166,14 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("--owner", "tester", "mod", sample, "speed", '{"speed": 9}')
         self.assertEqual(code, 1, res)
         self.assertEqual(res["kind"], "error")
+        # --read-only: a reads command answers; a changes one is refused and not sent again
+        code, res = self.ctl("--owner", "tester", "mod", sample, "hello", "--read-only")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["result"]["greeting"][:5], "hello")
+        before = self.ctl("status")[1]["lastAction"]
+        code, res = self.ctl("--owner", "tester", "mod", "--read-only", sample, "speed", '{"speed": 2}')
+        self.assertEqual((code, res["refused"]), (4, "not-read-only"), res)
+        self.assertEqual(self.ctl("status")[1]["lastAction"], before, "nothing sent as a change")
         code, res = self.ctl("mod", sample, "nope")
         self.assertEqual(code, 1, res)
         self.assertEqual(res["kind"], "noCommand")
@@ -5331,7 +5339,7 @@ class OwnerCheckTest(unittest.TestCase):
             self.assertIsNone(tf3ctl.check_game_owner(cmd, args), cmd)
         # a dryRun inside the command's own arguments is the other mod's business: still changing
         self.assertTrue(tf3ctl.changes_game("modChange", dict(args, args={"dryRun": True})))
-        self.assertNotIn("modChange", tf3ctl.COOP_ALLOWED, "not one of the commands coop lets through")
+        self.assertIn("modChange", tf3ctl.COOP_ALLOWED, "coop lets it through as it does event")
 
     def test_reading_commands_dry_runs_and_camera_reading_go(self):
         self.record("bob")
@@ -5625,6 +5633,27 @@ class CoopTest(unittest.TestCase):
         for argv in (["speed", "1", "--user-asked"], ["pause", "--user-asked"], ["run", "--days", "1", "--user-asked"],
                      ["save", "probe-x", "--user-asked"]):
             self.assertTrue(p.parse_args(argv).user_asked, argv)
+
+    def test_another_mods_change_goes_in_coop_and_counts_on_a_persons_save(self):
+        args = {"mod": "m", "command": "c", "args": {}, "timeout": 25}
+        self.record("bob")
+        self.assertNotIsInstance(self.refused_owner("modChange", args), tf3ctl.CoopRefused)
+        self.record("alice")
+        self.start()
+        self.assertFalse(self.goes("modChange", args)["count"], "a test save: nothing to count")
+        self.loaded("aom-eu-1900")
+        self.assertTrue(self.goes("modChange", args)["count"], "a person's save: counted as a change")
+        self.assertEqual(self.sent("modChange", args)["coop"]["save"], "aom-eu-1900")
+        self.assertGreater(self.rec()["coop"].get("changes", 0), 0)
+        # saving stays as it was in coop
+        with self.assertRaises(tf3ctl.CoopRefused) as cm:
+            tf3ctl.check_game_owner("save", {"name": "aom-eu-1900x"})
+        self.assertIn("not a test save", str(cm.exception))
+
+    def refused_owner(self, cmd, args=None):
+        with self.assertRaises(tf3ctl.OwnerRefused) as cm:
+            tf3ctl.check_game_owner(cmd, args)
+        return cm.exception
 
     def test_save_only_to_a_test_name(self):
         self.record("alice")
@@ -6847,7 +6876,7 @@ class ConfigDefaultsTest(unittest.TestCase):
                                          "testSaveDigitFirst": False, "pointer": False,
                                          "modhub": {"validateFolders": [], "publishFolders": [],
                                                     "publishedIds": {}}})
-        self.assertIsNone(tf3ctl.config_warning())
+        self.assertIsNone(tf3ctl.config_broken_text())
         home = os.path.expanduser("~")
         self.assertEqual(tf3ctl.config_path({}), (os.path.join(home, ".config", "tf3ctl", "config.json"), False))
         self.assertEqual(tf3ctl.config_path({"XDG_CONFIG_HOME": "/x"}), ("/x/tf3ctl/config.json", False))
@@ -6884,11 +6913,12 @@ class ConfigDefaultsTest(unittest.TestCase):
             self.assertEqual(info["state"], "broken", text)
             self.assertIn(why, info["error"], text)
             self.assertEqual(cfg, dict(tf3ctl._config_defaults(), ownerCheck=True), text)
+        # config still answers, with what is wrong; exit 2 as every other command on a broken file
         code, res, err = self.ctl("config")
-        self.assertEqual((code, res["file"]["state"], res["config"]["ownerCheck"]), (0, "broken", True))
-        self.assertIn("warning: cannot read the configuration file %s" % os.path.join(self.home, "tf3ctl",
-                                                                                      "config.json"), err)
-        self.assertIn("the owner check on", err)
+        self.assertEqual((code, res["ok"], res["config"], res["file"]["state"]), (2, False, None, "broken"))
+        self.assertIn("coop needs ownerCheck true", res["file"]["error"])
+        self.assertIn("error: cannot read the configuration file %s" % os.path.join(self.home, "tf3ctl",
+                                                                                    "config.json"), err)
         # a file TF3CTL_CONFIG names that is not there: the same
         with unittest.mock.patch.dict(os.environ, {"TF3CTL_CONFIG": os.path.join(self.home, "missing.json")}):
             cfg, info = tf3ctl.load_config()
@@ -6900,10 +6930,44 @@ class ConfigDefaultsTest(unittest.TestCase):
         tf3ctl.game_pids = lambda: [4242]
         with contextlib.redirect_stderr(io.StringIO()):
             tf3ctl.write_launched(4242, owner="alice")
-        code, res, err = self.ctl("save", "x")  # main re-reads the file: the owner check is on
-        self.assertEqual(code, 4)
-        self.assertIn("warning: cannot read the configuration file", err)
+        code, res, err = self.ctl("save", "x")  # main re-reads the file: nothing runs
+        self.assertEqual((code, res["ok"], res["refused"], res["config"]["state"]),
+                         (2, False, "config-broken", "broken"))
+        self.assertIn("error: cannot read the configuration file", err)
         self.assertEqual(os.listdir(self.x), [], "nothing sent")
+
+    def test_a_broken_file_stops_every_command_and_sends_nothing(self):
+        self.write_config('{"coop": "yes"}')
+        sent = []
+        with unittest.mock.patch.object(tf3ctl, "send", lambda *a, **kw: sent.append(a) or {"ok": True}):
+            for argv in (["--owner", "alice", "status"], ["--owner", "alice", "stations"],
+                         ["--owner", "alice", "mod", "--list"], ["--owner", "alice", "speed", "1"]):
+                code, res, err = self.ctl(*argv)
+                self.assertEqual((code, res["refused"]), (2, "config-broken"), argv)
+                self.assertIn("coop must be true or false", res["error"] + err, argv)
+        self.assertEqual((sent, os.listdir(self.x)), ([], []), "nothing sent")
+        # fixed: commands run again (main re-reads the file each time)
+        self.write_config("{}")
+        with unittest.mock.patch.object(tf3ctl, "send", lambda *a, **kw: sent.append(a) or {"ok": True}):
+            code, res, err = self.ctl("--owner", "alice", "stations")
+        self.assertEqual((code, len(sent)), (0, 1), res)
+
+    def test_status_says_which_configuration_it_runs_on(self):
+        ok = {"ok": True, "game": "ready"}
+        with unittest.mock.patch.object(tf3ctl, "send", lambda *a, **kw: dict(ok)):
+            code, res, err = self.ctl("status")
+        self.assertEqual((code, res["config"]), (0, {"path": os.path.join(self.home, "tf3ctl", "config.json"),
+                                                     "state": "none"}))
+        self.write_config('{"pointer": true}')
+        with unittest.mock.patch.object(tf3ctl, "send", lambda *a, **kw: dict(ok)):
+            code, res, err = self.ctl("status")
+        self.assertEqual((code, res["config"]["state"]), (0, "file"))
+
+        def not_ready(*a, **kw):
+            raise tf3ctl.GameNotReady("no game", "menu")
+        with unittest.mock.patch.object(tf3ctl, "send", not_ready):
+            code, res, err = self.ctl("status")
+        self.assertEqual((code, res["config"]["state"]), (3, "file"), res)
 
     def test_save_note_only_on_an_answer_that_did_something(self):
         for cmd, args in (("stockSet", {}), ("steps", {"count": 1}), ("money", {"add": 1}), ("townDevelop", {}),
@@ -6990,6 +7054,8 @@ class ConfigDefaultsTest(unittest.TestCase):
         self.assertEqual(len(warnings), 2)
         self.assertIn("'a'", warnings[0])
         self.assertIn("'ab'", warnings[1])
+        for w in warnings:  # the short-prefix line says what the name decides, as the empty-list line does
+            self.assertIn(tf3ctl.TEST_SAVE_USES, w)
         code, res, err = self.ctl("config")
         self.assertEqual(res["warnings"], warnings)
         self.assertEqual(err.count("warning: testSavePrefixes"), 2)
@@ -7192,12 +7258,16 @@ class ModCommandTest(unittest.TestCase):
     def test_args(self):
         self.assertEqual(tf3ctl.mod_call_args(self.ns("--list")), ("modList", {}))
         self.assertEqual(tf3ctl.mod_call_args(self.ns("m")), ("modList", {"mod": "m"}))
-        self.assertEqual(tf3ctl.mod_call_args(self.ns("--list", "m")), ("modList", {"mod": "m"}))
         self.assertEqual(tf3ctl.mod_call_args(self.ns("m", "c")),
                          ("modRead", {"mod": "m", "command": "c", "args": {}, "timeout": 25}))
         self.assertEqual(tf3ctl.mod_call_args(self.ns("m", "c", '[1, {"a": null}]', "--timeout", "60"))[1],
                          {"mod": "m", "command": "c", "args": [1, {"a": None}], "timeout": 55})
-        for argv, text in ((("--list", "m", "c"), "at most a mod's id"), (("m", "c", "{x"), "not JSON"),
+        for argv, text in ((("--list", "m"), "takes nothing else"), (("--list", "m", "c"), "takes nothing else"),
+                           (("--list", "m", "c", "{}"), "takes nothing else"),
+                           (("m", "--list"), "takes nothing else"),
+                           (("m", "--read-only"), "goes with a command"),
+                           (("--list", "--read-only"), "goes with a command"),
+                           (("m", "c", "{x"), "not JSON"),
                            (("m", "c", "3"), "object or list"), (("m", "c", '"s"'), "object or list"),
                            (("m", "c", "--timeout", "5"), "between 6 and 125"),
                            (("m", "c", "--timeout", "126"), "between 6 and 125"),
@@ -7254,6 +7324,42 @@ class ModCommandTest(unittest.TestCase):
         self.assertEqual(res["kind"], "noExt")
         res, sent = self.run_mod([{"ok": True, "mods": []}], "--list")
         self.assertEqual(sent[0][0], "modList")
+
+    def test_read_only_is_a_flag_anywhere(self):
+        for argv in (("--read-only", "m", "c"), ("m", "--read-only", "c"), ("m", "c", "--read-only"),
+                     ("m", "c", "{}", "--read-only"), ("m", "c", "--read-only", "--timeout", "30")):
+            ns = self.ns(*argv)
+            self.assertTrue(ns.read_only, argv)
+            self.assertEqual(tf3ctl.mod_call_args(ns)[0], "modRead", argv)
+        self.assertFalse(self.ns("m", "c").read_only)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.ns("m", "c", "--read-only=yes")  # takes no value
+
+    def test_read_only_runs_a_reads_command_and_refuses_the_rest_without_sending_again(self):
+        res, sent = self.run_mod([{"ok": True, "result": 1}], "m", "c", "--read-only")
+        self.assertEqual(([c for c, _, _ in sent], res["result"]), (["modRead"], 1))
+        with self.assertRaises(tf3ctl.NotReadOnly) as cm:
+            self.run_mod([{"ok": False, "needsChange": True, "kind": "changes", "tag": "changes"}],
+                         "m", "c", "--read-only")
+        self.assertIsInstance(cm.exception, tf3ctl.OwnerRefused)
+        self.assertIn("not tagged reads", str(cm.exception))
+        # through main: exit 4 "not-read-only", only the read went out
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append(cmd)
+            return {"ok": False, "needsChange": True, "kind": "changes", "tag": "changes"}
+        out = io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = tf3ctl.main(["--owner", "alice", "mod", "m", "c", "--read-only"])
+        self.assertEqual((code, json.loads(out.getvalue())["refused"], sent), (4, "not-read-only", ["modRead"]))
+        # a --list with more after it sends nothing
+        out = io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = tf3ctl.main(["--owner", "alice", "mod", "--list", "m"])
+        self.assertEqual((code, sent), (2, ["modRead"]))
 
     def test_a_refused_change_sends_nothing_after_the_read(self):
         def fake_send(cmd, args=None, timeout=20, **kw):
