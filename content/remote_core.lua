@@ -5343,7 +5343,7 @@ function M.evalDump(v, opts)
 			list = {}
 			for i = 1, math.min(n, 100000) do
 				local okI, val = pcall(function() return x[i] end)
-				list[#list + 1] = { i, okI and val or nil }
+				if okI then list[#list + 1] = { i, val } else list[#list + 1] = { i } end -- (false stays false)
 			end
 			return list
 		end
@@ -5452,6 +5452,14 @@ function M.evalRun(code, env, opts)
 	opts = opts or {}
 	local loadFn = opts.load or realGlobal("load")
 	if type(loadFn) ~= "function" then return { ok = false, kind = "compile", error = "this Lua state has no load" } end
+	-- a load that drops the environment would run the code with the real globals: refuse then (the read-only one
+	-- would not hold, and nothing would say so)
+	local chk = loadFn("return _G", "=eval.check", "t", env)
+	local okC, got = false, nil
+	if chk then okC, got = pcall(chk) end
+	if not okC or got ~= env then
+		return { ok = false, kind = "compile", error = "this Lua state's load does not take an environment: nothing run" }
+	end
 	local fn = loadFn("return " .. code, "=eval", "t", env)
 	if not fn then
 		local f2, err = loadFn(code, "=eval", "t", env)
@@ -5472,7 +5480,9 @@ function M.evalRun(code, env, opts)
 	local res = (function(...) return { n = select("#", ...), ... } end)(xpcall(fn, handler))
 	local ms = (clock and t0) and math.floor((clock() - t0) * 1000 + 0.5) or nil
 	if not res[1] then
-		return { ok = false, kind = "runtime", error = tostring(res[2]), traceback = traceback, ms = ms }
+		local okE, e = pcall(tostring, res[2])
+		return { ok = false, kind = "runtime", error = okE and e or "<an error whose tostring raised>",
+			traceback = traceback, ms = ms }
 	end
 	return M.evalPack(res, opts, ms)
 end
@@ -5507,6 +5517,19 @@ function M.evalPack(res, opts, ms)
 	return out
 end
 
+-- the whole answer within EVAL_CHARS_MAX of JSON (value and values are cut each to maxChars, print apart): values
+-- go first, then value, then print, each replaced by its mark
+function M.evalCap(r)
+	local function size() local ok, j = pcall(M.json, r); return ok and #j or math.huge end
+	if size() <= M.EVAL_CHARS_MAX then return r end
+	if r.values ~= nil then r.values, r.truncated = "<too large: the answer is over " .. M.EVAL_CHARS_MAX .. " chars>", true end
+	if size() > M.EVAL_CHARS_MAX and r.value ~= nil then
+		r.value, r.truncated = "<too large: the answer is over " .. M.EVAL_CHARS_MAX .. " chars>", true
+	end
+	if size() > M.EVAL_CHARS_MAX then r.print, r.printTruncated = M.array({}), true end
+	return r
+end
+
 -- runs one request in this Lua state: the environment for write or not, print captured. ctx: clock, globals.
 -- returns the answer's fields: ok, value, values, n, ms, truncated, print, printTruncated (and kind, error,
 -- traceback when not ok)
@@ -5519,7 +5542,7 @@ function M.evalHere(a, write, ctx)
 	local r = M.evalRun(a.code, env, { depth = a.depth, maxChars = a.maxChars, clock = ctx.clock, traceback = tb })
 	r.print = M.array(captured.print or {})
 	r.printTruncated = captured.printTruncated == true
-	return r
+	return M.evalCap(r)
 end
 
 return M

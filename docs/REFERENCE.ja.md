@@ -1462,7 +1462,7 @@ return {
 ```
 python3 tools/tf3ctl.py eval 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # 読むだけ、どのセーブでも
 python3 tools/tf3ctl.py eval --file probe.lua [--depth 6] [--max-chars 200000]               # コードをファイルから
-python3 tools/tf3ctl.py eval --gs 'game.interface.getGameTime()'     # ゲームスクリプトの中で (gameScript を入)
+python3 tools/tf3ctl.py eval --gs 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # ゲームスクリプトの中で
 python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべてのグローバル: 試験用のセーブだけ
 ```
 
@@ -1481,12 +1481,16 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
   - `_G`・`debug`・`io`・`os`・`package`・`ffi`・`jit` の `require`
 
   表 (`api`・`string`・`math`・require したモジュール・`getmetatable` のメタテーブル) は読むだけの見え方で
-  渡し、書き込むとエラーになります。`load` は文字列だけを取り、同じ環境で動かします。
+  渡し、書き込むとエラーになります。`load` は文字列だけを取り、同じ環境で動かします。`game` (つまり、読むだけで
+  なく建てる・変える関数も持つ `game.interface`) は `--write` にだけあります。読むだけなら `api.engine` を使います。
+  コードの前に、その状態の `load` が環境を取るかを確認します。取らなければ何も動かしません (`kind: compile`)。
+  取らないまま動かすと、コードが本物のグローバルで動いてしまうためです。
 - **読むだけで守れないもの。** Lua ではコードを閉じ込めきれません。読むだけの環境が防ぐのは、まっとうなコードが
   うっかり書き込むことです。外へ出ようとするコードは止められません:
   - userdata (エンジンの物: component、ベクトルなど) は本物です。メソッドは確認しないので、ゲームを変える
     メソッドを呼べば動きます。
-  - 関数の返す値は本物です。モジュールの関数は、モジュール自身の (全部ある) グローバルで動きます。
+  - 関数の返す値は本物です。モジュールの関数は、モジュール自身の (全部ある) グローバルで動きます。`require` で初めて
+    読み込むモジュールの先頭のコードも同じです。
   - 上の一覧に当たらない名前の、書き換える関数は外しません。
 - **`--write`。** コードはすべてのグローバル (`game.interface`、`api.cmd` など) のある環境で動きます。
   - 試験用のセーブ (`testSavePrefixes`) を読み込んでいるときだけ送ります。tf3ctl がゲームのログから読み込んだ
@@ -1495,6 +1499,8 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
     (`"refused": "coop"`)。
   - ゲームを変える命令に数え (owner の検査)、答えに `saveNote` が付きます。コードが何をしたかはツールには
     分からず、保存すると残ります。
+  - GUI では、速度ボタンのレシピの中でなく、プローブの `guiUpdate` の中で動きます。レシピの中でしか動かない
+    `api.gui` の呼び出し (窓を開くなど) は、ここからだとゲームを落とすことがあります。
 - **`--write` は保存しません。** `app.saveGame` と `app.deleteSavegame` は `eval does not save: use tf3ctl save`
   のエラー (実行時のエラー) を出します。できる範囲の手当てです: 本物の `app` には (`require("_G")`、
   `package.loaded`、`debug` から) まだ届き、ゲームのほかの保存の手段も止めません。保存は `tf3ctl save` で。
@@ -1524,8 +1530,13 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
     `"nan"`・`"inf"`・`"-inf"` です。
   - userdata は `pairs` で回せれば回し、だめならリスト (`#`、`[i]`) として、それもだめなら `tostring` で書きます。
   - オブジェクトのキーは文字列で、並べ替えます。同じ文字のキー (`1` と `"1"`) は `"1"` と `"1 (2)"` になります。
+  - 答え全体は JSON で 1,000,000 文字までです。超えると `values`、次に `value` が `"<too large: ...>"` になり、
+    それでも超えれば `print` を落とします。
+  - `--gs` では、空のリストが `{}` で返ることがあります (リストの印はゲームスクリプトの側に残るため)。
+  - 表は、上限で切る前に全部を回します (1 つの表で 100,000 項目まで)。書き出す量が少なくても、とても大きい表は
+    ゲームのフレームの時間を食います。
 - **時間切れはありません。** ゲームの Lua には `debug.sethook` が無いので、終わらないループはゲームを固めます。
-  止める手はありません。ツールは 45 秒であきらめます (終了コード 2) が、ゲームは固まったままです。api の呼び出しの
+  止める手はありません。読むだけの `eval` は人のセーブにも届くので、すぐ終わるコードだけを送ってください。ツールは 45 秒であきらめます (終了コード 2) が、ゲームは固まったままです。api の呼び出しの
   中のエンジンの assertion も捕まえられません。
 - **まだゲームで確認していないこと:**
   - ゲームの `load` が LuaJIT と同じく環境 (4 つめの引数) を取るか

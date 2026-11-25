@@ -93,7 +93,8 @@ python3 tools/tf3ctl.py quit
 - **`eval`** (off unless the configuration file has `"eval": true`) runs Lua in the game and returns its value as
   JSON. Plain `eval` is for reading; its environment drops the obvious writers but cannot stop every one
   (an engine object's methods are real), so send only code that reads. `eval --write` has every global and goes
-  on test saves only. Neither saves: use `save`. A loop that never ends freezes the game (there is no timeout).
+  on test saves only. Neither saves: use `save`. A loop that never ends, or a walk over a huge table, freezes the
+  game (there is no timeout), on a person's save too: send only short code that ends quickly.
   Prefer the probe's own commands when one exists.
 - `--remove-buildings` on `build` and `road`, and `--remove-fields` on `road`, take town buildings and fields
   away as a player can when building by hand. No `saveNote`; use them on test saves.

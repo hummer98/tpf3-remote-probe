@@ -1577,7 +1577,7 @@ nothing sent).
 ```
 python3 tools/tf3ctl.py eval 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # read only, any save
 python3 tools/tf3ctl.py eval --file probe.lua [--depth 6] [--max-chars 200000]               # the code from a file
-python3 tools/tf3ctl.py eval --gs 'game.interface.getGameTime()'     # in the game script (gameScript on)
+python3 tools/tf3ctl.py eval --gs 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # in the game script
 python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # every global: test saves only
 ```
 
@@ -1596,13 +1596,16 @@ It may be up to 100,000 characters long.
   - `require` of `_G`, `debug`, `io`, `os`, `package`, `ffi`, `jit`.
 
   Tables (`api`, `string`, `math`, a required module, a metatable from `getmetatable`) are read-only views:
-  a write raises. `load` takes text only and runs it in the same environment.
+  a write raises. `load` takes text only and runs it in the same environment. `game` (and so `game.interface`,
+  which builds and sets as well as reads) is only in `--write`: read with `api.engine` here.
+  Before the code, the probe checks that the state's `load` takes the environment; if it does not, nothing runs
+  (`kind: compile`), since the code would otherwise run with the real globals.
 - **What read only cannot hold.** Lua cannot fully fence code in, so read only keeps honest code from writing by
   mistake. It does not stop code meant to get out:
   - A userdata (an engine object: a component, a vector) is the real object: its methods are not checked, and
     one that changes the game runs.
   - A function's return value is the real value, and a module's functions run with the module's own (full)
-    globals.
+    globals. So does the top-level code of a module that `require` loads for the first time.
   - A writer whose name is not on the list above is not dropped.
 - **`--write`.** The code runs with every global (`game.interface`, `api.cmd`, ...).
   - It goes only when a test save is loaded (`testSavePrefixes`: tf3ctl names the loaded save from the game's log
@@ -1610,6 +1613,8 @@ It may be up to 100,000 characters long.
   - During coop it goes on a test save only, from the coop client, with `--user-asked` (`"refused": "coop"`).
   - It counts as changing the game (the owner check), and its answer carries `saveNote`: what the code did is not
     known to the tool, and saving keeps it.
+  - In the GUI it runs in the probe's `guiUpdate`, not in the speed control's recipe: some `api.gui` calls that
+    only work there (opening windows) may crash the game from here.
 - **`--write` does not save.** `app.saveGame` and `app.deleteSavegame` raise `eval does not save: use tf3ctl save`
   (a runtime error). This is best effort: the real `app` is still reachable (`require("_G")`, `package.loaded`,
   `debug`), and so is any other way the game has to save. Use `tf3ctl save` to save. The game script has no `app`,
@@ -1640,8 +1645,13 @@ It may be up to 100,000 characters long.
   - A userdata is walked with `pairs` when it can be, else as a list (`#`, `[i]`), else written as its
     `tostring`.
   - An object's keys are strings, sorted. Two keys with the same text (`1` and `"1"`) get `"1"` and `"1 (2)"`.
+  - The whole answer stays within 1,000,000 characters of JSON: past that, `values` and then `value` become
+    `"<too large: ...>"`, and then `print` is dropped.
+  - With `--gs` an empty list may come back as `{}` (the mark that makes it a list stays in the game script).
+  - A table is walked whole (up to 100,000 entries each) before the limits cut it: a very large table costs time
+    in the game's frame even when little of it is written.
 - **No timeout.** The game's Lua has no `debug.sethook`, so a loop that never ends freezes the game. Nothing
-  stops it. The tool gives up after 45 s (exit 2), but the game stays frozen. An engine assertion in an api call
+  stops it, and plain `eval` goes to any save, a person's too: send only code that ends quickly. The tool gives up after 45 s (exit 2), but the game stays frozen. An engine assertion in an api call
   is not caught either.
 - **Not checked in a game yet:**
   - whether the game's `load` takes the environment (4 arguments) as LuaJIT does;

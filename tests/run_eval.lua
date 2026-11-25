@@ -304,4 +304,40 @@ return function(h)
 		local _, err = core.scriptEventRequest({ id = core.RUNCOST_EVENT_ID, name = core.EVAL_EVENT_WRITE, param = {} })
 		truthy(err and err:find("probe's own") and err:find("eval %-%-gs"), err)
 	end)
+
+	test("core.evalRun refuses a load that drops the environment; a raising __tostring; a userdata list's false", function()
+		local env = core.evalEnv({})
+		-- a load that runs everything with the real globals (as a game's load without the env argument would)
+		local dropping = function(chunk, name) return load(chunk, name) end
+		evalDropped = nil
+		local r = core.evalRun("evalDropped = 1", env, { load = dropping })
+		eq(r.ok, false); eq(r.kind, "compile"); truthy(r.error:find("does not take an environment"), r.error)
+		eq(evalDropped, nil, "nothing run")
+		eq(core.evalRun("1", env).ok, true)
+		-- an error value whose tostring raises
+		local bad = here("error(setmetatable({}, { __tostring = function() error('no') end }))")
+		eq(bad.ok, false); eq(bad.kind, "runtime"); truthy(bad.error:find("tostring raised"), bad.error)
+		-- a userdata read as a list keeps false
+		local u = newproxy(true)
+		local m = getmetatable(u)
+		m.__len = function() return 2 end
+		m.__index = function(_, i) if i == 1 then return false end return 7 end
+		local d = core.evalDump(u).value
+		eq(d[1], false); eq(d[2], 7)
+	end)
+
+	test("core.evalCap: the whole answer stays within EVAL_CHARS_MAX of JSON", function()
+		local big = string.rep("z", core.EVAL_CHARS_MAX - 1000)
+		local r = core.evalCap({ ok = true, n = 2, value = big, values = { big, 1 }, print = core.array({}) })
+		eq(r.value, big); truthy(type(r.values) == "string" and r.values:find("too large"), "values dropped first")
+		eq(r.truncated, true); truthy(#core.json(r) <= core.EVAL_CHARS_MAX)
+		local p = core.evalCap({ ok = true, n = 1, value = big, print = core.array({ string.rep("p", 3000) }) })
+		truthy(#core.json(p) <= core.EVAL_CHARS_MAX); truthy(type(p.value) == "string" and p.value:find("too large"))
+		local small = core.evalCap({ ok = true, n = 1, value = 3, print = core.array({}) })
+		eq(small.value, 3); eq(small.truncated, nil)
+		-- through evalHere: two large values come back within the cap
+		local h = core.evalHere({ code = "string.rep('a', 600000), string.rep('b', 600000)", depth = 6,
+			maxChars = core.EVAL_CHARS_MAX }, false)
+		eq(h.ok, true); truthy(#core.json(h) <= core.EVAL_CHARS_MAX, #core.json(h)); eq(h.truncated, true)
+	end)
 end
