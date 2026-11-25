@@ -540,6 +540,7 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # エンジンに聞く (ゲームを変える側)
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 --bridge concrete [--dry-run --engine-check]
+python3 tools/tf3ctl.py road --from-node 4077 [--from 1504.5,-300] --to 1620,-300 [--dry-run]   # node 4077 につなぐ
 python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
 python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # 試験用のセーブだけ (tf3ctl が確認します): 交差点の信号を外す
 python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車線 (「道路の車線」を参照)
@@ -560,6 +561,16 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   (新しい edge の種類と `typeIndex` の読み返し、`asSent`)。空中の道路は、`--from` / `--to` の z で端の高さを決めるか、
   そこにある道路の node につなぎます (`--snap`、3次元で測る)。`--bridge` が無ければ、これまでどおりふつうの edge
   (`NORMAL`、`typeIndex` -1) です。ゲーム内では未確認 (柱・橋台・地面に近い橋): 絵で見てください。
+- `--from-node ID` / `--to-node ID` (2026-11-26 に書いた): その端を、既存の道路の node に entity id で
+  つなぎます (`road --inspect-node` や `lanes` で分かる id)。そのままつなぎ、snap しません。それだけなら端はその node の
+  点です (そのときは `--from` / `--to` を書かなくてよい)。`--from` / `--to` も書くと、node につないだまま、道路の端は
+  その点になります: edge の `node0` がその node、`position0` がその点 (to の端は `node1` / `position1`)。プレイヤーが
+  広い道路の車線の脇に細い道路をつないだ形を読んだとき、`position0` が `node0` から 4.5 m ずれていました。z が無ければ
+  node の高さ。地図の上で node から 12 m より遠い点は、何も送らずに断ります (dry-run も)。両端が同じ node でも断ります。
+  答えの `from` / `to` に `position` (その点。`zFrom` は `given` か `node`) と `endOffset` (点 − node: `x`・`y`・`z`・
+  地図の上の `flat`・`length`) が付き、`offsetNote` がそれを書きます。道路の長さと向きは、点と点の間で決めます。
+  **ゲーム内では未確認** [推測]: エンジンが node からずれた端を受けるか、何 m まで受けるか、ずれを車線に対してどちら
+  向きにすべきか。まず `--dry-run --engine-check` で試してください。`--batch` の道路でも同じです。
 - 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない。3次元で測るので、点の上にある橋の node は使わない)
   以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。点の近くの道路は octree
   (`api.engine.util.octree.findEntitiesInCircle` で BASE_EDGE、無ければ octree system の箱) から探し、道路だけ
@@ -678,7 +689,8 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   それぞれはこの命令の引数の名前で書いた object です (`from`・`to`・`type`・`bridge`・`snap`・`tangent-from`・
   `tangent-to`・`align-to-edge`・`align-edge`。MOD の名前 `tangentFrom` なども読みます。点は `"x,y[,z]"` か
   `[x, y, z]`)。node を共有するには `from-node` / `to-node` を使います: 既存の道路の node の entity id (そのまま
-  つなぐ。snap しない。同じ端に `from` / `to` を一緒に書くと断ります)、または新しい node の名前 `"@a"` (複数の道路で共有する
+  つなぐ。snap しない。同じ端に `from` / `to` も書くと、端はその点になり node の脇につながる。12 m まで。上の
+  `--from-node` と `--from` と同じで、ゲーム内では未確認)、または新しい node の名前 `"@a"` (複数の道路で共有する
   新しい node。snap しない。点は少なくとも 1 つの端で書き、書いた端どうしは 0.01 m 以内で同じであること。1 つの端に
   しか出てこない名前は断ります)。`--dry-run`・`--engine-check`・`--remove-fields`・`--remove-buildings`・
   `--ignore-errors`・`--collision-detail` は提案全体のものとしてコマンドラインに書き、1 本のときと同じ意味・同じ柵です (命令の名前は
@@ -1075,6 +1087,11 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
   名前に読めなければ `unknown`)、`tramLanes`、`busLanes` (`BUS` があり `CAR` が無い車線) と `hasBusLane`、`roadLanes`、
   `vehicleLanes`、`sidewalks` (車線の番号)。`street`: `BASE_EDGE_STREET` にある `streetType`・`tramTrackType`・`hasBus`
   (TF2 の欄。TF3 の tealdef には無い)。その `tramTrackType` が車線からのものと違えば `tramMismatch`。
+- edge ごとに、ほかに (2026-11-26 に書いた): `tangent0` / `tangent1` (`BASE_EDGE` の値。どちらも `node0` から `node1` の
+  向き)、`node0Position` / `node1Position` (node そのものの点、`BASE_NODE`。読めない node のものは書かない)、
+  `endOffset0` / `endOffset1`: `from` (`position0`) と `to` (`position1`) から node の点を引いたもの (`x`・`y`・`z`・
+  地図の上の `flat`・`length`)。道路の端は node の脇にあることがあります (広い道路の車線の脇につないだ細い道路: 4.5 m)。
+  `road --from-node ID --from x,y` でそういう端を建てます。ずれが車線に対してどちら向きかは、ゲーム内では未確認です。
 - 車線ごと (`lanes`、`BASE_EDGE` の `laneConfigs`、32 本まで): `index` (`node0` から `node1` を見て一番左が 1。type.d.tl の
   とおり左から右)、`atNode0` / `atNode1` (`road --inspect-node` の `laneConnections` がそれぞれの端で使う 0 始まりの番号:
   `index - 1` と `laneCount - index`)、`vehicleIndex` (乗り物の mode を持つ車線の中で左から何本目) と `outer` (その最初か

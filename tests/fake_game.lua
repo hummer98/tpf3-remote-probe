@@ -2241,11 +2241,18 @@ function M.installBuild(g, spec)
 				end
 			end
 			-- a piece's end where its node is (a guess at what the engine asserts; Track Connector sends its pieces'
-			-- positions at their nodes')
+			-- positions at their nodes'). An existing node's end may sit beside it (a player's road in a game had
+			-- position0 4.5 m off node0, read 2026-11-26): here up to OFFSET_CRASH_M on the map, a guess (the engine's
+			-- own limit is not known; the probe refuses past 12 m before it sends). A new node's end stays at it
+			local OFFSET_CRASH_M = 12.5
 			for _, kk in ipairs({ { "node0", "position0" }, { "node1", "position1" } }) do
 				local q, at = newNodes[c[kk[1]]] or g.nodes[c[kk[1]]], c[kk[2]]
-				if q and at and (q.x - at.x) ^ 2 + (q.y - at.y) ^ 2 + (q.z - at.z) ^ 2 > 0.0001 then
-					crash("street proposal: " .. kk[2] .. " is not at " .. kk[1] .. " " .. tostring(c[kk[1]]))
+				if q and at then
+					local flat2 = (q.x - at.x) ^ 2 + (q.y - at.y) ^ 2
+					local off = flat2 + (q.z - at.z) ^ 2 > 0.0001
+					if off and (newNodes[c[kk[1]]] or flat2 > OFFSET_CRASH_M ^ 2) then
+						crash("street proposal: " .. kk[2] .. " is not at " .. kk[1] .. " " .. tostring(c[kk[1]]))
+					end
 				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end

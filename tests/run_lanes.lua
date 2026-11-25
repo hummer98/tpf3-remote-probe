@@ -246,6 +246,38 @@ return function(t)
 		truthy(not g.crashed, g.crashed)
 	end)
 
+	test("lanes: tangents, the nodes' points and each end's offset from its node (an end 4.5 m beside node0)", function()
+		local things = {
+			-- a player's narrow road beside a wide one: position0 4.5 m across from node0 (as read in a game 2026-11-26)
+			[712] = { box = { 0, 200, 0, 100, 210, 1 }, comps = { BASE_EDGE = edge(0, 204.5, "town_new_small.lua",
+				{ lane(true, 0, 4, ROAD) }, { node0 = 7121, node1 = 7122, position1 = { x = 100, y = 200, z = 1 },
+					tangent0 = { x = 100, y = -4.5, z = 1 }, tangent1 = { x = 100.0004, y = -4.5, z = 1 } }) } },
+			[7121] = { box = { -1, 199, 0, 1, 201, 1 }, comps = { BASE_NODE = { position = { x = 0, y = 200, z = 0 } } } },
+			[7122] = { box = { 99, 199, 0, 101, 201, 1 }, comps = { BASE_NODE = { position = { x = 100, y = 200, z = 1 } } } },
+			-- node1 is no entity the engine has: its point and offset left out, nothing asked of it
+			[713] = { box = { 0, 220, 0, 100, 230, 1 }, comps = { BASE_EDGE = edge(0, 225, "s.lua", { lane(true, 0, 4, ROAD) },
+				{ node0 = 7131, node1 = 99999 }) } },
+			[7131] = { box = { -1, 224, 0, 1, 226, 1 }, comps = { BASE_NODE = { position = { x = 0, y = 225 } } } },
+		}
+		local g = lanesGame(things)
+		local a = run(g, 2861, "edgeLanes", '{ edges = "712,713" }')
+		truthy(a.ok, a.error)
+		truthy(a.note:find("endOffset0", 1, true), a.note)
+		local d = byEdge(a.edges, 712)
+		eq(d.tangent0.x, 100); eq(d.tangent0.y, -4.5); eq(d.tangent0.z, 1); eq(d.tangent1.x, 100)
+		eq(d.node0Position.x, 0); eq(d.node0Position.y, 200); eq(d.node0Position.z, 0)
+		eq(d.node1Position.x, 100); eq(d.node1Position.z, 1)
+		local o0, o1 = d.endOffset0, d.endOffset1
+		eq(o0.x, 0); eq(o0.y, 4.5); eq(o0.z, 0); eq(o0.flat, 4.5); eq(o0.length, 4.5)
+		eq(o1.x, 0); eq(o1.y, 0); eq(o1.flat, 0); eq(o1.length, 0)
+		local d2 = byEdge(a.edges, 713)
+		eq(d2.tangent0, nil, "no tangents read: none given")
+		eq(d2.node0Position.x, 0); eq(d2.node0Position.z, nil, "a node without z: none")
+		eq(d2.endOffset0.flat, 0); eq(d2.endOffset0.z, nil, "z left out where the node has none")
+		eq(d2.node1Position, nil); eq(d2.endOffset1, nil)
+		eq(#g.commands, 0, "nothing sent"); truthy(not g.crashed, g.crashed)
+	end)
+
 	test("lanes: more lanes than MAX_LANES are cut, as said", function()
 		local many = {}
 		for i = 1, L.MAX_LANES + 3 do many[i] = lane(true, 0, 3, ROAD) end

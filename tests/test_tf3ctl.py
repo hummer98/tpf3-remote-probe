@@ -2521,6 +2521,22 @@ class QuitLaunchTest(unittest.TestCase):
             tf3ctl.road_args(p.parse_args(["road", "--from", "0,0", "--to", "1,1", "--engine-check"]))
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--engine-check"]))
+        # --from-node / --to-node: an existing node's id; alone, the end is the node's; with --from, both are sent
+        self.assertEqual(tf3ctl.road_args(p.parse_args(["road", "--from-node", "4077", "--to", "1,1"])),
+                         {"fromNode": 4077, "to": [1.0, 1.0]})
+        self.assertEqual(tf3ctl.road_args(p.parse_args(["road", "--from-node", "4077", "--from", "4.5,0",
+                                                        "--to", "1,1", "--to-node", "4078", "--dry-run"])),
+                         {"from": [4.5, 0.0], "fromNode": 4077, "to": [1.0, 1.0], "toNode": 4078, "dryRun": True})
+        self.assertFalse(tf3ctl.changes_game("road", {"from": [4.5, 0.0], "fromNode": 4077, "to": [1, 1], "dryRun": True}))
+        for bad in (["--from-node=-1", "--to", "1,1"], ["--from-node", "7", "--to-node", "7"], ["--from-node", "7"],
+                    ["--to-node", "7"]):
+            with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
+                tf3ctl.road_args(p.parse_args(["road"] + bad))
+        with self.assertRaises(SystemExit):
+            with contextlib.redirect_stderr(io.StringIO()):
+                p.parse_args(["road", "--from-node", "x", "--to", "1,1"])
+        with self.assertRaises(tf3ctl.ToolError):
+            tf3ctl.road_inspect_args(p.parse_args(["road", "--inspect-node", "5", "--from-node", "7"]))
         # --from and --to: required unless --inspect-node (checked after parsing)
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.road_args(p.parse_args(["road", "--from", "0,0"]))
@@ -6370,6 +6386,9 @@ class RoadBatchTest(_ForceBase):
         # what the mod is written: a Lua list of pieces
         self.assertIn('["tangentFrom"] = { 1.0, 0.0 }, ["fromNode"] = 8001 }', tf3ctl.to_lua(self.batch(self.TWO)))
         self.assertIn("--batch", " ".join(self.p._subparsers._group_actions[0].choices["road"].format_help().split()))
+        # from with from-node: the end at that point, joined to the node (the mod checks the 12 m); both sent
+        b = self.batch([{"from": "4.5,0", "from-node": 8001, "to": "100,0", "to-node": 8002}])["batch"]
+        self.assertEqual(b, [{"from": [4.5, 0.0], "fromNode": 8001, "to": [100.0, 0.0], "toNode": 8002}])
 
     def test_bad_files_and_pieces_send_nothing(self):
         self.bad("not JSON", raw="[{\"from\": ")
@@ -6388,7 +6407,7 @@ class RoadBatchTest(_ForceBase):
                 ("piece 1: unknown key 'tangent_from'", [{"from": "0,0", "to": "1,0", "tangent_from": "1,0"}]),
                 ("unknown key 'dry-run'", [{"from": "0,0", "to": "1,0", "dry-run": True}]),
                 ("tangentFrom given twice", [{"from": "0,0", "to": "1,0", "tangent-from": "1,0", "tangentFrom": "1,0"}]),
-                ("piece 1: road needs --from and --to", [{"from": "0,0"}]),
+                ("piece 1: road needs --from (or --from-node) and --to (or --to-node)", [{"from": "0,0"}]),
                 ("piece 1: --to must be", [{"from": "0,0", "to": "1"}]),
                 ("piece 1: --from must be numbers", [{"from": "a,0", "to": "1,0"}]),
                 ("from must be", [{"from": True, "to": "1,0"}]),
@@ -6401,12 +6420,11 @@ class RoadBatchTest(_ForceBase):
                 ("from-node must be a node's entity id", [{"from-node": 1.5, "to": "1,0"}]),
                 ("a new node's name is @", [{"from-node": "a", "to": "1,0"}]),
                 ("a new node's name is @", [{"from-node": "@" + "x" * 33, "to": "1,0"}]),
-                ("give from or from-node 8001", [{"from": "0,0", "from-node": 8001, "to": "1,0"}]),
                 ("type must be a string", [{"from": "0,0", "to": "1,0", "type": 5}]),
         ):
             self.bad(why, pieces)
         # road's own flags beside --batch: in the file instead
-        for flag in (["--from", "0,0"], ["--type", "x"], ["--snap", "1"], ["--tangent-from", "1,0"], ["--bridge", "concrete"]):
+        for flag in (["--from", "0,0"], ["--from-node", "7"], ["--to-node", "7"], ["--type", "x"], ["--snap", "1"], ["--tangent-from", "1,0"], ["--bridge", "concrete"]):
             path = os.path.join(self.files, "pieces.json")
             write(path, json.dumps(self.TWO))
             with self.assertRaises(tf3ctl.ToolError) as cm:

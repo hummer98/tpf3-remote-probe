@@ -8,7 +8,8 @@
 -- What is read (api/tealdef, 40444):
 --   BASE_EDGE (engine.d.tl BaseEdge): laneConfigs ({LaneConfig}; laneConfig, as declared too, when that is empty),
 --     roadTemplate, roadStyle, type (BaseEdgeType: NORMAL, BRIDGE, TUNNEL), roadType, node0 / node1, position0 /
---     position1, distance
+--     position1, tangent0 / tangent1, distance
+--   BASE_NODE (engine.d.tl BaseNode): position, of node0 and node1 (each end's endOffset: position0 / 1 less it)
 --   LaneConfig (type.d.tl): speed, width, height, forward, transportModes ({TransportMode : boolean}), offset
 --     ("Offset from center"). The base's street templates give offset as a small nudge (town_new_medium_tram_
 --     electrified: sidewalks 0.15 / -0.15, the tram lanes -0.5 / 0.5), not the lane's place: so the place here is
@@ -34,7 +35,9 @@ M.MAX_NETWORK = 64 -- transport network edges per piece copied out
 M.NOTE = "read only; not checked in a game yet. Lanes run left to right looking from node0 to node1 (type.d.tl); " ..
 	"centre is worked out from the widths plus offset, + to the right (a guess from the base's templates); side " ..
 	"goes by the widths alone. atNode0 / atNode1 are the numbers road --inspect-node's laneConnections use. " ..
-	"tramTrackType comes from the lanes' transport modes. modeKeys are the keys as read (the enum's values)"
+	"tramTrackType comes from the lanes' transport modes. modeKeys are the keys as read (the enum's values). " ..
+	"endOffset0 / endOffset1: from (position0) and to (position1) less node0Position / node1Position, an end beside " ..
+	"its node (not checked in a game yet)"
 
 local function finite(v) return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge end
 local function r3(v) return finite(v) and math.floor(v * 1000 + 0.5) / 1000 or nil end
@@ -252,6 +255,22 @@ function M.new(ctx)
 		if a and b then
 			out.from, out.to = a, b
 			out.chord = r3(math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2 + ((b.z or 0) - (a.z or 0)) ^ 2))
+		end
+		-- the curve's ends' ways (BASE_EDGE tangent0 / tangent1, both pointing node0 -> node1), the nodes' own
+		-- points (BASE_NODE position), and each end's offset from its node (position - node: x, y, z, flat on the
+		-- map, length in 3 d): a piece's end may sit beside its node (a player's narrow road beside a wide one's
+		-- lanes had position0 4.5 m off node0, read 2026-11-26). Not checked in a game yet which way an offset runs
+		-- against the lanes (the answer's note says so)
+		local t0, t1 = vec(core.field(be, "tangent0")), vec(core.field(be, "tangent1"))
+		out.tangent0 = t0 and { x = r3(t0.x), y = r3(t0.y), z = r3(t0.z) } or nil
+		out.tangent1 = t1 and { x = r3(t1.x), y = r3(t1.y), z = r3(t1.z) } or nil
+		for k, nid in ipairs({ out.node0, out.node1 }) do
+			local np = exists(nid) and vec(core.field(comp(nid, "BASE_NODE"), "position")) or nil
+			if np then
+				out["node" .. (k - 1) .. "Position"] = { x = r3(np.x), y = r3(np.y), z = r3(np.z) }
+				local at = k == 1 and a or b
+				out["endOffset" .. (k - 1)] = at and core.endOffset(at, np) or nil
+			end
 		end
 		out.distance = r3(tonumber(core.field(be, "distance")))
 		-- what BASE_EDGE_STREET has of the old fields (TF2's), as read

@@ -1594,7 +1594,7 @@ function M.new(ctx)
 	local NOTE_BATCH = "several pieces in one SimpleProposal (road --batch), judged and built together; not checked in a " ..
 		"game yet: look at it (frame) before trusting the answer"
 
-	-- an end given as an existing node's id (road --batch fromNode / toNode): that node as it is, never a snap.
+	-- an end given as an existing node's id (fromNode / toNode; with a point too, offsetEnd): that node as it is, never a snap.
 	-- Refused as a snap passes over or stops at a node: none there, no road piece at it, or its junction set-up
 	-- missing or unread. Whether the entity exists is asked first, as road --inspect-node and lights do before
 	-- getComponent (Overpass Builder's way); a node with no road piece (a track node) is not asked of its set-up,
@@ -1620,6 +1620,31 @@ function M.new(ctx)
 		return { node = n, x = p.x, y = p.y, z = p.z, byId = true, nodeConfig = true, pieces = segs and #segs or nil }
 	end
 
+	-- an existing node's end moved off the node (fromNode with from, toNode with to): the end's x, y, z stay the
+	-- node's (what joins it, its pieces and its set-up go by the node), its point (BASE_EDGE position0 / position1)
+	-- is position, and endOffset is how far that is from the node. No z: the node's. Further than
+	-- core.ROAD_END_OFFSET_MAX on the map is refused. Whether the engine takes an end off its node in a proposal is
+	-- not checked in a game yet (a player's road had one 4.5 m off, read 2026-11-26)
+	local function offsetEnd(e, pt)
+		local z, zFrom = pt[3], "given"
+		if z == nil then z, zFrom = e.z, "node" end
+		local position = { x = pt[1], y = pt[2], z = z, zFrom = zFrom }
+		local off = core.endOffset(position, e)
+		if not off then return nil, string.format("node %d: the point beside it could not be read: nothing sent", e.node) end
+		if off.flat > core.ROAD_END_OFFSET_MAX + 1e-9 then
+			return nil, string.format("(%g,%g) is %.2f m from node %d (%.3f,%.3f) on the map: an end beside its node is " ..
+				"at most %g m off it (a wrong node, or a wrong point?): nothing sent", pt[1], pt[2], off.flat, e.node,
+				e.x, e.y, core.ROAD_END_OFFSET_MAX)
+		end
+		e.position, e.endOffset = position, off
+		return e
+	end
+	-- where a piece's end is (its BASE_EDGE position): the point beside its node, else the end itself
+	local function posOf(e) return e.position or e end
+	local NOTE_OFFSET = "an end is off its node (position0 / position1 beside node0 / node1, endOffset): the piece's " ..
+		"curve runs from that point, its node is the old one; not checked in a game yet whether the engine takes " ..
+		"such a proposal, or how vehicles run over the gap: look at it (frame, lanes --edge) before trusting the answer"
+
 	-- road: one piece (core.roadRequest), or road --batch: several in one SimpleProposal (core.roadBatchRequest),
 	-- so that the engine judges them together. Both go the same way here: a batch of one is the proposal road sends.
 	-- New entities are numbered -1, -2, ... over nodes and pieces alike (type.d.tl SimpleStreetProposal.nodesToAdd:
@@ -1643,7 +1668,11 @@ function M.new(ctx)
 		local namedEnds = {}
 		local function endOf(spec, key)
 			local nv = spec[key .. "Node"]
-			if type(nv) == "number" then return nodeEnd(nv) end
+			if type(nv) == "number" then
+				local e, nerr = nodeEnd(nv)
+				if e and spec[key] then return offsetEnd(e, spec[key]) end
+				return e, nerr
+			end
 			if type(nv) == "string" then
 				local base = namedEnds[nv]
 				if not base then
@@ -1673,7 +1702,9 @@ function M.new(ctx)
 			if a.node and a.node == b.node then
 				return fail(c.id, head(i) .. string.format("both ends are node %d: give points further apart (or a smaller snap)", a.node))
 			end
-			local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
+			-- (the piece's own length: between its points, an end beside its node at that point)
+			local pa, pb = posOf(a), posOf(b)
+			local dx, dy, dz = pb.x - pa.x, pb.y - pa.y, pb.z - pa.z
 			local length = math.sqrt(dx * dx + dy * dy + dz * dz)
 			if length < core.ROAD_LIMITS.minLength then
 				return fail(c.id, head(i) .. string.format("the piece would be %.2f m long: at least %g m", length, core.ROAD_LIMITS.minLength))
@@ -1758,6 +1789,7 @@ function M.new(ctx)
 			end
 			p.out = { from = p.a, to = p.b, template = p.tpl.name, length = p.length, year = year, snap = p.spec.snap,
 				note = NOTE_ROAD, bridge = bridge }
+			if p.a.endOffset or p.b.endOffset then p.out.offsetNote = NOTE_OFFSET end
 			p.piece = { entity = p.id, node0 = p.n0.id, node1 = p.n1.id, lanes = lanesOf(p.tpl.lanes) }
 			if p.piece.lanes == nil then return fail(c.id, head(i) .. p.tpl.name .. ": its lanes could not be read: nothing sent") end
 		end
@@ -1857,7 +1889,9 @@ function M.new(ctx)
 			local dir0 = ps.tangentFrom or (aligned.from and { aligned.from.x, aligned.from.y })
 			-- (at the to end the road there runs on out past it, so the new piece comes in against that way)
 			local dir1 = ps.tangentTo or (aligned.to and { -aligned.to.x, -aligned.to.y })
-			local t0, t1, turns = core.roadTangents(a, b, dir0, dir1)
+			-- (the curve runs between the piece's points: an end beside its node from that point, the way given or
+			-- followed there taken as it is, as the moved end runs on alongside the road at the node)
+			local t0, t1, turns = core.roadTangents(posOf(a), posOf(b), dir0, dir1)
 			if not t0 then return fail(c.id, head(i) .. tostring(t1) .. ": nothing sent") end
 			p.t0, p.t1 = t0, t1
 			po.tangent0 = { x = r3(t0.x), y = r3(t0.y), z = r3(t0.z) }
@@ -1887,11 +1921,14 @@ function M.new(ctx)
 		end
 		-- where the hits are described from: the piece's middle (road), the middle of the pieces' middles (a batch)
 		local cx, cy = 0, 0
-		for _, p in ipairs(P) do cx, cy = cx + (p.a.x + p.b.x) / 2 / #P, cy + (p.a.y + p.b.y) / 2 / #P end
+		for _, p in ipairs(P) do
+			local pa, pb = posOf(p.a), posOf(p.b)
+			cx, cy = cx + (pa.x + pb.x) / 2 / #P, cy + (pa.y + pb.y) / 2 / #P
+		end
 		-- (--collision-detail) the proposal's own boxes, to meet what is in the way: each piece's from its ends, in
 		-- the pieces' order (overlaps' mine is the piece's number)
 		local mineBoxes = {}
-		for i, p in ipairs(P) do mineBoxes[i] = pieceBox(p.a, p.b) end
+		for i, p in ipairs(P) do mineBoxes[i] = pieceBox(posOf(p.a), posOf(p.b)) end
 		if batch then
 			local list = {}
 			for _, p in ipairs(P) do list[#list + 1] = p.out end
@@ -1931,7 +1968,8 @@ function M.new(ctx)
 		end
 		local edges = {}
 		for _, p in ipairs(P) do
-			local a, b, t0, t1 = p.a, p.b, p.t0, p.t1
+			-- (positions: the piece's points, an end beside its node at its own point; node0 / node1 the nodes)
+			local a, b, t0, t1 = posOf(p.a), posOf(p.b), p.t0, p.t1
 			local e = newRecord("SegmentAndEntity")
 			e.entity = p.id
 			e.type = 0 -- 0 street, 1 track

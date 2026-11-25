@@ -574,6 +574,7 @@ python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 [--type town_new_sm
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-300 --dry-run --engine-check   # asks the engine (changes the game)
 python3 tools/tf3ctl.py road --from 1500,-300 --to 1620,-260 --align-to-edge from [--align-edge 9010] [--tangent-to 1,0]
 python3 tools/tf3ctl.py road --from 2564,2400,110 --to 2636,2400,110 --snap 1 --bridge concrete [--dry-run --engine-check]
+python3 tools/tf3ctl.py road --from-node 4077 [--from 1504.5,-300] --to 1620,-300 [--dry-run]   # join node 4077
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
 python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only (checked): a junction's light off
 python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lanes (see "A road's lanes")
@@ -596,6 +597,17 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   air takes its ends' heights from `--from` / `--to` (x,y,z), or joins a road node there (`--snap`, measured in three
   dimensions). Without `--bridge` the piece is plain (`NORMAL`, `typeIndex` -1), as before. Not checked in a game yet
   (pillars, abutments, a bridge low over the ground): look at it.
+- `--from-node ID` / `--to-node ID` (written 2026-11-26): join that end to an existing road node by its entity id
+  (as `road --inspect-node` and `lanes` give them), as it is, never a snap; alone, the end is the node's own point
+  (`--from` / `--to` may then be left out). With `--from` / `--to` as well, the piece's end is that point while it
+  still joins the node: the edge's `node0` is the node and its `position0` the point (`node1` / `position1` for the
+  to end), as a player's narrow road joined beside a wide one's lanes was read (`position0` 4.5 m off `node0`).
+  No z: the node's height. A point further than 12 m from its node on the map is refused with nothing sent (dry
+  runs too); the same node at both ends is refused. The answer's `from` / `to` then give `position` (the point,
+  `zFrom` `given` or `node`) and `endOffset` (point less node: `x`, `y`, `z`, `flat` on the map, `length`), and
+  `offsetNote` says it. The piece's length and tangents are taken between the points. **Not checked in a game
+  yet** [guess]: whether the engine takes an end off its node, up to how far, and which way the offset should run
+  against the lanes; try it with `--dry-run --engine-check` first. The same in `--batch` pieces.
 - An end within `--snap` metres (default 5, at most 20, 0: never; measured in three dimensions, so a bridge's
   node above the point is not taken) of an end of a road piece is that node, so the piece joins the road there.
   The pieces near the point are found in the octree (`api.engine.util.octree.findEntitiesInCircle` with
@@ -727,7 +739,8 @@ autosave loaded again saves under any name.
   list of at most 16 pieces; each is an object with this command's own values by their flags' names (`from`, `to`,
   `type`, `bridge`, `snap`, `tangent-from`, `tangent-to`, `align-to-edge`, `align-edge`; the mod's names
   `tangentFrom`, ... are read too; points as `"x,y[,z]"` or `[x, y, z]`) and, for sharing a node, `from-node` /
-  `to-node`: an existing road node's entity id (joined as it is, no snap; giving `from` / `to` at the same end as well is refused), or a
+  `to-node`: an existing road node's entity id (joined as it is, no snap; with `from` / `to` at the same end as well, the end sits at that point beside the
+  node, within 12 m, as `--from-node` with `--from` above, not checked in a game yet), or a
   name `"@a"` for a new node the pieces share (never snapped; its point given at one of its ends at least and the
   same, within 0.01 m, at each end that gives one; a name used at one end only is refused). `--dry-run`,
   `--engine-check`, `--remove-fields`, `--remove-buildings`, `--ignore-errors` and `--collision-detail` go on the
@@ -1158,6 +1171,12 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
   `CAR`) and `hasBusLane`, `roadLanes`, `vehicleLanes`, `sidewalks` (lane numbers); `street`: what
   `BASE_EDGE_STREET` has of `streetType`, `tramTrackType`, `hasBus` (TF2's fields; the TF3 tealdef does not list
   them), and `tramMismatch` when its `tramTrackType` differs from the lanes'.
+- Also per piece (written 2026-11-26): `tangent0` / `tangent1` (`BASE_EDGE`'s, both pointing `node0` to `node1`),
+  `node0Position` / `node1Position` (the nodes' own points, `BASE_NODE`; left out for a node that does not read),
+  and `endOffset0` / `endOffset1`: `from` (`position0`) and `to` (`position1`) less the node's point (`x`, `y`, `z`,
+  `flat` on the map, `length`). A piece's end may sit beside its node (a narrow road joined beside a wide one's
+  lanes: 4.5 m); `road --from-node ID --from x,y` builds such an end. Which way an offset runs against the lanes is
+  not checked in a game yet.
 - Per lane (`lanes`, `laneConfigs` of `BASE_EDGE`, at most 32): `index` (1 = the leftmost looking from `node0` to
   `node1`, as type.d.tl says they run), `atNode0` / `atNode1` (the 0-based numbers `road --inspect-node`'s
   `laneConnections` use at each end: `index - 1` and `laneCount - index`), `vehicleIndex` (among the lanes with a

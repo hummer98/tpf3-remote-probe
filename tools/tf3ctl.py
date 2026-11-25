@@ -118,6 +118,9 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # several pieces in one proposal, judged and built together (at most 16): a JSON list, each piece with
             # road's values (from, to, type, bridge, snap, tangent-from, tangent-to, align-to-edge, align-edge) and
             # from-node / to-node: an existing node's id, or "@a" for a new node the pieces share
+  tf3ctl.py road --from-node 4077 --from 1504.5,-300 --to 1620,-300 [--dry-run]   # the from end at that point,
+            # joined to node 4077 (at most 12 m across from it, else refused; the answer shows endOffset). [guess]
+            # not checked in a game yet. --from-node alone: the end is the node's own point (a batch piece: the same)
   tf3ctl.py road --inspect-node 4077   # read only: the node's pieces, construction, set-up (with its
             # trafficLightPreference YES / NO / AUTO), octree hits
   tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only, not in coop: the junction's traffic light
@@ -3188,8 +3191,9 @@ def road_inspect_args(ns):
     if ns.from_ is not None or ns.to is not None or ns.type is not None or ns.snap is not None or ns.dry_run \
             or ns.engine_check or ns.remove_fields or getattr(ns, "remove_buildings", False) \
             or getattr(ns, "ignore_errors", False) or getattr(ns, "bridge", None) is not None \
-            or getattr(ns, "batch", None) is not None or getattr(ns, "collision_detail", False):
-        raise ToolError("--inspect-node takes nothing else (no --from, --to, --type, --snap, --dry-run, "
+            or getattr(ns, "batch", None) is not None or getattr(ns, "collision_detail", False) \
+            or getattr(ns, "from_node", None) is not None or getattr(ns, "to_node", None) is not None:
+        raise ToolError("--inspect-node takes nothing else (no --from, --to, --from-node, --to-node, --type, --snap, --dry-run, "
                         "--engine-check, --remove-fields, --remove-buildings, --ignore-errors, --bridge, --batch, "
                         "--collision-detail)")
     if getattr(ns, "tangent_from", None) is not None or getattr(ns, "tangent_to", None) is not None \
@@ -3217,10 +3221,22 @@ def lights_args(ns):
 def road_args(ns):
     """road: --from and --to as x,y[,z]; --type, --snap, --dry-run as given (the mod checks them again)."""
     args = {}
-    for text in (ns.from_, ns.to):
-        if text is None:
-            raise ToolError("road needs --from and --to (or --inspect-node ID alone)")
+    node_ids = {}
+    for key, flag in (("fromNode", "from_node"), ("toNode", "to_node")):
+        v = getattr(ns, flag, None)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ToolError("--%s must be a node's entity id (0 or more)" % flag.replace("_", "-"))
+        node_ids[key] = v
+    if len(node_ids) == 2 and node_ids["fromNode"] == node_ids["toNode"]:
+        raise ToolError("--from-node and --to-node are the same node %d: a piece needs two ends" % node_ids["fromNode"])
+    for key, text in (("fromNode", ns.from_), ("toNode", ns.to)):
+        if text is None and key not in node_ids:
+            raise ToolError("road needs --from (or --from-node) and --to (or --to-node) (or --inspect-node ID alone)")
     for key, text in (("from", ns.from_), ("to", ns.to)):
+        if text is None:
+            continue  # the end is its node's (--from-node / --to-node)
         try:
             v = [float(x) for x in text.split(",")]
         except ValueError:
@@ -3228,6 +3244,7 @@ def road_args(ns):
         if not 2 <= len(v) <= 3 or any(x != x or abs(x) == float("inf") for x in v):
             raise ToolError("--%s must be x,y or x,y,z (finite numbers; for a negative x write --%s=-100,50)" % (key, key))
         args[key] = v
+    args.update(node_ids)
     if ns.type is not None:
         if not ns.type.strip():
             raise ToolError("--type is empty")
@@ -3303,7 +3320,8 @@ def road_batch_args(ns):
     besides), with the options that go for the whole proposal (--dry-run, --engine-check, --remove-fields,
     --remove-buildings, --ignore-errors, --collision-detail) beside them. Each piece is checked as road_args checks road's flags; the
     mod checks them all again (the named nodes' points among them). Nothing is sent when the file does not read."""
-    for flag, v in (("--from", ns.from_), ("--to", ns.to), ("--type", ns.type), ("--snap", ns.snap),
+    for flag, v in (("--from", ns.from_), ("--to", ns.to), ("--from-node", getattr(ns, "from_node", None)),
+                    ("--to-node", getattr(ns, "to_node", None)), ("--type", ns.type), ("--snap", ns.snap),
                     ("--bridge", getattr(ns, "bridge", None)), ("--tangent-from", getattr(ns, "tangent_from", None)),
                     ("--tangent-to", getattr(ns, "tangent_to", None)),
                     ("--align-to-edge", getattr(ns, "align_to_edge", None)),
@@ -3389,9 +3407,8 @@ def road_batch_args(ns):
             if isinstance(v, int) and not isinstance(v, bool):
                 if v < 0:
                     raise ToolError(head + "%s must be a node's entity id (0 or more) or \"@name\" (nothing sent)" % name)
-                if key[:-4] in piece:
-                    raise ToolError(head + "give %s or %s %d (an existing node), not both (nothing sent)"
-                                    % (key[:-4], name, v))
+                # with the end's point too: the piece's end is that point, joined to the node (the mod refuses
+                # a point more than core.ROAD_END_OFFSET_MAX m from it). [guess] not checked in a game yet
             elif isinstance(v, str):
                 if not re.match(r"^@[A-Za-z0-9_-]{1,32}$", v.strip()):
                     raise ToolError(head + "%s %r: a new node's name is @ and up to 32 letters, digits, _ or - "
@@ -6137,6 +6154,11 @@ def make_parser():
     rd.add_argument("--from", dest="from_", metavar="X,Y[,Z]",
                     help="one end (metres); no Z: the terrain's height there (required, but with --inspect-node)")
     rd.add_argument("--to", metavar="X,Y[,Z]", help="the other end (required, but with --inspect-node)")
+    rd.add_argument("--from-node", type=int, metavar="ID", help="join the from end to this existing road node (its "
+                    "entity id; no snap). Alone: the end is the node's own point. With --from: the piece's end is "
+                    "that point, joined to the node, at most 12 m from it across (else refused, nothing sent; the "
+                    "answer shows the end's endOffset). [guess] the shifted end is not checked in a game yet")
+    rd.add_argument("--to-node", type=int, metavar="ID", help="the same for the to end")
     rd.add_argument("--type", help="the street template's resName, or a base road's file name (town_new_small, "
                     "country_old_medium; looked for under the base's town, country and highway roads); default the "
                     "base medium town road of the game's year")

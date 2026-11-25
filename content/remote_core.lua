@@ -1211,24 +1211,46 @@ function M.ignoreErrorsMisplaced(cmd, args)
 end
 
 -- one piece's own values (road's, and each element of road --batch): from and to, snap, type, bridge, the ways at
--- its ends. nodes (batch only): an end may name a node instead of a point (fromNode / toNode): an existing road
--- node's entity id (joined as it is, no snap), or a name "@a" for a new node the pieces of the batch share (no
--- snap; its point given at one end at least, the same at every end that gives one: roadBatchRequest checks that)
+-- its ends. An end may name a node instead of a point (fromNode / toNode): an existing road node's entity id
+-- (joined as it is, no snap; road and road --batch), or, in a batch only (nodes), a name "@a" for a new node the
+-- pieces of the batch share (no snap; its point given at one end at least, the same at every end that gives one:
+-- roadBatchRequest checks that). An existing node's id with a point beside it (fromNode 36074 and from x,y[,z]):
+-- the piece's end (BASE_EDGE position0 / position1) at that point, its node that node: an end moved off its node
+-- sideways, as a player's narrow road put beside a wide one's lanes (a town_new_small piece whose position0 was
+-- 4.5 m from its node0, read in a game 2026-11-26). How far it may be is checked where the node's position is
+-- known (remote_build.lua, ROAD_END_OFFSET_MAX). Whether the engine takes such a proposal is not checked in a game yet
 M.ROAD_NODE_NAME_MAX = 32
+-- the most an end may be off its existing node on the map (metres): about two lanes and a sidewalk, past the
+-- measured 4.5 m; further is taken for a wrong node or a wrong point
+M.ROAD_END_OFFSET_MAX = 12
+-- an end's point against its node's ({ x, y, z } each, z may be nil): the difference (point - node) and its
+-- lengths, on the map (flat) and in 3 d (length; z left out where either z is missing); nil without both x, y
+function M.endOffset(at, node)
+	if type(at) ~= "table" or type(node) ~= "table" then return nil end
+	local ax, ay, nx, ny = tonumber(at.x), tonumber(at.y), tonumber(node.x), tonumber(node.y)
+	if not (finite(ax) and finite(ay) and finite(nx) and finite(ny)) then return nil end
+	local az, nz = tonumber(at.z), tonumber(node.z)
+	local dz = (finite(az) and finite(nz)) and az - nz or nil
+	local dx, dy = ax - nx, ay - ny
+	local flat = math.sqrt(dx * dx + dy * dy)
+	local function r3(v) return math.floor(v * 1000 + 0.5) / 1000 end
+	return { x = r3(dx), y = r3(dy), z = dz and r3(dz) or nil, flat = r3(flat),
+		length = r3(math.sqrt(flat * flat + (dz or 0) ^ 2)) }
+end
 local function roadPiece(args, nodes)
 	local L = M.BUILD_LIMITS
 	local ends, named = {}, {}
 	for _, k in ipairs({ "from", "to" }) do
 		local nk = k .. "Node"
 		local nv = args[nk]
-		if nv ~= nil and not nodes then return nil, nk .. " goes with batch only (road --batch)" end
 		if type(nv) == "number" then
 			if nv ~= math.floor(nv) or nv < 0 or nv > 2 ^ 31 then
-				return nil, nk .. " must be a node's entity id (0 or more) or a name @a for a new node"
+				return nil, nk .. " must be a node's entity id (0 or more)" .. (nodes and " or a name @a for a new node" or "")
 			end
-			-- (an existing node is where it is: a point beside it could only disagree)
-			if args[k] ~= nil then return nil, "give " .. k .. " or " .. nk .. " " .. nv .. " (an existing node), not both" end
+			-- (with a point too: the end there, beside its node; remote_build.lua checks how far)
 			named[k] = nv
+		elseif nv ~= nil and not nodes then
+			return nil, nk .. " must be a node's entity id (0 or more); a name @a goes with batch only (road --batch)"
 		elseif nv ~= nil then
 			local name = type(nv) == "string" and nv:match("^%s*(.-)%s*$") or nil
 			if not name or #name > M.ROAD_NODE_NAME_MAX + 1 or not name:match("^@[%w_%-]+$") then
@@ -1239,8 +1261,7 @@ local function roadPiece(args, nodes)
 		end
 		if args[k] == nil then
 			if named[k] == nil then
-				return nil, "give " .. k .. ": x,y[,z] in metres (no z: the terrain's height there)" ..
-					(nodes and (" (or " .. nk .. ")") or "")
+				return nil, "give " .. k .. ": x,y[,z] in metres (no z: the terrain's height there) (or " .. nk .. ")"
 			end
 		else
 			local p, err = M.numberList(args[k], 3)

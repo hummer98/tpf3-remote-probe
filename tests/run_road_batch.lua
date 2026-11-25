@@ -70,7 +70,6 @@ return function(t)
 			{ { batch = { { from = "0,0", to = "10,0" }, 5 } }, "piece 2: not a table" },
 			{ { batch = { { from = "0,0", to = "10,0" }, { from = "0,0" } } }, "piece 2: give to" },
 			{ { batch = { { from = "0,0", to = "10,0", snap = 99 } } }, "piece 1: snap must be" },
-			{ { batch = { { from = "0,0", fromNode = 8001, to = "10,0" } } }, "give from or fromNode 8001 (an existing node), not both" },
 			{ { batch = { { fromNode = -1, to = "10,0" } } }, "fromNode must be a node's entity id" },
 			{ { batch = { { fromNode = 1.5, to = "10,0" } } }, "fromNode must be" },
 			{ { batch = { { fromNode = "a", to = "10,0" } } }, "a name for a new node" },
@@ -102,9 +101,26 @@ return function(t)
 		list[#list + 1] = { from = "0,500", to = "0,600" }
 		local no, why = core.roadBatchRequest({ batch = list })
 		eq(no, nil); truthy(why:find("batch has 17 pieces: at most 16", 1, true), why)
-		-- road (one piece) takes no node names: those are the batch's
-		no, why = core.roadRequest({ fromNode = 8001, to = "10,0" })
-		eq(no, nil); truthy(why:find("fromNode goes with batch only", 1, true), why)
+		-- an existing node's id with a point beside it: both kept (how far is checked where the node is known)
+		r = core.roadBatchRequest({ batch = { { from = "0,4.5", fromNode = 8001, to = "10,0" } } })
+		eq(r.pieces[1].fromNode, 8001); eq(r.pieces[1].from[2], 4.5)
+		-- road (one piece) takes an existing node's id too, alone or with a point; node names are the batch's
+		r = core.roadRequest({ fromNode = 8001, to = "10,0" })
+		eq(r.fromNode, 8001); eq(r.from, nil)
+		r = core.roadRequest({ fromNode = 8001, from = "0,4.5", to = "10,0", toNode = 8002 })
+		eq(r.fromNode, 8001); eq(r.from[2], 4.5); eq(r.toNode, 8002)
+		for _, bad in ipairs({
+			{ { fromNode = "@a", to = "10,0" }, "a name @a goes with batch only" },
+			{ { fromNode = -1, to = "10,0" }, "fromNode must be a node's entity id (0 or more)" },
+			{ { fromNode = 1.5, to = "10,0" }, "fromNode must be" },
+			{ { fromNode = true, to = "10,0" }, "a name @a goes with batch only" },
+			{ { to = "10,0" }, "give from: x,y[,z] in metres (no z: the terrain's height there) (or fromNode)" },
+			{ {}, "give from" },
+		}) do
+			no, why = core.roadRequest(bad[1])
+			eq(no, nil, bad[2]); truthy(tostring(why):find(bad[2], 1, true), tostring(why) .. " / " .. bad[2])
+		end
+		eq(core.roadRequest(nil), nil, "nil args: refused, no error")
 		-- road itself as before
 		r = core.roadRequest({ from = "1,2", to = "30,4", tangentTo = "1,0" })
 		eq(r.from[1], 1); eq(r.tangentTo[1], 1); eq(r.batch, nil); eq(r.fromNode, nil)
@@ -402,5 +418,90 @@ return function(t)
 		truthy(a.ok, a.error); truthy(a.pieces[1].edge and a.pieces[2].edge, "found")
 		truthy(a.pieces[1].why:find("found between the ends", 1, true)); eq(#a.edges, 2)
 		truthy(not g.crashed, g.crashed)
+	end)
+
+	-- an existing node's id with a point beside it (fromNode with from): the piece's end at that point, its node the
+	-- old one (a player's road had position0 4.5 m off node0, read 2026-11-26; the engine's side not checked yet)
+	test("road (and --batch): fromNode with a point 4.5 m beside it: position0 there, node0 the node; endOffset said", function()
+		local function world()
+			return roadWorld({ height = flat, roads = { nodes = { [8001] = { x = 100, y = 0, z = 2 }, [8002] = { x = 0, y = 0, z = 2 } },
+				edges = { [8100] = { node0 = 8002, node1 = 8001 } } } })
+		end
+		-- the dry run: nothing sent, the offset in the answer
+		local g = world()
+		local a = roadRun(g, 2101, '{ fromNode = 8001, from = "100,4.5", to = "200,4.5,2", dryRun = true }')
+		truthy(a.ok, a.error); eq(#g.buildCmds, 0)
+		eq(a.from.node, 8001); eq(a.from.byId, true); eq(a.from.x, 100, "the end's x, y, z stay the node's"); eq(a.from.y, 0)
+		eq(a.from.position.x, 100); eq(a.from.position.y, 4.5); eq(a.from.position.z, 2); eq(a.from.position.zFrom, "node")
+		eq(a.from.endOffset.x, 0); eq(a.from.endOffset.y, 4.5); eq(a.from.endOffset.z, 0); eq(a.from.endOffset.flat, 4.5)
+		eq(a.to.endOffset, nil); eq(a.length, 100, "between the piece's points")
+		truthy(a.offsetNote and a.offsetNote:find("not checked in a game yet", 1, true), tostring(a.offsetNote))
+		-- the build: position0 at the point, node0 the node; the curve straight along the chord between the points
+		a = roadRun(g, 2102, '{ fromNode = 8001, from = "100,4.5", to = "200,4.5,2" }')
+		truthy(a.ok, a.error); eq(#g.buildCmds, 1)
+		local e = streetOf(g.buildCmds[1]).edgesToAdd[1].comp
+		eq(e.node0, 8001); eq(e.position0.x, 100); eq(e.position0.y, 4.5); eq(e.position0.z, 2)
+		eq(e.position1.y, 4.5); eq(e.tangent0.x, 100); eq(e.tangent0.y, 0); eq(e.tangent1.y, 0)
+		eq(a.from.endOffset.flat, 4.5); truthy(a.edge, "read back built"); eq(g.edges[a.edge].node0, 8001)
+		truthy(not g.crashed, g.crashed)
+		-- the same piece in a batch (and the to end beside its node, z given): the same proposal as road's
+		g = world()
+		local a1 = roadRun(g, 2103, '{ fromNode = 8001, from = "100,4.5", to = "200,4.5" }')
+		local g2 = world()
+		local a2 = roadRun(g2, 2103, '{ batch = { { fromNode = 8001, from = "100,4.5", to = "200,4.5" } } }')
+		truthy(a1.ok and a2.ok, tostring(a1.error) .. " / " .. tostring(a2.error))
+		eq(proposalText(g2.buildCmds[1]), proposalText(g.buildCmds[1]))
+		eq(canon(a2.pieces[1].from.endOffset), canon(a1.from.endOffset)); truthy(a2.pieces[1].offsetNote)
+		g = world()
+		a = roadRun(g, 2104, '{ batch = { { from = "-100,0", toNode = 8002, to = "0,-3,5" } } }')
+		truthy(a.ok, a.error)
+		e = streetOf(g.buildCmds[1]).edgesToAdd[1].comp
+		eq(e.node1, 8002); eq(e.position1.y, -3); eq(e.position1.z, 5)
+		eq(a.pieces[1].to.position.zFrom, "given"); eq(a.pieces[1].to.endOffset.z, 3); eq(a.pieces[1].to.endOffset.flat, 3)
+		truthy(not g.crashed and not g2.crashed, tostring(g.crashed or g2.crashed))
+	end)
+
+	test("road (and --batch): a point more than 12 m from its node is refused, nothing sent; 12 m is taken", function()
+		local g = roadWorld({ height = flat })
+		for i, args in ipairs({ '{ fromNode = 8001, from = "100,12.5", to = "200,12.5" }',
+			'{ batch = { { fromNode = 8001, from = "100,12.5", to = "200,12.5" } } }',
+			'{ fromNode = 8001, from = "100,12.5", to = "200,12.5", dryRun = true }' }) do
+			local a = roadRun(g, 2110 + i, args)
+			eq(a.ok, false, args); truthy(a.error:find("is 12.50 m from node 8001", 1, true), a.error)
+			truthy(a.error:find("at most 12 m", 1, true), a.error)
+		end
+		eq(#g.buildCmds, 0, "nothing sent"); eq(g.proposalDataCalls or 0, 0, "nothing asked")
+		local a = roadRun(g, 2114, '{ fromNode = 8001, from = "100,12", to = "200,12" }')
+		truthy(a.ok, a.error); eq(a.from.endOffset.flat, 12); truthy(not g.crashed, g.crashed)
+	end)
+
+	test("road: fromNode alone is as before (the node's own point, no offset); a node id that is no node refused", function()
+		for i, args in ipairs({ 'fromNode = 8001, to = "200,20"', 'fromNode = 8001, to = "200,20", tangentTo = "1,0"' }) do
+			local g1 = roadWorld({ height = flat })
+			local a1 = roadRun(g1, 2120 + i, '{ ' .. args .. ' }')
+			local g2 = roadWorld({ height = flat })
+			local a2 = roadRun(g2, 2120 + i, '{ batch = { { ' .. args .. ' } } }')
+			truthy(a1.ok and a2.ok, tostring(a1.error) .. " / " .. tostring(a2.error))
+			eq(proposalText(g2.buildCmds[1]), proposalText(g1.buildCmds[1]), args)
+			eq(a1.from.position, nil); eq(a1.from.endOffset, nil); eq(a1.offsetNote, nil)
+			local e = streetOf(g1.buildCmds[1]).edgesToAdd[1].comp
+			eq(e.node0, 8001); eq(e.position0.x, 100); eq(e.position0.y, 0); eq(e.position0.z, 2)
+		end
+		local g = roadWorld({ height = flat })
+		local a = roadRun(g, 2125, '{ fromNode = 4242, from = "0,0", to = "200,20" }')
+		eq(a.ok, false); eq(#g.buildCmds, 0)
+		a = roadRun(g, 2126, '{ fromNode = 8001, toNode = 8001 }')
+		eq(a.ok, false); truthy(a.error:find("both ends are node 8001", 1, true), a.error); eq(#g.buildCmds, 0)
+		truthy(not g.crashed, g.crashed)
+	end)
+
+	test("core.endOffset: the difference and its lengths; nil and empty refused quietly; z left out when missing", function()
+		local o = core.endOffset({ x = 103, y = 4, z = 1 }, { x = 100, y = 0, z = 0 })
+		eq(o.x, 3); eq(o.y, 4); eq(o.z, 1); eq(o.flat, 5); eq(o.length, math.floor(math.sqrt(26) * 1000 + 0.5) / 1000)
+		o = core.endOffset({ x = 1, y = 1 }, { x = 0, y = 0, z = 5 })
+		eq(o.z, nil); eq(o.length, o.flat)
+		eq(core.endOffset(nil, { x = 0, y = 0 }), nil); eq(core.endOffset({}, {}), nil)
+		eq(core.endOffset({ x = 0 / 0, y = 0 }, { x = 0, y = 0 }), nil); eq(core.endOffset({ x = 1, y = 1 }, "x"), nil)
+		eq(core.ROAD_END_OFFSET_MAX, 12)
 	end)
 end
