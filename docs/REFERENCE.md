@@ -1607,7 +1607,9 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # characters of each
 - **Refused in a scenario**, before anything is sent: the flags that skip a check (`--force`, `--user-asked`,
   `--other-owner-ok`, `--ignore-errors`, also as `--flag=...`); a first word that is an option (`--owner` goes on
   the `test` command line, and is given to every step); `test`; `log` (use a log step); `pointer`; `modhub publish`
-  and `modhub publish-clear`; `--every` without `--count`. Every step is parsed by tf3ctl's parser first, so a wrong
+  and `modhub publish-clear`; `coop start` and `launch --coop` (coop loosens the checks: a person starts it beside
+  the user; `coop end` is allowed); `quit --kill`; `restart` without `--no-kill`; `window --close-all`; `--every`
+  without `--count`. Every step is parsed by tf3ctl's parser first, so a wrong
   name or option breaks the scenario before its first step runs. Unknown keys break it too (a misspelt `expect`
   would otherwise check nothing), and so does an empty `steps`.
 - **`expect`**: `{"path": ..., "op": ..., "value": ...}`. `path` goes into the answer: `lines[0].vehicles`,
@@ -1628,7 +1630,8 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # characters of each
   that match one are not counted), `require` (expressions that must be found in some entry) and `max` (entries
   allowed, default `0`). It answers `matches`, the first 10 entries (600 characters each) and `entriesRead`. A
   `launch` or `restart` in the scenario starts a new log: it is read from its start. The log is read before every
-  step, so what the old game wrote after that last read, while it was quitting, is not seen. No log found is an
+  step, so what the old game wrote after that last read, while it was quitting, is not seen. Every log step looks
+  at all of it since the start, so an entry that one log step counted is counted again by the next. No log found is an
   error. The log is found as `log` finds it (`TF3_LOG`, else the game's `crash_dump/stdout.txt`).
 - **The result**: `ok`, `result` (`pass`, `fail`, `error`, `interrupted`; `broken` with `error` for a broken file;
   `checked` for `--dry-run`), `exitCode`, `passed` / `failed` / `errors` / `skipped`, `durationSec`, and `steps`:
@@ -1637,8 +1640,8 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # characters of each
   `...`), `stderr` (its last 1000 characters) and `why` when it did not pass.
 - The scenario has no time limit of its own: each command's own waits and `--timeout` end it. Ctrl+C stops it
   (exit `130`).
-- Start from a new game (`launch --new ...` with the game closed, or `restart --new ...`) or a test save, so that
-  what the steps build or change is thrown away. [`examples/test_scenario_sample.json`](../examples/test_scenario_sample.json)
+- Start from a new game (`launch --new ...` with the game closed, or `restart --new ... --no-kill`) or a test
+  save, so that what the steps build or change is thrown away. [`examples/test_scenario_sample.json`](../examples/test_scenario_sample.json)
   is a tiny new game, a road depot checked with `build --dry-run`, 20 steps, the date and the log.
 
 ### Several clients at once

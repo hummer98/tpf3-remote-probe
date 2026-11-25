@@ -59,7 +59,8 @@ INSTRUCTIONS = (
     "answer, exit code and stderr. Read AGENTS.md first. Ask the person before the first command that changes the "
     "game; use test saves only (run saves first and save under a new name of your own); no flags that skip a check "
     "(force, user_asked, ignore_errors) unless the person asked. Exit codes: 0 ok, 1 the game answered an error, "
-    "2 no answer or tool error, 3 the game cannot answer where it is (read gameState), 4 refused (read refused). "
+    "2 no answer or tool error, 3 the game cannot answer where it is (read gameState), 4 refused (read refused), "
+    "5 a step of a test scenario failed (read steps). "
     "One call at a time."
 )
 

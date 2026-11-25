@@ -101,7 +101,7 @@ class PathAndOpsTest(unittest.TestCase):
         self.assertEqual(T.parse_path("lines[0].vehicles"), ["lines", 0, "vehicles"])
         self.assertEqual(T.parse_path('a[-1]["x.y"].b'), ["a", -1, "x.y", "b"])
         self.assertEqual(T.parse_path("[2]"), [2])
-        for bad in (".a", "a.", "a..b", "a[x]", "a[", "a.[0]", 'a["x]'):
+        for bad in (".a", "a.", "a..b", "a[x]", "a[", "a.[0]", 'a["x]', '["a\\q"]', '["a\\u12"]'):
             with self.assertRaises(T.ScenarioError, msg=bad):
                 T.parse_path(bad)
         doc = {"lines": [{"vehicles": 3}], "e": []}
@@ -227,6 +227,21 @@ class BrokenScenarioTest(Base):
         self.broken({"steps": [{"cmd": "modhub publish-clear --yes"}]}, "modhub publish-clear is not run")
         self.broken({"steps": [{"cmd": "vehicles --every 5"}]}, "--every needs --count")
 
+    def test_coop_kill_and_close_all_refused(self):
+        # a scenario runs unattended: it cannot loosen the checks (coop) or SIGKILL the game
+        self.broken({"steps": [{"cmd": "coop start --reason x"}]}, "coop start is not run")
+        self.broken({"steps": [{"cmd": "launch --new --coop --reason x"}]}, "--coop starts coop")
+        self.broken({"steps": [{"cmd": "quit --kill"}]}, "--kill sends SIGKILL")
+        self.broken({"steps": [{"cmd": "restart --load probe-x"}]}, "restart needs --no-kill")
+        self.broken({"steps": [{"cmd": "window --close-all"}]}, "--close-all closes every window")
+        for ok in ("coop end", "quit", "restart --load probe-x --no-kill", "launch --new"):
+            self.assertTrue(T.validate({"steps": [{"cmd": ok}]}, tf3ctl.make_parser), ok)
+
+    def test_a_broken_escape_in_a_path_is_a_broken_scenario(self):
+        res = self.broken({"steps": [{"cmd": "status", "expect": {"path": '["a\\q"]', "op": "exists"}}]},
+                          "cannot read the quoted key")
+        self.assertEqual(res["exitCode"], 2)
+
     def test_expects_and_log_specs(self):
         st = lambda **e: {"steps": [{"cmd": "status", "expect": e}]}  # noqa: E731
         self.broken(st(path="a", op="equals", value=1), "op is one of")
@@ -293,6 +308,27 @@ class RunTest(Base):
                                         "pass": True}])
         self.assertIsInstance(s["durationSec"], float)
         self.assertIn("durationSec", res)
+
+    def test_other_owner_ok_from_the_command_line_goes_to_every_step(self):
+        fake = self.fake()
+        ns = tf3ctl.make_parser().parse_args(["--owner", "t", "--other-owner-ok", "test", self.scenario(self.SC)])
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = T.cmd_test(ns, fake, tf3ctl.make_parser, lambda: self.log, tf3ctl.show)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake.calls[0], ["--owner", "t", "--other-owner-ok", "status"])
+        self.assertTrue(all("--other-owner-ok" in c for c in fake.calls))
+
+    def test_ctrl_c_between_commands_still_prints_the_steps(self):
+        fake = self.fake()
+        real = fake.__call__
+
+        def interrupt_on_saves(argv):
+            if "saves" in argv:
+                raise KeyboardInterrupt
+            return real(argv)
+        code, res = self.run_test(self.SC, interrupt_on_saves)
+        self.assertEqual(code, 130, res)
+        self.assertEqual([s["status"] for s in res["steps"]], ["pass", "interrupted", "skipped"])
 
     def test_a_failed_check_stops_and_exits_5(self):
         fake = self.fake(n_saves=3)
@@ -423,7 +459,7 @@ class LogStepTest(Base):
                       + ERR)
             print("{}")
             return 0
-        sc = {"steps": [{"cmd": "restart --new --size tiny"}, {"log": {}}]}
+        sc = {"steps": [{"cmd": "restart --new --size tiny --no-kill"}, {"log": {}}]}
         code, res = self.run_test(sc, main)
         self.assertEqual(code, 5, res)
         self.assertEqual(res["steps"][1]["matches"], 1)

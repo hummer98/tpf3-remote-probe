@@ -16,8 +16,9 @@ is separate and does not follow the release version.
   the start (a `log` step: no `ERROR` or Lua error entries, patterns can be set). One JSON result; exit `0` all
   passed, `5` (new) a step failed, `2` a broken scenario (nothing sent) or no answer. Each step goes through
   tf3ctl's own checks; flags that skip one (`--force`, `--user-asked`, `--other-owner-ok`, `--ignore-errors`) are
-  refused in a scenario. `--dry-run` only checks the file. So a mod's author can run the same checks again after
-  every change without reading the answers. Sample: `examples/test_scenario_sample.json`. Not run against a game
+  refused in a scenario, and so are starting coop, `quit --kill` and `restart` without `--no-kill`. `--dry-run`
+  only checks the file. So a mod's author can run the same checks again after every change without reading the
+  answers. Sample: `examples/test_scenario_sample.json`. Not run against a game
   yet (the unit tests run a scenario against the fake game).
 - `road --from-node ID` / `--to-node ID`: join an end to an existing road node by its id (before, only `--batch`
   pieces could). With `--from` / `--to` as well, the end sits at that point beside the node (the edge's `node0`

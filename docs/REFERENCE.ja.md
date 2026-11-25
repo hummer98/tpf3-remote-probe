@@ -1476,8 +1476,9 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # 結果に残す答
   `continueOnFail`。
 - **台本では断るもの** (何も送る前に): 確認を飛ばすフラグ (`--force`、`--user-asked`、`--other-owner-ok`、
   `--ignore-errors`。`--flag=...` の形も)、オプションで始まる命令 (`--owner` は `test` のコマンドラインに付け、全部の
-  段に渡ります)、`test`、`log` (ログの段を使う)、`pointer`、`modhub publish` と `modhub publish-clear`、`--count`
-  の無い `--every`。全部の段を先に tf3ctl のパーサーで読むので、命令やオプションの名前の間違いは、最初の段を動かす
+  段に渡ります)、`test`、`log` (ログの段を使う)、`pointer`、`modhub publish` と `modhub publish-clear`、
+  `coop start` と `launch --coop` (coop は確認を緩めるので、人がユーザーと一緒に始める。`coop end` は通す)、`quit --kill`、`--no-kill` の無い `restart`、
+  `window --close-all`、`--count` の無い `--every`。全部の段を先に tf3ctl のパーサーで読むので、命令やオプションの名前の間違いは、最初の段を動かす
   前に台本を壊れた扱いにします。知らないキーも同じです (綴りを間違えた `expect` は、さもないと何も確認しません)。
   空の `steps` も同じです。
 - **`expect`**: `{"path": ..., "op": ..., "value": ...}`。`path` は答えの中の場所です: `lines[0].vehicles`、
@@ -1495,7 +1496,8 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # 結果に残す答
   concatenate`)、`ignore` (当たった項目は数えない)、`require` (どれかの項目に無ければならない式)、`max` (許す項目の
   数。初期値 `0`) を付けられます。答えは `matches`、最初の 10 項目 (各 600 文字)、`entriesRead`。台本の中の
   `launch` と `restart` は新しいログを始めるので、それを初めから読みます。ログは段の前ごとに読むので、その最後の
-  読み込みのあと、前のゲームが終わるまでに書いた行は見えません。ログが無ければ error です。ログの場所は `log` と
+  読み込みのあと、前のゲームが終わるまでに書いた行は見えません。ログの段はどれも始めからの全部を見るので、前のログの段が数えた項目は、
+  次のログの段でも数えます。ログが無ければ error です。ログの場所は `log` と
   同じ (`TF3_LOG`、無ければゲームの `crash_dump/stdout.txt`)。
 - **結果**: `ok`、`result` (`pass`・`fail`・`error`・`interrupted`。壊れたファイルは `broken` と `error`、
   `--dry-run` は `checked`)、`exitCode`、`passed`・`failed`・`errors`・`skipped`、`durationSec`、`steps`。段ごとに
@@ -1504,7 +1506,7 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # 結果に残す答
   通らなければ `why`。
 - 台本そのものに時間の上限はありません。各命令の待ちと `--timeout` で終わります。Ctrl+C で止まります (終了コード
   `130`)。
-- 新しいゲーム (ゲームが止まっているときの `launch --new ...` か `restart --new ...`) か試験用のセーブから始め、
+- 新しいゲーム (ゲームが止まっているときの `launch --new ...` か `restart --new ... --no-kill`) か試験用のセーブから始め、
   段が建てたもの・変えたものが残らないようにします。[`examples/test_scenario_sample.json`](../examples/test_scenario_sample.json)
   は、小さな新しいゲーム、`build --dry-run` で見る道路の車庫、20 歩、日付とログの見本です。
 

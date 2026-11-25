@@ -46,7 +46,16 @@ EXCLUDED = {
     ("pointer",): "moves the X11 pointer of the machine the game runs on; for screenshots made by hand",
     ("modhub", "publish"): "uploads to mod.io: a person runs it",
     ("modhub", "publish-clear"): "clears the mark a failed upload left, after a person checked mod.io",
+    ("coop", "start"): "coop loosens the checks for the user's own game: a person starts it beside the user",
 }
+# options a scenario cannot give, with why: a file runs unattended, so it gets neither looser checks nor a SIGKILL
+REFUSED_OPTIONS = (
+    ("launch", "coop", True, "--coop starts coop, which loosens the checks: a person starts it beside the user"),
+    ("quit", "kill", True, "--kill sends SIGKILL (an unsaved game is lost): quit, or restart --no-kill"),
+    ("restart", "no_kill", False, "restart needs --no-kill in a scenario (without it, a game that does not quit "
+                                  "gets SIGKILL)"),
+    ("window", "close_all", True, "--close-all closes every window of the game, also the player's"),
+)
 OPS = ("eq", "ne", "gt", "ge", "lt", "le", "exists", "contains", "len")
 CMP_OPS = ("eq", "ne", "gt", "ge", "lt", "le")
 SCENARIO_KEYS = {"name", "description", "comment", "continueOnFail", "steps"}
@@ -100,7 +109,10 @@ def parse_path(path):
             out.append(int(m.group(1)))
         elif not dot and _QUOTED.match(path, pos):
             m = _QUOTED.match(path, pos)
-            out.append(json.loads('"' + m.group(1) + '"'))
+            try:
+                out.append(json.loads('"' + m.group(1) + '"'))
+            except ValueError:  # a broken escape such as \q: the file's mistake, not the tool's
+                raise ScenarioError("cannot read the quoted key in the path %r at character %d" % (path, pos + 1))
         else:
             raise ScenarioError("cannot read the path %r at character %d" % (path, pos + 1))
         pos = m.end()
@@ -249,10 +261,14 @@ def _check_cmd(argv, where, make_parser):
     except SystemExit:
         msg = err.getvalue().strip().splitlines()
         raise ScenarioError("%s: tf3ctl cannot read the command: %s" % (where, msg[-1] if msg else " ".join(argv)))
-    path = (ns.cmd,) + ((ns.action,) if ns.cmd == "modhub" and getattr(ns, "action", None) else ())
+    action = getattr(ns, "action", None) if ns.cmd == "modhub" else getattr(ns, "coop_action", None)
+    path = (ns.cmd,) + ((action,) if ns.cmd in ("modhub", "coop") and action else ())
     for key in (path, path[:1]):
         if key in EXCLUDED:
             raise ScenarioError("%s: %s is not run from a scenario: %s" % (where, " ".join(key), EXCLUDED[key]))
+    for cmd, attr, refused_when, why in REFUSED_OPTIONS:
+        if ns.cmd == cmd and bool(getattr(ns, attr, False)) == refused_when:
+            raise ScenarioError("%s: %s" % (where, why))
     if getattr(ns, "every", None) is not None and getattr(ns, "count", None) is None:
         raise ScenarioError("%s: --every needs --count in a scenario (else it never ends)" % where)
 
@@ -558,7 +574,10 @@ def run_scenario(steps, run_main, log_path, owner=None, other_owner_ok=False, ex
             continue
         watch.scan()  # the last step's lines, before a launch or restart may start a new log
         t0 = clock()
-        res = run_log_step(step, watch) if "log" in step else run_cmd_step(step, run_main, head, excerpt_chars)
+        try:
+            res = run_log_step(step, watch) if "log" in step else run_cmd_step(step, run_main, head, excerpt_chars)
+        except KeyboardInterrupt:  # Ctrl+C outside a command's own wait: still print the steps so far
+            res = {"kind": "log" if "log" in step else "cmd", "status": "interrupted", "why": "interrupted"}
         res = dict({"index": step["index"], "name": step["name"]}, **res)
         res["durationSec"] = round(clock() - t0, 3)
         results.append(res)

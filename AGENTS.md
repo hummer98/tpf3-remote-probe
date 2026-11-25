@@ -122,7 +122,8 @@ A check you run again and again belongs in a scenario file: `python3 tools/tf3ct
 its commands one by one through the same checks as on the command line, compares their answers with the file's
 `expect` and looks at the game's log since the start (a `log` step). Exit `0` passed, `5` a step failed, `2` a
 broken file (nothing was sent) or no answer. Read `steps[].why` and `steps[].checks` for what failed. A scenario
-cannot carry `--force`, `--user-asked`, `--other-owner-ok` or `--ignore-errors`. Check a new file with `--dry-run`
+cannot carry `--force`, `--user-asked`, `--other-owner-ok` or `--ignore-errors`, start coop, `quit --kill`, or
+`restart` without `--no-kill`. Check a new file with `--dry-run`
 first. The format is in "Test scenarios" in `docs/REFERENCE.md`; a sample is `examples/test_scenario_sample.json`.
 
 ## When something is wrong
