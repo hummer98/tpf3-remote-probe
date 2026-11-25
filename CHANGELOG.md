@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 X*10000 + Y*100 + Z (1.0.0 is revision 10000). The command protocol's own number (`version` in the mod's answers)
 is separate and does not follow the release version.
 
+## [Unreleased]
+
+### Added
+
+- `tools/tf3ctl_mcp.py`: an MCP server (stdio, standard library only) that offers tf3ctl's commands as tools, so
+  clients that take MCP servers can use the tool, and people looking for an MCP server find it. A thin wrapper: the
+  tool list comes from tf3ctl's own parser and every call runs `tf3ctl.py` with its checks; `pointer` and
+  `modhub publish` / `publish-clear` are left out. README: "MCP server".
+
 ## [1.0.2] - 2026-11-25
 
 ### Added
