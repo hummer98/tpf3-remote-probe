@@ -306,8 +306,8 @@ return function(h)
 		eq(#r.commands, 0, "finance sends nothing")
 	end)
 
-	test("status luaLoad: the GUI's and the game script's load / loadstring / setfenv; unread when off or no script", function()
-		-- core: each name's type, "unread" when reading raised, all "unread" without a reader; gs values as strings only
+	test("status luaLoad: the GUI's and the game script's load / loadstring / setfenv; unread when off or no script, raised apart", function()
+		-- core: each name's type, "raised" when reading raised, all "unread" without a reader; gs values as strings only
 		local k = core.luaLoadKinds(function(n) if n == "load" then return print elseif n == "setfenv" then error("strict") end end)
 		eq(k.load, "function"); eq(k.loadstring, "nil"); eq(k.setfenv, "raised", "raised apart from not read")
 		for _, bad in ipairs({ nil, {}, "load" }) do
@@ -352,11 +352,13 @@ return function(h)
 		g.modParams = { hummer_remote_probe = { gameScript = 2 } }
 		local clock = os.time
 		os.time = function() return 1800000000 end
-		g.gs._resetForTests()
-		frames(g, 2)
-		g.gsValue.luaLoad = { load = "nil", loadstring = "raised", setfenv = "function" }
-		local okS5, s5 = pcall(run, g, 9305, "status", "{}")
-		os.time = clock
+		local okS5, s5 = pcall(function()
+			g.gs._resetForTests()
+			frames(g, 2)
+			g.gsValue.luaLoad = { load = "nil", loadstring = "raised", setfenv = "function" }
+			return run(g, 9305, "status", "{}")
+		end)
+		os.time = clock -- (given back even when the run raised, so the next tests keep a clock that moves)
 		truthy(okS5, s5)
 		eq(s5.luaLoad.gs.load, "nil"); eq(s5.luaLoad.gs.loadstring, "raised"); eq(s5.luaLoad.gui.load, "function")
 		-- gameScript off: nothing written; the GUI's still read

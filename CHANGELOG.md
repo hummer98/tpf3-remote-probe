@@ -19,8 +19,9 @@ is separate and does not follow the release version.
   one's lanes was read with its end 4.5 m off its node, and there was no way to build that. Not checked in a game
   yet whether the engine takes such an end.
 - `status` answers `luaLoad`: whether `load`, `loadstring` and `setfenv` exist in the GUI's Lua state and in the game
-  script's (`gui` / `gs`, each `type()` of the three, or `"raised"` when reading it raised; `gs` is `"unread"`
-  unless the setting `gameScript` is on now, as the script writes it into its state). Asked before building anything that evaluates Lua text on them.
+  script's (`gui` / `gs`, each `type()` of the three, or `"raised"` when reading it raised; `gs` is `"unread"` unless
+  the setting `gameScript` is on now, as the script writes it into its state). Asked before building anything that
+  evaluates Lua text on them.
 - `lanes`: each piece also gives `tangent0` / `tangent1`, `node0Position` / `node1Position` and `endOffset0` /
   `endOffset1` (each end's point less its node's), so an end beside its node can be seen before building one.
 
