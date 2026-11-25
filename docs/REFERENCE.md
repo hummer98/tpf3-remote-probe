@@ -94,6 +94,9 @@ does not tag `reads` (`"refused": "not-read-only"`).
 python3 tools/tf3ctl.py status                        # date, speed, measured rate, mods and their settings
 python3 tools/tf3ctl.py speed 8                       # beyond the UI's 4x, up to the game's estimate; 0 pauses
 python3 tools/tf3ctl.py pause
+python3 tools/tf3ctl.py calendar-speed                # read the calendar speed (the base's 0.25x-4x slider)
+python3 tools/tf3ctl.py calendar-speed 0.25           # set it: 0 (the date stands), 0.25, 0.5, 1, 2 or 4
+python3 tools/tf3ctl.py calendar-speed --millis-per-day 8000   # or the engine's value itself
 python3 tools/tf3ctl.py run --months 2 --speed 4      # or --days N / --until YYYY-MM-DD; then speed 0
 python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # how often the mod reads the command file, until the next load
 ```
@@ -106,6 +109,18 @@ In game, the mod adds ×8 and ×16 buttons to the right of the base ⏸ ▶ ▶�
 current speed lights up as with the base buttons. A ×8 / ×16 button sets that speed as it is, even above the game's
 estimated maximum (unlike `speed`, which caps: the player chose it). A base button goes back to the base speeds. The
 label beside them (`×8 real ×3.2`) still shows for 8 and 16, which the base buttons do not have.
+
+`calendar-speed` is the base's calendar speed slider (in the calendar window: Paused, 0.25x, 0.5x, 1x, 2x, 4x),
+not the simulation speed above. The engine keeps it as `GAME_SPEED.millisPerDay`, the game time in milliseconds
+that one calendar day lasts (0: the date stands still). A factor is turned into it as the base slider does:
+`round(getDefaultDayDuration() / factor)`, so 0.25 makes a day four times as long and the date moves slower while
+vehicles run at the same pace. Without a value it only reads and sends nothing; the answer has `calendar`
+(`millisPerDay`, `defaultDayMs`, `factor`, `text` as the slider labels it, `step`: whether it is one of the
+slider's steps, `paused`) and `steps`. With a value it sends `makeGameSetCalendarSpeedCmd` and answers `before`,
+`after`, `sent` and `requested` once the game shows the new value (an error when the engine refuses it, or when
+nothing changes within 5 s). A factor must be one of the slider's steps; `--millis-per-day` takes 0 or a whole
+number from 100 to 3600000. Setting it counts as changing the game, as `speed` does (owner check; during coop only
+with `--user-asked`). It does not stop a `run`, but with the calendar at 0 a run toward a date never gets there.
 
 ### Saves and new games
 
@@ -1616,7 +1631,7 @@ tf3ctl.py --owner bob coop end
   `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`, other mods' commands
   (`mod`, sent as `modChange`). This holds on the user's own saves too. What a mod's command (or an `event`)
   does is up to that mod: tf3ctl's refusals below cover tf3ctl's own commands, not a mod command that saves.
-- Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`.
+- Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`, `calendar-speed` with a value.
 - `save` only to a test save's name (`testSavePrefixes`, and with `testSaveDigitFirst` one digit first,
   `3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that
   kind, a new game, or unknown), a save to a new test name needs `--user-asked` too.
@@ -1624,8 +1639,8 @@ tf3ctl.py --owner bob coop end
   `line`, `terrain`, `town`, `modhub`, ... Exit 4, `"refused": "coop"`, nothing sent; the message says why.
 - The loaded save is read from the game's log (the last `Loading game from file` / `Start new game` since the
   start).
-- On a person's save, each game-changing command the mod took (not `camera`, `window`, `speed`, `save`, nor a dry
-  run) sets `"modified": true` and counts `"changes"` in the mark. `status` and `coop end` then say that the game
+- On a person's save, each game-changing command the mod took (not `camera`, `window`, `speed`, `calendar-speed`,
+  `save`, nor a dry run) sets `"modified": true` and counts `"changes"` in the mark. `status` and `coop end` then say that the game
   was changed during coop and that saving keeps the changes; `coop end` adds that the autosave has the changed
   game, and that to go back the user loads a named save without saving. Each line is in `text` and `textJa`.
 - Other clients are refused as before (`--other-owner-ok` as before).

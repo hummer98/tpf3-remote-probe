@@ -373,7 +373,10 @@ function M.new(dir, opts)
 	opts.saves = opts.saves or {}
 	local g = { dir = dir, time = 1000, gameTime = 0, speedup = 1, logs = {}, commands = {}, loads = {}, saved = {},
 		mods = opts.mods or { "hummer_remote_probe" }, modParams = opts.modParams or {}, running = true, callbacks = {},
-		started = {}, menu = opts.menu == true, mapEditor = opts.mapEditor == true }
+		started = {}, menu = opts.menu == true, mapEditor = opts.mapEditor == true,
+		-- the calendar slider's value (GAME_SPEED.millisPerDay), apart from the simulation's speedup as in the game;
+		-- opts.millisPerDay to start elsewhere. The fake's dates do not follow it (dateOf counts DAY_TICKS)
+		millisPerDay = opts.millisPerDay or DAY_TICKS }
 	-- the main menu (opts.menu, startup.lua): no world, no mod params of a game, no GUI save data
 	local function inGame(what) if g.menu then error(what .. " in the main menu") end end
 
@@ -801,7 +804,9 @@ function M.new(dir, opts)
 	}
 	_G.api = {
 		util = { getApplicationTime = function() return g.time end,
-			getDefaultYearDuration = function() return 365 * DAY_TICKS end },
+			getDefaultYearDuration = function() return 365 * DAY_TICKS end,
+			-- opts.noDefaultDay: the function is missing (a factor cannot be turned into millisPerDay then)
+			getDefaultDayDuration = (not opts.noDefaultDay) and function() return DAY_TICKS end or nil },
 		-- opts.modhub: see installModhub (after this table)
 		engine = {
 			util = {
@@ -1223,7 +1228,7 @@ function M.new(dir, opts)
 					for _, m in ipairs(d.modes or {}) do modes[api.type.enum.TransportMode[m]] = true end
 					return { carrier = d.carrier or 5, transportModes = modes, maintenancePool = d.maintenancePool or 0 }
 				end
-				if kind == "GAME_SPEED" then return { speedup = g.speedup, millisPerDay = g.speedup > 0 and DAY_TICKS / g.speedup or 0 } end
+				if kind == "GAME_SPEED" then return { speedup = g.speedup, millisPerDay = g.millisPerDay } end
 			end,
 			config = { getModParams = function() inGame("getModParams"); return g.modParams end },
 		},
@@ -1290,6 +1295,11 @@ function M.new(dir, opts)
 		},
 		cmd = {
 			makeGameSetSpeedCmd = function(n) return { kind = "speed", speed = n } end,
+			-- the engine's command data holds an int (CmdData::GameSetCalendarSpeed): a non-integer raises
+			makeGameSetCalendarSpeedCmd = function(n)
+				if type(n) ~= "number" or n ~= math.floor(n) then error("makeGameSetCalendarSpeedCmd: integer expected, got " .. tostring(n)) end
+				return { kind = "calendarSpeed", millisPerDay = n }
+			end,
 			-- the engine copies the config when the command is made: a later change to the Lua value is not sent
 			makeVehicleBuyCmd = function(pl, depot, config) return { kind = "buy", player = pl, depot = depot, config = copy(config) } end,
 			makeVehicleReplaceCmd = function(e, config) return { kind = "replace", vehicle = e, config = copy(config) } end,
@@ -1315,6 +1325,11 @@ function M.new(dir, opts)
 				end
 				local function apply()
 					if cmd.kind == "speed" then g.speedup = cmd.speed; return true end
+					-- opts.calendarStuck: accepted, but the component keeps its value
+					if cmd.kind == "calendarSpeed" then
+						if not opts.calendarStuck then g.millisPerDay = cmd.millisPerDay end
+						return true
+					end
 					if cmd.kind == "scriptEvent" then return not opts.scriptEventFails end
 					return applyVehicle(cmd)
 				end

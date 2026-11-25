@@ -82,7 +82,8 @@ python3 tools/tf3ctl.py quit
 - **No flags that skip a check** unless the person asked for that command: `--other-owner-ok`, `--user-asked`,
   `--force`, `--ignore-errors`.
 - **Speed:** `run` and `speed` are capped at the game's own estimate. For checks that do not look at the screen,
-  `steps N` (20 steps ≈ 1 game day) is faster; send `speed 0` first.
+  `steps N` (20 steps ≈ 1 game day) is faster; send `speed 0` first. `calendar-speed` is a different thing: the
+  base's calendar slider (how long a calendar day lasts), not how fast the simulation runs.
 - **Stopping the game:** `quit`. Always use `restart --no-kill`: a plain `restart` (and `quit --kill`) SIGKILLs
   a game that does not quit, and unsaved progress is lost.
 - **Debug commands** change the save as no player can: `stock set`, `steps`, `money`, `town develop` / `size` /

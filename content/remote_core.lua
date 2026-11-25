@@ -4906,4 +4906,68 @@ function M.extResultError(v)
 	return walk(v, "result", 0)
 end
 
+---------------------------------------------------------------------------------------------------------------------
+-- calendar speed: the base's 0.25x-4x slider (game_bar_widgets.tl, CalendarEditorDateSpeedControl). The engine keeps
+-- it as GAME_SPEED.millisPerDay, an integer (milliseconds of game time per calendar day; 0 = the calendar stands),
+-- and the slider sends makeGameSetCalendarSpeedCmd(millisPerDay) with round(getDefaultDayDuration() / factor).
+-- It is not the simulation speed (speed / run): a slower calendar keeps vehicles running at the same pace while
+-- the date, and with it what is booked per day or month, moves slower.
+-- calendarSpeed reads only; calendarSpeedSet changes it (any save: it is the base's own slider, and set back the same way)
+M.COMMANDS.calendarSpeed = true
+M.COMMANDS.calendarSpeedSet = true
+M.CHANGES_GAME.calendarSpeedSet = true
+
+-- the slider's steps, as the base lists them (a value between them is shown, inserted into the list, by the base too)
+M.CALENDAR_FACTORS = { 0, 0.25, 0.5, 1, 2, 4 }
+-- a millisPerDay given directly: 0 (stands) or within these bounds. The base's slowest step is 4x the default
+-- day, its fastest a quarter of it; the bounds only keep a typo (a day of 0.01 ms, or of a year) from being sent
+M.CALENDAR_MIN_MS, M.CALENDAR_MAX_MS = 100, 3600000
+
+local function isFactorStep(f)
+	for _, s in ipairs(M.CALENDAR_FACTORS) do if f == s then return true end end
+	return false
+end
+
+-- what the numbers mean, as the slider shows them: factor = defaultDayMs / millisPerDay ("Paused" for 0)
+function M.calendarInfo(millisPerDay, defaultDayMs)
+	local ms = tonumber(millisPerDay)
+	local def = tonumber(defaultDayMs)
+	if def ~= nil and not (def > 0) then def = nil end
+	local r = { millisPerDay = ms, defaultDayMs = def, paused = ms == 0 }
+	if ms == nil then return r end
+	if ms == 0 then r.factor = 0; r.text = "Paused"; r.step = true; return r end
+	if def ~= nil and ms > 0 then
+		r.factor = def / ms
+		-- step: the base matches the factor exactly against its list (else it inserts it); the label has two digits
+		r.step = isFactorStep(r.factor)
+		r.text = tostring(math.floor(r.factor * 100 + 0.5) / 100) .. "x"
+	end
+	return r
+end
+
+-- args: { factor = one of CALENDAR_FACTORS } or { millisPerDay = a whole number }, not both.
+-- returns millisPerDay, or nil and why
+function M.calendarSpeedArg(args, defaultDayMs)
+	if type(args) ~= "table" then return nil, "calendar speed needs factor or millisPerDay" end
+	local f, ms = args.factor, args.millisPerDay
+	if f ~= nil and ms ~= nil then return nil, "give factor or millisPerDay, not both" end
+	if f == nil and ms == nil then return nil, "calendar speed needs factor or millisPerDay" end
+	if f ~= nil then
+		if type(f) ~= "number" or f ~= f then return nil, "factor must be a number" end
+		if not isFactorStep(f) then
+			return nil, "factor must be one of the slider's steps: 0, 0.25, 0.5, 1, 2, 4 (or give millisPerDay)"
+		end
+		if f == 0 then return 0 end
+		local def = tonumber(defaultDayMs)
+		if def == nil or not (def > 0) then return nil, "cannot read the default day duration to turn a factor into millisPerDay" end
+		return math.floor(def / f + 0.5)
+	end
+	if type(ms) ~= "number" or ms ~= ms then return nil, "millisPerDay must be a number" end
+	if ms ~= math.floor(ms) then return nil, "millisPerDay must be a whole number" end
+	if ms ~= 0 and (ms < M.CALENDAR_MIN_MS or ms > M.CALENDAR_MAX_MS) then
+		return nil, ("millisPerDay must be 0 or between %d and %d"):format(M.CALENDAR_MIN_MS, M.CALENDAR_MAX_MS)
+	end
+	return ms
+end
+
 return M

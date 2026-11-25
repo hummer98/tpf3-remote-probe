@@ -8,6 +8,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
   tf3ctl.py status
   tf3ctl.py speed 8             # beyond the UI's 4x, capped at the game's estimate (getEstimatedMaximumGameSpeed);
             # 0 pauses
+  tf3ctl.py calendar-speed [0.25 | --millis-per-day 8000]   # the base's calendar slider (0, 0.25 .. 4x): read with
+            # no value; set answers before / after (millisPerDay: game ms per calendar day; 0: the date stands)
   tf3ctl.py run --months 2 --speed 4
   tf3ctl.py saves
   tf3ctl.py info "probe"
@@ -265,10 +267,11 @@ CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "ev
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
                 "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect", "runningCostsSet", "lightsOff",
-                "modChange"}  # window: what the player sees  # poll: only the mod's file reads
+                "modChange", "calendarSpeedSet"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 # modChange: another mod's command tagged "changes" (or untagged); modList and modRead (tagged "reads") only read.
+# calendarSpeedSet: the base's calendar slider (calendar-speed with a value); calendarSpeed only reads it.
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -962,8 +965,9 @@ COOP_REASON_MAX = 200
 # what the coop client may send (after the reading commands, which always go): a person keeps the game itself
 # modChange: another mod's command, the same as event (a test command a mod ships); a save stays refused by "save"
 COOP_ALLOWED = {"camera", "window", "event", "build", "road", "stockSet", "money", "steps", "modChange"}
-COOP_USER_ASKED = {"speed", "run"}  # pause is speed 0: only when the person asked (--user-asked)
-COOP_UNCOUNTED = {"camera", "window", "speed", "save"}  # they leave the world as it was
+# calendarSpeedSet: the calendar slider goes as speed does (the person's own control of the time)
+COOP_USER_ASKED = {"speed", "run", "calendarSpeedSet"}  # pause is speed 0: only when the person asked (--user-asked)
+COOP_UNCOUNTED = {"camera", "window", "speed", "save", "calendarSpeedSet"}  # they leave the world as it was
 LOADED_ANCHORS = (b"Application startup", b"Loading game from file", b"Start new game")
 USER_ASKED = False  # set by main from --user-asked
 
@@ -5361,6 +5365,28 @@ def models_args(ns):
     return args
 
 
+# the base's calendar slider steps (game_bar_widgets.tl); the mod checks them again (remote_core.lua)
+CALENDAR_FACTORS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0)
+CALENDAR_MIN_MS, CALENDAR_MAX_MS = 100, 3600000
+
+
+def calendar_speed_args(ns):
+    """(cmd, args): calendarSpeed (read only) without a value, else calendarSpeedSet with factor or millisPerDay."""
+    factor, ms = ns.factor, ns.millis_per_day
+    if factor is not None and ms is not None:
+        raise ToolError("give a factor or --millis-per-day, not both")
+    if factor is None and ms is None:
+        return "calendarSpeed", {}
+    if factor is not None:
+        if factor not in CALENDAR_FACTORS:
+            raise ToolError("the factor must be one of the calendar slider's steps: 0, 0.25, 0.5, 1, 2, 4 "
+                            "(or give --millis-per-day)")
+        return "calendarSpeedSet", {"factor": factor}
+    if ms != 0 and not CALENDAR_MIN_MS <= ms <= CALENDAR_MAX_MS:
+        raise ToolError("--millis-per-day must be 0 or between %d and %d" % (CALENDAR_MIN_MS, CALENDAR_MAX_MS))
+    return "calendarSpeedSet", {"millisPerDay": ms}
+
+
 def running_costs_args(ns):
     """(cmd, args): runningCosts (read only) without a --set-* / --scale-*, else runningCostsSet with its ops."""
     if not ns.model or not ns.model.strip():
@@ -5991,6 +6017,10 @@ def make_parser():
     s.add_argument("speed", type=int)
     s.add_argument("--force", action="store_true", help="above the game's estimate of what it can sustain")
     s.add_argument("--user-asked", action="store_true", help="send it during coop: only when the user asked for it")
+    cs = sub.add_parser("calendar-speed", help="read (no value) or set the base's calendar speed slider (0.25x-4x)")
+    cs.add_argument("factor", nargs="?", type=float, help="one of the slider's steps: 0 (paused), 0.25, 0.5, 1, 2, 4")
+    cs.add_argument("--millis-per-day", type=int, help="the engine's value itself: game ms per calendar day (0: paused)")
+    cs.add_argument("--user-asked", action="store_true", help="send it during coop: only when the user asked for it")
     pz = sub.add_parser("pause")
     pz.add_argument("--user-asked", action="store_true", help="send it during coop: only when the user asked for it")
     r = sub.add_parser("run")
@@ -6745,6 +6775,9 @@ def main(argv=None):
             res = send("speed", dict(extra, speed=speed))
             if note:
                 res["speedNote"] = note
+        elif ns.cmd == "calendar-speed":
+            ccmd, cargs = calendar_speed_args(ns)
+            res = send(ccmd, cargs)
         elif ns.cmd == "run":
             res = cmd_run(ns)
         elif ns.cmd == "saves":

@@ -91,6 +91,9 @@ python3 tools/tf3ctl.py status
 python3 tools/tf3ctl.py status                        # 日付、速度、実測の倍率、MOD とその設定
 python3 tools/tf3ctl.py speed 8                       # UI の 4 倍を超える (ゲームの見積もりまで)。0 で停止
 python3 tools/tf3ctl.py pause
+python3 tools/tf3ctl.py calendar-speed                # カレンダーの速度を読む (本体の 0.25x〜4x のスライダー)
+python3 tools/tf3ctl.py calendar-speed 0.25           # 変える: 0 (日付が止まる)、0.25、0.5、1、2、4
+python3 tools/tf3ctl.py calendar-speed --millis-per-day 8000   # エンジンの値そのものでも
 python3 tools/tf3ctl.py run --months 2 --speed 4      # --days N / --until YYYY-MM-DD も。その後は速度 0
 python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # コマンドファイルを読む間隔 (次のロードまで)
 ```
@@ -102,6 +105,18 @@ python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # コマンドファイル
 ボタンが、本体のボタンと同じように光ります。×8 / ×16 のボタンは、その速度をそのまま指定します。ゲームの見積もりの
 上限より上でも止めません (`speed` は上限で止めますが、ボタンはプレイヤーが自分で選ぶものなので)。本体のボタンを
 押せば、本体の速度に戻ります。横の表示 (`×8 実測×3.2`) は、本体のボタンにない 8 と 16 でも今までどおり出ます。
+
+`calendar-speed` は、本体のカレンダーの速度のスライダー (カレンダーの窓の、停止・0.25x・0.5x・1x・2x・4x) です。
+上のシミュレーションの速度とは別のものです。エンジンは `GAME_SPEED.millisPerDay` として持ちます。カレンダーの
+1 日が続くゲーム時間 (ミリ秒) で、0 なら日付が止まります。倍率は、本体のスライダーと同じく
+`round(getDefaultDayDuration() / 倍率)` で変えます。0.25 なら 1 日が 4 倍長くなり、車両は同じ速さで走ったまま、
+日付がゆっくり進みます。値を付けなければ読むだけで、何も送りません。答えには `calendar` (`millisPerDay`、
+`defaultDayMs`、`factor`、スライダーの表示と同じ `text`、スライダーの段のどれかかの `step`、`paused`) と `steps`
+が入ります。値を付けると `makeGameSetCalendarSpeedCmd` を送り、ゲームが新しい値になったところで `before`・
+`after`・`sent`・`requested` を答えます (エンジンが断ったとき、5 秒のうちに変わらないときはエラー)。倍率は
+スライダーの段のどれかだけです。`--millis-per-day` は 0 か、100〜3600000 の整数です。変えるのは `speed` と同じく
+ゲームを変える命令に数えます (送り主の検査、共同作業の間は `--user-asked` が要る)。`run` は止めませんが、
+カレンダーが 0 だと、日付を目指す run はいつまでも着きません。
 
 ### セーブと新しいゲーム
 
@@ -1478,11 +1493,11 @@ tf3ctl.py --owner bob coop end
 - `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。延長しても、印の変更の回数は引き継ぎます。
 - 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`、ほかの MOD の命令 (`mod`。`modChange` で送るもの)。ユーザーのセーブでも同じです。
   MOD の命令 (と `event`) が何をするかは、その MOD 次第です。下の拒否は tf3ctl 自身の命令に効くもので、保存する MOD の命令は止めません。
-- `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`。
+- `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`、値を付けた `calendar-speed`。
 - `save` は試験用のセーブの名前にだけ (`testSavePrefixes`。`testSaveDigitFirst` なら数字 1 文字で始まる名前 `3-probe` も)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
 - ほかは断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`、`tool`、`buy`、`line`、`terrain`、`town`、`modhub` など。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。
 - 読み込まれているセーブは、ゲームのログから読みます (起動から最後の `Loading game from file` / `Start new game`)。
-- 人のセーブで、ゲームを変える命令を MOD が受け取るたびに (`camera`・`window`・`speed`・`save`・dry run は除く)、印に `"modified": true` を付け、`"changes"` を数えます。そのあと `status` と `coop end` が、共同作業で変更されていること、保存すると変更が残ることを出します。`coop end` は続けて、オートセーブには変更後の状態が入っていること、元に戻すには保存せずに名前のついたセーブを読み直すことを出します。文は `text` (英) と `textJa` (日)。
+- 人のセーブで、ゲームを変える命令を MOD が受け取るたびに (`camera`・`window`・`speed`・`calendar-speed`・`save`・dry run は除く)、印に `"modified": true` を付け、`"changes"` を数えます。そのあと `status` と `coop end` が、共同作業で変更されていること、保存すると変更が残ることを出します。`coop end` は続けて、オートセーブには変更後の状態が入っていること、元に戻すには保存せずに名前のついたセーブを読み直すことを出します。文は `text` (英) と `textJa` (日)。
 - ほかのクライアントは、これまでどおり断ります (`--other-owner-ok` もこれまでどおり)。
 - 終わるのは、ゲームが無くなったとき (記録の pid が動いているゲームでない)、tf3ctl が記録を消したとき (quit)、`coop end` (印だけを消す。権限を減らすだけなので誰が打ってもよい)。`status` の `coop` に出ます (`active`・`with`・`minutesLeft`・`save`・`testSave`・`text` など)。
 - 期限切れ・形の壊れた印: `until` に達しても共同作業は終わらず、tf3ctl はそのために印を消したり書き換えたりしません。ユーザーがまだ遊んでいるかもしれないので、厳しい側に倒します (外のゲームの安全装置と同じ)。動いているゲームの印が期限切れ (`until` を過ぎた) か、形が壊れている (`with` が無い・空、`until` が有限の数でない・7 日より先・NaN・Infinity、印がオブジェクトでない) 間は、ゲームを起動した owner も印の `with` のクライアントも、ゲームを変える命令を一切送りません: 終了コード 4、`"refused": "coop-expired"` か `"coop-invalid"`、何も送りません (`--other-owner-ok` でも同じ)。読む命令は通ります。`coop start` (延長する。壊れた印は書き直す。変更の回数は残る) と `coop end` も通ります。ほかのクライアントの扱いは前と同じです。ただし、人が起動したゲームで、形の壊れた印から `with` が読めないときは、誰の共同作業か分からないので、どのクライアントも断ります (`"coop-invalid"`、`--other-owner-ok` でも)。`status` の `coop` に `"expired": true` か `"invalid": true` (と `why`) が付き、`text` と `textJa` に出ます。pid が動いているゲームでない印は、印ではありません (ゲームが終わった)。

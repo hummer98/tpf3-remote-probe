@@ -5353,6 +5353,13 @@ class OwnerCheckTest(unittest.TestCase):
             with self.assertRaises(tf3ctl.OwnerRefused):
                 tf3ctl.check_game_owner(cmd, {"folder": "f", "dryRun": True})
 
+    def test_calendar_speed_set_is_checked_as_speed_and_reading_it_is_not(self):
+        self.record("bob")
+        self.assertIn("started by bob, not by alice", self.refused("calendarSpeedSet", {"factor": 0.25}))
+        self.assertIsNone(tf3ctl.check_game_owner("calendarSpeed", {}), "read only")
+        self.assertTrue(tf3ctl.changes_game("calendarSpeedSet", {"millisPerDay": 0}))
+        self.assertFalse(tf3ctl.changes_game("calendarSpeed", {}))
+
     def test_no_game_running_lets_it_through_to_say_where_the_game_is(self):
         tf3ctl.game_pids = lambda: []
         self.assertIsNone(tf3ctl.check_game_owner("save", {"name": "x"}))
@@ -5633,6 +5640,19 @@ class CoopTest(unittest.TestCase):
         for argv in (["speed", "1", "--user-asked"], ["pause", "--user-asked"], ["run", "--days", "1", "--user-asked"],
                      ["save", "probe-x", "--user-asked"]):
             self.assertTrue(p.parse_args(argv).user_asked, argv)
+
+    def test_calendar_speed_only_when_the_user_asked_and_reading_always(self):
+        self.loaded("my-own-save")  # a person's save: a change there is counted, the calendar as speed is not
+        self.record("alice")
+        self.start()
+        self.assertIn("--user-asked", self.refused("calendarSpeedSet", {"factor": 1.0}))
+        self.assertIsNone(tf3ctl.check_game_owner("calendarSpeed", {}), "reading goes as ever")
+        tf3ctl.USER_ASKED = True
+        self.assertFalse(self.goes("calendarSpeedSet", {"factor": 1.0})["count"], "not counted, as speed")
+        self.assertFalse(self.goes("speed", {"speed": 1})["count"])
+        self.assertTrue(self.goes("build", {"res": "x"})["count"], "a counted one, for contrast")
+        p = tf3ctl.make_parser()
+        self.assertTrue(p.parse_args(["calendar-speed", "0.25", "--user-asked"]).user_asked)
 
     def test_another_mods_change_goes_in_coop_and_counts_on_a_persons_save(self):
         args = {"mod": "m", "command": "c", "args": {}, "timeout": 25}
@@ -7397,6 +7417,44 @@ class ModCommandTest(unittest.TestCase):
             tf3ctl.game_pids, tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = saved
             use_config(CONFIGURED)
             tf3ctl.remove_launched()
+
+
+class CalendarSpeedArgsTest(unittest.TestCase):
+    """calendar-speed: no value reads (calendarSpeed), a slider step or --millis-per-day sets (calendarSpeedSet)."""
+
+    def args(self, *argv):
+        return tf3ctl.calendar_speed_args(tf3ctl.make_parser().parse_args(["calendar-speed", *argv]))
+
+    def test_no_value_reads_only(self):
+        self.assertEqual(self.args(), ("calendarSpeed", {}))
+
+    def test_a_step_or_millis_per_day_sets(self):
+        self.assertEqual(self.args("0.25"), ("calendarSpeedSet", {"factor": 0.25}))
+        self.assertEqual(self.args("4"), ("calendarSpeedSet", {"factor": 4.0}))
+        self.assertEqual(self.args("0"), ("calendarSpeedSet", {"factor": 0.0}))
+        self.assertEqual(self.args("--millis-per-day", "8000"), ("calendarSpeedSet", {"millisPerDay": 8000}))
+        self.assertEqual(self.args("--millis-per-day", "0"), ("calendarSpeedSet", {"millisPerDay": 0}))
+        self.assertEqual(tf3ctl.command_text(7, "calendarSpeedSet", {"factor": 0.25}).count("[\"factor\"] = 0.25"), 1)
+
+    def test_bad_values_are_refused_before_sending(self):
+        for argv, word in ((("3",), "slider's steps"), (("-1",), "slider's steps"), (("nan",), "slider's steps"),
+                           (("inf",), "slider's steps"), (("1", "--millis-per-day", "2000"), "not both"),
+                           (("--millis-per-day", "5"), "between"), (("--millis-per-day", "-1"), "between"),
+                           (("--millis-per-day", "3600001"), "between")):
+            with self.assertRaises(tf3ctl.ToolError) as cm:
+                self.args(*argv)
+            self.assertIn(word, str(cm.exception), argv)
+        for argv in (("fast",), ("--millis-per-day", "2.5")):  # not a number: argparse refuses (exit 2)
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.args(*argv)
+
+    def test_the_steps_are_the_mods(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "..", "content", "remote_core.lua"), encoding="utf-8") as f:
+            lua = f.read()
+        self.assertIn("M.CALENDAR_FACTORS = { 0, 0.25, 0.5, 1, 2, 4 }", lua)
+        self.assertIn("M.CALENDAR_MIN_MS, M.CALENDAR_MAX_MS = %d, %d" % (tf3ctl.CALENDAR_MIN_MS, tf3ctl.CALENDAR_MAX_MS),
+                      lua)
 
 
 if __name__ == "__main__":

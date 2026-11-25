@@ -368,6 +368,62 @@ function handlers.speed(c)
 	end)
 end
 
+-- calendar speed (remote_core.lua, calendarInfo): the base's 0.25x-4x slider, GAME_SPEED.millisPerDay
+local CAL_WAIT_SEC = 5 -- after the command's callback, how long to wait for the component to show the sent value
+G.calWaits = {}
+
+local function calendarNow()
+	local sp = try(function() return api.engine.getComponent(world(), api.type.ComponentType.GAME_SPEED) end)
+	local ms = sp and tonumber(try(function() return sp.millisPerDay end)) or nil
+	local def = tonumber(try(function() return api.util.getDefaultDayDuration() end))
+	return core.calendarInfo(ms, def)
+end
+
+-- reads only: no command is sent
+function handlers.calendarSpeed(c)
+	local cal = calendarNow()
+	if cal.millisPerDay == nil then return fail(c.id, "cannot read GAME_SPEED.millisPerDay") end
+	answer(c.id, { ok = true, calendar = cal, steps = core.CALENDAR_FACTORS, state = now() })
+end
+
+-- as the slider: makeGameSetCalendarSpeedCmd(millisPerDay). It leaves a run alone (it does not touch the
+-- simulation speed), but a calendar at 0 stands, so a run toward a date never gets there
+function handlers.calendarSpeedSet(c)
+	local before = calendarNow()
+	if before.millisPerDay == nil then return fail(c.id, "cannot read GAME_SPEED.millisPerDay") end
+	local ms, err = core.calendarSpeedArg(c.args, before.defaultDayMs)
+	if ms == nil then return fail(c.id, err) end
+	local w = { id = c.id, before = before, sent = ms, requested = { factor = c.args.factor, millisPerDay = c.args.millisPerDay },
+		started = appTime() }
+	G.calWaits[#G.calWaits + 1] = w
+	api.cmd.sendCommand(api.cmd.makeGameSetCalendarSpeedCmd(ms), function(_, success)
+		w.success = success == true
+		w.calledAt = appTime()
+	end)
+end
+
+-- answers each calendarSpeedSet once the component shows the sent value, the engine refused it, or the wait ran out
+local function stepCalendar()
+	if #G.calWaits == 0 then return end
+	local keep = {}
+	for _, w in ipairs(G.calWaits) do
+		local after = calendarNow()
+		local base = { before = w.before, after = after, sent = w.sent, requested = w.requested }
+		if w.success == false then
+			failWith(w.id, "the engine refused the calendar speed command", base)
+		elseif w.success == true and after.millisPerDay == w.sent then
+			base.ok = true; base.state = now()
+			answer(w.id, base)
+		elseif appTime() - (w.calledAt or w.started) > CAL_WAIT_SEC then
+			failWith(w.id, w.success and ("the command was accepted, but millisPerDay did not become the sent value in "
+				.. CAL_WAIT_SEC .. " s") or ("no answer from the engine to the command in " .. CAL_WAIT_SEC .. " s"), base)
+		else
+			keep[#keep + 1] = w
+		end
+	end
+	G.calWaits = keep
+end
+
 function handlers.run(c)
 	local t = now()
 	local target, err = core.runTarget(c.args, t)
@@ -1639,6 +1695,7 @@ local function step()
 	modext.step()
 	stepFinish()
 	stepRun()
+	stepCalendar()
 	stepBuildTool()
 	stepOpens()
 	stepLabel()
