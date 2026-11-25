@@ -132,6 +132,11 @@ return function(h)
 			"return { got == api, got.cmd == nil, back }")
 		eq(pass.ok, true, tostring(pass.error)); eq(core.json(pass.value), "[true,true,true]")
 		api.engine.evalPass = nil
+		-- a table with a Lua __call and a readable metatable is a mod's, not the engine's: it gets the views
+		api.engine.luaCallable = setmetatable({}, { __call = function(_, t) t.evalWritten = 1 end })
+		local lc = here("api.engine.luaCallable(api.engine)")
+		api.engine.luaCallable = nil
+		eq(lc.ok, false); truthy(lc.error:find("reads only"), lc.error); eq(api.engine.evalWritten, nil)
 		-- a table that cannot be called raises as calling it would
 		api.engine.evalPlainTable = {}
 		local nc = here("api.engine.evalPlainTable()")

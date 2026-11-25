@@ -5177,6 +5177,16 @@ end
 -- arguments; only api's (the engine's own bindings, which read their arguments into the engine's types). A Lua
 -- function (a library's, a module's, one a mod hung under api) gets the views as they are: it could write into a
 -- real table (table.insert, ...).
+-- a table whose metatable can be read and whose __call is a Lua function is Lua's (a mod's), not the engine's: the
+-- engine's bindings hide their metatable (getmetatable gives false), so only they get the real tables, and a Lua
+-- __call, which could write into them, gets the views
+local function luaCallable(t)
+	local ok, mt = pcall(getmetatable, t)
+	if not ok or type(mt) ~= "table" then return false end
+	local ok2, c = pcall(function() return mt.__call end) -- (no rawget in the game's Lua)
+	return ok2 and type(c) == "function"
+end
+
 local function readOnlyView(t, drop, cache, callReal)
 	cache = cache or setmetatable({}, { __mode = "k" })
 	local key = drop or false
@@ -5221,7 +5231,7 @@ local function readOnlyView(t, drop, cache, callReal)
 		__len = function() return #t end,
 		-- (a table that cannot be called raises as calling it would: "attempt to call a table value")
 		__call = function(_, ...)
-			if not callReal then return t(...) end
+			if not callReal or luaCallable(t) then return t(...) end
 			local args, n = unwrapArgs(...)
 			return rewrapValues(t(unpack(args, 1, n)))
 		end,
