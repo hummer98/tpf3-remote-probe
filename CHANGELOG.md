@@ -7,14 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 X*10000 + Y*100 + Z (1.0.0 is revision 10000). The command protocol's own number (`version` in the mod's answers)
 is separate and does not follow the release version.
 
-## [Unreleased]
+## [1.0.2] - 2026-11-25
 
 ### Added
 
 - `calendar-speed`: reads the base's calendar speed slider (`GAME_SPEED.millisPerDay`, 0.25x-4x or paused) without
   a value, and sets it with one (a slider step, or `--millis-per-day`), answering the value before and after. Tests
   that need the date to move slower or faster than the simulation could only get there by a click in the calendar
-  window before. Setting it is checked as `speed` is (owner, coop with `--user-asked`); not yet tried in a game.
+  window before. Setting it is checked as `speed` is (owner, coop with `--user-asked`).
 
 ## [1.0.1] - 2026-11-25
 
@@ -59,5 +59,6 @@ that let a script outside the game drive a running game through small files in t
 - Mod settings for the check intervals, the log amount, the speed label, the ×8 / ×16 buttons and the game-script commands, in English and
   Japanese.
 
+[1.0.2]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.2
 [1.0.1]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.1
 [1.0.0]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.0
