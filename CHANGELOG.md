@@ -9,6 +9,8 @@ is separate and does not follow the release version.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-26
+
 ### Added
 
 - `test FILE`: run a test scenario, a JSON file of tf3ctl commands with checks of their answers (`expect`: a path
@@ -16,10 +18,9 @@ is separate and does not follow the release version.
   the start (a `log` step: no `ERROR` or Lua error entries, patterns can be set). One JSON result; exit `0` all
   passed, `5` (new) a step failed, `2` a broken scenario (nothing sent) or no answer. Each step goes through
   tf3ctl's own checks; flags that skip one (`--force`, `--user-asked`, `--other-owner-ok`, `--ignore-errors`) are
-  refused in a scenario, and so are starting coop, `quit --kill` and `restart` without `--no-kill`. `--dry-run`
-  only checks the file. So a mod's author can run the same checks again after every change without reading the
-  answers. Sample: `examples/test_scenario_sample.json`. Not run against a game
-  yet (the unit tests run a scenario against the fake game).
+  refused in a scenario, and so are starting coop, `quit --kill`, `restart` without `--no-kill`,
+  `window --close-all` and `--every` without `--count`. `--dry-run` only checks the file. So a mod's author can run the same checks again after every change without reading the
+  answers. Sample: `examples/test_scenario_sample.json`, which passed against a game (6 of 6 steps, 2026-11-26).
 - `eval 'CODE'` (or `--file`): runs a piece of Lua in the game's GUI Lua state (`--gs`: in the game script, with the
   setting `gameScript` on) and returns its value as JSON, with `print`'s lines; depth and size limits mark what they
   cut, userdata are walked as tables, a cycle is `"<cycle>"`, errors are `{ "ok": false, "kind": "compile" |
@@ -29,19 +30,25 @@ is separate and does not follow the release version.
   test saves only (during coop with `--user-asked`), carries `saveNote`, and its `app.saveGame` /
   `app.deleteSavegame` raise (best effort: `tf3ctl save` saves). Off unless the configuration file has
   `"eval": true`. There is no timeout: a loop that never ends freezes the game. Asked for to read values no command
-  gives yet, without a new probe release for each. Checked in a game (2026-11-26): plain `eval`, `--gs`, `--write`'s
-  refusal of `app.saveGame`, and that a component (userdata) cannot be walked with `pairs` (it comes back as
-  `"userdata: 0x..."`; read its fields by name into a table). The engine's functions are callable tables there
-  (`type()` `"table"`, `getmetatable` `false`): the read-only views call them, such a table under `api` gets the real
-  tables for the views among its arguments (a Lua function gets the views; a callback gets a view back) (a table seen only through a view comes back as that view), and the
-  writer names drop such tables too. That fix is checked with the unit tests only.
+  gives yet, without a new probe release for each. The engine's functions are callable tables in the game
+  (`type()` `"table"`, `getmetatable` `false`): the read-only views call them. Such a table under `api` gets the
+  real tables for the views among its arguments; a Lua function gets the views, a callback gets a view back, and a
+  table seen only through a view comes back as that view (a Lua callable table that hides its metatable cannot be
+  told apart from the engine's: see the reference). The writer names drop such tables too. Checked in a game
+  (2026-11-26): plain `eval` (`api.engine.forEachEntityWithComponent` and `getComponent` answer, a write is
+  refused, `api.cmd` is not there), `--gs`, `--write`'s refusal of `app.saveGame`, and that a component (userdata)
+  cannot be walked with `pairs` (it comes back as `"userdata: 0x..."`; read its fields by name into a table).
 - `road --from-node ID` / `--to-node ID`: join an end to an existing road node by its id (before, only `--batch`
   pieces could). With `--from` / `--to` as well, the end sits at that point beside the node (the edge's `node0`
   the node, `position0` the point), up to 12 m off on the map; further is refused with nothing sent. The answer's
   ends give `position` and `endOffset`, and `offsetNote` says it. `--batch` pieces take `from` with `from-node`
   (and `to` with `to-node`) the same way, which was refused before. A player's narrow road joined beside a wide
-  one's lanes was read with its end 4.5 m off its node, and there was no way to build that. Not checked in a game
-  yet whether the engine takes such an end.
+  one's lanes was read with its end 4.5 m off its node, and there was no way to build that. Checked in a game
+  (2026-11-26): one piece with its end 4.5 to 6.25 m beside a four-lane road's end node was built, but a second
+  such piece at the same node was refused ("cannot be built", critical, no `collisionEntities`; also as a dry run
+  with `--ignore-errors`), in one proposal or after the first; a second piece out of the node's own point was built
+  beside it. How far the engine takes, and which way an offset should run against the lanes, are not checked yet
+  (more in `docs/KNOWN_BEHAVIOR.md`).
 - `status` answers `luaLoad`: whether `load`, `loadstring` and `setfenv` exist in the GUI's Lua state and in the game
   script's (`gui` / `gs`, each `type()` of the three, or `"raised"` when reading it raised; `gs` is `"unread"` unless
   the setting `gameScript` is on now, as the script writes it into its state). Asked before building anything that
@@ -51,7 +58,17 @@ is separate and does not follow the release version.
 - `tools/tf3ctl_mcp.py`: an MCP server (stdio, standard library only) that offers tf3ctl's commands as tools, so
   clients that take MCP servers can use the tool, and people looking for an MCP server find it. A thin wrapper: the
   tool list comes from tf3ctl's own parser and every call runs `tf3ctl.py` with its checks; `pointer` and
-  `modhub publish` / `publish-clear` are left out. README: "MCP server".
+  `modhub publish` / `publish-clear` are left out. README: "MCP server". Checked so far by hand with `initialize`
+  and `tools/list` only (no game).
+- `tools/config.example.json`: the `eval` key (off).
+- `docs/KNOWN_BEHAVIOR.md`: what was seen in a game on 2026-11-26 with proposals sent from a game script (a mod's
+  script event: an on-road stop placed, a native crash with a stock in an edge object's construction, a refused
+  vehicle at a `build --no-owner` construction's mouth), with `eval`, and with `test` and `road`'s end offsets.
+
+### Fixed
+
+- The `fit` example in the reference named the base road depot as `::/depots/road/road_depot.con`; it is
+  `depots/road/road_depot/road_depot.con`.
 
 ## [1.0.2] - 2026-11-25
 
@@ -105,6 +122,8 @@ that let a script outside the game drive a running game through small files in t
 - Mod settings for the check intervals, the log amount, the speed label, the ×8 / ×16 buttons and the game-script commands, in English and
   Japanese.
 
+[Unreleased]: https://github.com/hummer98/tpf3-remote-probe/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.1.0
 [1.0.2]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.2
 [1.0.1]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.1
 [1.0.0]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.0

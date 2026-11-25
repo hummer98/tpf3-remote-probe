@@ -107,11 +107,22 @@
 - `api.engine` の下のエンジンの関数 (`getComponent`・`forEachEntityWithComponent` など) は Lua の関数ではありません:
   `type()` は `"table"` で、メタテーブルを通して呼ばれ、`getmetatable` は `false` を返します (中は読めません)。
   `pairs(api.engine)` は 16 個で、そのうち 13 個がこの表でした。素の `eval` はこれをただの表として包んでいたので
-  呼べませんでした (「attempt to call field ... (a table value)」)。いまは見え方から呼べます。これは同じ形をまねた
-  偽物に対する単体テストで確認しただけです。
+  呼べませんでした (「attempt to call field ... (a table value)」)。いまは見え方から呼べます: 素の `eval` から
+  `forEachEntityWithComponent`・`getComponent` が答え、書き込みは断られ、`api.cmd` はありません。
 - component (userdata) は中を一覧できません: `pairs` が「bad argument #1 to 'pairs' (table expected, got
   userdata)」になるので、`eval` は `"userdata: 0x..."` と書きます。欄は名前で読めます: 欲しい欄を表に詰めて
   返してください (例 `local c = api.engine.getComponent(id, api.type.ComponentType.NAME); return { name = c.name }`)。
+
+## 試験のシナリオと、node の脇の道路の端
+
+2026-11-26 にゲームで確認しました。
+
+- `test examples/test_scenario_sample.json` は 6 ステップ中 6 で通りました。
+- `road --from-node` と `--from` (node の脇の端): 4 車線の道路の端の node から 4.5〜6.25 m 脇に端を置いた道路 1 本は
+  建ちました (対面の 2 車線と一方通行の道路)。同じ node に 2 本目のそういう道路は、1 つの提案でも、1 本目のあとでも
+  「建設不可」で断られました (critical。`collisionEntities` は空。`--ignore-errors` の dry-run でも同じ)。2 本目を
+  node の点そのものから出すと、並べて建ち、`reach --mode drive` はその 2 本を通る行きと帰りの道を見つけました
+  (一方通行に逆らう向きは無し)。絵で道がくびれたのは node の点から出した側だけで、ずらした端はくびれませんでした。
 
 ## メモ
 

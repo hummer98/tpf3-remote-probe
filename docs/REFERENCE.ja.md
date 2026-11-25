@@ -574,8 +574,12 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   node の高さ。地図の上で node から 12 m より遠い点は、何も送らずに断ります (dry-run も)。両端が同じ node でも断ります。
   答えの `from` / `to` に `position` (その点。`zFrom` は `given` か `node`) と `endOffset` (点 − node: `x`・`y`・`z`・
   地図の上の `flat`・`length`) が付き、`offsetNote` がそれを書きます。道路の長さと向きは、点と点の間で決めます。
-  **ゲーム内では未確認** [推測]: エンジンが node からずれた端を受けるか、何 m まで受けるか、ずれを車線に対してどちら
-  向きにすべきか。まず `--dry-run --engine-check` で試してください。`--batch` の道路でも同じです。
+  **ゲームで確認済み (2026-11-26):** 4 車線の道路の端の node から 4.5〜6.25 m 脇に端を置いた道路 1 本は建ちました
+  (対面の 2 車線と一方通行の道路)。同じ node に 2 本目のそういう道路は、1 つの提案でも、1 本目のあとでも
+  「建設不可」で断られました (critical。`collisionEntities` は空。`--ignore-errors` の dry-run でも同じ)。2 本目を
+  node の点そのものから出すと、並べて建ち、`reach --mode drive` はその 2 本を通る行きと帰りの道を見つけました
+  (一方通行に逆らう向きは無し)。**まだ確認していないこと** [推測]: 何 m まで受けるか、ずれを車線に対して
+  どちら向きにすべきか。まず `--dry-run --engine-check` で試してください。`--batch` の道路でも同じです。
 - 端から `--snap` メートル (初期設定 5、最大 20、0 ならつながない。3次元で測るので、点の上にある橋の node は使わない)
   以内に道路の端の node があれば、その node を端にして、そこで道路につなぎます。点の近くの道路は octree
   (`api.engine.util.octree.findEntitiesInCircle` で BASE_EDGE、無ければ octree system の箱) から探し、道路だけ
@@ -695,7 +699,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   `tangent-to`・`align-to-edge`・`align-edge`。MOD の名前 `tangentFrom` なども読みます。点は `"x,y[,z]"` か
   `[x, y, z]`)。node を共有するには `from-node` / `to-node` を使います: 既存の道路の node の entity id (そのまま
   つなぐ。snap しない。同じ端に `from` / `to` も書くと、端はその点になり node の脇につながる。12 m まで。上の
-  `--from-node` と `--from` と同じで、ゲーム内では未確認)、または新しい node の名前 `"@a"` (複数の道路で共有する
+  `--from-node` と `--from` と同じ。1 つの node に 1 本はゲームで建った)、または新しい node の名前 `"@a"` (複数の道路で共有する
   新しい node。snap しない。点は少なくとも 1 つの端で書き、書いた端どうしは 0.01 m 以内で同じであること。1 つの端に
   しか出てこない名前は断ります)。`--dry-run`・`--engine-check`・`--remove-fields`・`--remove-buildings`・
   `--ignore-errors`・`--collision-detail` は提案全体のものとしてコマンドラインに書き、1 本のときと同じ意味・同じ柵です (命令の名前は
@@ -1604,8 +1608,9 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
   中のエンジンの assertion も捕まえられません。
 - **ゲームで確認済み (2026-11-26):** 素の `eval` (つまり、ゲームの `load` は環境を取る)、gameScript を入にした
   `--gs`、`--write` で `app.saveGame` を断ること、component を `pairs` で回せないこと。ゲームではエンジンの関数が
-  呼べる表で (`getmetatable` は `false`)、直す前の素の `eval` からは呼べませんでした。この直し自体は単体テストで
-  確認しただけです。
+  呼べる表で (`getmetatable` は `false`)、直す前の素の `eval` からは呼べませんでした。直したあとは、素の `eval` から
+  `api.engine.forEachEntityWithComponent`・`getComponent` が答え、書き込みは断られ、`api.cmd` はありませんでした
+  (同じゲームで確認)。
 
 ### 複数のクライアント
 

@@ -112,11 +112,24 @@ Checked in game on 2026-11-26.
   functions: `type()` gives `"table"`, they are called through a metatable, and `getmetatable` gives `false` (what
   is inside cannot be read). `pairs(api.engine)` gave 16 members, 13 of them such tables. Plain `eval` wrapped
   them as plain tables and could not call them ("attempt to call field ... (a table value)"); its views now call
-  them. Checked with the unit tests only, against a fake that has the same shape.
+  them: `forEachEntityWithComponent` and `getComponent` answer from plain `eval`, a write is refused, and `api.cmd`
+  is not there.
 - A component (userdata) cannot be walked: `pairs` raises "bad argument #1 to 'pairs' (table expected, got
   userdata)", so `eval` writes it as `"userdata: 0x..."`. Its fields can be read by name: put the ones you want in
   a table and return that, say
   `local c = api.engine.getComponent(id, api.type.ComponentType.NAME); return { name = c.name }`.
+
+## Test scenarios and road ends beside a node
+
+Checked in game on 2026-11-26.
+
+- `test examples/test_scenario_sample.json` passed, 6 of 6 steps.
+- `road --from-node` with `--from` (an end beside its node): one piece with its end 4.5 to 6.25 m beside a
+  four-lane road's end node was built (two-way two-lane and one-way roads). A second such piece at the same node
+  was refused ("cannot be built", critical, no `collisionEntities`), in one proposal or after the first, also as a
+  dry run with `--ignore-errors`. A second piece out of the node's own point was built beside it, and
+  `reach --mode drive` found the way out and back through the two (against the one-way pieces: none). In the
+  picture the road narrows only where a piece leaves the node's own point, not at the offset end.
 
 ## Notes
 

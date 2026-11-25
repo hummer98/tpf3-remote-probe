@@ -611,9 +611,14 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   No z: the node's height. A point further than 12 m from its node on the map is refused with nothing sent (dry
   runs too); the same node at both ends is refused. The answer's `from` / `to` then give `position` (the point,
   `zFrom` `given` or `node`) and `endOffset` (point less node: `x`, `y`, `z`, `flat` on the map, `length`), and
-  `offsetNote` says it. The piece's length and tangents are taken between the points. **Not checked in a game
-  yet** [guess]: whether the engine takes an end off its node, up to how far, and which way the offset should run
-  against the lanes; try it with `--dry-run --engine-check` first. The same in `--batch` pieces.
+  `offsetNote` says it. The piece's length and tangents are taken between the points. **Checked in a game
+  (2026-11-26):** one piece with its end 4.5 to 6.25 m beside a four-lane road's end node was built (two-way
+  two-lane and one-way roads); a second such piece at the same node was refused ("cannot be built", critical,
+  nothing in `collisionEntities`), in one proposal or after the first, also as a dry run with `--ignore-errors`. A
+  second piece out of the node's own point was built beside it, and `reach --mode drive` found the way out and
+  back through the two (against the one-way pieces: none). **Not checked yet** [guess]: how far the engine
+  takes, and which way the offset should run against the lanes; try it with `--dry-run --engine-check` first. The
+  same in `--batch` pieces.
 - An end within `--snap` metres (default 5, at most 20, 0: never; measured in three dimensions, so a bridge's
   node above the point is not taken) of an end of a road piece is that node, so the piece joins the road there.
   The pieces near the point are found in the octree (`api.engine.util.octree.findEntitiesInCircle` with
@@ -746,7 +751,7 @@ autosave loaded again saves under any name.
   `type`, `bridge`, `snap`, `tangent-from`, `tangent-to`, `align-to-edge`, `align-edge`; the mod's names
   `tangentFrom`, ... are read too; points as `"x,y[,z]"` or `[x, y, z]`) and, for sharing a node, `from-node` /
   `to-node`: an existing road node's entity id (joined as it is, no snap; with `from` / `to` at the same end as well, the end sits at that point beside the
-  node, within 12 m, as `--from-node` with `--from` above, not checked in a game yet), or a
+  node, within 12 m, as `--from-node` with `--from` above: one such end per node was built in a game), or a
   name `"@a"` for a new node the pieces share (never snapped; its point given at one of its ends at least and the
   same, within 0.01 m, at each end that gives one; a name used at one end only is refused). `--dry-run`,
   `--engine-check`, `--remove-fields`, `--remove-buildings`, `--ignore-errors` and `--collision-detail` go on the
@@ -1740,7 +1745,8 @@ It may be up to 100,000 characters long.
 - **Checked in a game (2026-11-26):** plain `eval` (so the game's `load` takes the environment), `--gs` with
   gameScript on, `--write`'s refusal of `app.saveGame`, and that a component cannot be walked with `pairs`. The
   engine's functions are callable tables there (`getmetatable` gives `false`), which plain `eval` could not call
-  before this was fixed; the fix itself is checked with the unit tests only.
+  before this was fixed; with the fix, `api.engine.forEachEntityWithComponent` and `getComponent` answer from plain
+  `eval`, a write is refused and `api.cmd` is not there (checked in the same game).
 
 ### Several clients at once
 
