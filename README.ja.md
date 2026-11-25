@@ -173,7 +173,7 @@ GitHub の issue でお知らせください: https://github.com/hummer98/tpf3-r
 
 ## ライセンス
 
-MIT。[LICENSE](LICENSE) を見てください。
+MIT。[LICENSE](LICENSE.txt) を見てください。
 
 Track Connector (`ethan_track_connector`) は別の作者の MOD です。このリポジトリには含まれず、このリポジトリの MIT
 ライセンスの対象外で、このプロジェクトとの関係もありません。`connect` は、プレイヤーが自分で入れたものを読み込むだけです。

@@ -183,7 +183,7 @@ answered (the JSON), and the `[remote_probe]` lines of the game log.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE.txt).
 
 Track Connector (`ethan_track_connector`) is another author's mod. It is not part of this repository, not covered
 by its licence, and not connected with this project; `connect` only loads it from the player's own installation.
