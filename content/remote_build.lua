@@ -2303,6 +2303,8 @@ function M.new(ctx)
 		-- what road would do with this node as an end
 		if con and con.frozen then
 			out.road = "refused: a construction's frozen node"
+		elseif con and con.unreadConstruction then
+			out.road = "refused: a construction's node whose CONSTRUCTION could not be read"
 		elseif con then
 			out.road = "joined, its set-up remade with the new piece's connections (a construction's node)"
 		elseif out.nodeConfig == false then
@@ -2502,8 +2504,8 @@ function M.new(ctx)
 		end
 		local con, unread = constructionOfNode(n, segs)
 		if con then
-			return fail(c.id, string.format("node %d is construction %d's (%s): its junction set-up is the " ..
-				"construction's, and lights does not change it: nothing sent", n, con.construction, tostring(con.fileName)))
+			return fail(c.id, string.format("node %d is construction %d's (%s): lights does not change a " ..
+				"construction's node (not checked in a game what the engine makes of it): nothing sent", n, con.construction, tostring(con.fileName)))
 		end
 		if unread then
 			return fail(c.id, "whether node " .. n .. " is a construction's could not be read (" .. unread .. "): nothing sent")

@@ -9575,7 +9575,11 @@ test("road to a terminal's mouth: a dry run plans the same and sends nothing; th
 		return gc(e, kind)
 	end
 	a = roadRun(g, 1040, '{ from = "200,200", to = "200,300", type = "town_new_medium" }')
+	send(g, 1041, "roadInspect", string.format("{ node = %d }", mouth))
+	frames(g, FIRST + 2)
+	local ins = final(g, 1041)
 	api.engine.getComponent = gc
+	truthy(ins.ok, ins.error); truthy(tostring(ins.road):find("refused", 1, true), tostring(ins.road))
 	eq(a.ok, false); truthy(tostring(a.error):find("whose CONSTRUCTION component could not be read", 1, true), tostring(a.error)); eq(#g.buildCmds, sent)
 	truthy(not g.crashed, g.crashed)
 end)

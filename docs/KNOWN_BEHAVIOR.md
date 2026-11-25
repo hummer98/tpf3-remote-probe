@@ -101,8 +101,8 @@ Checked in game on 2026-11-26.
   A game script can write that stock's amount.
 - A construction built with `build --no-owner` got a road joined to its mouth with `road --from-node`. A line
   through its station could be made, but putting a vehicle on that line was refused with "Unkown" (sic). In the
-  picture its mouth showed a no-entry sign. The mouth's junction set-up had no lane connections: `road` joined a
-  construction's node with its set-up left as it was. `road` now remakes that set-up with the new piece's lane
+  picture its mouth showed a no-entry sign. The mouth's junction set-up had no lane connections (`road` joined a
+  construction's node with its set-up left as it was); this is taken as the cause, not yet measured. `road` now remakes that set-up with the new piece's lane
   connections, as at a town node (not checked in a game yet whether vehicles then pass).
 
 ## Lua in the game (`eval`)
