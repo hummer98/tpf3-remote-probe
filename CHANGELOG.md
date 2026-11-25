@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 X*10000 + Y*100 + Z (1.0.0 is revision 10000). The command protocol's own number (`version` in the mod's answers)
 is separate and does not follow the release version.
 
+## [1.0.1] - 2026-11-25
+
+### Changed
+
+- The mod.io download holds only the mod: mod.io does not take `.py` files, so `tools/` is left out there. README,
+  AGENTS.md and the mod.io description now say to get the tool from GitHub (a clone or the release zip) and keep it
+  outside the game's mods folder. The GitHub release zip still holds the tool. No code changed.
+
 ## [1.0.0] - 2026-11-25
 
 First public release: a Transport Fever 3 mod (`hummer_remote_probe`) and a command-line tool (`tools/tf3ctl.py`)
@@ -42,4 +50,5 @@ that let a script outside the game drive a running game through small files in t
 - Mod settings for the check intervals, the log amount, the speed label, the ×8 / ×16 buttons and the game-script commands, in English and
   Japanese.
 
+[1.0.1]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.1
 [1.0.0]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.0

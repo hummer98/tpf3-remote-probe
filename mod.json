@@ -1,6 +1,6 @@
 {
 	"modId": "hummer_remote_probe",
-	"revision": 10000,
+	"revision": 10001,
 	"severityAdd": "None",
 	"severityRemove": "None",
 	"visible": true,

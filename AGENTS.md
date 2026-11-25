@@ -5,6 +5,9 @@ to drive the game with `tools/tf3ctl.py` safely. Start with `README.md`. The ful
 `docs/REFERENCE.md`; read the section of a command there before you use it for the first time. The game's quirks,
 the sequences that crashed it and what was checked in a game are in `docs/KNOWN_BEHAVIOR.md`.
 
+`tools/` below is the one in the folder that holds the tool (a clone or an unzipped release). If the mod came from mod.io, the tool is not in it (mod.io takes no `.py`):
+it is a copy from GitHub kept outside the game's mods folder (README, "Install"). Use that copy's path.
+
 ## What this is
 
 A small mod (`hummer_remote_probe`) and a command-line tool. The tool writes a command file into the game's

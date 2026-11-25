@@ -40,7 +40,7 @@ More in [Requirements](docs/REFERENCE.md#requirements).
 The game's local mods folder is `<Steam>/userdata/<your Steam id>/3493540/local/mods/` (on Linux `<Steam>` is
 usually `~/.local/share/Steam`).
 
-**From GitHub** (recommended if you want a fixed place for the tool, or to change it):
+**From GitHub** (the mod and the tool in one folder):
 
 ```
 cd ~/.local/share/Steam/userdata/<your Steam id>/3493540/local/mods/
@@ -50,22 +50,34 @@ git clone https://github.com/hummer98/tpf3-remote-probe.git hummer_remote_probe_
 The folder must hold `mod.json` directly. Run the tool as `python3 hummer_remote_probe_1/tools/tf3ctl.py ...`
 (or put an alias in your shell).
 
-**From mod.io**: subscribe to Remote Probe in the game. The game keeps subscribed mods in mod.io's cache folder,
-and mod.io's client **rebuilds that folder from scratch on every update** (anything you add or change there is
-lost). On Linux the folder is under `~/mod.io/common/10640/mods/<number>/`. Do not install the mod both ways
-at once (two copies of one modId). You may run `tools/tf3ctl.py` from that folder as it is. If you want to change the tool, or run it from a
-fixed place (a script, an alias, your agent's instructions), clone it from GitHub instead.
+**From mod.io**: subscribe to Remote Probe in the game. The mod.io download holds **only the mod, not the tool**
+(mod.io does not take `.py` files), so get the tool from GitHub as well, and put it **outside** both the game's
+local mods folder and mod.io's folder: there it would be a second copy of the same modId. Either clone the
+repository somewhere else, or unzip the release zip (`hummer_remote_probe_1-vX.Y.Z.zip` on the GitHub releases
+page) somewhere else. Use the version the mod.io page shows (`X.Y.Z` below):
+
+```
+git clone https://github.com/hummer98/tpf3-remote-probe.git ~/tpf3-remote-probe
+git -C ~/tpf3-remote-probe checkout vX.Y.Z
+python3 ~/tpf3-remote-probe/tools/tf3ctl.py launch
+```
+
+The tool finds the game by itself; it does not need to sit in the mod's folder. mod.io's client rebuilds the
+subscribed mod's folder (on Linux under `~/mod.io/common/10640/mods/<number>/`) from scratch on every update, so do
+not change anything there.
 
 Then:
 
 1. In the game, enable "Remote Probe" for a save and load it, or let the tool start the game (`launch`, below).
-2. Check that it answers: `python3 tools/tf3ctl.py status`. The game log shows `[remote_probe] ready`.
+2. Check that it answers: `python3 tools/tf3ctl.py status` (`tools/` is in the folder you cloned or unzipped: the
+   mod's own folder from GitHub, or the copy outside the mods folder if you subscribed on mod.io). The game log shows `[remote_probe] ready`.
    Before the mod has run once, `status` (and `state`, `log`) stop with exit code 2 and "no hello file from the
    mod yet": start the game with `launch` (below) first.
 
 ## A first round
 
-The commands below are written as `tf3ctl.py`; run them as `python3 tools/tf3ctl.py` from the mod's folder.
+The commands below are written as `tf3ctl.py`; run them as `python3 tools/tf3ctl.py` from the folder that holds `tools/` (the clone or
+the unzipped folder, see Install).
 `my_mod` stands for your mod's modId.
 
 ```

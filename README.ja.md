@@ -36,7 +36,7 @@ Transport Fever 3 の MOD (`hummer_remote_probe`) と、コマンドラインの
 ゲームのローカルの MOD フォルダは `<Steam>/userdata/<Steam の ID>/3493540/local/mods/` です (Linux では `<Steam>` は
 ふつう `~/.local/share/Steam`)。
 
-**GitHub から** (ツールを決まった場所から打つ、またはツールに手を入れるなら、こちら):
+**GitHub から** (MOD とツールが 1 つのフォルダに入る):
 
 ```
 cd ~/.local/share/Steam/userdata/<Steam の ID>/3493540/local/mods/
@@ -46,22 +46,33 @@ git clone https://github.com/hummer98/tpf3-remote-probe.git hummer_remote_probe_
 フォルダの直下に `mod.json` が来るようにします。ツールは `python3 hummer_remote_probe_1/tools/tf3ctl.py ...` で打ちます
 (シェルの alias にしてもかまいません)。
 
-**mod.io から**: ゲームの中で Remote Probe を購読します。購読した MOD は mod.io のキャッシュのフォルダに入り、mod.io の
-クライアントは**更新のたびにそのフォルダをまるごと作り直します** (そこで足したもの・変えたものは消えます)。Linux では `~/mod.io/common/10640/mods/<数字>/` の下です。clone と購読の両方で
-入れないでください (同じ modId が 2 つになります)。ツールは、
-そのフォルダの `tools/tf3ctl.py` をそのまま打ってかまいません。ツールに手を入れる、または決まった場所から打つ
-(スクリプト・alias・エージェントへの指示に書く) なら、GitHub から clone してください。
+**mod.io から**: ゲームの中で Remote Probe を購読します。mod.io から入るのは **MOD の部分だけで、ツールは入りません**
+(mod.io は `.py` のファイルを受け付けないため)。ツールは GitHub からも取り、ゲームのローカルの MOD フォルダと
+mod.io のフォルダの、どちらの**外**にも置いてください (中に置くと、同じ modId が 2 つになります)。リポジトリを
+ほかの場所に clone するか、release の zip (GitHub の releases のページの `hummer_remote_probe_1-vX.Y.Z.zip`) を
+ほかの場所に展開します。版は mod.io のページに出ているもの (下の `X.Y.Z`) を使います:
+
+```
+git clone https://github.com/hummer98/tpf3-remote-probe.git ~/tpf3-remote-probe
+git -C ~/tpf3-remote-probe checkout vX.Y.Z
+python3 ~/tpf3-remote-probe/tools/tf3ctl.py launch
+```
+
+ツールはゲームの場所を自分で探すので、MOD のフォルダに置く必要はありません。購読した MOD のフォルダ (Linux では `~/mod.io/common/10640/mods/<数字>/` の下) は、
+mod.io のクライアントが更新のたびにまるごと作り直すので、そこでは何も変えないでください。
 
 そのあと:
 
 1. ゲームで、セーブに「Remote Probe」を有効にしてロードします。または、ツールにゲームを起動させます (下の `launch`)。
-2. 答えるか確認します: `python3 tools/tf3ctl.py status`。ゲームのログに `[remote_probe] ready` が出ます。
+2. 答えるか確認します: `python3 tools/tf3ctl.py status` (`tools/` は、clone か展開をしたフォルダの中です。GitHub から入れたなら MOD の
+   フォルダ、mod.io で購読したなら MOD フォルダの外に置いた写し)。ゲームのログに `[remote_probe] ready` が出ます。
    MOD が一度も動いていないうちは、`status` (と `state`、`log`) は終了コード 2 と「no hello file from the mod yet」で
    止まります。先に `launch` (下) でゲームを起動してください。
 
 ## 最初の一周
 
-下では `tf3ctl.py` と書きます。MOD のフォルダで `python3 tools/tf3ctl.py` として打ってください。`my_mod` は自分の
+下では `tf3ctl.py` と書きます。`tools/` を含むフォルダ (clone か展開をしたフォルダ。「入れ方」) で `python3 tools/tf3ctl.py`
+として打ってください。`my_mod` は自分の
 MOD の modId に読み替えます。
 
 ```

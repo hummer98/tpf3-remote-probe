@@ -65,6 +65,8 @@ MOD は速度ボタンのレシピを、同じボタンと ×8 / ×16 のボタ�
 
 1. このリポジトリを、ゲームのローカルの MOD フォルダに clone します (または写します。[README の入れ方](../README.ja.md#入れ方))。例:
    `<Steam>/userdata/<Steam の ID>/3493540/local/mods/hummer_remote_probe_1/` (その中に `mod.json`)。
+   mod.io で購読したなら、そこには `tools/` がありません。ツールを GitHub から取り、MOD のフォルダの外に置きます
+   (README の入れ方)。下の `tools/` はその写しの中です。
 2. ゲームで、セーブに「Remote Probe」を有効にしてロードします。または、ツールでゲームを起動します (下の `launch`)。
 3. 答えるか確認します:
 
