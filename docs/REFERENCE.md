@@ -1687,6 +1687,8 @@ It may be up to 100,000 characters long.
   - A function's return value is the real value (except that a table the code sees only through a view comes back
     as that view; a part of an argument the engine handed back, never seen through a view, comes back real), and a module's functions run with the module's own (full) globals. So does the top-level code of a module that `require` loads for the first time.
   - A writer whose name is not on the list above is not dropped.
+  - A Lua callable table that hides its metatable (`__metatable` set) looks like the engine's and gets the real
+    tables for its arguments.
 - **`--write`.** The code runs with every global (`game.interface`, `api.cmd`, ...).
   - It goes only when a test save is loaded (`testSavePrefixes`: tf3ctl names the loaded save from the game's log
     and the mod checks the name again): exit 4, `"refused": "eval"`.
