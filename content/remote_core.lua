@@ -304,7 +304,7 @@ end
 
 -- args: { days = n } or { months = n } or { untilDate = "YYYY-MM-DD" }; now.date: the current calendar date.
 -- Every target is a calendar date: game ticks per day follow the calendar speed (millisPerDay, which is 0 while
--- paused), so a tick count would drift whenever a mod or the player changes it.
+-- the calendar is paused), so a tick count would drift whenever a mod or the player changes it.
 function M.runTarget(args, now)
 	if not now.date or not M.dateKey(now.date) then return nil, "current date unknown" end
 	local d
@@ -4940,7 +4940,7 @@ function M.calendarInfo(millisPerDay, defaultDayMs)
 		r.factor = def / ms
 		-- step: the base matches the factor exactly against its list (else it inserts it); the label has two digits
 		r.step = isFactorStep(r.factor)
-		r.text = tostring(math.floor(r.factor * 100 + 0.5) / 100) .. "x"
+		r.text = (string.format("%.2f", r.factor):gsub("0+$", ""):gsub("%.$", "")) .. "x" -- "1x", not "1.0x" under Lua 5.3
 	end
 	return r
 end

@@ -66,7 +66,7 @@ Not checked yet:
 - `window` and `event` opening windows, the speed label's position and look, `tool` closing a window with `pop`.
 - The ×8 / ×16 buttons in game: their look and width beside the base buttons, the lit button, and the speed they set.
 - `calendar-speed`, entirely: the default day length the game reports, whether the set value shows in the
-  calendar window's slider, and whether the date then moves at the new pace.
+  "Calendar Speed" slider in the "Weather and Time" window, and whether the date then moves at the new pace.
 - Whether `app.quit` ends the game without a confirmation dialog.
 - `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
 - `build`, entirely (see "One construction on the map"). `road`, entirely (see "One straight road").

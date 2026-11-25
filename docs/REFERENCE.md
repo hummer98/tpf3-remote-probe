@@ -110,12 +110,12 @@ current speed lights up as with the base buttons. A ×8 / ×16 button sets that 
 estimated maximum (unlike `speed`, which caps: the player chose it). A base button goes back to the base speeds. The
 label beside them (`×8 real ×3.2`) still shows for 8 and 16, which the base buttons do not have.
 
-`calendar-speed` is the base's calendar speed slider (in the calendar window: Paused, 0.25x, 0.5x, 1x, 2x, 4x),
+`calendar-speed` is the base's calendar speed slider (the "Calendar Speed" card of the "Weather and Time" window: Paused, 0.25x, 0.5x, 1x, 2x, 4x),
 not the simulation speed above. The engine keeps it as `GAME_SPEED.millisPerDay`, the game time in milliseconds
 that one calendar day lasts (0: the date stands still). A factor is turned into it as the base slider does:
 `round(getDefaultDayDuration() / factor)`, so 0.25 makes a day four times as long and the date moves slower while
 vehicles run at the same pace. Without a value it only reads and sends nothing; the answer has `calendar`
-(`millisPerDay`, `defaultDayMs`, `factor`, `text` as the slider labels it, `step`: whether it is one of the
+(`millisPerDay`, `defaultDayMs`, `factor`, `text`, about as the slider labels it (the base formats and translates its own), `step`: whether it is one of the
 slider's steps, `paused`) and `steps`. With a value it sends `makeGameSetCalendarSpeedCmd` and answers `before`,
 `after`, `sent` and `requested` once the game shows the new value (an error when the engine refuses it, or when
 nothing changes within 5 s). A factor must be one of the slider's steps; `--millis-per-day` takes 0 or a whole

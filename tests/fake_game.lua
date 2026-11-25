@@ -1297,6 +1297,7 @@ function M.new(dir, opts)
 			makeGameSetSpeedCmd = function(n) return { kind = "speed", speed = n } end,
 			-- the engine's command data holds an int (CmdData::GameSetCalendarSpeed): a non-integer raises
 			makeGameSetCalendarSpeedCmd = function(n)
+				if opts.calendarCmdFails then error("makeGameSetCalendarSpeedCmd: refused") end
 				if type(n) ~= "number" or n ~= math.floor(n) then error("makeGameSetCalendarSpeedCmd: integer expected, got " .. tostring(n)) end
 				return { kind = "calendarSpeed", millisPerDay = n }
 			end,

@@ -395,11 +395,13 @@ function handlers.calendarSpeedSet(c)
 	if ms == nil then return fail(c.id, err) end
 	local w = { id = c.id, before = before, sent = ms, requested = { factor = c.args.factor, millisPerDay = c.args.millisPerDay },
 		started = appTime() }
-	G.calWaits[#G.calWaits + 1] = w
+	-- queued only once the command is out: if making or sending it throws, the caller's pcall answers the error,
+	-- and a queued wait would answer the same id a second time when it ran out
 	api.cmd.sendCommand(api.cmd.makeGameSetCalendarSpeedCmd(ms), function(_, success)
 		w.success = success == true
 		w.calledAt = appTime()
 	end)
+	G.calWaits[#G.calWaits + 1] = w
 end
 
 -- answers each calendarSpeedSet once the component shows the sent value, the engine refused it, or the wait ran out

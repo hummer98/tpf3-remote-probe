@@ -442,6 +442,8 @@ test("calendarInfo: the factor and label the slider shows", function()
 	eq(i.factor, 0); eq(i.text, "Paused"); eq(i.paused, true); eq(i.step, true)
 	i = core.calendarInfo(3000, 2000)
 	truthy(math.abs(i.factor - 2 / 3) < 1e-12); eq(i.text, "0.67x"); eq(i.step, false, "between the steps")
+	-- no trailing zeros, also where "/" gives a float (Lua 5.3 would print 4.0)
+	eq(core.calendarInfo(500, 2000).text, "4x"); eq(core.calendarInfo(4000, 2000).text, "0.5x"); eq(core.calendarInfo(1000, 2000).text, "2x")
 	i = core.calendarInfo(2000, nil)
 	eq(i.millisPerDay, 2000); eq(i.factor, nil, "no default day: no factor"); eq(i.text, nil)
 	i = core.calendarInfo(nil, 2000)
@@ -523,6 +525,17 @@ test("calendar-speed: bad values, a refusal, a lost answer and the main menu eac
 	frames(g, FIRST + 200)
 	a = final(g, 46)
 	eq(a.ok, false); truthy(a.error:find("did not become the sent value"), a.error); eq(a.after.millisPerDay, 2000)
+
+	-- making the command throws: one answer (the error), not a second one when a queued wait runs out
+	g = newGame({ saves = SAVES, calendarCmdFails = true })
+	frames(g, 2)
+	send(g, 52, "calendarSpeedSet", "{ factor = 2 }")
+	frames(g, FIRST + 500) -- past CAL_WAIT_SEC, where a queued wait would answer again
+	a, n = final(g, 52)
+	eq(n, 1, "one answer when the command cannot be made"); eq(a.ok, false); truthy(a.error:find("refused"), a.error)
+	local fails = 0
+	for _, l in ipairs(g.logs) do if l:find("command 52 failed", 1, true) then fails = fails + 1 end end
+	eq(fails, 1, "answered once: no later wait runs out for it")
 
 	g = newGame({ saves = SAVES, noDefaultDay = true })
 	frames(g, 2)
