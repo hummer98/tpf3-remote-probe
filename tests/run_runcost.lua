@@ -309,7 +309,7 @@ return function(h)
 	test("status luaLoad: the GUI's and the game script's load / loadstring / setfenv; unread when off or no script", function()
 		-- core: each name's type, "unread" when reading raised, all "unread" without a reader; gs values as strings only
 		local k = core.luaLoadKinds(function(n) if n == "load" then return print elseif n == "setfenv" then error("strict") end end)
-		eq(k.load, "function"); eq(k.loadstring, "nil"); eq(k.setfenv, "unread")
+		eq(k.load, "function"); eq(k.loadstring, "nil"); eq(k.setfenv, "raised", "raised apart from not read")
 		for _, bad in ipairs({ nil, {}, "load" }) do
 			local u = core.luaLoadKinds(bad)
 			eq(u.load, "unread"); eq(u.loadstring, "unread"); eq(u.setfenv, "unread")
@@ -319,6 +319,7 @@ return function(h)
 			eq(u.load, "unread"); eq(u.loadstring, "unread"); eq(u.setfenv, "unread")
 		end
 		eq(core.luaLoadGs({ load = "function", setfenv = "nil" }).loadstring, "unread")
+		eq(core.luaLoadGs({ load = "raised" }).load, "raised", "the script's raised kept")
 		-- gameScript on: the script writes its own into the state once, beside what was there; status reads both
 		local g = game({})
 		g.gsValue = { runningCosts = { req = 5 } }
@@ -341,6 +342,23 @@ return function(h)
 		g.gs._resetForTests()
 		frames(g, 2)
 		eq(sets, 2, "and not again")
+		-- the setting turned off after an on-run: the value left in the state is stale, not shown
+		g.modParams = { hummer_remote_probe = { gameScript = 0 } }
+		truthy(g.gsValue.luaLoad, "the old value still in the state")
+		local s4 = run(g, 9304, "status", "{}")
+		eq(s4.luaLoad.gs.load, "unread"); eq(s4.luaLoad.gs.loadstring, "unread"); eq(s4.luaLoad.gui.load, "function")
+		-- the script's own values, apart from the GUI's (each state has its own globals)
+		-- (the wall clock held still, so the script does not read the setting again and write its real values over these)
+		g.modParams = { hummer_remote_probe = { gameScript = 2 } }
+		local clock = os.time
+		os.time = function() return 1800000000 end
+		g.gs._resetForTests()
+		frames(g, 2)
+		g.gsValue.luaLoad = { load = "nil", loadstring = "raised", setfenv = "function" }
+		local okS5, s5 = pcall(run, g, 9305, "status", "{}")
+		os.time = clock
+		truthy(okS5, s5)
+		eq(s5.luaLoad.gs.load, "nil"); eq(s5.luaLoad.gs.loadstring, "raised"); eq(s5.luaLoad.gui.load, "function")
 		-- gameScript off: nothing written; the GUI's still read
 		local off = game({}, { gameScriptOff = true })
 		local s2 = run(off, 9302, "status", "{}")

@@ -1,6 +1,7 @@
--- The remote probe's game script (remote.gs.lua's update and handleEvent): one job (and status's luaLoad, below), the runningCostsSet write in
--- a game script's Lua state, the way price_probe wrote metadata.cost.price in 2026-11-16 (modelRep.get(id).metadata
--- written in place from a game script: every worker and the GUI saw the new value, and a purchase paid it).
+-- The remote probe's game script (remote.gs.lua's update and handleEvent). Two jobs: the runningCostsSet write in a
+-- game script's Lua state, the way price_probe wrote metadata.cost.price in 2026-11-16 (modelRep.get(id).metadata
+-- written in place from a game script: every worker and the GUI saw the new value, and a purchase paid it); and
+-- status's luaLoad, this state's load / loadstring / setfenv written into the script's state (writeLuaLoad, below).
 --
 -- Off unless the mod setting gameScript is on (--param hummer_remote_probe:gameScript=2 at launch / load): off, update
 -- only reads the setting now and then and subscribes to nothing; handleEvent returns at once for any event that

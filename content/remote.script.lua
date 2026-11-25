@@ -350,12 +350,17 @@ local function mapEditorNow()
 end
 
 -- status's luaLoad: this GUI state's load / loadstring / setfenv, and the game script's as it wrote them in its state
--- (remote_gs.script.lua, only with the setting gameScript on; else, and in the main menu, "unread")
+-- (remote_gs.script.lua, only with the setting gameScript on; else, and in the main menu, "unread"; "raised" when
+-- reading the name raised in that state)
 local function luaLoadNow()
 	local gui = core.luaLoadKinds(function(n)
 		if n == "load" then return load elseif n == "loadstring" then return loadstring elseif n == "setfenv" then return setfenv end
 	end)
-	local st = G.gsState
+	-- the setting as it is now: with gameScript off the script writes nothing, and a value an earlier on-run left in
+	-- the saved state would be stale
+	local all = try(function() return api.engine.config.getModParams() end)
+	local on = core.options(all and core.field(all, MOD) or nil).gameScript == true
+	local st = on and G.gsState or nil
 	local s = st and try(function() return st:get() end) or nil
 	return { gui = gui, gs = core.luaLoadGs(type(s) == "table" and s.luaLoad or nil) }
 end

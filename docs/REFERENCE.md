@@ -107,7 +107,8 @@ estimate is depends on the save.
 
 `status` also answers `luaLoad`: `gui` and `gs`, each `load`, `loadstring`, `setfenv` as `type()` reads them in that
 Lua state (the GUI's, and the game script's as it writes them in its state, only with the setting `gameScript` on;
-`"unread"` when they cannot be read: off, in the main menu, or before the script ran). Written 2026-11-26, not
+`"unread"` when they were not read: off (a value an earlier run left in the save is not shown), in the main menu, or
+before the script ran; `"raised"` when reading the name raised in that state). Written 2026-11-26, not
 checked in a game yet.
 
 In game, the mod adds ×8 and ×16 buttons to the right of the base ⏸ ▶ ▶▶ ▶▶▶ (0/1/2/4), in the same style. The

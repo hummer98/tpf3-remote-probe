@@ -4940,7 +4940,7 @@ M.CHANGES_GAME.calendarSpeedSet = true
 
 -- status's luaLoad: whether a Lua state has load / loadstring / setfenv (asked before any eval is built on them).
 -- read(name) is the caller's own closure over its globals (each Lua state has its own; core's would be core's), and
--- is called under pcall: TF3's init.lua may raise on a global it does not know. Each value is type(v), or "unread"
+-- is called under pcall: TF3's init.lua may raise on a global it does not know. Each value is type(v), or "raised"
 -- when reading it raised; read itself not a function: all "unread"
 M.LUA_LOAD_NAMES = { "load", "loadstring", "setfenv" }
 function M.luaLoadKinds(read)
@@ -4948,12 +4948,13 @@ function M.luaLoadKinds(read)
 	for _, n in ipairs(M.LUA_LOAD_NAMES) do
 		local ok, v = false, nil
 		if type(read) == "function" then ok, v = pcall(read, n) end
-		out[n] = ok and type(v) or "unread"
+		if type(read) ~= "function" then out[n] = "unread" else out[n] = ok and type(v) or "raised" end
 	end
 	return out
 end
 
--- the game script's as status answers it: a table of the three names' kinds as strings, else all "unread"
+-- the game script's as status answers it: a table of the three names' kinds as strings (its "raised" kept), else
+-- "unread": the script did not write them (gameScript off, the main menu, an older remote_probe's script)
 function M.luaLoadGs(v)
 	local out = {}
 	for _, n in ipairs(M.LUA_LOAD_NAMES) do
