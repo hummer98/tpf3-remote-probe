@@ -1120,7 +1120,7 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
 ### 建造物を置ける場所 (`fit`)
 
 ```sh
-python3 tools/tf3ctl.py fit --res ::/depots/road/road_depot.con --at 1200,800 [--radius 100] [--angle 1.5708]
+python3 tools/tf3ctl.py fit --res depots/road/road_depot/road_depot.con --at 1200,800 [--radius 100] [--angle 1.5708]
 python3 tools/tf3ctl.py fit --res road_depot --at 1200,800 --mouth 0,-35 [--link 8,40] [--link-edge] [--houses 5]   # つなぐ道路つき
 python3 tools/tf3ctl.py fit --res <駅の .con> --at 1200,800 --mouth 0,-12 --track --houses 5 [--catchment 150]
 python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0      # 読むだけ: エンジンに聞かない
@@ -1536,7 +1536,12 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
   - `_G`・`debug`・`io`・`os`・`package`・`ffi`・`jit` の `require`
 
   表 (`api`・`string`・`math`・require したモジュール・`getmetatable` のメタテーブル) は読むだけの見え方で
-  渡し、書き込むとエラーになります。`load` は文字列だけを取り、同じ環境で動かします。`game` (つまり、読むだけで
+  渡し、書き込むとエラーになります。エンジンの関数 (`api.engine.getComponent`・`api.engine.forEachEntityWithComponent`
+  など) は Lua の関数でなく、呼べる表です (`type()` は `"table"`)。その見え方も呼べば本物を呼びます。`api` の下の
+  呼べる表には、引数のうち見え方のものを本物の表に戻して渡します (1 段だけ: コードが作った表の中の見え方は
+  そのまま)。それがコールバックを呼ぶとき、コードが見え方で見ていた本物の表は、見え方に戻して渡します。Lua の
+  関数 (ライブラリの・モジュールの・`api` の下のもの) には、見え方のまま渡します。`api` の下では、上の書き換える名前に当たる
+  呼べる表も外します (メタテーブルのある表。メタテーブルの無いただの表、つまり名前空間は残します)。`load` は文字列だけを取り、同じ環境で動かします。`game` (つまり、読むだけで
   なく建てる・変える関数も持つ `game.interface`) は `--write` にだけあります。読むだけなら `api.engine` を使います。
   コードの前に、その状態の `load` が環境を取るかを確認します。取らなければ何も動かしません (`kind: compile`)。
   取らないまま動かすと、コードが本物のグローバルで動いてしまうためです。
@@ -1544,7 +1549,7 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
   うっかり書き込むことです。外へ出ようとするコードは止められません:
   - userdata (エンジンの物: component、ベクトルなど) は本物です。メソッドは確認しないので、ゲームを変える
     メソッドを呼べば動きます。
-  - 関数の返す値は本物です。モジュールの関数は、モジュール自身の (全部ある) グローバルで動きます。`require` で初めて
+  - 関数の返す値は本物です (ただし、コードが見え方でしか見ていない表が返ってきたら、その見え方で返します。エンジンが引数の一部を返したときは、見え方を作っていない表なので本物のまま返ります)。モジュールの関数は、モジュール自身の (全部ある) グローバルで動きます。`require` で初めて
     読み込むモジュールの先頭のコードも同じです。
   - 上の一覧に当たらない名前の、書き換える関数は外しません。
 - **`--write`。** コードはすべてのグローバル (`game.interface`、`api.cmd` など) のある環境で動きます。
@@ -1584,6 +1589,9 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
   - 自分の中に自分がある表は `"<cycle>"`、関数とスレッドは `"<function>"` / `"<thread>"`、NaN と無限大は
     `"nan"`・`"inf"`・`"-inf"` です。
   - userdata は `pairs` で回せれば回し、だめならリスト (`#`、`[i]`) として、それもだめなら `tostring` で書きます。
+    エンジンの component は回せない (`pairs` がエラーになる。ゲームで確認済み) ので `"userdata: 0x..."` で返ります:
+    欲しい欄を名前で読んで表に詰めて返してください (例
+    `local c = api.engine.getComponent(id, api.type.ComponentType.NAME); return { name = c.name }`)。
   - オブジェクトのキーは文字列で、並べ替えます。同じ文字のキー (`1` と `"1"`) は `"1"` と `"1 (2)"` になります。
   - 答え全体は JSON で 1,000,000 文字までです。超えると `values`、次に `value` が `"<too large: ...>"` になり、
     それでも超えれば `print` を落とします。
@@ -1593,11 +1601,10 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
 - **時間切れはありません。** ゲームの Lua には `debug.sethook` が無いので、終わらないループはゲームを固めます。
   止める手はありません。読むだけの `eval` は人のセーブにも届くので、すぐ終わるコードだけを送ってください。ツールは 45 秒であきらめます (終了コード 2) が、ゲームは固まったままです。api の呼び出しの
   中のエンジンの assertion も捕まえられません。
-- **まだゲームで確認していないこと:**
-  - ゲームの `load` が LuaJIT と同じく環境 (4 つめの引数) を取るか
-  - エンジンの userdata (component) を `pairs` でどう回せるか
-  - gameScript を入にしたときの `--gs` の往復
-  - `--write` で `app.saveGame` を断ること
+- **ゲームで確認済み (2026-11-26):** 素の `eval` (つまり、ゲームの `load` は環境を取る)、gameScript を入にした
+  `--gs`、`--write` で `app.saveGame` を断ること、component を `pairs` で回せないこと。ゲームではエンジンの関数が
+  呼べる表で (`getmetatable` は `false`)、直す前の素の `eval` からは呼べませんでした。この直し自体は単体テストで
+  確認しただけです。
 
 ### 複数のクライアント
 

@@ -95,6 +95,95 @@ return function(h)
 		eq(here("_G.api.cmd").value, nil, "_G is the environment")
 	end)
 
+	-- the game's api.engine.getComponent and its like are tables with __call (fake.callable): a view of one must
+	-- call it (2026-11-26 in the game: "attempt to call field 'forEachEntityWithComponent' (a table value)")
+	test("core.evalEnv (read only): the engine's callable tables call through, with the real tables as arguments", function()
+		h.vehicleGame({ lines = { [21] = { name = "L21" }, [22] = { name = "L22" } } })
+		eq(here("type(api.engine.getComponent)").value, "table", "as in the game")
+		local each = here("local ids = {} api.engine.forEachEntityWithComponent(function(e) ids[#ids + 1] = e end, " ..
+			"api.type.ComponentType.LINE) return ids")
+		eq(each.ok, true, tostring(each.error)); eq(table.concat(each.value, ","), "21,22")
+		eq(here("api.engine.entityExists(21) and not api.engine.entityExists(4040)").value, true)
+		local c = here("api.engine.getComponent(21, api.type.ComponentType.LINE) ~= nil")
+		eq(c.ok, true, tostring(c.error)); eq(c.value, true)
+		-- the arguments that are views reach a callable table as the real tables; a Lua function under api gets the
+		-- views (it could write into a real table), called with the real table as self
+		local real = api.type
+		api.engine.evalSame = fake.callable(function(x, y) return x == real, y == real end)
+		api.util.evalSameFn = function(x) return x == real end
+		api.engine.evalMethods = { same = function(self, x) return self == api.engine.evalMethods, x == real end }
+		local same = here("{ api.engine.evalSame(api.type, api.type) == true, select(2, api.engine.evalSame(1, api.type)), " ..
+			"api.util.evalSameFn(api.type), api.engine.evalMethods:same(api.type), " ..
+			"select(2, api.engine.evalMethods:same(api.type)) }")
+		eq(same.ok, true, tostring(same.error))
+		eq(core.json(same.value), "[true,true,false,true,false]")
+		api.util.evalPut = function(t) t.evalWritten = 1 end
+		local put = here("api.util.evalPut(api.engine)")
+		eq(put.ok, false); truthy(put.error:find("reads only"), put.error); eq(api.engine.evalWritten, nil)
+		api.util.evalPut = nil
+		-- a callback handed in is called with the engine's values
+		local cb = here("local seen api.engine.forEachEntityWithComponent(function(e, comp) seen = seen or { e, comp ~= nil } end, " ..
+			"api.type.ComponentType.LINE) return seen")
+		eq(core.json(cb.value), "[21,true]")
+		-- a callable handing an argument on to a callback hands it the view again, and gets back the real table for
+		-- a view the callback returns
+		api.engine.evalPass = fake.callable(function(fn, x) local r = fn(x) return r == real end)
+		local pass = here("local got local back = api.engine.evalPass(function(v) got = v return api.type end, api) " ..
+			"return { got == api, got.cmd == nil, back }")
+		eq(pass.ok, true, tostring(pass.error)); eq(core.json(pass.value), "[true,true,true]")
+		api.engine.evalPass = nil
+		-- a table that cannot be called raises as calling it would
+		api.engine.evalPlainTable = {}
+		local nc = here("api.engine.evalPlainTable()")
+		eq(nc.ok, false); eq(nc.kind, "runtime"); truthy(nc.error:find("call"), nc.error)
+		api.engine.evalSame, api.util.evalSameFn, api.engine.evalMethods, api.engine.evalPlainTable = nil, nil, nil, nil
+	end)
+
+	test("core.evalEnv (read only): a callable table is no way past the fence", function()
+		h.vehicleGame({})
+		local wrote = {}
+		-- a writer's name on a callable table (getmetatable false) drops it, as a writer's function is dropped
+		api.engine.setEvalThing = fake.callable(function() wrote.set = true end)
+		api.engine.util.addEvalThing = fake.callable(function() wrote.add = true end)
+		eq(here("api.engine.setEvalThing == nil and api.engine.util.addEvalThing == nil").value, true)
+		eq(here("api.engine.setEvalThing()").ok, false)
+		eq(wrote.set, nil); eq(wrote.add, nil)
+		-- a plain table whose name looks like a writer's (no metatable: a namespace) stays, read only
+		api.engine.settingsEval = { a = 1 }
+		eq(here("api.engine.settingsEval.a").value, 1)
+		eq(here("api.engine.settingsEval.a = 2").ok, false); eq(api.engine.settingsEval.a, 1)
+		-- a callable handing back what it was given gives the view again, never the real table
+		api.engine.evalEcho = fake.callable(function(...) return ... end)
+		api.util.evalEchoFn = function(...) return ... end
+		local e = here("local a, b = api.engine.evalEcho(api.engine, api) a.evalWritten = 1 return b.cmd")
+		eq(e.ok, false); truthy(e.error:find("reads only"), e.error); eq(api.engine.evalWritten, nil)
+		eq(here("api.engine.evalEcho(api).cmd == nil and api.util.evalEchoFn(api).gui == nil").value, true)
+		local f = here("api.util.evalEchoFn(api.engine).evalWritten = 1")
+		eq(f.ok, false); eq(api.engine.evalWritten, nil)
+		eq(here("api.engine.evalEcho(5, 'x', nil, true)").n, 4)
+		-- a fresh table from the engine is the code's own: it may change and sort it
+		api.engine.evalFresh = fake.callable(function() return { 3, 1, 2 } end)
+		eq(core.json(here("local t = api.engine.evalFresh() table.sort(t) t[4] = 4 return t").value), "[1,2,3,4]")
+		-- the libraries' functions get the views as they are: table.insert cannot write into the real api.engine
+		local before = #api.engine
+		here("table.insert(api.engine, 5)")
+		eq(#api.engine, before); eq(api.engine[1], nil)
+		-- so do a module's (require): its function cannot write into the real api.engine either
+		package.loaded["evalTestModule"] = { put = function(t) t.evalWritten = 1 end }
+		local m = here("require('evalTestModule').put(api.engine)")
+		package.loaded["evalTestModule"] = nil
+		eq(m.ok, false); truthy(m.error:find("reads only"), m.error); eq(api.engine.evalWritten, nil)
+		api.engine.setEvalThing, api.engine.util.addEvalThing, api.engine.settingsEval = nil, nil, nil
+		api.engine.evalEcho, api.util.evalEchoFn, api.engine.evalFresh = nil, nil, nil
+	end)
+
+	test("eval through the game: api.engine's callable tables (forEachEntityWithComponent) answer", function()
+		local g = game({ gameScriptOff = true, lines = { [21] = { name = "L21" } } })
+		local a = run(g, 3730, "eval", args("local n = 0 api.engine.forEachEntityWithComponent(function() n = n + 1 end, " ..
+			"api.type.ComponentType.LINE) return { n = n, exists = api.engine.entityExists(21) }"))
+		eq(a.ok, true, tostring(a.error)); eq(a.value.n, 1); eq(a.value.exists, true)
+	end)
+
 	test("core.evalEnv (write): every global; app's save entry points raise, its other members are app's", function()
 		local saved = #(app.evalSaves or {})
 		local r = here("api.cmd ~= nil and io ~= nil and debug ~= nil and game == nil", true)

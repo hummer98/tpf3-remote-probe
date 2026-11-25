@@ -103,6 +103,21 @@ Checked in game on 2026-11-26.
   through its station could be made, but putting a vehicle on that line was refused with "Unkown" (sic). In the
   picture its mouth showed a no-entry sign. The cause is not known.
 
+## Lua in the game (`eval`)
+
+Checked in game on 2026-11-26.
+
+- Plain `eval`, `--gs` (with gameScript on) and `--write`'s refusal of `app.saveGame` work.
+- The engine's functions under `api.engine` (`getComponent`, `forEachEntityWithComponent`, ...) are not Lua
+  functions: `type()` gives `"table"`, they are called through a metatable, and `getmetatable` gives `false` (what
+  is inside cannot be read). `pairs(api.engine)` gave 16 members, 13 of them such tables. Plain `eval` wrapped
+  them as plain tables and could not call them ("attempt to call field ... (a table value)"); its views now call
+  them. Checked with the unit tests only, against a fake that has the same shape.
+- A component (userdata) cannot be walked: `pairs` raises "bad argument #1 to 'pairs' (table expected, got
+  userdata)", so `eval` writes it as `"userdata: 0x..."`. Its fields can be read by name: put the ones you want in
+  a table and return that, say
+  `local c = api.engine.getComponent(id, api.type.ComponentType.NAME); return { name = c.name }`.
+
 ## Notes
 
 - **Exchange folder.** `recordings` is used first. The base lists every file in `mod_presets` as a mod preset (no

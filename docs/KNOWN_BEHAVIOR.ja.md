@@ -99,6 +99,20 @@
 - `build --no-owner` で建てた建設物の口に、`road --from-node` で道路をつないだ。その駅を通る路線は作れたが、車両を
   路線に入れると "Unkown"（原文のまま）で断られた。絵では、口に進入禁止の印が出ていた。原因は分かっていない。
 
+## ゲームの中の Lua (`eval`)
+
+2026-11-26 にゲームで確認しました。
+
+- 素の `eval`、`--gs` (gameScript を入にして)、`--write` で `app.saveGame` を断ることは動きます。
+- `api.engine` の下のエンジンの関数 (`getComponent`・`forEachEntityWithComponent` など) は Lua の関数ではありません:
+  `type()` は `"table"` で、メタテーブルを通して呼ばれ、`getmetatable` は `false` を返します (中は読めません)。
+  `pairs(api.engine)` は 16 個で、そのうち 13 個がこの表でした。素の `eval` はこれをただの表として包んでいたので
+  呼べませんでした (「attempt to call field ... (a table value)」)。いまは見え方から呼べます。これは同じ形をまねた
+  偽物に対する単体テストで確認しただけです。
+- component (userdata) は中を一覧できません: `pairs` が「bad argument #1 to 'pairs' (table expected, got
+  userdata)」になるので、`eval` は `"userdata: 0x..."` と書きます。欄は名前で読めます: 欲しい欄を表に詰めて
+  返してください (例 `local c = api.engine.getComponent(id, api.type.ComponentType.NAME); return { name = c.name }`)。
+
 ## メモ
 
 - **交換フォルダ。** `recordings` を最初に使います。本体は `mod_presets` の全ファイルを MOD プリセットとして並べる

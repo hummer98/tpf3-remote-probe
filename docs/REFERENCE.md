@@ -1208,7 +1208,7 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
 ### Where a construction fits (`fit`)
 
 ```
-python3 tools/tf3ctl.py fit --res ::/depots/road/road_depot.con --at 1200,800 [--radius 100] [--angle 1.5708]
+python3 tools/tf3ctl.py fit --res depots/road/road_depot/road_depot.con --at 1200,800 [--radius 100] [--angle 1.5708]
 python3 tools/tf3ctl.py fit --res road_depot --at 1200,800 --mouth 0,-35 [--link 8,40] [--link-edge] [--houses 5]   # + a link road
 python3 tools/tf3ctl.py fit --res <station .con> --at 1200,800 --mouth 0,-12 --track --houses 5 [--catchment 150]
 python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0      # read only: no engine check
@@ -1670,7 +1670,13 @@ It may be up to 100,000 characters long.
   - `require` of `_G`, `debug`, `io`, `os`, `package`, `ffi`, `jit`.
 
   Tables (`api`, `string`, `math`, a required module, a metatable from `getmetatable`) are read-only views:
-  a write raises. `load` takes text only and runs it in the same environment. `game` (and so `game.interface`,
+  a write raises. The engine's functions (`api.engine.getComponent`, `api.engine.forEachEntityWithComponent`,
+  ...) are tables that can be called, not Lua functions (`type()` gives `"table"`), and a view of one calls it.
+  Such a callable table under `api` gets the real tables for the views among its arguments (one level: a view
+  inside a table the code made stays a view), and a callback it calls gets a view again for a real table it is
+  handed that the code saw through a view; a Lua function (a library's, a module's, one under `api`) gets the
+  views as they are. Under `api` the writer
+  names above drop such callable tables too (a table with a metatable; a plain table, a namespace, stays). `load` takes text only and runs it in the same environment. `game` (and so `game.interface`,
   which builds and sets as well as reads) is only in `--write`: read with `api.engine` here.
   Before the code, the probe checks that the state's `load` takes the environment; if it does not, nothing runs
   (`kind: compile`), since the code would otherwise run with the real globals.
@@ -1678,8 +1684,8 @@ It may be up to 100,000 characters long.
   mistake. It does not stop code meant to get out:
   - A userdata (an engine object: a component, a vector) is the real object: its methods are not checked, and
     one that changes the game runs.
-  - A function's return value is the real value, and a module's functions run with the module's own (full)
-    globals. So does the top-level code of a module that `require` loads for the first time.
+  - A function's return value is the real value (except that a table the code sees only through a view comes back
+    as that view; a part of an argument the engine handed back, never seen through a view, comes back real), and a module's functions run with the module's own (full) globals. So does the top-level code of a module that `require` loads for the first time.
   - A writer whose name is not on the list above is not dropped.
 - **`--write`.** The code runs with every global (`game.interface`, `api.cmd`, ...).
   - It goes only when a test save is loaded (`testSavePrefixes`: tf3ctl names the loaded save from the game's log
@@ -1717,7 +1723,9 @@ It may be up to 100,000 characters long.
   - A table met again inside itself is `"<cycle>"`. Functions and threads are `"<function>"` / `"<thread>"`.
     NaN and the infinities are `"nan"`, `"inf"`, `"-inf"`.
   - A userdata is walked with `pairs` when it can be, else as a list (`#`, `[i]`), else written as its
-    `tostring`.
+    `tostring`. An engine component cannot be walked (`pairs` raises on it; checked in the game), so it comes back
+    as `"userdata: 0x..."`: read the fields you want by name into a table and return that, say
+    `local c = api.engine.getComponent(id, api.type.ComponentType.NAME); return { name = c.name }`.
   - An object's keys are strings, sorted. Two keys with the same text (`1` and `"1"`) get `"1"` and `"1 (2)"`.
   - The whole answer stays within 1,000,000 characters of JSON: past that, `values` and then `value` become
     `"<too large: ...>"`, and then `print` is dropped.
@@ -1727,11 +1735,10 @@ It may be up to 100,000 characters long.
 - **No timeout.** The game's Lua has no `debug.sethook`, so a loop that never ends freezes the game. Nothing
   stops it, and plain `eval` goes to any save, a person's too: send only code that ends quickly. The tool gives up after 45 s (exit 2), but the game stays frozen. An engine assertion in an api call
   is not caught either.
-- **Not checked in a game yet:**
-  - whether the game's `load` takes the environment (4 arguments) as LuaJIT does;
-  - how `pairs` walks the engine's userdata (a component);
-  - the `--gs` round trip with gameScript on;
-  - `--write`'s refusal of `app.saveGame`.
+- **Checked in a game (2026-11-26):** plain `eval` (so the game's `load` takes the environment), `--gs` with
+  gameScript on, `--write`'s refusal of `app.saveGame`, and that a component cannot be walked with `pairs`. The
+  engine's functions are callable tables there (`getmetatable` gives `false`), which plain `eval` could not call
+  before this was fixed; the fix itself is checked with the unit tests only.
 
 ### Several clients at once
 

@@ -5131,25 +5131,71 @@ local function realGlobal(k)
 	return nil
 end
 
+local unpack = table.unpack or unpack -- (Lua 5.2+ has only table.unpack, LuaJIT both)
 local proxyReal = setmetatable({}, { __mode = "k" }) -- proxy -> the table it shows
+local realProxy = setmetatable({}, { __mode = "k" }) -- a table shown through a view -> that view (the last made)
+
+
+-- a call's values as the code may see them: a table the code sees only through a view (an argument it handed in,
+-- returned again) goes back as that view, so a call cannot give the real one out. Any other table (the engine's
+-- answer, made for the call) stays itself: it is the code's to change, and viewing it would make lists unsortable.
+local function rewrapValues(...)
+	local n = select("#", ...)
+	local vals = { ... }
+	for i = 1, n do
+		local v = vals[i]
+		if type(v) == "table" and realProxy[v] then vals[i] = realProxy[v] end
+	end
+	return unpack(vals, 1, n)
+end
+
+-- the arguments for an engine's callable table: the views as the real tables, since the engine takes its own
+-- tables (api.type's), not a view of them (one level only: a view inside a table the code made stays a view). A
+-- callback is wrapped so that a real table the engine hands it back (an argument passed on) reaches the code as its
+-- view again, and the views it returns go back real
+local function unwrapArgs(...)
+	local n = select("#", ...)
+	local args = { ... }
+	for i = 1, n do
+		local a = args[i]
+		if type(a) == "table" and proxyReal[a] then
+			args[i] = proxyReal[a]
+		elseif type(a) == "function" then
+			args[i] = function(...)
+				local back, m = unwrapArgs(a(rewrapValues(...)))
+				return unpack(back, 1, m)
+			end
+		end
+	end
+	return args, n
+end
 
 -- a read-only view of a table: its fields read through (tables as views again, functions called with the real
--- table as self), writes raise, and drop(k) hides a member. pairs works under Lua 5.2+ (__pairs).
-local function readOnlyView(t, drop, cache)
+-- table as self), writes raise, and drop(k) hides a member. pairs works under Lua 5.2+ (__pairs). The view of a
+-- callable table calls the real one (the game's api.engine.getComponent and its like are tables with __call, not
+-- functions). callReal: calling a callable table under this view gives it the real tables for the views among its
+-- arguments; only api's (the engine's own bindings, which read their arguments into the engine's types). A Lua
+-- function (a library's, a module's, one a mod hung under api) gets the views as they are: it could write into a
+-- real table (table.insert, ...).
+local function readOnlyView(t, drop, cache, callReal)
 	cache = cache or setmetatable({}, { __mode = "k" })
 	local key = drop or false
-	cache[key] = cache[key] or setmetatable({}, { __mode = "k" })
-	if cache[key][t] then return cache[key][t] end
+	local side = callReal and "call" or "plain"
+	cache[side] = cache[side] or setmetatable({}, { __mode = "k" })
+	local byDrop = cache[side]
+	byDrop[key] = byDrop[key] or setmetatable({}, { __mode = "k" })
+	if byDrop[key][t] then return byDrop[key][t] end
 	local p = {}
 	local fns = {}
+	local function call(f, self, ...)
+		if self == p then self = t end
+		return f(self, ...)
+	end
 	local function view(v)
-		if type(v) == "table" and not proxyReal[v] then return readOnlyView(v, drop, cache) end
+		if type(v) == "table" and not proxyReal[v] then return readOnlyView(v, drop, cache, callReal) end
 		if type(v) == "function" then
 			if not fns[v] then
-				fns[v] = function(self, ...)
-					if self == p then return v(t, ...) end
-					return v(self, ...)
-				end
+				fns[v] = function(...) return call(v, ...) end
 			end
 			return fns[v]
 		end
@@ -5173,10 +5219,17 @@ local function readOnlyView(t, drop, cache)
 			return it, p, nil
 		end,
 		__len = function() return #t end,
+		-- (a table that cannot be called raises as calling it would: "attempt to call a table value")
+		__call = function(_, ...)
+			if not callReal then return t(...) end
+			local args, n = unwrapArgs(...)
+			return rewrapValues(t(unpack(args, 1, n)))
+		end,
 		__metatable = "eval: a read-only view",
 	})
 	proxyReal[p] = t
-	cache[key][t] = p
+	realProxy[t] = p
+	byDrop[key][t] = p
 	return p
 end
 
@@ -5259,11 +5312,20 @@ function M.evalEnv(opts)
 	end
 	local blocked = {}
 	for _, n in ipairs(M.EVAL_BLOCKED) do blocked[n] = true end
+	local metaOf = get("getmetatable")
 	local function dropApi(t, k)
 		if t == get("api") and inList(M.EVAL_API_BLOCKED, k) then return true end
 		if writerName(k) then
+			-- a function, or a table that may be called: the game's are tables with __call whose getmetatable gives
+			-- false, and a plain Lua table (a namespace like api.engine.system) has no metatable at all
 			local ok, v = pcall(function() return t[k] end)
-			return ok and type(v) == "function"
+			if not ok then return false end
+			if type(v) == "function" then return true end
+			if type(v) == "table" then
+				local okM, m = pcall(metaOf, v)
+				return not okM or m ~= nil
+			end
+			return false
 		end
 		return false
 	end
@@ -5304,7 +5366,7 @@ function M.evalEnv(opts)
 		if own[k] ~= nil then return own[k] end
 		if blocked[k] then return nil end
 		local v = get(k)
-		if k == "api" and v ~= nil then return readOnlyView(v, dropApi, cache) end
+		if k == "api" and v ~= nil then return readOnlyView(v, dropApi, cache, true) end
 		if type(v) == "table" then return readOnlyView(v, dropLib, cache) end
 		return v
 	end })

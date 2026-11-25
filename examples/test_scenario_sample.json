@@ -5,7 +5,7 @@
     {"name": "new tiny game", "cmd": ["launch", "--new", "--size", "tiny", "--year", "1900"]},
     {"name": "pause", "cmd": "speed 0"},
     {"name": "the vanilla road depot fits (dry run, nothing built)",
-     "cmd": ["build", "--res", "::/depots/road/road_depot.con", "--at", "600,600", "--dry-run"],
+     "cmd": ["build", "--res", "depots/road/road_depot/road_depot.con", "--at", "600,600", "--dry-run"],
      "expect": [{"path": "ok", "op": "eq", "value": true},
                 {"path": "dryRun", "op": "eq", "value": true}]},
     {"name": "one day", "cmd": "steps 20"},

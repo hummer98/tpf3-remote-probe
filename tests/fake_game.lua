@@ -118,6 +118,13 @@ end
 
 M.object, M.vector = object, vector
 
+-- a bound engine function as the game has it: a table with __call, not a function, whose getmetatable gives false
+-- (api.engine.getComponent, forEachEntityWithComponent, ...: type "table" in the game's GUI Lua, 2026-11-26).
+-- Without it, code that takes them for functions (or views them as plain tables) passes here and fails in the game.
+function M.callable(fn)
+	return setmetatable({}, { __call = function(_, ...) return fn(...) end, __metatable = false })
+end
+
 -- an enum: each name a distinct userdata, compared with ==, as the engine's
 local function enum(names, prefix)
 	local e = {}
@@ -1454,6 +1461,21 @@ function M.new(dir, opts)
 			isMapEditor = function() inGame("isMapEditor"); return g.mapEditor == true end,
 		} },
 	}
+	-- the engine's bound functions are tables with __call (M.callable). forEachEntityWithComponent(fn, kind) calls
+	-- fn(entity, component) for the lines and vehicles here; like the binding, a callback that is no function and a
+	-- kind that is no component type (a table) are errors
+	api.engine.getComponent = M.callable(api.engine.getComponent)
+	api.engine.entityExists = M.callable(api.engine.entityExists)
+	api.engine.forEachEntityWithComponent = M.callable(function(fn, kind)
+		inGame("forEachEntityWithComponent")
+		if type(fn) ~= "function" then error("bad argument #1 to 'forEachEntityWithComponent' (function expected, got " .. type(fn) .. ")") end
+		if type(kind) == "table" then error("bad argument #2 to 'forEachEntityWithComponent' (ComponentType expected, got table)") end
+		local of = ({ LINE = g.lines, TRANSPORT_VEHICLE = g.fleet })[kind] or {}
+		local ids = {}
+		for e in pairs(of) do ids[#ids + 1] = e end
+		table.sort(ids)
+		for _, e in ipairs(ids) do fn(e, api.engine.getComponent(e, kind)) end
+	end)
 	if opts.modhub then M.installModhub(g, opts.modhub == true and {} or opts.modhub) end
 
 	-- the base's vehicle_react_util.HandleVehicleChanges, as in 40444 (stamp, autoload, then the engine command);
