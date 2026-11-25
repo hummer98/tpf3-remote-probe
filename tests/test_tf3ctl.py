@@ -6779,6 +6779,130 @@ class RunningCostsTest(_ForceBase):
         self.assertEqual(got[1][2], tf3ctl.RUNNING_COSTS_TIMEOUT_SEC)
 
 
+class EvalTest(_ForceBase):
+    """eval (2026-11-26): any Lua in the game, only with "eval": true in the configuration file. eval alone only
+    reads (no owner check, any save, coop too); eval --write (evalWrite) goes to test saves only, during coop only
+    with --user-asked, and through the owner check; its answer says the save's contents may have changed."""
+
+    def setUp(self):
+        super().setUp()
+        use_config(dict(CONFIGURED, eval=True))
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        use_config(CONFIGURED)
+        shutil.rmtree(self.dir, ignore_errors=True)
+        super().tearDown()
+
+    def ea(self, *a):
+        return tf3ctl.eval_args(self.p.parse_args(["eval"] + list(a)))
+
+    def ctl(self, *argv, answer=None):
+        got = []
+
+        def fake_send(cmd, args=None, **kw):
+            got.append((cmd, args, kw.get("timeout")))
+            return dict(answer or {"ok": True, "value": 1, "where": "gui"})
+        out, err = io.StringIO(), io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "send", fake_send), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            code = tf3ctl.main(list(argv))
+        return code, json.loads(out.getvalue()) if out.getvalue().strip() else None, got
+
+    def test_args(self):
+        self.assertEqual(self.ea("1 + 1"), ("eval", {"code": "1 + 1"}))
+        self.assertEqual(self.ea("x", "--write", "--gs", "--depth", "3", "--max-chars", "5000"),
+                         ("evalWrite", {"code": "x", "gs": True, "depth": 3, "maxChars": 5000}))
+        f = os.path.join(self.dir, "probe.lua")
+        write(f, "return api.engine ~= nil\n")
+        self.assertEqual(self.ea("--file", f), ("eval", {"code": "return api.engine ~= nil\n"}))
+        for bad, why in ((["--file", f, "1"], "not both"), ([], "give the Lua code"), ([""], "empty"),
+                         (["  \n\t"], "empty"), (["--file", os.path.join(self.dir, "none.lua")], "cannot read"),
+                         (["x" * (tf3ctl.EVAL_CODE_MAX + 1)], "longer than"), (["1", "--depth", "0"], "--depth"),
+                         (["1", "--depth", "17"], "--depth"), (["1", "--max-chars", "999"], "--max-chars"),
+                         (["1", "--max-chars", "1000001"], "--max-chars")):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad) as cm:
+                self.ea(*bad)
+            self.assertIn(why, str(cm.exception))
+
+    def test_off_without_the_configuration_nothing_sent(self):
+        for cfg in (CONFIGURED, dict(CONFIGURED, eval=False)):
+            use_config(cfg)
+            for argv in (["eval", "1"], ["eval", "1", "--write"], ["eval", "1", "--gs"]):
+                code, res, got = self.ctl("--owner", "alice", *argv)
+                self.assertEqual((code, res["refused"], got), (4, "config", []), argv)
+                self.assertIn('"eval": true', res["error"])
+        # the defaults (no file) have it off
+        self.assertIs(tf3ctl.CONFIG_DEFAULTS["eval"], False)
+        with self.assertRaises(ValueError):
+            tf3ctl.config_values({"eval": "yes"})
+
+    def test_main_routes_and_notes(self):
+        code, res, got = self.ctl("--owner", "alice", "eval", "1")
+        self.assertEqual((code, got), (0, [("eval", {"code": "1"}, tf3ctl.EVAL_TIMEOUT_SEC)]))
+        self.assertNotIn("saveNote", res)
+        self.assertNotIn("gsNote", res)
+        code, res, got = self.ctl("--owner", "alice", "eval", "1", "--gs",
+                                  answer={"ok": True, "value": 1, "where": "script"})
+        self.assertEqual(got[0][1], {"code": "1", "gs": True})
+        self.assertIn("about a minute", res["gsNote"])
+
+    def test_read_only_changes_nothing_and_goes_anywhere(self):
+        self.assertFalse(tf3ctl.changes_game("eval", {"code": "1"}))
+        self.assertTrue(tf3ctl.changes_game("evalWrite", {"code": "1"}))
+        self.loaded("aom-eu-1900")
+        self.assertNotIn("_testSave", self.sent("eval", {"code": "1", "_testSave": "probe-x"}))
+        tf3ctl.coop_start(60, "look together")
+        self.sent("eval", {"code": "1"})
+        tf3ctl.coop_end()
+        tf3ctl.OWNER = "bob"  # another owner's game: a read still goes
+        self.sent("eval", {"code": "1"})
+
+    def test_write_on_a_test_save_names_it_and_its_answer_has_the_note(self):
+        for save in ("probe-flat-base", "3-probe", "team-x"):
+            self.loaded(save)
+            a = self.sent("evalWrite", {"code": "1"})
+            self.assertEqual((a["_testSave"], a["_owner"]), (save, "alice"))
+            self.assertEqual(a["_testSaveRules"], tf3ctl.test_save_rules())
+        res = tf3ctl.note_save_change("evalWrite", {"code": "1"}, {"ok": True})
+        self.assertEqual(res["saveNote"], tf3ctl.EVAL_WRITE_NOTE)
+        self.assertIn("may have changed", res["saveNote"])
+        self.assertNotIn("saveNote", tf3ctl.note_save_change("evalWrite", {"code": "1"}, {"ok": False}))
+        self.assertNotIn("saveNote", tf3ctl.note_save_change("eval", {"code": "1"}, {"ok": True}))
+
+    def test_write_refused_on_a_persons_save_a_new_game_or_an_unknown_one(self):
+        self.loaded("aom-eu-1900")
+        e = self.refused("evalWrite", {"code": "1"}, "'aom-eu-1900' is not a test save's")
+        self.assertIsInstance(e, tf3ctl.EvalRefused)
+        self.assertEqual(e.refused, "eval")
+        self.loaded("")
+        self.refused("evalWrite", {"code": "1"}, "save probe-NAME), then load that")
+        self.loaded(None)
+        self.refused("evalWrite", {"code": "1"}, "is not known")
+        self.loaded("aom-eu-1900")  # a _testSave written by hand is dropped and named again from the log
+        self.refused("evalWrite", {"code": "1", "_testSave": "probe-x"}, "is not a test save's")
+
+    def test_write_in_coop_only_when_the_user_asked_and_on_a_test_save(self):
+        tf3ctl.coop_start(60, "look together")
+        e = self.refused("evalWrite", {"code": "1"}, "--user-asked")
+        self.assertIsInstance(e, tf3ctl.CoopRefused)
+        tf3ctl.USER_ASKED = True
+        a = self.sent("evalWrite", {"code": "1"})
+        self.assertEqual(a["_testSave"], "probe-flat-base")
+        self.loaded("aom-eu-1900")  # the person's own save: --user-asked does not widen it
+        self.refused("evalWrite", {"code": "1"}, "is not a test save's")
+        tf3ctl.USER_ASKED = False
+        # another client, not in the coop: the coop mark refuses it before the save's name
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True
+        self.loaded("probe-x")
+        self.refused("evalWrite", {"code": "1"}, "coop")
+        tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "alice", False
+        tf3ctl.coop_end()
+        tf3ctl.OWNER = "bob"  # another owner's game: the owner check refuses it
+        e = self.refused("evalWrite", {"code": "1"}, "not by bob")
+        self.assertNotIsInstance(e, tf3ctl.EvalRefused)
+
+
 class LightsTest(_ForceBase):
     """lights --node ID --off (2026-11-24): a junction's traffic light taken off (lightsOff), only
     on a test save, not in coop, as road --ignore-errors, and through the owner check; its dry run asks the engine,
@@ -6911,7 +7035,7 @@ class ConfigDefaultsTest(unittest.TestCase):
         self.assertEqual(tf3ctl.CONFIG_INFO, {"path": os.path.join(self.home, "tf3ctl", "config.json"),
                                               "state": "none"})
         self.assertEqual(tf3ctl.CONFIG, {"ownerCheck": False, "coop": False, "testSavePrefixes": ["probe-"],
-                                         "testSaveDigitFirst": False, "pointer": False,
+                                         "testSaveDigitFirst": False, "pointer": False, "eval": False,
                                          "modhub": {"validateFolders": [], "publishFolders": [],
                                                     "publishedIds": {}}})
         self.assertIsNone(tf3ctl.config_broken_text())

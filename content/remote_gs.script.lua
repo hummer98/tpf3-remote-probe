@@ -2,6 +2,8 @@
 -- game script's Lua state, the way price_probe wrote metadata.cost.price in 2026-11-16 (modelRep.get(id).metadata
 -- written in place from a game script: every worker and the GUI saw the new value, and a purchase paid it); and
 -- status's luaLoad, this state's load / loadstring / setfenv written into the script's state (writeLuaLoad, below).
+-- And eval --gs (remote_eval.lua): a piece of Lua run in this state, answered in the state as { eval = ... }, which is
+-- cleared again after core.EVAL_KEEP_SEC.
 --
 -- Off unless the mod setting gameScript is on (--param hummer_remote_probe:gameScript=2 at launch / load): off, update
 -- only reads the setting now and then and subscribes to nothing; handleEvent returns at once for any event that
@@ -63,6 +65,18 @@ local function writeLuaLoad(state)
 	state:set(s)
 end
 
+-- eval's answer stays in the state for EVAL_KEEP_SEC (the GUI reads it within a frame or two), then goes: the state
+-- is saved with the game, so an answer is not kept in it longer than it is needed
+local function clearEval(state)
+	local s = state:get()
+	if type(s) ~= "table" or type(s.eval) ~= "table" then return end
+	local t = os.time and os.time() or 0
+	local at = tonumber(s.eval.at)
+	if at ~= nil and t - at < core.EVAL_KEEP_SEC and t >= at then return end
+	s.eval = nil
+	state:set(s)
+end
+
 function S.update(_userParams, state, _dt)
 	local wasAt = cache.at
 	if not enabled() or cache.at == wasAt then return end
@@ -70,14 +84,22 @@ function S.update(_userParams, state, _dt)
 	local ok, err = pcall(function()
 		state:subscribeToEvent(core.RUNCOST_EVENT_WRITE)
 		state:subscribeToEvent(core.RUNCOST_EVENT_READ)
+		state:subscribeToEvent(core.EVAL_EVENT_READ)
+		state:subscribeToEvent(core.EVAL_EVENT_WRITE)
 		if not cache.said then
 			cache.said = true
-			say("subscribed to " .. core.RUNCOST_EVENT_WRITE .. " and " .. core.RUNCOST_EVENT_READ .. " (gameScript on)")
+			say("subscribed to " .. core.RUNCOST_EVENT_WRITE .. ", " .. core.RUNCOST_EVENT_READ .. ", "
+				.. core.EVAL_EVENT_READ .. " and " .. core.EVAL_EVENT_WRITE .. " (gameScript on)")
 		end
 	end)
 	if not ok and not warned then
 		warned = true
 		say("subscribing failed: " .. tostring(err))
+	end
+	local okE, errE = pcall(clearEval, state)
+	if not okE and not cache.evalSaid then
+		cache.evalSaid = true
+		say("eval's answer not cleared: " .. tostring(errE))
 	end
 	local okL, errL = pcall(writeLuaLoad, state)
 	if not okL and not cache.luaLoadSaid then
@@ -117,8 +139,42 @@ local function run(name, param)
 	return out
 end
 
+-- eval (remote_eval.lua): the code run in this state, its answer written into the state as { eval = { req, at,
+-- result } }. The request is checked again here (evalWrite: a test save's name)
+local function handleEval(state, name, param)
+	local write = name == core.EVAL_EVENT_WRITE
+	local s = state:get()
+	if type(s) ~= "table" then s = {} end
+	local prev = type(s.eval) == "table" and s.eval or nil
+	if prev and type(param) == "table" and prev.req ~= nil and prev.req == tonumber(param.req) then
+		say("eval request " .. tostring(prev.req) .. " came again: dropped (code is never run twice)")
+		return
+	end
+	local a, why = core.evalRequestChecked(param, write)
+	if not a then
+		-- (refused before anything ran: no state written)
+		say("eval refused: " .. tostring(why))
+		return
+	end
+	local r = core.evalHere(a, write, {})
+	-- (the code may have written the state through the globals: read it again before writing the answer)
+	s = state:get()
+	if type(s) ~= "table" then s = {} end
+	s.eval = { req = a.req, at = os.time and os.time() or 0, result = r }
+	state:set(s)
+	say((write and "eval --write" or "eval") .. " request " .. tostring(a.req) .. ": "
+		.. (r.ok and "ran" or ("failed (" .. tostring(r.kind) .. "): " .. tostring(r.error))))
+end
+
 function S.handleEvent(_userParams, state, _src, id, name, param)
 	if id ~= core.RUNCOST_EVENT_ID then return nil end
+	if name == core.EVAL_EVENT_READ or name == core.EVAL_EVENT_WRITE then
+		local ok, err = pcall(function()
+			if enabled() then handleEval(state, name, param) end
+		end)
+		if not ok then say("handleEvent (eval) failed: " .. tostring(err)) end
+		return nil
+	end
 	if name ~= core.RUNCOST_EVENT_WRITE and name ~= core.RUNCOST_EVENT_READ then return nil end
 	local ok, err = pcall(function()
 		if not enabled() then return end

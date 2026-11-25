@@ -87,9 +87,14 @@ python3 tools/tf3ctl.py quit
 - **Stopping the game:** `quit`. Always use `restart --no-kill`: a plain `restart` (and `quit --kill`) SIGKILLs
   a game that does not quit, and unsaved progress is lost.
 - **Debug commands** change the save as no player can: `stock set`, `steps`, `money`, `town develop` / `size` /
-  `connect`, `company init`, `running-costs` writes, `lights --off`, `road --ignore-errors`. Only
-  three check the save's name (`road --ignore-errors`, `lights --off`, `running-costs` writes); nothing stops the
-  others on a person's save. Their answers carry `saveNote`.
+  `connect`, `company init`, `running-costs` writes, `lights --off`, `road --ignore-errors`, `eval --write`. Only
+  four check the save's name (`road --ignore-errors`, `lights --off`, `running-costs` writes, `eval --write`);
+  nothing stops the others on a person's save. Their answers carry `saveNote`.
+- **`eval`** (off unless the configuration file has `"eval": true`) runs Lua in the game and returns its value as
+  JSON. Plain `eval` is for reading; its environment drops the obvious writers but cannot stop every one
+  (an engine object's methods are real), so send only code that reads. `eval --write` has every global and goes
+  on test saves only. Neither saves: use `save`. A loop that never ends freezes the game (there is no timeout).
+  Prefer the probe's own commands when one exists.
 - `--remove-buildings` on `build` and `road`, and `--remove-fields` on `road`, take town buildings and fields
   away as a player can when building by hand. No `saveNote`; use them on test saves.
 - **New games start from the main menu** (`launch --new`, `restart --new`). Inside a game, `newgame` only takes

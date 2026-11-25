@@ -34,7 +34,7 @@
 - `line delete` は、車両のいる路線を `--sell-vehicles` が無ければ断ります。本体のミッションと保護された entity の
   確認は省いています (試験用のセーブ向けのため)。
 - `stock set`・`steps` とほかの debug の命令は、どのセーブにも届きます。読み込んだセーブが試験用かを確認するのは
-  `road --ignore-errors`・`lights --off`・`running-costs` の書き込みだけです。ほかの命令も試験用のセーブで使って
+  `road --ignore-errors`・`lights --off`・`running-costs` の書き込み・`eval --write` だけです。ほかの命令も試験用のセーブで使って
   ください。答えに `saveNote` が付きます (セーブの中身が変わり、保存すると変更が残る)。
 - `money` は「その他」の仕訳として帳簿に残り、収支の表やグラフに出ます。
 - `buy` は、年代の外のモデルも買えます (店の可否の確認は通しません)。

@@ -7,7 +7,7 @@
   "_coop": "true: coop start / end and launch --coop, a person and one --owner client sharing the running game (the client may look, build and test, not quit, load or save the person's game). Needs ownerCheck true (coop without it makes the file unreadable): the owner check is what keeps other clients off the person's game.",
   "coop": false,
 
-  "_testSavePrefixes": "Saves whose names start with one of these are test saves: road --ignore-errors, lights --off and running-costs writes go only to a game loaded from one (and the probe's game script only with one).",
+  "_testSavePrefixes": "Saves whose names start with one of these are test saves: road --ignore-errors, lights --off, running-costs writes and eval --write go only to a game loaded from one (and the probe's game script only with one).",
   "testSavePrefixes": ["probe-"],
 
   "_testSaveDigitFirst": "true: a name starting with one digit and then no digit (3-probe) is a test save too.",
@@ -15,6 +15,9 @@
 
   "_pointer": "true: the pointer command (synthetic X11 pointer movement into the game window; no click, no key).",
   "pointer": false,
+
+  "_eval": "true: the eval command (any Lua code sent into the running game, its value read back). eval alone runs in an environment without the entry points that write or send (Lua cannot close every way: a userdata's own methods stay), on any save; eval --write runs with every global, on test saves only (during coop only with --user-asked), with the save entry points replaced so the code does not save.",
+  "eval": false,
 
   "_modhub": "modhub validate / publish (My Mods to mod.io, from the main menu): the staging folder names each may take, and publishedIds, the folders already on mod.io with their mod.io ids (a first upload of one is refused; an update goes only to that id). Empty: neither takes any folder; modhub status still reads.",
   "modhub": {

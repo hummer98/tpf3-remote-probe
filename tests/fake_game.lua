@@ -1676,6 +1676,7 @@ function M.new(dir, opts)
 		package.loaded["hummer_remote_probe::/remote_runcost.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_reach.lua"] = nil
 		package.loaded["hummer_remote_probe::/remote_modext.lua"] = nil
+		package.loaded["hummer_remote_probe::/remote_eval.lua"] = nil
 		for k in pairs(package.loaded) do
 			if type(k) == "string" and k:match("::/remote_probe_ext%.lua$") then package.loaded[k] = nil end
 		end

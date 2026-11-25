@@ -958,9 +958,10 @@ end
 function M.scriptEventRequest(args)
 	args = type(args) == "table" and args or {}
 	if type(args.id) ~= "string" or args.id == "" then return nil, "give the script event's id (e.g. the mod's UI id)" end
-	-- the probe's own game script event goes only through runningCostsSet, whose test-save check script-event lacks
+	-- the probe's own game script event goes only through runningCostsSet and eval --gs, whose test-save checks
+	-- script-event lacks
 	if args.id == M.RUNCOST_EVENT_ID then
-		return nil, "the id " .. args.id .. " is the probe's own: use running-costs --set-* (test saves only)"
+		return nil, "the id " .. args.id .. " is the probe's own: use running-costs --set-* (test saves only) or eval --gs"
 	end
 	local ev, err = M.eventRequest(args)
 	if not ev then return nil, err end
@@ -5015,6 +5016,510 @@ function M.calendarSpeedArg(args, defaultDayMs)
 		return nil, ("millisPerDay must be 0 or between %d and %d"):format(M.CALENDAR_MIN_MS, M.CALENDAR_MAX_MS)
 	end
 	return ms
+end
+
+---------------------------------------------------------------------------------------------------------------------
+-- eval (remote_eval.lua): a piece of Lua run in a running game, its value read back as JSON. Meant for reading what
+-- a mod made (a constant, a table it keeps, a rep's field) without a release of the tool for each such read.
+--
+-- eval reads only: the code runs in an environment without the entry points that write or send (EVAL_BLOCKED,
+-- api's proxy below). Lua cannot fence it fully: a userdata's methods and fields are the engine's own (a rep's
+-- metadata written in place stays written), and a module's functions run with the full globals they were loaded
+-- with. evalWrite runs with every global (test saves only, tf3ctl's check too); its app is a proxy whose save
+-- entry points raise (EVAL_SAVE_NAMES), best effort: the real app is still in reach (require("_G"), a module's own).
+-- No time limit: TF3's Lua has no debug.sethook, so an endless loop freezes the game.
+M.COMMANDS.eval = true
+M.COMMANDS.evalWrite = true
+M.CHANGES_GAME.evalWrite = true -- (eval only reads: no "who used the game" entry, as the other reads)
+M.EVAL_EVENT_READ = "hummer_remote_probe.eval.read" -- (sent with RUNCOST_EVENT_ID: script-event refuses that id)
+M.EVAL_EVENT_WRITE = "hummer_remote_probe.eval.write"
+M.EVAL_WAIT_SEC = 15
+M.EVAL_DEPTH = 6
+M.EVAL_DEPTH_MAX = 16
+M.EVAL_CHARS = 200000 -- characters of the value's JSON
+M.EVAL_CHARS_MIN = 1000
+M.EVAL_CHARS_MAX = M.EXT_RESULT_MAX
+M.EVAL_CODE_MAX = 100000
+M.EVAL_KEEP_SEC = 60 -- how long the game script keeps an answer in its state (it would go into a save made then)
+M.EVAL_PRINT_LINES = 200
+M.EVAL_PRINT_CHARS = 20000
+-- globals the read-only environment does not have: the game's writers (app saves and loads, game.interface builds
+-- and sets), files, modules' internals and the loaders that would take the environment off
+M.EVAL_BLOCKED = { "app", "game", "io", "package", "debug", "dofile", "loadfile", "loadstring", "setfenv", "getfenv",
+	"collectgarbage", "module", "rawset", "rawget", "rawequal" }
+-- api's members the read-only environment does not have (commands, the GUI's), and the names of functions it drops
+-- anywhere under api (api.util.setAppConfig, saveAppConfig, ...)
+M.EVAL_API_BLOCKED = { "cmd", "gui" }
+M.EVAL_WRITER_PATTERNS = { "^set", "^save", "^send", "^add", "^remove", "^delete", "^write", "^clear", "^reset",
+	"^apply", "^register", "^unregister", "^subscribe", "^unsubscribe", "^execute", "^enqueue" }
+M.EVAL_OS_KEEP = { "time", "date", "clock", "difftime" }
+M.EVAL_REQUIRE_BLOCKED = { "_G", "debug", "io", "os", "package", "ffi", "jit" }
+M.EVAL_SAVE_NAMES = { "saveGame", "deleteSavegame" }
+M.EVAL_SAVE_REFUSAL = "eval does not save: use tf3ctl save"
+
+-- args: code (a string), depth, maxChars, gs (bool); write: evalWrite, also a test save's name in _testSave.
+-- returns { code, depth, maxChars, gs, testSave, testSaveRules } or nil and why
+function M.evalArgs(args, write)
+	args = type(args) == "table" and args or {}
+	local code = args.code
+	if type(code) ~= "string" or not code:match("%S") then return nil, "give the Lua code to run (code)" end
+	if #code > M.EVAL_CODE_MAX then return nil, "code is longer than " .. M.EVAL_CODE_MAX .. " characters" end
+	local out = { code = code, depth = M.EVAL_DEPTH, maxChars = M.EVAL_CHARS, gs = args.gs == true }
+	if args.gs ~= nil and type(args.gs) ~= "boolean" then return nil, "gs must be true or false" end
+	if args.depth ~= nil then
+		local n = tonumber(args.depth)
+		if n == nil or n ~= math.floor(n) or n < 1 or n > M.EVAL_DEPTH_MAX then
+			return nil, "depth must be a whole number from 1 to " .. M.EVAL_DEPTH_MAX
+		end
+		out.depth = n
+	end
+	if args.maxChars ~= nil then
+		local n = tonumber(args.maxChars)
+		if n == nil or n ~= math.floor(n) or n < M.EVAL_CHARS_MIN or n > M.EVAL_CHARS_MAX then
+			return nil, "maxChars must be a whole number from " .. M.EVAL_CHARS_MIN .. " to " .. M.EVAL_CHARS_MAX
+		end
+		out.maxChars = n
+	end
+	if write then
+		if not M.isTestSaveName(args._testSave, args._testSaveRules) then
+			return nil, "evalWrite is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave)
+				.. " is no test save's name): nothing run"
+		end
+		out.testSave, out.testSaveRules = args._testSave, M.testSaveRules(args._testSaveRules)
+	end
+	return out
+end
+
+-- the game script's request (plain values only), and its check there (a script event can be sent by hand)
+function M.evalRequest(req, a, write)
+	local rules = a.testSaveRules or M.TEST_SAVE_DEFAULT
+	local prefixes = {}
+	for i, x in ipairs(rules.prefixes) do prefixes[i] = x end
+	return { req = req, code = a.code, depth = a.depth, maxChars = a.maxChars, write = write == true,
+		testSave = a.testSave, testSaveRules = { prefixes = prefixes, digitFirst = rules.digitFirst == true } }
+end
+
+function M.evalRequestChecked(p, write)
+	if type(p) ~= "table" then return nil, "no request" end
+	local req = tonumber(p.req)
+	if req == nil then return nil, "req must be a number" end
+	if (p.write == true) ~= (write == true) then return nil, "the request's write does not match the event's name" end
+	local a, err = M.evalArgs({ code = p.code, depth = p.depth, maxChars = p.maxChars, _testSave = p.testSave,
+		_testSaveRules = p.testSaveRules }, write)
+	if not a then return nil, err end
+	a.req = req
+	return a
+end
+
+local function inList(list, x)
+	for _, v in ipairs(list) do if v == x then return true end end
+	return false
+end
+
+local function writerName(k)
+	if type(k) ~= "string" then return false end
+	for _, p in ipairs(M.EVAL_WRITER_PATTERNS) do if k:match(p) then return true end end
+	return false
+end
+
+-- the real globals: _ENV under Lua 5.2+ (the game's), _G under LuaJIT (the tests'). Read through pcall: the
+-- game's _G is no plain table
+local REAL = (type(_ENV) == "table" and _ENV) or _G
+local function realGlobal(k)
+	local ok, v = pcall(function() return REAL[k] end)
+	if ok then return v end
+	return nil
+end
+
+local proxyReal = setmetatable({}, { __mode = "k" }) -- proxy -> the table it shows
+
+-- a read-only view of a table: its fields read through (tables as views again, functions called with the real
+-- table as self), writes raise, and drop(k) hides a member. pairs works under Lua 5.2+ (__pairs).
+local function readOnlyView(t, drop, cache)
+	cache = cache or setmetatable({}, { __mode = "k" })
+	local key = drop or false
+	cache[key] = cache[key] or setmetatable({}, { __mode = "k" })
+	if cache[key][t] then return cache[key][t] end
+	local p = {}
+	local fns = {}
+	local function view(v)
+		if type(v) == "table" and not proxyReal[v] then return readOnlyView(v, drop, cache) end
+		if type(v) == "function" then
+			if not fns[v] then
+				fns[v] = function(self, ...)
+					if self == p then return v(t, ...) end
+					return v(self, ...)
+				end
+			end
+			return fns[v]
+		end
+		return v
+	end
+	setmetatable(p, {
+		__index = function(_, k)
+			if drop and drop(t, k) then return nil end
+			local ok, v = pcall(function() return t[k] end)
+			if not ok then return nil end
+			return view(v)
+		end,
+		__newindex = function(_, k) error("eval reads only: cannot write " .. tostring(k) .. " (eval --write can, on a test save)", 2) end,
+		__pairs = function()
+			local function it(_, k)
+				local nk, v = next(t, k)
+				while nk ~= nil and drop and drop(t, nk) do nk, v = next(t, nk) end
+				if nk == nil then return nil end
+				return nk, view(v)
+			end
+			return it, p, nil
+		end,
+		__len = function() return #t end,
+		__metatable = "eval: a read-only view",
+	})
+	proxyReal[p] = t
+	cache[key][t] = p
+	return p
+end
+
+-- what a value shows, a proxy's table for a proxy
+function M.evalUnwrap(v)
+	return proxyReal[v] or v
+end
+
+local function capturePrint(out)
+	out.print, out.printChars, out.printTruncated = {}, 0, false
+	return function(...)
+		local parts = {}
+		for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+		local line = table.concat(parts, "\t")
+		if #out.print >= M.EVAL_PRINT_LINES or out.printChars >= M.EVAL_PRINT_CHARS then
+			out.printTruncated = true
+			return
+		end
+		local room = M.EVAL_PRINT_CHARS - out.printChars
+		if #line > room then line, out.printTruncated = line:sub(1, room) .. "<truncated>", true end
+		out.print[#out.print + 1] = line
+		out.printChars = out.printChars + #line
+	end
+end
+
+-- the environment the code runs in. opts: write (the full one), globals (a function k -> the real global; the
+-- tests' own), captured (a table that gets print's lines). The read-only one: EVAL_BLOCKED gone; api a view without
+-- EVAL_API_BLOCKED and without functions named as writers; os with EVAL_OS_KEEP only; the libraries' tables
+-- read-only views; load forced to text and to this environment; require refuses EVAL_REQUIRE_BLOCKED and gives
+-- a read-only view of a module. The full one: every global, app a view whose EVAL_SAVE_NAMES raise.
+function M.evalEnv(opts)
+	opts = opts or {}
+	local get = opts.globals or realGlobal
+	local captured = opts.captured or {}
+	local env = {}
+	local own = {}
+	local print_ = capturePrint(captured)
+	own.print = print_
+	own.debugPrint = function(...)
+		local parts = {}
+		for i = 1, select("#", ...) do
+			local v = (select(i, ...))
+			parts[i] = type(v) == "string" and v or M.json(M.evalDump(v, { depth = 4, maxChars = 4000 }).value)
+		end
+		print_(table.concat(parts, "\t"))
+	end
+	own._G = env
+	local cache = setmetatable({}, { __mode = "k" })
+	if opts.write then
+		local app = get("app")
+		if app ~= nil then
+			-- app's own members, its functions called with app as self, except the save entry points, which raise
+			local saveFns, fns = {}, {}
+			for _, n in ipairs(M.EVAL_SAVE_NAMES) do saveFns[n] = function() error(M.EVAL_SAVE_REFUSAL, 2) end end
+			local p = {}
+			setmetatable(p, {
+				__index = function(_, k)
+					if saveFns[k] then return saveFns[k] end
+					local v = app[k]
+					if type(v) ~= "function" then return v end
+					if not fns[v] then
+						fns[v] = function(self, ...)
+							if self == p then return v(app, ...) end
+							return v(self, ...)
+						end
+					end
+					return fns[v]
+				end,
+				__newindex = function(_, k, v) app[k] = v end,
+				__metatable = "eval: app without its save entry points",
+			})
+			proxyReal[p] = app
+			own.app = p
+		end
+		setmetatable(env, { __index = function(_, k)
+			if own[k] ~= nil then return own[k] end
+			return get(k)
+		end })
+		return env
+	end
+	local blocked = {}
+	for _, n in ipairs(M.EVAL_BLOCKED) do blocked[n] = true end
+	local function dropApi(t, k)
+		if t == get("api") and inList(M.EVAL_API_BLOCKED, k) then return true end
+		if writerName(k) then
+			local ok, v = pcall(function() return t[k] end)
+			return ok and type(v) == "function"
+		end
+		return false
+	end
+	local function dropLib() return false end
+	local osReal = get("os")
+	if type(osReal) == "table" then
+		local o = {}
+		for _, n in ipairs(M.EVAL_OS_KEEP) do o[n] = osReal[n] end
+		own.os = readOnlyView(o, nil, cache)
+	end
+	local loadReal = get("load")
+	if type(loadReal) == "function" then
+		own.load = function(chunk, name, _mode, e)
+			if type(chunk) ~= "string" then return nil, "eval's load takes a string only" end
+			return loadReal(chunk, name or "=eval.load", "t", e == nil and env or e)
+		end
+	end
+	local requireReal = get("ug_require") or get("require")
+	local function req(name)
+		if inList(M.EVAL_REQUIRE_BLOCKED, name) then error("eval reads only: require(\"" .. tostring(name) .. "\") is not here", 2) end
+		local m = requireReal(name)
+		if type(m) == "table" then return readOnlyView(m, dropApi, cache) end
+		return m
+	end
+	if type(requireReal) == "function" then
+		own.require = req
+		if get("ug_require") ~= nil then own.ug_require = req end
+	end
+	local real = get("getmetatable")
+	if type(real) == "function" then
+		own.getmetatable = function(v)
+			local m = real(v)
+			if type(m) == "table" then return readOnlyView(m, dropLib, cache) end
+			return m
+		end
+	end
+	setmetatable(env, { __index = function(_, k)
+		if own[k] ~= nil then return own[k] end
+		if blocked[k] then return nil end
+		local v = get(k)
+		if k == "api" and v ~= nil then return readOnlyView(v, dropApi, cache) end
+		if type(v) == "table" then return readOnlyView(v, dropLib, cache) end
+		return v
+	end })
+	return env
+end
+
+-- a Lua value as plain JSON-ready values. opts: depth (tables deeper are "<depth limit: type>"), maxChars (a budget:
+-- strings and entries past it are cut, marked "<truncated: ...>"). A table met again inside itself is "<cycle>";
+-- functions and threads "<function>" / "<thread>"; NaN and the infinities "nan" / "inf" / "-inf"; a userdata
+-- walked with pairs, else as a list (#, [i]), else its tostring. Keys of a table that is no list are strings.
+-- returns { value, truncated }
+function M.evalDump(v, opts)
+	opts = opts or {}
+	local maxDepth = opts.depth or M.EVAL_DEPTH
+	local budget = opts.maxChars or M.EVAL_CHARS
+	local truncated = false
+	local stack = {}
+	local function spend(n)
+		budget = budget - n
+		return budget >= 0
+	end
+	local walk
+	local function entries(x)
+		-- (k, v) pairs of a table or a userdata, nil when it cannot be walked
+		local list = {}
+		local ok = pcall(function()
+			for k, val in pairs(x) do
+				list[#list + 1] = { k, val }
+				if #list > 100000 then break end
+			end
+		end)
+		if ok and (#list > 0 or type(x) == "table") then return list end
+		if type(x) == "table" then return list end
+		local okN, n = pcall(function() return #x end)
+		if okN and type(n) == "number" and n > 0 then
+			list = {}
+			for i = 1, math.min(n, 100000) do
+				local okI, val = pcall(function() return x[i] end)
+				list[#list + 1] = { i, okI and val or nil }
+			end
+			return list
+		end
+		return nil
+	end
+	walk = function(x, depth)
+		x = proxyReal[x] or x
+		local t = type(x)
+		if t == "nil" or t == "boolean" then return x end
+		if t == "number" then
+			if x ~= x then return "nan" end
+			if x == math.huge then return "inf" end
+			if x == -math.huge then return "-inf" end
+			spend(8)
+			return x
+		end
+		if t == "string" then
+			if budget <= 0 then truncated = true; return "<truncated: " .. #x .. " chars>" end
+			if #x > budget then
+				truncated = true
+				local keep = math.max(0, math.floor(budget) - 64) -- (room for the mark and the rest)
+				spend(#x)
+				return x:sub(1, keep) .. "<truncated: " .. (#x - keep) .. " more chars>"
+			end
+			spend(#x + 2)
+			return x
+		end
+		if t == "function" or t == "thread" then spend(12); return "<" .. t .. ">" end
+		if t ~= "table" and t ~= "userdata" then return tostring(x) end
+		if stack[x] then return "<cycle>" end
+		if depth >= maxDepth then
+			truncated = true
+			return "<depth limit: " .. t .. ">"
+		end
+		local list = entries(x)
+		if list == nil then
+			local okS, s = pcall(tostring, x)
+			s = okS and s or "<userdata>"
+			spend(#s + 2)
+			return s
+		end
+		stack[x] = true
+		local n, isList = #list, true
+		local seenIdx = {}
+		for _, e in ipairs(list) do
+			local k = e[1]
+			if type(k) ~= "number" or k < 1 or k % 1 ~= 0 or k > n then isList = false; break end
+			seenIdx[k] = true
+		end
+		if isList then for i = 1, n do if not seenIdx[i] then isList = false; break end end end
+		local out = {}
+		if isList and n > 0 then
+			table.sort(list, function(a, b) return a[1] < b[1] end)
+			for i, e in ipairs(list) do
+				if budget <= 0 then
+					truncated = true
+					out[i] = "<truncated: " .. (n - i + 1) .. " more>"
+					break
+				end
+				spend(2)
+				local val = walk(e[2], depth + 1)
+				if val == nil then val = "<nil>" end
+				out[i] = val
+			end
+			M.array(out)
+		else
+			for _, e in ipairs(list) do
+				local okK, ks = pcall(tostring, e[1])
+				e.key = okK and ks or "<key>"
+			end
+			-- the same text from two keys (1 and "1"): the string's key first, so the order does not follow pairs
+			table.sort(list, function(a, b)
+				if a.key ~= b.key then return a.key < b.key end
+				local ta, tb = type(a[1]), type(b[1])
+				if ta ~= tb then return ta == "string" or (tb ~= "string" and ta < tb) end
+				return false
+			end)
+			for i, e in ipairs(list) do
+				if budget <= 0 then
+					truncated = true
+					out["<truncated>"] = (#list - i + 1) .. " more"
+					break
+				end
+				local key = e.key
+				if out[key] ~= nil then
+					local j = 2
+					while out[key .. " (" .. j .. ")"] ~= nil do j = j + 1 end
+					key = key .. " (" .. j .. ")"
+				end
+				spend(#key + 4)
+				out[key] = walk(e[2], depth + 1)
+			end
+		end
+		stack[x] = nil
+		return out
+	end
+	local value = walk(v, 0)
+	return { value = value, truncated = truncated }
+end
+
+-- compiles code as an expression first ("return " .. code), else as statements; runs it in env.
+-- opts: depth, maxChars, clock (seconds, for ms), traceback (debug.traceback when the state has one).
+-- returns { ok = true, value, values (when more than one), n, ms, truncated } or
+-- { ok = false, kind = "compile" | "runtime", error, traceback }; print's lines are the caller's (opts.captured)
+function M.evalRun(code, env, opts)
+	opts = opts or {}
+	local loadFn = opts.load or realGlobal("load")
+	if type(loadFn) ~= "function" then return { ok = false, kind = "compile", error = "this Lua state has no load" } end
+	local fn = loadFn("return " .. code, "=eval", "t", env)
+	if not fn then
+		local f2, err = loadFn(code, "=eval", "t", env)
+		if not f2 then return { ok = false, kind = "compile", error = tostring(err) } end
+		fn = f2
+	end
+	local clock = opts.clock
+	local t0 = clock and clock()
+	local tb = opts.traceback
+	local traceback
+	local function handler(e)
+		if tb then
+			local ok, s = pcall(tb, tostring(e), 2)
+			if ok then traceback = s end
+		end
+		return e
+	end
+	local res = (function(...) return { n = select("#", ...), ... } end)(xpcall(fn, handler))
+	local ms = (clock and t0) and math.floor((clock() - t0) * 1000 + 0.5) or nil
+	if not res[1] then
+		return { ok = false, kind = "runtime", error = tostring(res[2]), traceback = traceback, ms = ms }
+	end
+	return M.evalPack(res, opts, ms)
+end
+
+-- the values code returned (res: xpcall's, packed with n) as the answer's fields, each dumped (evalDump) and the
+-- whole cut to maxChars of JSON once more ("<too large: N chars>")
+function M.evalPack(res, opts, ms)
+	opts = opts or {}
+	local d = { depth = opts.depth or M.EVAL_DEPTH, maxChars = opts.maxChars or M.EVAL_CHARS }
+	local n = (res.n or #res) - 1
+	local out = { ok = true, n = n, ms = ms, truncated = false }
+	if n >= 1 then
+		local first = M.evalDump(res[2], d)
+		out.value, out.truncated = first.value, first.truncated
+		local size = #M.json(out.value)
+		if size > d.maxChars then out.value, out.truncated = "<too large: " .. size .. " chars>", true end
+	end
+	if n > 1 then
+		local values = {}
+		for i = 1, n do
+			local one = M.evalDump(res[i + 1], d)
+			if one.value == nil then values[i] = "<nil>" else values[i] = one.value end
+			out.truncated = out.truncated or one.truncated
+		end
+		local size = #M.json(values)
+		if size > d.maxChars then
+			out.values, out.truncated = "<too large: " .. size .. " chars>", true
+		else
+			out.values = M.array(values)
+		end
+	end
+	return out
+end
+
+-- runs one request in this Lua state: the environment for write or not, print captured. ctx: clock, globals.
+-- returns the answer's fields: ok, value, values, n, ms, truncated, print, printTruncated (and kind, error,
+-- traceback when not ok)
+function M.evalHere(a, write, ctx)
+	ctx = ctx or {}
+	local captured = {}
+	local env = M.evalEnv({ write = write, globals = ctx.globals, captured = captured })
+	local dbg = realGlobal("debug")
+	local tb = type(dbg) == "table" and dbg.traceback or nil
+	local r = M.evalRun(a.code, env, { depth = a.depth, maxChars = a.maxChars, clock = ctx.clock, traceback = tb })
+	r.print = M.array(captured.print or {})
+	r.printTruncated = captured.printTruncated == true
+	return r
 end
 
 return M
