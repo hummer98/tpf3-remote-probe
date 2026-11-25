@@ -47,6 +47,7 @@ EXIT_MEANING = {
     2: "no answer, a tool error, or a configuration file that cannot be read (the reason is on stderr)",
     3: "the game cannot answer where it is (menu, loading, closed): read gameState",
     4: "refused, nothing was sent (read refused); do not retry with a flag that skips the check",
+    5: "tf3ctl test: a step of the scenario failed (read steps)",
     130: "interrupted",
 }
 WAIT_MARGIN_SEC = 240  # past the command's own --timeout values, and its fixed waits (pickup 30 s, a load's ack

@@ -47,6 +47,7 @@ people, use `--owner <your name>` on every command.
   - `4` refused, nothing was sent (another owner's game, not a test save, off in the config file, or
     `mod ... --read-only` for a command not tagged `reads`, and a few more: the answer's `refused` says why).
     Do not retry with a flag that skips the check; tell the person why it was refused.
+  - `5` (`test` only) a step of the scenario failed (read `steps`)
 - The game log's times are UTC.
 
 ## A first round
@@ -114,6 +115,15 @@ python3 tools/tf3ctl.py mod my_mod hello '{"who": "me"}'
 `tag = "reads"` is only your mod's own claim: the probe does not check it, and sends such a command without the
 owner check. Errors come back as `{ "ok": false, "kind", "error" }`. The file's form, `ctx` and deferred answers
 are in "Other mods' commands" in `docs/REFERENCE.md`; a whole example mod is `examples/remote_probe_ext_sample/`.
+
+## Test scenarios
+
+A check you run again and again belongs in a scenario file: `python3 tools/tf3ctl.py --owner NAME test FILE` runs
+its commands one by one through the same checks as on the command line, compares their answers with the file's
+`expect` and looks at the game's log since the start (a `log` step). Exit `0` passed, `5` a step failed, `2` a
+broken file (nothing was sent) or no answer. Read `steps[].why` and `steps[].checks` for what failed. A scenario
+cannot carry `--force`, `--user-asked`, `--other-owner-ok` or `--ignore-errors`. Check a new file with `--dry-run`
+first. The format is in "Test scenarios" in `docs/REFERENCE.md`; a sample is `examples/test_scenario_sample.json`.
 
 ## When something is wrong
 

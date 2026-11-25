@@ -1,0 +1,19 @@
+{
+  "name": "sample: a tiny new game, a depot that would fit, 20 steps, no errors",
+  "description": "Run with: python3 tools/tf3ctl.py --owner my-tests test examples/test_scenario_sample.json (the game closed: launch starts it). Add your mod with --add in the first step and replace the depot by your asset.",
+  "steps": [
+    {"name": "new tiny game", "cmd": ["launch", "--new", "--size", "tiny", "--year", "1900"]},
+    {"name": "pause", "cmd": "speed 0"},
+    {"name": "the vanilla road depot fits (dry run, nothing built)",
+     "cmd": ["build", "--res", "::/depots/road/road_depot.con", "--at", "600,600", "--dry-run"],
+     "expect": [{"path": "ok", "op": "eq", "value": true},
+                {"path": "dryRun", "op": "eq", "value": true}]},
+    {"name": "one day", "cmd": "steps 20"},
+    {"name": "the game is in 1900",
+     "cmd": "status",
+     "expect": [{"path": "ok", "op": "eq", "value": true},
+                {"path": "state.date.year", "op": "ge", "value": 1900},
+                {"path": "state.date.year", "op": "lt", "value": 1902}]},
+    {"name": "no errors in the game's log", "log": {}}
+  ]
+}

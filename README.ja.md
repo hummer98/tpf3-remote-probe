@@ -114,6 +114,7 @@ tf3ctl.py quit
 | 車両・所持金・路線 | `buy`、`duplicate`、`replace`、`sell`、`money`、`line create / update / delete`、`rename` |
 | GUI | `window` (entity の窓を開く)、`event` (react のイベント)、`tool` (音楽・カレンダー・通知)、`camera`、`build-tool`、`script-event`、`frame` (Steam の録画からの静止画、Linux)、`pointer` (既定で切) |
 | 自分の MOD の命令 | `mod --list`、`mod <modId> <命令> [JSON]` (MOD が `remote_probe_ext.lua` で出す命令) |
+| テストの台本 | `test FILE` (命令と、その答えとゲームのログの確認を並べた JSON。0 で通過、5 で失敗) |
 | ログとファイル | `log`、`keep-log`、`clean`、`restore-profile` |
 | 複数のクライアントで使う | `--owner`、`coop`、`config`、`modhub` (メインメニューからのマイ MOD と mod.io へのアップロード) |
 

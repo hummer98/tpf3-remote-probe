@@ -6722,7 +6722,21 @@ def make_parser():
     kl = sub.add_parser("keep-log", help="copy the game log to crash_dump/logs now (launch and restart do it "
                                          "before every start); lists the kept logs")
     kl.add_argument("--list", action="store_true", help="only list the kept logs")
+    _test_module().add_parser(sub)
     return p
+
+
+def _test_module():
+    """tools/tf3ctl_test.py (test scenarios), loaded from beside this file: tf3ctl may be run or loaded by path."""
+    mod = sys.modules.get("tf3ctl_test")
+    if mod is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "tf3ctl_test", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tf3ctl_test.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules["tf3ctl_test"] = mod
+    return mod
 
 
 def main(argv=None):
@@ -6749,6 +6763,11 @@ def main(argv=None):
         return 2
     for line in test_save_warnings():
         print(line, file=sys.stderr)
+    if ns.cmd == "test":  # each step runs through main itself, with its checks
+        try:
+            return _test_module().cmd_test(ns, main, make_parser, game_log_path, show)
+        except KeyboardInterrupt:
+            return 130
 
     try:
         if ns.cmd == "config":

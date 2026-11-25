@@ -1569,6 +1569,78 @@ game: 0-4, answered from the engine's callback). Copy the folder into the game's
   similar words); whether the profile's installed mods are listed by modId in a game (not only in the menu); the
   sample mod as a whole.
 
+### Test scenarios (`test`)
+
+`tf3ctl.py test FILE` runs a scenario: a JSON file of tf3ctl commands, each with checks of its answer, plus checks
+of the game's log. It prints one JSON result and exits `0` when every step passed, `5` when a step failed, `2` when
+the scenario is broken (nothing is sent then) or a step got no answer. A mod's author can keep such files beside
+the mod and run them again after every change, without anyone reading the answers.
+
+```
+python3 tools/tf3ctl.py --owner my-tests test examples/test_scenario_sample.json
+python3 tools/tf3ctl.py test my_scenario.json --dry-run     # only check the file: every command parsed, nothing sent
+python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # characters of each answer kept (default 2000)
+```
+
+```json
+{
+  "name": "my_mod builds its depot",
+  "continueOnFail": false,
+  "steps": [
+    {"name": "new game", "cmd": ["launch", "--new", "--size", "tiny", "--year", "1900", "--add", "my_mod"]},
+    {"cmd": "speed 0"},
+    {"cmd": ["build", "--res", "my_mod::/my_depot.con", "--at", "600,600", "--dry-run"],
+     "expect": [{"path": "dryRun", "op": "eq", "value": true}]},
+    {"cmd": "steps 20"},
+    {"cmd": "status", "expect": {"path": "state.date.year", "op": "ge", "value": 1900}},
+    {"cmd": "info no-such-save", "exit": 1, "expect": {"path": "error", "op": "contains", "value": "no save"}},
+    {"name": "no errors in the log", "log": {}}
+  ]
+}
+```
+
+- **A step** is one command (`cmd`) or one look at the log (`log`). `cmd` is the words after `tf3ctl.py`: a list
+  (numbers become words) or one string split as a shell would. It runs through tf3ctl's own `main`, so every check
+  applies as on the command line: the owner check, test saves only, coop, the configuration file. The scenario adds
+  no check and skips none. Other keys: `name`, `comment`, `exit` (the exit code the command should give, default
+  `0`), `expect` (one check or a list), `continueOnFail`.
+- **Refused in a scenario**, before anything is sent: the flags that skip a check (`--force`, `--user-asked`,
+  `--other-owner-ok`, `--ignore-errors`, also as `--flag=...`); a first word that is an option (`--owner` goes on
+  the `test` command line, and is given to every step); `test`; `log` (use a log step); `pointer`; `modhub publish`
+  and `modhub publish-clear`; `--every` without `--count`. Every step is parsed by tf3ctl's parser first, so a wrong
+  name or option breaks the scenario before its first step runs. Unknown keys break it too (a misspelt `expect`
+  would otherwise check nothing), and so does an empty `steps`.
+- **`expect`**: `{"path": ..., "op": ..., "value": ...}`. `path` goes into the answer: `lines[0].vehicles`,
+  `saves[-1].saveName`, `["a key.with dots"]`; `""` is the whole answer (for `--every`, the list of its lines).
+  `op`: `eq`, `ne` (JSON equality: `1` equals `1.0`, `true` does not equal `1`), `gt`, `ge`, `lt`, `le` (two numbers
+  or two strings, else the check fails), `exists` (`value` true, the default, or false: must not be there),
+  `contains` (an element of a list, a part of a string, a key of an object), `len` (of a list, a string or an
+  object; compared with `value` by `cmp`, `eq` by default). A path that is not in the answer fails the check
+  (`why`: "no such path in the answer"); it does not break the scenario.
+- **A step passes** when its exit code is `exit` and every check passed. Exit `2` or `3` when not expected is an
+  error (no answer: the tool or the game could not give one); any other mismatch, `1` and `4` among them, is a
+  failure. The first failure or error stops the scenario (the rest are listed as `skipped`) unless
+  `continueOnFail` is true in the step or, for every step, in the scenario.
+- **A log step** looks at what the game wrote to its log since the scenario started (lines from before are not
+  looked at): `{"log": {}}` (or `true`) with optional `patterns` (regular expressions searched in each entry, a
+  `[time - LEVEL - ...]` line with the indented lines under it; by default an `ERROR` line, `Exception type:`,
+  `Lua error`, and Lua's `attempt to index / call / perform arithmetic / compare / concatenate`), `ignore` (entries
+  that match one are not counted), `require` (expressions that must be found in some entry) and `max` (entries
+  allowed, default `0`). It answers `matches`, the first 10 entries (600 characters each) and `entriesRead`. A
+  `launch` or `restart` in the scenario starts a new log: it is read from its start. The log is read before every
+  step, so what the old game wrote after that last read, while it was quitting, is not seen. No log found is an
+  error. The log is found as `log` finds it (`TF3_LOG`, else the game's `crash_dump/stdout.txt`).
+- **The result**: `ok`, `result` (`pass`, `fail`, `error`, `interrupted`; `broken` with `error` for a broken file;
+  `checked` for `--dry-run`), `exitCode`, `passed` / `failed` / `errors` / `skipped`, `durationSec`, and `steps`:
+  each with `index`, `name`, `status`, `cmd`, `exit`, `expectedExit`, `durationSec`, `checks` (each with `pass`,
+  `actual` and `why` when it failed), `answer` (cut to `--excerpt` characters: then it is a string ending in
+  `...`), `stderr` (its last 1000 characters) and `why` when it did not pass.
+- The scenario has no time limit of its own: each command's own waits and `--timeout` end it. Ctrl+C stops it
+  (exit `130`).
+- Start from a new game (`launch --new ...` with the game closed, or `restart --new ...`) or a test save, so that
+  what the steps build or change is thrown away. [`examples/test_scenario_sample.json`](../examples/test_scenario_sample.json)
+  is a tiny new game, a road depot checked with `build --dry-run`, 20 steps, the date and the log.
+
 ### Several clients at once
 
 Several tool processes may run at once (a long `run` plus `status` calls, say): a lock makes them write the single

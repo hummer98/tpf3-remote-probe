@@ -1454,6 +1454,60 @@ return {
   失敗するか (プローブは自分の無いファイルのときの文と比べ、"not found" などの語でも見分ける)。ゲームの中で
   プロファイルの入っている MOD が modId で挙がるか (メニューでだけでなく)。見本の MOD そのもの。
 
+### テストの台本 (`test`)
+
+`tf3ctl.py test FILE` は台本を動かします。台本は tf3ctl の命令を並べた JSON のファイルで、命令ごとに答えの確認を付け、
+ゲームのログの確認も入れられます。結果を JSON 1 つで出し、全部の段が通れば `0`、どれかの段が落ちれば `5`、台本が
+壊れている (そのときは何も送りません) か、ある段に答えが無ければ `2` で終わります。MOD の作者は台本を MOD の横に置き、
+直すたびに動かし直せます。答えを人が読まなくても済みます。
+
+```
+python3 tools/tf3ctl.py --owner my-tests test examples/test_scenario_sample.json
+python3 tools/tf3ctl.py test my_scenario.json --dry-run     # ファイルを見るだけ: 命令を全部読み、何も送らない
+python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # 結果に残す答えの文字数 (初期値 2000)
+```
+
+台本の例は英語版の [Test scenarios](REFERENCE.md#test-scenarios-test) にあります。
+
+- **段** は命令 1 つ (`cmd`) か、ログを見ること 1 つ (`log`) です。`cmd` は `tf3ctl.py` のあとの語で、リスト (数は
+  語になります) か、シェルと同じに分ける 1 つの文字列です。tf3ctl の `main` そのものを通るので、コマンドラインと同じ
+  確認が全部効きます (owner、試験用のセーブだけ、coop、設定ファイル)。台本は確認を足しも外しもしません。ほかのキー:
+  `name`、`comment`、`exit` (命令が返すはずの終了コード。初期値 `0`)、`expect` (確認 1 つか、そのリスト)、
+  `continueOnFail`。
+- **台本では断るもの** (何も送る前に): 確認を飛ばすフラグ (`--force`、`--user-asked`、`--other-owner-ok`、
+  `--ignore-errors`。`--flag=...` の形も)、オプションで始まる命令 (`--owner` は `test` のコマンドラインに付け、全部の
+  段に渡ります)、`test`、`log` (ログの段を使う)、`pointer`、`modhub publish` と `modhub publish-clear`、`--count`
+  の無い `--every`。全部の段を先に tf3ctl のパーサーで読むので、命令やオプションの名前の間違いは、最初の段を動かす
+  前に台本を壊れた扱いにします。知らないキーも同じです (綴りを間違えた `expect` は、さもないと何も確認しません)。
+  空の `steps` も同じです。
+- **`expect`**: `{"path": ..., "op": ..., "value": ...}`。`path` は答えの中の場所です: `lines[0].vehicles`、
+  `saves[-1].saveName`、`["点の入ったキー"]`。`""` は答え全体 (`--every` では行のリスト)。`op`: `eq`、`ne` (JSON の
+  等しさ: `1` と `1.0` は等しく、`true` と `1` は等しくない)、`gt`、`ge`、`lt`、`le` (数どうしか文字列どうし。
+  ほかは確認が落ちる)、`exists` (`value` が true (初期値) か false: 無いこと)、`contains` (リストの要素、文字列の
+  一部、オブジェクトのキー)、`len` (リスト・文字列・オブジェクトの長さを `cmp` で `value` と比べる。初期値 `eq`)。
+  答えに無い path は確認が落ちます (`why`: "no such path in the answer")。台本は壊れた扱いになりません。
+- **段が通る** のは、終了コードが `exit` で、確認が全部通ったときです。思っていない `2` か `3` は error
+  (答えが無い: ツールかゲームが答えられなかった)、ほかの食い違い (`1` と `4` も) は fail です。最初の fail か error
+  で台本は止まります (残りは `skipped`)。段か台本全体に `continueOnFail` が true なら続けます。
+- **ログの段** は、台本を始めてからゲームがログに書いたものを見ます (その前の行は見ません): `{"log": {}}` (か
+  `true`)。`patterns` (各項目で探す正規表現。項目は `[時刻 - LEVEL - ...]` の行とその下の字下げの行。初期値は
+  `ERROR` の行、`Exception type:`、`Lua error`、Lua の `attempt to index / call / perform arithmetic / compare /
+  concatenate`)、`ignore` (当たった項目は数えない)、`require` (どれかの項目に無ければならない式)、`max` (許す項目の
+  数。初期値 `0`) を付けられます。答えは `matches`、最初の 10 項目 (各 600 文字)、`entriesRead`。台本の中の
+  `launch` と `restart` は新しいログを始めるので、それを初めから読みます。ログは段の前ごとに読むので、その最後の
+  読み込みのあと、前のゲームが終わるまでに書いた行は見えません。ログが無ければ error です。ログの場所は `log` と
+  同じ (`TF3_LOG`、無ければゲームの `crash_dump/stdout.txt`)。
+- **結果**: `ok`、`result` (`pass`・`fail`・`error`・`interrupted`。壊れたファイルは `broken` と `error`、
+  `--dry-run` は `checked`)、`exitCode`、`passed`・`failed`・`errors`・`skipped`、`durationSec`、`steps`。段ごとに
+  `index`、`name`、`status`、`cmd`、`exit`、`expectedExit`、`durationSec`、`checks` (それぞれ `pass`、`actual`、
+  落ちたら `why`)、`answer` (`--excerpt` の文字数で切る。切ったら `...` で終わる文字列)、`stderr` (最後の 1000 文字)、
+  通らなければ `why`。
+- 台本そのものに時間の上限はありません。各命令の待ちと `--timeout` で終わります。Ctrl+C で止まります (終了コード
+  `130`)。
+- 新しいゲーム (ゲームが止まっているときの `launch --new ...` か `restart --new ...`) か試験用のセーブから始め、
+  段が建てたもの・変えたものが残らないようにします。[`examples/test_scenario_sample.json`](../examples/test_scenario_sample.json)
+  は、小さな新しいゲーム、`build --dry-run` で見る道路の車庫、20 歩、日付とログの見本です。
+
 ### 複数のクライアント
 
 ツールは複数同時に動かせます (長い `run` と `status` など)。コマンドファイルは 1 つなので、ロックで順に書きます。

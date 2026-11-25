@@ -11,6 +11,14 @@ is separate and does not follow the release version.
 
 ### Added
 
+- `test FILE`: run a test scenario, a JSON file of tf3ctl commands with checks of their answers (`expect`: a path
+  into the answer with `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `exists`, `contains`, `len`) and of the game's log since
+  the start (a `log` step: no `ERROR` or Lua error entries, patterns can be set). One JSON result; exit `0` all
+  passed, `5` (new) a step failed, `2` a broken scenario (nothing sent) or no answer. Each step goes through
+  tf3ctl's own checks; flags that skip one (`--force`, `--user-asked`, `--other-owner-ok`, `--ignore-errors`) are
+  refused in a scenario. `--dry-run` only checks the file. So a mod's author can run the same checks again after
+  every change without reading the answers. Sample: `examples/test_scenario_sample.json`. Not run against a game
+  yet (the unit tests run a scenario against the fake game).
 - `road --from-node ID` / `--to-node ID`: join an end to an existing road node by its id (before, only `--batch`
   pieces could). With `--from` / `--to` as well, the end sits at that point beside the node (the edge's `node0`
   the node, `position0` the point), up to 12 m off on the map; further is refused with nothing sent. The answer's
