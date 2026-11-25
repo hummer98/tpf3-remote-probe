@@ -20,6 +20,16 @@ is separate and does not follow the release version.
   only checks the file. So a mod's author can run the same checks again after every change without reading the
   answers. Sample: `examples/test_scenario_sample.json`. Not run against a game
   yet (the unit tests run a scenario against the fake game).
+- `eval 'CODE'` (or `--file`): runs a piece of Lua in the game's GUI Lua state (`--gs`: in the game script, with the
+  setting `gameScript` on) and returns its value as JSON, with `print`'s lines; depth and size limits mark what they
+  cut, userdata are walked as tables, a cycle is `"<cycle>"`, errors are `{ "ok": false, "kind": "compile" |
+  "runtime" }`. Plain `eval` runs in an environment without the game's writers (`app`, `game`, `io`, `debug`,
+  `api.cmd`, `api.gui`, functions under `api` named as writers, ...) and goes to any save; Lua cannot fence code
+  in fully (an engine object's methods are real), as the reference says. `eval --write` has every global, goes on
+  test saves only (during coop with `--user-asked`), carries `saveNote`, and its `app.saveGame` /
+  `app.deleteSavegame` raise (best effort: `tf3ctl save` saves). Off unless the configuration file has
+  `"eval": true`. There is no timeout: a loop that never ends freezes the game. Asked for to read values no command
+  gives yet, without a new probe release for each. Not checked in a game yet.
 - `road --from-node ID` / `--to-node ID`: join an end to an existing road node by its id (before, only `--batch`
   pieces could). With `--from` / `--to` as well, the end sits at that point beside the node (the edge's `node0`
   the node, `position0` the point), up to 12 m off on the map; further is refused with nothing sent. The answer's

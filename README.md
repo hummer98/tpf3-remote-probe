@@ -121,6 +121,7 @@ One line each; every command has `--help`, and the [reference](docs/REFERENCE.md
 | GUI | `window` (open an entity's window), `event` (a react event), `tool` (music, calendar, notifications), `camera`, `build-tool`, `script-event`, `frame` (a still from Steam's recording, Linux), `pointer` (off by default) |
 | Your mod's commands | `mod --list`, `mod <modId> <command> [JSON]` (commands your mod ships in `remote_probe_ext.lua`) |
 | Test scenarios | `test FILE` (a JSON file of commands with checks of their answers and of the game's log: exit 0 passed, 5 failed) |
+| Lua in the game | `eval 'CODE'` (read only, its value as JSON; `--gs` in the game script), `eval --write` (test saves only); off by default (`"eval": true` in the configuration file) |
 | Log and files | `log`, `keep-log`, `clean`, `restore-profile` |
 | Setups with several clients | `--owner`, `coop`, `config`; `modhub` (My Mods and mod.io uploads from the main menu) |
 

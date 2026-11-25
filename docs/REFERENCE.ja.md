@@ -81,7 +81,7 @@ python3 tools/tf3ctl.py status
 どのコマンドも JSON のオブジェクトを 1 つ出力します。終了コード: 0 成功、1 ゲームがエラーを返した、2 応答なし・
 ツールのエラー・読めない設定ファイル (「設定ファイル」)、3 ゲームが今いる場所では答えられない (メニュー、ロード中、probe のないメインメニュー、終了。
 `gameState` が示す)、4 断った (何も送っていない): 動いているゲームはこの `--owner` のものではない (「ゲームを変えるのは起動した owner だけ」)、
-試験用セーブかを確認する命令 (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み) を別のセーブに
+試験用セーブかを確認する命令 (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み・`eval --write`) を別のセーブに
 送ろうとした、設定ファイルで入れていない命令 (「設定ファイル」)、札が `reads` でない命令への `mod ... --read-only`
 (`"refused": "not-read-only"`)。
 
@@ -1509,6 +1509,95 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # 結果に残す答
 - 新しいゲーム (ゲームが止まっているときの `launch --new ...` か `restart --new ... --no-kill`) か試験用のセーブから始め、
   段が建てたもの・変えたものが残らないようにします。[`examples/test_scenario_sample.json`](../examples/test_scenario_sample.json)
   は、小さな新しいゲーム、`build --dry-run` で見る道路の車庫、20 歩、日付とログの見本です。
+### ゲームの中で Lua を動かす (`eval`)
+
+設定ファイルに `"eval": true` があるときだけ使えます (初期設定は切。切のときは断り、何も送りません: 終了コード 4、
+`"refused": "config"`)。
+
+```
+python3 tools/tf3ctl.py eval 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # 読むだけ、どのセーブでも
+python3 tools/tf3ctl.py eval --file probe.lua [--depth 6] [--max-chars 200000]               # コードをファイルから
+python3 tools/tf3ctl.py eval --gs 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # ゲームスクリプトの中で
+python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべてのグローバル: 試験用のセーブだけ
+```
+
+コードはまず式として (`return CODE`)、だめなら文として compile します (文なら `return x` で値を返します)。
+実行は 1 回だけで、場所はゲームの GUI の Lua の状態 (プローブの `guiUpdate`) です。`--gs` ならゲームスクリプトの
+状態で動かします。長さは 100,000 文字までです。
+
+- **読むだけ (`eval` だけ)。** コードは、ゲームを書き換える関数を外した環境で動きます。どのセーブにも送れ、ゲームを
+  変える命令には数えません (`status` と同じく、owner の検査はありません)。外してあるもの:
+  - グローバルの `app`・`game`・`io`・`package`・`debug`・`dofile`・`loadfile`・`loadstring`・`setfenv`・
+    `getfenv`・`collectgarbage`・`module`・`rawset`・`rawget`・`rawequal`
+  - `api.cmd` と `api.gui`。`api` の下で名前が `set`・`save`・`send`・`add`・`remove`・`delete`・`write`・
+    `clear`・`reset`・`apply`・`register`・`unregister`・`subscribe`・`unsubscribe`・`execute`・`enqueue` で
+    始まる関数 (たとえば `api.util.setAppConfig`)
+  - `os` は `time`・`date`・`clock`・`difftime` だけを残します
+  - `_G`・`debug`・`io`・`os`・`package`・`ffi`・`jit` の `require`
+
+  表 (`api`・`string`・`math`・require したモジュール・`getmetatable` のメタテーブル) は読むだけの見え方で
+  渡し、書き込むとエラーになります。`load` は文字列だけを取り、同じ環境で動かします。`game` (つまり、読むだけで
+  なく建てる・変える関数も持つ `game.interface`) は `--write` にだけあります。読むだけなら `api.engine` を使います。
+  コードの前に、その状態の `load` が環境を取るかを確認します。取らなければ何も動かしません (`kind: compile`)。
+  取らないまま動かすと、コードが本物のグローバルで動いてしまうためです。
+- **読むだけで守れないもの。** Lua ではコードを閉じ込めきれません。読むだけの環境が防ぐのは、まっとうなコードが
+  うっかり書き込むことです。外へ出ようとするコードは止められません:
+  - userdata (エンジンの物: component、ベクトルなど) は本物です。メソッドは確認しないので、ゲームを変える
+    メソッドを呼べば動きます。
+  - 関数の返す値は本物です。モジュールの関数は、モジュール自身の (全部ある) グローバルで動きます。`require` で初めて
+    読み込むモジュールの先頭のコードも同じです。
+  - 上の一覧に当たらない名前の、書き換える関数は外しません。
+- **`--write`。** コードはすべてのグローバル (`game.interface`、`api.cmd` など) のある環境で動きます。
+  - 試験用のセーブ (`testSavePrefixes`) を読み込んでいるときだけ送ります。tf3ctl がゲームのログから読み込んだ
+    セーブの名前を送り、MOD ももう一度確認します。ほかのセーブでは断ります: 終了コード 4、`"refused": "eval"`。
+  - 共同作業 (coop) の間は、試験用のセーブで、coop の相手のクライアントが `--user-asked` を付けたときだけ送ります
+    (`"refused": "coop"`)。
+  - ゲームを変える命令に数え (owner の検査)、答えに `saveNote` が付きます。コードが何をしたかはツールには
+    分からず、保存すると残ります。
+  - GUI では、速度ボタンのレシピの中でなく、プローブの `guiUpdate` の中で動きます。レシピの中でしか動かない
+    `api.gui` の呼び出し (窓を開くなど) は、ここからだとゲームを落とすことがあります。
+- **`--write` は保存しません。** `app.saveGame` と `app.deleteSavegame` は `eval does not save: use tf3ctl save`
+  のエラー (実行時のエラー) を出します。できる範囲の手当てです: 本物の `app` には (`require("_G")`、
+  `package.loaded`、`debug` から) まだ届き、ゲームのほかの保存の手段も止めません。保存は `tf3ctl save` で。
+  ゲームスクリプトには `app` が無いので、そちらでは何も置き換えません。
+- **`--gs`。** コードをスクリプトのイベントとしてプローブのゲームスクリプトに送り、その状態で動かします。
+  - MOD の設定 gameScript を入にしておく必要があります: `--param hummer_remote_probe:gameScript=2` を付けて
+    読み込みます (tf3ctl が許すのは試験用のセーブだけ、`testSavePrefixes`)。入でなければエラーで、何も動かしません。
+  - 答えはプローブのスクリプトの状態に書き、GUI が読み取ります。答えは 1 分ほどそこに残るので、その間に保存すると
+    セーブに入ります。答えの `gsNote` にもそう書きます。
+  - MOD は答えを 15 秒待ちます。`--gs` は 1 度に 1 つです。同じ依頼が 2 度届いても、2 度は動かしません。
+  - スクリプトのイベントは手でも送れるので、ゲームスクリプトは依頼をもう一度確認します (`--write` なら試験用の
+    セーブの名前)。`script-event` は、これまでどおりプローブのイベントの id を断ります。
+- **答え。** `{ "ok": true, "value", "n", "truncated", "print", "printTruncated", "where", "ms" }`:
+  - `value`: コードが返した最初の値。2 つ以上なら、全部が `values` に入り、`n` がその数です。`values` の中の
+    `nil` は `"<nil>"` です。
+  - `where`: `gui` か `script`。`ms`: 動かした時間 (GUI だけ)。
+  - `print`: `print` の書いた行 (200 行・20,000 文字まで。超えたら `printTruncated`)。`debugPrint` は値を JSON に
+    してそこに書きます。
+  - エラーは `{ "ok": false, "kind": "compile" | "runtime", "error", "traceback" }` です (終了コード 1。
+    `traceback` はその状態に `debug.traceback` があるとき)。
+- **値の書き方。**
+  - `--depth` (初期設定 6、1〜16) より深い表は `"<depth limit: table>"` になります。
+  - JSON は `--max-chars` (初期設定 200,000、1,000〜1,000,000) で切ります。長い文字列は
+    `<truncated: N more chars>` で終わり、リストやオブジェクトのキーの残りは `<truncated>` の印になります。それでも
+    大きすぎる値は `"<too large: N chars>"` です。どれも `truncated` を立てます。
+  - 自分の中に自分がある表は `"<cycle>"`、関数とスレッドは `"<function>"` / `"<thread>"`、NaN と無限大は
+    `"nan"`・`"inf"`・`"-inf"` です。
+  - userdata は `pairs` で回せれば回し、だめならリスト (`#`、`[i]`) として、それもだめなら `tostring` で書きます。
+  - オブジェクトのキーは文字列で、並べ替えます。同じ文字のキー (`1` と `"1"`) は `"1"` と `"1 (2)"` になります。
+  - 答え全体は JSON で 1,000,000 文字までです。超えると `values`、次に `value` が `"<too large: ...>"` になり、
+    それでも超えれば `print` を落とします。
+  - `--gs` では、空のリストが `{}` で返ることがあります (リストの印はゲームスクリプトの側に残るため)。
+  - 表は、上限で切る前に全部を回します (1 つの表で 100,000 項目まで)。書き出す量が少なくても、とても大きい表は
+    ゲームのフレームの時間を食います。
+- **時間切れはありません。** ゲームの Lua には `debug.sethook` が無いので、終わらないループはゲームを固めます。
+  止める手はありません。読むだけの `eval` は人のセーブにも届くので、すぐ終わるコードだけを送ってください。ツールは 45 秒であきらめます (終了コード 2) が、ゲームは固まったままです。api の呼び出しの
+  中のエンジンの assertion も捕まえられません。
+- **まだゲームで確認していないこと:**
+  - ゲームの `load` が LuaJIT と同じく環境 (4 つめの引数) を取るか
+  - エンジンの userdata (component) を `pairs` でどう回せるか
+  - gameScript を入にしたときの `--gs` の往復
+  - `--write` で `app.saveGame` を断ること
 
 ### 複数のクライアント
 
@@ -1571,7 +1660,7 @@ tf3ctl.py --owner bob coop end
 - `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。延長しても、印の変更の回数は引き継ぎます。
 - 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`、ほかの MOD の命令 (`mod`。`modChange` で送るもの)。ユーザーのセーブでも同じです。
   MOD の命令 (と `event`) が何をするかは、その MOD 次第です。下の拒否は tf3ctl 自身の命令に効くもので、保存する MOD の命令は止めません。
-- `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`、値を付けた `calendar-speed`。
+- `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`、値を付けた `calendar-speed`、試験用のセーブでの `eval --write` (「ゲームの中で Lua を動かす」)。
 - `save` は試験用のセーブの名前にだけ (`testSavePrefixes`。`testSaveDigitFirst` なら数字 1 文字で始まる名前 `3-probe` も)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
 - ほかは断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`、`tool`、`buy`、`line`、`terrain`、`town`、`modhub` など。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。
 - 読み込まれているセーブは、ゲームのログから読みます (起動から最後の `Loading game from file` / `Start new game`)。
@@ -1615,9 +1704,10 @@ tf3ctl.py --owner bob coop end
 |---|---|---|
 | `ownerCheck` | `false` | ゲームを変える命令は、その `--owner` が起動したゲームにだけ届く (下記) |
 | `coop` | `false` | `coop start` / `end` と `launch --coop`。切れていると断ります (終了コード 4、`"refused": "config"`)。`ownerCheck` が true であることが要ります。`coop` だけを入れたファイルは、読めないファイルとして扱います |
-| `testSavePrefixes` | `["probe-"]` | 試験用セーブとみなす名前の前置き。`road --ignore-errors`・`lights --off`・`running-costs` の書き込みの検査のほか、coop の間に `save` が書ける名前、`--param hummer_remote_probe:gameScript=2` を付けて読み込めるセーブ、coop の命令を人のゲームへの変更として数えるかにも効きます |
+| `testSavePrefixes` | `["probe-"]` | 試験用セーブとみなす名前の前置き。`road --ignore-errors`・`lights --off`・`running-costs` の書き込み・`eval --write` の検査のほか、coop の間に `save` が書ける名前、`--param hummer_remote_probe:gameScript=2` を付けて読み込めるセーブ、coop の命令を人のゲームへの変更として数えるかにも効きます |
 | `testSaveDigitFirst` | `false` | 数字 1 文字で始まる名前 (`3-probe`) も試験用セーブにする |
 | `pointer` | `false` | `pointer` 命令 |
+| `eval` | `false` | `eval` 命令 (動いているゲームに Lua のコードを送る。「ゲームの中で Lua を動かす」) |
 | `modhub.validateFolders` / `publishFolders` / `publishedIds` | 空 | `modhub validate` / `publish` が受け付ける staging のフォルダと、mod.io にすでにあるフォルダとその id |
 
 `_` で始まる項目は注釈です。ほかの知らない項目、型の違う値、JSON として読めない中身、`ownerCheck` の無い `coop`、
@@ -1629,11 +1719,12 @@ MOD はこのファイルを読めないので、試験用セーブの名前と 
 それで確認します (送られなければ `probe-` だけ、modhub のフォルダはなし)。
 
 **デバッグ命令**は、プレイヤーにはできない形でゲームを変えます: `stock set`・`steps`・`money`・`town develop` /
-`size` / `connect`・`company init`・`running-costs` の書き込み・`lights --off`・`road --ignore-errors`。どれも
-試験用のセーブ向けですが、読み込んだセーブの名前 (`testSavePrefixes`) を確認するのは `road --ignore-errors`・
-`lights --off`・`running-costs` の書き込みの 3 つだけです (coop の間も断ります)。ほかは、デバッグのツールとして
-どのセーブにも届きます (owner の検査はふつうどおり)。答え (dry run を除く) に `saveNote` が付きます: セーブの中身が
-変わり、保存すると変更が残ります (`running-costs` は、その起動の間の車両の型)。
+`size` / `connect`・`company init`・`running-costs` の書き込み・`lights --off`・`road --ignore-errors`・
+`eval --write`。どれも試験用のセーブ向けですが、読み込んだセーブの名前 (`testSavePrefixes`) を確認するのは
+`road --ignore-errors`・`lights --off`・`running-costs` の書き込み (coop の間も断ります) と `eval --write` (coop の
+間は `--user-asked` のときだけ) の 4 つだけです。ほかは、デバッグのツールとしてどのセーブにも届きます (owner の
+検査はふつうどおり)。答え (dry run を除く) に `saveNote` が付きます: セーブの中身が変わり、保存すると変更が残ります
+(`running-costs` は、その起動の間の車両の型。`eval --write` は、コードがしたこと)。
 
 `screenshot` と `newgame --unsafe` は外しました。`screenshot` は写真モードの外ではファイルを書かず (`frame` を
 使ってください)、`--unsafe` はゲームを落とすだけでした (新しいゲームはメインメニューから `launch` / `restart --new`

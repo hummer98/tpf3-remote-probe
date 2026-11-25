@@ -1359,6 +1359,12 @@ local modext = (ug_require or require)(MOD .. "::/remote_modext.lua").new({ core
 	end,
 	modParams = function() return core.plain(try(function() return api.engine.config.getModParams() end)) end })
 for k, fn in pairs(modext.handlers) do handlers[k] = fn end
+-- eval (remote_eval.lua): a piece of Lua run here or (gs) in the game script, its value read back; evalWrite with
+-- every global, test saves only
+local evalMod = (ug_require or require)(MOD .. "::/remote_eval.lua").new({ core = core, answer = answer,
+	failWith = failWith, appTime = appTime, fineTime = fineTime, try = try, say = say,
+	gsState = function() return G.gsState end })
+for k, fn in pairs(evalMod.handlers) do handlers[k] = fn end
 lines.walkBetween = reach.walkBetween -- (stations --catchment: whether a building can be walked to its station)
 
 -- args: entity (one industry; none: all). Read only. Per industry: its capacity (PERSON_CAPACITY), the sims that
@@ -1589,6 +1595,7 @@ local function init()
 		townConnect.reset()
 		runcost.reset()
 		modext.reset()
+		evalMod.reset()
 	end
 	if type(app) ~= "table" and type(app) ~= "userdata" then
 		say("app is not available; off")
@@ -1712,6 +1719,7 @@ local function step()
 	townConnect.step()
 	runcost.step()
 	modext.step()
+	evalMod.step()
 	stepFinish()
 	stepRun()
 	stepCalendar()

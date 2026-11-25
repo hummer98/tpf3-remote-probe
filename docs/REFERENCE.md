@@ -84,7 +84,7 @@ error, or a configuration file that cannot be read (see "Configuration file"), 3
 is (a menu, loading, the main menu without the probe, closed; the `gameState` field says which), 4 refused,
 nothing sent: the running game is not this `--owner`'s (see
 "Only the owner who started the game changes it"), one of the commands that check for a test save
-(`road --ignore-errors`, `lights --off`, `running-costs` writes) on another save, a command
+(`road --ignore-errors`, `lights --off`, `running-costs` writes, `eval --write`) on another save, a command
 the configuration file does not enable (see "Configuration file"), or `mod ... --read-only` for a command its mod
 does not tag `reads` (`"refused": "not-read-only"`).
 
@@ -1643,6 +1643,95 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # characters of each
 - Start from a new game (`launch --new ...` with the game closed, or `restart --new ... --no-kill`) or a test
   save, so that what the steps build or change is thrown away. [`examples/test_scenario_sample.json`](../examples/test_scenario_sample.json)
   is a tiny new game, a road depot checked with `build --dry-run`, 20 steps, the date and the log.
+### Running Lua in the game (`eval`)
+
+With `"eval": true` in the configuration file (off by default: `eval` is refused, exit 4, `"refused": "config"`,
+nothing sent).
+
+```
+python3 tools/tf3ctl.py eval 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # read only, any save
+python3 tools/tf3ctl.py eval --file probe.lua [--depth 6] [--max-chars 200000]               # the code from a file
+python3 tools/tf3ctl.py eval --gs 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # in the game script
+python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # every global: test saves only
+```
+
+The code is compiled as an expression first (`return CODE`), else as statements (then `return x` gives a value).
+It runs once, in the game's GUI Lua state (in the probe's `guiUpdate`), or with `--gs` in the game script's state.
+It may be up to 100,000 characters long.
+
+- **Read only (`eval` alone).** The code runs in an environment without the game's writers, on any save, and is
+  not counted as changing the game (no owner check, like `status`). What it does not have:
+  - the globals `app`, `game`, `io`, `package`, `debug`, `dofile`, `loadfile`, `loadstring`, `setfenv`,
+    `getfenv`, `collectgarbage`, `module`, `rawset`, `rawget`, `rawequal`;
+  - `api.cmd` and `api.gui`, and under `api` every function whose name starts with `set`, `save`, `send`, `add`,
+    `remove`, `delete`, `write`, `clear`, `reset`, `apply`, `register`, `unregister`, `subscribe`,
+    `unsubscribe`, `execute` or `enqueue` (`api.util.setAppConfig`, say);
+  - of `os` only `time`, `date`, `clock` and `difftime`;
+  - `require` of `_G`, `debug`, `io`, `os`, `package`, `ffi`, `jit`.
+
+  Tables (`api`, `string`, `math`, a required module, a metatable from `getmetatable`) are read-only views:
+  a write raises. `load` takes text only and runs it in the same environment. `game` (and so `game.interface`,
+  which builds and sets as well as reads) is only in `--write`: read with `api.engine` here.
+  Before the code, the probe checks that the state's `load` takes the environment; if it does not, nothing runs
+  (`kind: compile`), since the code would otherwise run with the real globals.
+- **What read only cannot hold.** Lua cannot fully fence code in, so read only keeps honest code from writing by
+  mistake. It does not stop code meant to get out:
+  - A userdata (an engine object: a component, a vector) is the real object: its methods are not checked, and
+    one that changes the game runs.
+  - A function's return value is the real value, and a module's functions run with the module's own (full)
+    globals. So does the top-level code of a module that `require` loads for the first time.
+  - A writer whose name is not on the list above is not dropped.
+- **`--write`.** The code runs with every global (`game.interface`, `api.cmd`, ...).
+  - It goes only when a test save is loaded (`testSavePrefixes`: tf3ctl names the loaded save from the game's log
+    and the mod checks the name again): exit 4, `"refused": "eval"`.
+  - During coop it goes on a test save only, from the coop client, with `--user-asked` (`"refused": "coop"`).
+  - It counts as changing the game (the owner check), and its answer carries `saveNote`: what the code did is not
+    known to the tool, and saving keeps it.
+  - In the GUI it runs in the probe's `guiUpdate`, not in the speed control's recipe: some `api.gui` calls that
+    only work there (opening windows) may crash the game from here.
+- **`--write` does not save.** `app.saveGame` and `app.deleteSavegame` raise `eval does not save: use tf3ctl save`
+  (a runtime error). This is best effort: the real `app` is still reachable (`require("_G")`, `package.loaded`,
+  `debug`), and so is any other way the game has to save. Use `tf3ctl save` to save. The game script has no `app`,
+  so nothing is replaced there.
+- **`--gs`.** The code goes to the probe's game script as a script event and runs in that state.
+  - This needs the mod setting gameScript on: load with `--param hummer_remote_probe:gameScript=2`, which tf3ctl
+    allows on test saves only (`testSavePrefixes`). Without it: an error, nothing run.
+  - The answer is written into the probe's script state and read back by the GUI. It stays there for about a
+    minute, so a save made then holds it. The answer says so in `gsNote`.
+  - The mod waits 15 s for the answer; one `--gs` request at a time. A request sent again is never run twice.
+  - The game script checks the request again (a test save's name for `--write`), since a script event can be sent
+    by hand. `script-event` still refuses the probe's own event id.
+- **The answer.** `{ "ok": true, "value", "n", "truncated", "print", "printTruncated", "where", "ms" }`:
+  - `value`: the first value the code returned. With more than one, all of them are in `values` and `n` is how
+    many. A `nil` inside `values` is `"<nil>"`.
+  - `where`: `gui` or `script`. `ms`: the run's time (GUI only).
+  - `print`: the lines `print` wrote (up to 200 lines and 20,000 characters, then `printTruncated`). `debugPrint`
+    writes a value as JSON there.
+  - An error is `{ "ok": false, "kind": "compile" | "runtime", "error", "traceback" }` (exit 1, `traceback`
+    when the state has `debug.traceback`).
+- **How a value is written.**
+  - A table more than `--depth` levels deep (default 6, 1-16) becomes `"<depth limit: table>"`.
+  - The JSON is cut at `--max-chars` (default 200,000, 1,000-1,000,000). A long string ends in
+    `<truncated: N more chars>`, the rest of a list or of an object's keys in a `<truncated>` mark. A value still
+    too large is `"<too large: N chars>"`. Each of these sets `truncated`.
+  - A table met again inside itself is `"<cycle>"`. Functions and threads are `"<function>"` / `"<thread>"`.
+    NaN and the infinities are `"nan"`, `"inf"`, `"-inf"`.
+  - A userdata is walked with `pairs` when it can be, else as a list (`#`, `[i]`), else written as its
+    `tostring`.
+  - An object's keys are strings, sorted. Two keys with the same text (`1` and `"1"`) get `"1"` and `"1 (2)"`.
+  - The whole answer stays within 1,000,000 characters of JSON: past that, `values` and then `value` become
+    `"<too large: ...>"`, and then `print` is dropped.
+  - With `--gs` an empty list may come back as `{}` (the mark that makes it a list stays in the game script).
+  - A table is walked whole (up to 100,000 entries each) before the limits cut it: a very large table costs time
+    in the game's frame even when little of it is written.
+- **No timeout.** The game's Lua has no `debug.sethook`, so a loop that never ends freezes the game. Nothing
+  stops it, and plain `eval` goes to any save, a person's too: send only code that ends quickly. The tool gives up after 45 s (exit 2), but the game stays frozen. An engine assertion in an api call
+  is not caught either.
+- **Not checked in a game yet:**
+  - whether the game's `load` takes the environment (4 arguments) as LuaJIT does;
+  - how `pairs` walks the engine's userdata (a component);
+  - the `--gs` round trip with gameScript on;
+  - `--write`'s refusal of `app.saveGame`.
 
 ### Several clients at once
 
@@ -1731,7 +1820,8 @@ tf3ctl.py --owner bob coop end
   `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`, other mods' commands
   (`mod`, sent as `modChange`). This holds on the user's own saves too. What a mod's command (or an `event`)
   does is up to that mod: tf3ctl's refusals below cover tf3ctl's own commands, not a mod command that saves.
-- Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`, `calendar-speed` with a value.
+- Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`, `calendar-speed` with a value,
+  and `eval --write` on a test save (see "Running Lua in the game").
 - `save` only to a test save's name (`testSavePrefixes`, and with `testSaveDigitFirst` one digit first,
   `3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that
   kind, a new game, or unknown), a save to a new test name needs `--user-asked` too.
@@ -1795,9 +1885,10 @@ and `status` carries `"config": {"path", "state"}` (`"file"`, or `"none"`: no fi
 |---|---|---|
 | `ownerCheck` | `false` | game-changing commands go only to the game this `--owner` started (below) |
 | `coop` | `false` | `coop start` / `end` and `launch --coop`; off, they are refused (exit 4, `"refused": "config"`). Needs `ownerCheck` true: `coop` without it makes the file unreadable |
-| `testSavePrefixes` | `["probe-"]` | the save names that count as test saves: the checks of `road --ignore-errors`, `lights --off` and `running-costs` writes, where `save` may write during coop, which loads may take `--param hummer_remote_probe:gameScript=2`, and which coop commands count as changes to a person's game |
+| `testSavePrefixes` | `["probe-"]` | the save names that count as test saves: the checks of `road --ignore-errors`, `lights --off`, `running-costs` writes and `eval --write`, where `save` may write during coop, which loads may take `--param hummer_remote_probe:gameScript=2`, and which coop commands count as changes to a person's game |
 | `testSaveDigitFirst` | `false` | a name with one digit first (`3-probe`) is a test save too |
 | `pointer` | `false` | the `pointer` command |
+| `eval` | `false` | the `eval` command (Lua code sent into the running game; see "Running Lua in the game") |
 | `modhub.validateFolders` / `publishFolders` / `publishedIds` | empty | the staging folders `modhub validate` / `publish` take, and the folders already on mod.io with their ids |
 
 Keys starting with `_` are comments. Any other unknown key, a value of the wrong kind, JSON that does not parse,
@@ -1810,11 +1901,12 @@ sends the test saves' names and the modhub lists with each command that needs th
 (without them: `probe-` only, no modhub folder).
 
 **Debug commands** change the game as no player can: `stock set`, `steps`, `money`, `town develop` / `size` /
-`connect`, `company init`, `running-costs` writes, `lights --off` and `road --ignore-errors`. They are meant for
-test saves, but only three check the loaded save's name (`testSavePrefixes`): `road --ignore-errors`,
-`lights --off` and `running-costs` writes (also refused during coop). The others go to any save, as a debug tool
-does, with the usual owner check. Their answers (not a dry run's) carry `saveNote`: the save's contents changed,
-and saving keeps the change (`running-costs`: the model, for the rest of the session).
+`connect`, `company init`, `running-costs` writes, `lights --off`, `road --ignore-errors` and `eval --write`. They
+are meant for test saves, but only four check the loaded save's name (`testSavePrefixes`): `road --ignore-errors`,
+`lights --off` and `running-costs` writes (also refused during coop), and `eval --write` (during coop only with
+`--user-asked`). The others go to any save, as a debug tool does, with the usual owner check. Their answers (not a
+dry run's) carry `saveNote`: the save's contents changed, and saving keeps the change (`running-costs`: the model,
+for the rest of the session; `eval --write`: whatever the code did).
 
 `screenshot` and `newgame --unsafe` are gone: `screenshot` wrote no file outside photo mode (use `frame`), and
 `--unsafe` only crashed the game (start new games from the main menu: `launch` / `restart --new`).

@@ -61,6 +61,14 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # only (as road --ignore-errors), not in coop: the fields written in place, in the game script (needs the
             # mod setting gameScript: --param hummer_remote_probe:gameScript=2 at launch / load) or the GUI; the
             # answer has before, the writes (the engine's error word for word) and after, in both Lua states
+  tf3ctl.py eval 'api.engine.getComponent(1, 1)' [--file x.lua] [--depth 6] [--max-chars 200000] [--gs]
+            # needs "eval": true in the configuration file. Read only: Lua in an environment without api.cmd, api.gui,
+            # app, game, io and the functions under api named as writers (a userdata's own methods are not covered);
+            # any save. The value as JSON (cut at the depth and size, marked), print's lines, or {kind: compile |
+            # runtime, error}. No timeout (the game's Lua has no debug.sethook): a loop that never ends hangs the game.
+            # --gs: in the probe's game script (needs gameScript=2, as running-costs)
+  tf3ctl.py eval --write 'CODE' [--user-asked]   # every global: test saves only, during coop only with --user-asked;
+            # app.saveGame / deleteSavegame raise (best effort: the real app stays reachable through require("_G"))
   tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--columns 4]   # read only: the finance table's rows
             # per carrier (MAINTENANCE / VEHICLE = the running costs), and calculateBalance of the fleet and vehicles
   tf3ctl.py mod --list | mod <modId>   # read only: the mods that ship remote_probe_ext.lua and their commands
@@ -182,9 +190,10 @@ JSON ("refused": "config-broken"), exit 2. Only `tf3ctl.py config` still answers
 {"path", "state": "file" or "none"}.
 
 The debug commands (stock set, steps, money, town develop / size / connect, company init, running-costs writes,
-lights --off, road --ignore-errors) change the save's contents as no player can: their answers carry "saveNote"
-(saving keeps the change). They are meant for test saves, but only road --ignore-errors, lights --off and
-running-costs writes check that a test save (testSavePrefixes) is loaded; the others go to any save.
+lights --off, road --ignore-errors, eval --write) change the save's contents as no player can: their answers carry
+"saveNote" (saving keeps the change). They are meant for test saves, but only road --ignore-errors, lights --off,
+running-costs writes and eval --write check that a test save (testSavePrefixes) is loaded; the others go to any
+save.
 
 --owner (or TF3CTL_OWNER) names the client sending commands (a person or a script). It is shown (status:
 run.owner, lastAction) and used for a warning when another owner changed the game in the last 10 minutes. With
@@ -202,7 +211,8 @@ With "coop": true, coop start --reason "..." [--minutes 60] (or launch --coop --
 and this --owner: the game this owner started, or one a person started from Steam (never another owner's). The
 launch record then carries "coop": {"with", "reason", "since", "until"[, "modified", "changes"]}; it counts until
 "until", while its pid is the running game. Meanwhile this owner may send camera, window, event, build, road,
-stock set, money, steps and other mods' commands (mod; fit too); speed, run and pause only with --user-asked;
+stock set, money, steps and other mods' commands (mod; fit too); speed, run, pause and eval --write (on a test
+save) only with --user-asked;
 save only to a test save's name, and with a person's save loaded only with --user-asked; nothing else (quit,
 load, newgame, restart, ...): exit 4, "refused": "coop". A game-changing command on a person's save sets
 "modified" and counts "changes"; status and coop end say so. coop end removes the mark.
@@ -217,7 +227,7 @@ command file one after another, each waiting until the mod has picked its comman
 Exit codes: 0 ok, 1 the game answered with an error, 2 no answer / tool error / a configuration file that cannot
 be read, 3 the game cannot answer where it is (menu, loading, main menu, closed: gameState in the output says which),
 4 refused, nothing sent: the running game is not this --owner's (see --owner above), road --ignore-errors / lights
---off / a running-costs write on a save that is not a test save, a command the configuration does not enable
+--off / a running-costs write / eval --write on a save that is not a test save, a command the configuration does not enable
 ("refused": "config"), or mod --read-only for a command its mod does not tag reads ("refused": "not-read-only").
 
 Environment: TF3_REMOTE_DIR = the exchange folder (default: the newest hello file under Steam's userdata),
@@ -270,11 +280,12 @@ CHANGES_GAME = {"speed", "run", "load", "save", "newgame", "window", "quit", "ev
                 "replace", "sell", "money", "line", "connect", "camera", "buildTool", "scriptEvent", "rename",
                 "build", "road", "terrain", "town", "modhubValidate", "modhubPublish",
                 "stockSet", "steps", "townDevelop", "townSize", "companyInit", "townConnect", "runningCostsSet", "lightsOff",
-                "modChange", "calendarSpeedSet"}  # window: what the player sees  # poll: only the mod's file reads
+                "modChange", "calendarSpeedSet", "evalWrite"}  # window: what the player sees  # poll: only the mod's file reads
 # modhubValidate: no save changes and nothing written to mod.io, but it runs the game's validator for minutes and
 # aborts a validation a person may have started on the My Mods page. modhubStatus only reads. modhubPublish uploads.
 # modChange: another mod's command tagged "changes" (or untagged); modList and modRead (tagged "reads") only read.
 # calendarSpeedSet: the base's calendar slider (calendar-speed with a value); calendarSpeed only reads it.
+# evalWrite: eval --write (any Lua, with every global); eval alone runs in an environment without the writers.
 
 READ_LUA = r"""
 local f = assert(loadfile(arg[1]))
@@ -341,13 +352,15 @@ CONFIG_DEFAULTS = {
     "testSaveDigitFirst": False,
     # pointer: synthetic X11 pointer events into the game window
     "pointer": False,
+    # eval: any Lua code sent into the running game (read only; --write on test saves only)
+    "eval": False,
     # modhub validate / publish: the staging folders each takes, and the folders already on mod.io (folder: id)
     "modhub": {"validateFolders": [], "publishFolders": [], "publishedIds": {}},
 }
 # over the defaults, when the file cannot be read: main refuses every command then, but a caller importing the
 # module and calling its functions directly still gets the strict side
 CONFIG_BROKEN = {"ownerCheck": True}
-_CONFIG_BOOLS = ("ownerCheck", "coop", "testSaveDigitFirst", "pointer")
+_CONFIG_BOOLS = ("ownerCheck", "coop", "testSaveDigitFirst", "pointer", "eval")
 _PLAIN_NAME_RE = re.compile(r"[^/\\,\x00-\x1f]{1,200}")
 
 
@@ -445,7 +458,7 @@ def config_broken_text():
 
 TEST_SAVE_PREFIX_MIN = 3  # a 1-2 character prefix ("a", "3-") is the start of many a player's save name
 # everything a test save's name decides (is_test_save's callers), for the warnings
-TEST_SAVE_USES = ("road --ignore-errors, lights --off and running-costs writes, save during coop, loads with "
+TEST_SAVE_USES = ("road --ignore-errors, lights --off, running-costs writes and eval --write, save during coop, loads with "
                   "gameScript=2, and which coop commands count as changes")
 
 
@@ -969,7 +982,8 @@ COOP_REASON_MAX = 200
 # modChange: another mod's command, the same as event (a test command a mod ships); a save stays refused by "save"
 COOP_ALLOWED = {"camera", "window", "event", "build", "road", "stockSet", "money", "steps", "modChange"}
 # calendarSpeedSet: the calendar slider goes as speed does (the person's own control of the time)
-COOP_USER_ASKED = {"speed", "run", "calendarSpeedSet"}  # pause is speed 0: only when the person asked (--user-asked)
+# evalWrite: any Lua on a test save (eval_write_check), and during coop only when the person asked
+COOP_USER_ASKED = {"speed", "run", "calendarSpeedSet", "evalWrite"}  # pause is speed 0: only when the person asked (--user-asked)
 COOP_UNCOUNTED = {"camera", "window", "speed", "save", "calendarSpeedSet"}  # they leave the world as it was
 LOADED_ANCHORS = (b"Application startup", b"Loading game from file", b"Start new game")
 USER_ASKED = False  # set by main from --user-asked
@@ -995,13 +1009,19 @@ def ignore_errors_check(cmd, args):
     return loaded_test_save_or_refuse(head, IgnoreErrorsRefused)
 
 
-def loaded_test_save_or_refuse(head, refusal):
+def loaded_test_save_or_refuse(head, refusal, coop_ok=False):
     """The loaded save's name when it is a test save's and the running game carries no coop mark (active, expired or
     malformed: a person may be playing); else refusal(head + why) is raised, nothing sent. A new game with no save
-    name yet, or a save not known from the log, is refused too."""
+    name yet, or a save not known from the log, is refused too. coop_ok: an active coop mark naming this --owner
+    goes on (coop_check, in check_game_owner, decided over it); any other mark still refuses (another client, even
+    with --other-owner-ok, an expired or a malformed mark)."""
     pids = game_pids()
     rec, _ = read_launched()
-    if pids and rec is not None and coop_mark(rec, pids)[0] is not None:
+    mine = False
+    if coop_ok and pids and rec is not None:
+        coop = active_coop(rec, pids)
+        mine = coop is not None and bool(OWNER) and OWNER in coop_with(coop)
+    if not mine and pids and rec is not None and coop_mark(rec, pids)[0] is not None:
         raise refusal(head + "the running game carries a coop mark, so the user may be playing it (coop end first)")
     save = loaded_save()
     if save == "":
@@ -1048,11 +1068,28 @@ def lights_check(cmd, args):
     return loaded_test_save_or_refuse(head, LightsRefused)
 
 
+class EvalRefused(OwnerRefused):
+    """eval --write on a game that is not a test save's; nothing was sent. Exit code 4."""
+    refused = "eval"
+
+
+def eval_write_check(cmd, args):
+    """Before evalWrite (eval --write): the loaded save's name, which the mod checks again (_testSave), when it is a
+    test save's; else EvalRefused, nothing sent. Unlike the other test-save commands it may go during coop: on a
+    test save, and only with --user-asked (coop_check, COOP_USER_ASKED). None for any other command: eval alone
+    (its environment has no writers) goes to any save."""
+    if cmd != "evalWrite":
+        return None
+    head = ("refused 'eval --write', nothing sent (for test saves only: the code runs with every global, so it can "
+            "change anything): ")
+    return loaded_test_save_or_refuse(head, EvalRefused, coop_ok=True)
+
+
 def test_save_checks(cmd, args):
     """The loaded test save's name for the commands that go to test saves only (road --ignore-errors, running-costs
-    writes, lights --off), which the mod checks again (_testSave); None for any other command. Refuses (nothing
-    sent) as each check says."""
-    for check in (ignore_errors_check, running_costs_check, lights_check):
+    writes, lights --off, eval --write), which the mod checks again (_testSave); None for any other command. Refuses
+    (nothing sent) as each check says."""
+    for check in (ignore_errors_check, running_costs_check, lights_check, eval_write_check):
         save = check(cmd, args)
         if save is not None:
             return save
@@ -1305,6 +1342,9 @@ def coop_check(cmd, args, coop):
     if cmd == "window" and args.get("closeAll"):
         raise CoopRefused(head + "their windows stay open (window --close-all is not sent)")
     if cmd in COOP_USER_ASKED and not USER_ASKED:
+        if cmd == "evalWrite":
+            raise CoopRefused(head + "eval --write (any Lua, with every global) goes only when the user asked for "
+                              "it: add --user-asked then")
         raise CoopRefused(head + "the game's speed is theirs: add --user-asked only when the user asked for it")
     if cmd == "save":
         target = args.get("name")
@@ -1326,9 +1366,13 @@ def coop_check(cmd, args, coop):
 SAVE_NOTE = "this command changes the save's contents; saving keeps the change"
 # a model's values live in the session, not in the save (whether a save keeps them was not checked)
 RUNNING_COSTS_NOTE = "this command changes the vehicle model for the rest of the session, as no player can"
+# eval --write: what the code did is not known to the tool
+EVAL_WRITE_NOTE = ("eval --write ran code with every global: the save's contents may have changed (saving keeps what "
+                   "it changed); the save entry points were replaced, best effort, so it did not save")
 DEBUG_COMMANDS = {"stockSet": "stock set", "steps": "steps", "money": "money", "townDevelop": "town develop",
                   "townSize": "town size", "townConnect": "town connect", "companyInit": "company init",
-                  "runningCostsSet": "running-costs --set-* / --scale-*", "lightsOff": "lights --off"}
+                  "runningCostsSet": "running-costs --set-* / --scale-*", "lightsOff": "lights --off",
+                  "evalWrite": "eval --write"}
 
 
 def debug_command(cmd, args):
@@ -1346,7 +1390,8 @@ def note_save_change(cmd, args, res):
     not one that sent nothing (company init on a game already set up)."""
     if (isinstance(res, dict) and debug_command(cmd, args) and (args or {}).get("dryRun") is not True
             and res.get("ok") is True and res.get("sent") is not False):
-        res["saveNote"] = RUNNING_COSTS_NOTE if cmd == "runningCostsSet" else SAVE_NOTE
+        res["saveNote"] = (RUNNING_COSTS_NOTE if cmd == "runningCostsSet" else EVAL_WRITE_NOTE if cmd == "evalWrite"
+                           else SAVE_NOTE)
     return res
 
 
@@ -5194,6 +5239,60 @@ def cmd_mod(ns):
     return res
 
 
+EVAL_TIMEOUT_SEC = 45  # the mod waits 15 s for the game script's answer (--gs)
+EVAL_CODE_MAX = 100000  # the mod's core.EVAL_CODE_MAX
+EVAL_DEPTH_MAX = 16  # the mod's limits: core.EVAL_DEPTH (6) up to this
+EVAL_CHARS_MIN, EVAL_CHARS_MAX = 1000, 1000000  # core.EVAL_CHARS (200000) between these
+EVAL_GS_NOTE = ("--gs: the answer stays in the probe's game-script state for about a minute (saving within it keeps "
+                "it in the save)")
+
+
+def eval_args(ns):
+    """(wire command, args) for eval: the code from the argument or --file, the limits, --gs."""
+    if ns.code is not None and ns.file is not None:
+        raise ToolError("give the code or --file, not both")
+    if ns.file is not None:
+        try:
+            with open(ns.file, encoding="utf-8") as f:
+                code = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            raise ToolError("cannot read %s: %s" % (ns.file, e))
+    elif ns.code is not None:
+        code = ns.code
+    else:
+        raise ToolError("give the Lua code to run: eval 'CODE' or eval --file FILE.lua")
+    if not code.strip():
+        raise ToolError("the code is empty: nothing to run")
+    if len(code) > EVAL_CODE_MAX:
+        raise ToolError("the code is longer than %d characters" % EVAL_CODE_MAX)
+    args = {"code": code}
+    if ns.depth is not None:
+        if not (1 <= ns.depth <= EVAL_DEPTH_MAX):
+            raise ToolError("--depth must be between 1 and %d" % EVAL_DEPTH_MAX)
+        args["depth"] = ns.depth
+    if ns.max_chars is not None:
+        if not (EVAL_CHARS_MIN <= ns.max_chars <= EVAL_CHARS_MAX):
+            raise ToolError("--max-chars must be between %d and %d" % (EVAL_CHARS_MIN, EVAL_CHARS_MAX))
+        args["maxChars"] = ns.max_chars
+    if ns.gs:
+        args["gs"] = True
+    return ("evalWrite" if ns.write else "eval"), args
+
+
+def cmd_eval(ns):
+    """eval: Lua code in the running game, and its value back. Only with "eval": true in the configuration file.
+    Without --write the mod runs it in an environment without the entry points that write or send (read only, any
+    save); --write runs it with every global (a test save; during coop only with --user-asked; save entry points
+    replaced). --gs runs it in the probe's game script instead of the GUI's Lua state."""
+    if not CONFIG["eval"]:
+        raise config_needed("eval (any Lua code sent into the running game)", "eval")
+    wire, args = eval_args(ns)
+    res = send(wire, args, timeout=EVAL_TIMEOUT_SEC)
+    if isinstance(res, dict) and args.get("gs") and res.get("where") == "script":
+        res["gsNote"] = EVAL_GS_NOTE
+    return res
+
+
 def cmd_modhub(ns):
     """My Mods in the main menu: status (read only), validate (one staging mod), publish (one new mod, or an update
     of the mod.io page of the folder's fileid)."""
@@ -6662,6 +6761,23 @@ def make_parser():
                     "%d-%d; the mod gives a command that defers its answer %d s less)"
                     % (MOD_TIMEOUT_SEC, MOD_EXT_MARGIN_SEC + 1, MOD_EXT_TIMEOUT_MAX + MOD_EXT_MARGIN_SEC,
                        MOD_LIST_TIMEOUT_SEC, MOD_LIST_TIMEOUT_MIN, MOD_LIST_TIMEOUT_MAX, MOD_EXT_MARGIN_SEC))
+    ev = sub.add_parser("eval", help="needs \"eval\": true in the configuration file. Run Lua code in the game and "
+                        "read its value (as JSON) and print output back. Read only: the code runs in an environment "
+                        "without api.cmd, api.gui, app, game, io and the functions under api named as writers (a "
+                        "userdata's own methods are not covered), on any save. --write: with every global, on test "
+                        "saves only (during coop also --user-asked); the save entry points raise")
+    ev.add_argument("code", nargs="?", help="the code: an expression ('api.engine.getComponent(1, 1)') or "
+                    "statements ending in return")
+    ev.add_argument("--file", help="read the code from this file instead")
+    ev.add_argument("--write", action="store_true", help="changes the save's contents (saving keeps it); run with "
+                    "every global (test saves only)")
+    ev.add_argument("--gs", action="store_true", help="run in the probe's game script (needs the mod setting "
+                    "gameScript: --param hummer_remote_probe:gameScript=2 at launch / load) instead of the GUI's "
+                    "Lua state")
+    ev.add_argument("--depth", type=int, help="table levels in the answer (default 6, 1-%d)" % EVAL_DEPTH_MAX)
+    ev.add_argument("--max-chars", type=int, help="characters of JSON in the answer (default 200000, %d-%d)"
+                    % (EVAL_CHARS_MIN, EVAL_CHARS_MAX))
+    ev.add_argument("--user-asked", action="store_true", help="--write during coop: only when the user asked for it")
     mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate, publish "
                                        "(one new mod, or an update of one on mod.io)")
     msub = mh.add_subparsers(dest="action", required=True)
@@ -6988,6 +7104,8 @@ def main(argv=None):
             res = cmd_modhub(ns)
         elif ns.cmd == "mod":
             res = cmd_mod(ns)
+        elif ns.cmd == "eval":
+            res = cmd_eval(ns)
         elif ns.cmd == "coop":
             res = cmd_coop(ns)
     except OwnerRefused as e:

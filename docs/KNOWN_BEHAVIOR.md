@@ -33,8 +33,8 @@ and what was not, moved here from the README unchanged. Sections the text names 
   after the click carries a `note`, and a load that times out names the button as the likely cause.
 - `line delete` refuses a line with vehicles unless `--sell-vehicles` is given. It skips the base checks for
   missions and protected entities (it is meant for test saves).
-- `stock set`, `steps` and the other debug commands go to any save: only `road --ignore-errors`, `lights --off`
-  and `running-costs` writes check that a test save is loaded. Use the rest on test saves too; their answers
+- `stock set`, `steps` and the other debug commands go to any save: only `road --ignore-errors`, `lights --off`,
+  `running-costs` writes and `eval --write` check that a test save is loaded. Use the rest on test saves too; their answers
   carry `saveNote` (the save's contents changed, saving keeps it).
 - `money` books an "other" journal entry, which shows in the finance tables and charts.
 - `buy` can buy models outside their years (the store's availability check is not applied).

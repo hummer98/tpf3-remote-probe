@@ -115,6 +115,7 @@ tf3ctl.py quit
 | GUI | `window` (entity の窓を開く)、`event` (react のイベント)、`tool` (音楽・カレンダー・通知)、`camera`、`build-tool`、`script-event`、`frame` (Steam の録画からの静止画、Linux)、`pointer` (既定で切) |
 | 自分の MOD の命令 | `mod --list`、`mod <modId> <命令> [JSON]` (MOD が `remote_probe_ext.lua` で出す命令) |
 | テストの台本 | `test FILE` (命令と、その答えとゲームのログの確認を並べた JSON。0 で通過、5 で失敗) |
+| ゲームの中の Lua | `eval 'CODE'` (読むだけ。値を JSON で返す。`--gs` はゲームスクリプトの中)、`eval --write` (試験用のセーブだけ)。初期設定は切 (設定ファイルの `"eval": true`) |
 | ログとファイル | `log`、`keep-log`、`clean`、`restore-profile` |
 | 複数のクライアントで使う | `--owner`、`coop`、`config`、`modhub` (メインメニューからのマイ MOD と mod.io へのアップロード) |
 
