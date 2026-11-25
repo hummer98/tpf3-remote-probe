@@ -349,13 +349,25 @@ local function mapEditorNow()
 	return { gui = flag(gui), modParams = flag(mp) }
 end
 
+-- status's luaLoad: this GUI state's load / loadstring / setfenv, and the game script's as it wrote them in its state
+-- (remote_gs.script.lua, only with the setting gameScript on; else, and in the main menu, "unread")
+local function luaLoadNow()
+	local gui = core.luaLoadKinds(function(n)
+		if n == "load" then return load elseif n == "loadstring" then return loadstring elseif n == "setfenv" then return setfenv end
+	end)
+	local st = G.gsState
+	local s = st and try(function() return st:get() end) or nil
+	return { gui = gui, gs = core.luaLoadGs(type(s) == "table" and s.luaLoad or nil) }
+end
+
 function handlers.status(c)
 	local t = now()
 	answer(c.id, { ok = true, version = core.VERSION, mod = MOD, stamp = G.stamp, dir = G.dir, menu = G.menu == true, state = t,
 		defaultSavegameId = try(function() return api.gui.game.getDefaultSavegameId() end),
 		modParams = modParamsNow(), run = runInfo(), poll = { idle = G.pollIdle, active = G.pollActive },
 		ui = (not G.menu) and uiReadBack() or nil,
-		logLevel = G.options.logLevel, lastAction = G.lastAction, mapEditor = (not G.menu) and mapEditorNow() or nil })
+		logLevel = G.options.logLevel, lastAction = G.lastAction, mapEditor = (not G.menu) and mapEditorNow() or nil,
+		luaLoad = luaLoadNow() })
 end
 
 function handlers.speed(c)

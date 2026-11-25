@@ -1,4 +1,4 @@
--- The remote probe's game script (remote.gs.lua's update and handleEvent): one job, the runningCostsSet write in
+-- The remote probe's game script (remote.gs.lua's update and handleEvent): one job (and status's luaLoad, below), the runningCostsSet write in
 -- a game script's Lua state, the way price_probe wrote metadata.cost.price in 2026-11-16 (modelRep.get(id).metadata
 -- written in place from a game script: every worker and the GUI saw the new value, and a purchase paid it).
 --
@@ -43,6 +43,25 @@ end
 local S = {}
 local warned = false
 
+-- status's luaLoad (core.luaLoadKinds): this state's own globals, so the closure is written here
+local function readGlobal(n)
+	if n == "load" then return load elseif n == "loadstring" then return loadstring elseif n == "setfenv" then return setfenv end
+end
+
+-- written into the state (luaLoad) for the GUI's status to read, when the setting is read again and only when the
+-- value changed (no set every few seconds). Off: nothing written, as for everything else here (status: "unread")
+local function writeLuaLoad(state)
+	local kinds = core.luaLoadKinds(readGlobal)
+	local s = state:get()
+	if type(s) ~= "table" then s = {} end
+	local had = type(s.luaLoad) == "table" and s.luaLoad or {}
+	local same = true
+	for _, n in ipairs(core.LUA_LOAD_NAMES) do same = same and had[n] == kinds[n] end
+	if same then return end
+	s.luaLoad = kinds
+	state:set(s)
+end
+
 function S.update(_userParams, state, _dt)
 	local wasAt = cache.at
 	if not enabled() or cache.at == wasAt then return end
@@ -58,6 +77,11 @@ function S.update(_userParams, state, _dt)
 	if not ok and not warned then
 		warned = true
 		say("subscribing failed: " .. tostring(err))
+	end
+	local okL, errL = pcall(writeLuaLoad, state)
+	if not okL and not cache.luaLoadSaid then
+		cache.luaLoadSaid = true
+		say("luaLoad not written: " .. tostring(errL))
 	end
 end
 

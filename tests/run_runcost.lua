@@ -102,7 +102,7 @@ return function(h)
 		eq(a.gameScript, true)
 		eq(table.concat(a.writable, ","), "maintenance.maintenanceScale,maintenance.runningCostScale,maintenance.runningCosts")
 		eq(g.runcostEvents, nil, "no script event for a read")
-		eq(g.gsValue, nil, "the game script's state untouched")
+		eq((g.gsValue or {}).runningCosts, nil, "the game script's state untouched (but status's luaLoad, from its update)")
 		eq(g.runningCostMeta(101).runningCosts, 4000)
 		-- by id, and a limit of the vehicles listed
 		local b = run(g, 2602, "runningCosts", "{ model = 101, limit = 1 }", 20)
@@ -201,7 +201,7 @@ return function(h)
 		gs.handleEvent(nil, st, "", "", "initNewGame", {})
 		gs.handleEvent(nil, st, "", "VehicleModifier", core.RUNCOST_EVENT_WRITE, req)
 		gs.handleEvent(nil, st, "", core.RUNCOST_EVENT_ID, "other", req)
-		eq(g.gsValue, nil); eq(g.runningCostMeta(101).runningCosts, 5000)
+		eq((g.gsValue or {}).runningCosts, nil); eq(g.runningCostMeta(101).runningCosts, 5000)
 		-- once applied, the same req again is dropped (a write is never applied twice)
 		gs.handleEvent(nil, st, "", core.RUNCOST_EVENT_ID, core.RUNCOST_EVENT_WRITE, req)
 		eq(g.runningCostMeta(101).runningCosts, 10000)
@@ -304,5 +304,51 @@ return function(h)
 		truthy(d.ok, d.error); truthy(d.tableError:find("computeFinanceTable"), d.tableError)
 		truthy(d.fleet.runningError:find("std::exception")); eq(d.fleet.running, nil)
 		eq(#r.commands, 0, "finance sends nothing")
+	end)
+
+	test("status luaLoad: the GUI's and the game script's load / loadstring / setfenv; unread when off or no script", function()
+		-- core: each name's type, "unread" when reading raised, all "unread" without a reader; gs values as strings only
+		local k = core.luaLoadKinds(function(n) if n == "load" then return print elseif n == "setfenv" then error("strict") end end)
+		eq(k.load, "function"); eq(k.loadstring, "nil"); eq(k.setfenv, "unread")
+		for _, bad in ipairs({ nil, {}, "load" }) do
+			local u = core.luaLoadKinds(bad)
+			eq(u.load, "unread"); eq(u.loadstring, "unread"); eq(u.setfenv, "unread")
+		end
+		for _, v in ipairs({ nil, {}, "x", { load = 5, loadstring = true } }) do
+			local u = core.luaLoadGs(v)
+			eq(u.load, "unread"); eq(u.loadstring, "unread"); eq(u.setfenv, "unread")
+		end
+		eq(core.luaLoadGs({ load = "function", setfenv = "nil" }).loadstring, "unread")
+		-- gameScript on: the script writes its own into the state once, beside what was there; status reads both
+		local g = game({})
+		g.gsValue = { runningCosts = { req = 5 } }
+		local sets, set = 0, g.gsState.set
+		g.gsState.set = function(self, v) sets = sets + 1; return set(self, v) end
+		local was = _G.loadstring
+		_G.loadstring = nil -- this run's Lua has all three: one taken away, for the script and the GUI alike
+		local okRun, s = pcall(run, g, 9301, "status", "{}")
+		_G.loadstring = was
+		truthy(okRun, s)
+		truthy(s.ok, s.error)
+		eq(s.luaLoad.gui.load, "function"); eq(s.luaLoad.gui.loadstring, "nil"); eq(s.luaLoad.gui.setfenv, "function")
+		eq(s.luaLoad.gs.load, "function"); eq(s.luaLoad.gs.loadstring, "nil"); eq(s.luaLoad.gs.setfenv, "function")
+		eq(g.gsValue.runningCosts.req, 5, "the state's other keys kept")
+		eq(sets, 1, "written once, not at each read of the setting")
+		g.gs._resetForTests() -- (the setting is read again after 5 s of wall clock: as a new worker instead)
+		frames(g, 2)
+		eq(sets, 2, "written again when a value changed (loadstring back)")
+		eq(g.gsValue.luaLoad.loadstring, "function")
+		g.gs._resetForTests()
+		frames(g, 2)
+		eq(sets, 2, "and not again")
+		-- gameScript off: nothing written; the GUI's still read
+		local off = game({}, { gameScriptOff = true })
+		local s2 = run(off, 9302, "status", "{}")
+		eq(off.gsValue, nil, "off: no state written")
+		eq(s2.luaLoad.gui.load, "function"); eq(s2.luaLoad.gs.load, "unread"); eq(s2.luaLoad.gs.setfenv, "unread")
+		-- no game script at all (the state never handed over): unread
+		local bare = h.vehicleGame({})
+		local s3 = run(bare, 9303, "status", "{}")
+		eq(s3.luaLoad.gs.loadstring, "unread"); eq(s3.luaLoad.gui.loadstring, "function")
 	end)
 end

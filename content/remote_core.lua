@@ -4938,6 +4938,31 @@ M.COMMANDS.calendarSpeed = true
 M.COMMANDS.calendarSpeedSet = true
 M.CHANGES_GAME.calendarSpeedSet = true
 
+-- status's luaLoad: whether a Lua state has load / loadstring / setfenv (asked before any eval is built on them).
+-- read(name) is the caller's own closure over its globals (each Lua state has its own; core's would be core's), and
+-- is called under pcall: TF3's init.lua may raise on a global it does not know. Each value is type(v), or "unread"
+-- when reading it raised; read itself not a function: all "unread"
+M.LUA_LOAD_NAMES = { "load", "loadstring", "setfenv" }
+function M.luaLoadKinds(read)
+	local out = {}
+	for _, n in ipairs(M.LUA_LOAD_NAMES) do
+		local ok, v = false, nil
+		if type(read) == "function" then ok, v = pcall(read, n) end
+		out[n] = ok and type(v) or "unread"
+	end
+	return out
+end
+
+-- the game script's as status answers it: a table of the three names' kinds as strings, else all "unread"
+function M.luaLoadGs(v)
+	local out = {}
+	for _, n in ipairs(M.LUA_LOAD_NAMES) do
+		local k = type(v) == "table" and v[n] or nil
+		out[n] = type(k) == "string" and k or "unread"
+	end
+	return out
+end
+
 -- the slider's steps, as the base lists them (a value between them is shown, inserted into the list, by the base too)
 M.CALENDAR_FACTORS = { 0, 0.25, 0.5, 1, 2, 4 }
 -- a millisPerDay given directly: 0 (stands) or within these bounds. The base's slowest step is 4x the default

@@ -105,6 +105,11 @@ python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # how often the mod reads 
 (`getEstimatedMaximumGameSpeed`, see Safety): a number above it gives that estimate, not more. How high the
 estimate is depends on the save.
 
+`status` also answers `luaLoad`: `gui` and `gs`, each `load`, `loadstring`, `setfenv` as `type()` reads them in that
+Lua state (the GUI's, and the game script's as it writes them in its state, only with the setting `gameScript` on;
+`"unread"` when they cannot be read: off, in the main menu, or before the script ran). Written 2026-11-26, not
+checked in a game yet.
+
 In game, the mod adds ×8 and ×16 buttons to the right of the base ⏸ ▶ ▶▶ ▶▶▶ (0/1/2/4), in the same style. The
 current speed lights up as with the base buttons. A ×8 / ×16 button sets that speed as it is, even above the game's
 estimated maximum (unlike `speed`, which caps: the player chose it). A base button goes back to the base speeds. The

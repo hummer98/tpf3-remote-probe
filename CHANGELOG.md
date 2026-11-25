@@ -18,6 +18,9 @@ is separate and does not follow the release version.
   (and `to` with `to-node`) the same way, which was refused before. A player's narrow road joined beside a wide
   one's lanes was read with its end 4.5 m off its node, and there was no way to build that. Not checked in a game
   yet whether the engine takes such an end.
+- `status` answers `luaLoad`: whether `load`, `loadstring` and `setfenv` exist in the GUI's Lua state and in the game
+  script's (`gui` / `gs`, each `type()` of the three; `gs` is `"unread"` unless the setting `gameScript` is on, as
+  the script writes it into its state). Asked before building anything that evaluates Lua text on them.
 - `lanes`: each piece also gives `tangent0` / `tangent1`, `node0Position` / `node1Position` and `endOffset0` /
   `endOffset1` (each end's point less its node's), so an end beside its node can be seen before building one.
 

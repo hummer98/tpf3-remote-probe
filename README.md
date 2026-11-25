@@ -113,7 +113,7 @@ One line each; every command has `--help`, and the [reference](docs/REFERENCE.md
 
 | Group | Commands |
 |---|---|
-| Time | `status` (date, speed, mods), `speed N` (beyond the UI's 4x, capped at the game's estimate), `pause`, `calendar-speed [0.25]` (the base's calendar slider, 0.25x-4x: read, or set), `run --days / --months / --until` (then pause), `steps N` (simulation steps, a debug command), `poll` (how often the mod reads) |
+| Time | `status` (date, speed, mods; `luaLoad`: whether load / loadstring / setfenv exist), `speed N` (beyond the UI's 4x, capped at the game's estimate), `pause`, `calendar-speed [0.25]` (the base's calendar slider, 0.25x-4x: read, or set), `run --days / --months / --until` (then pause), `steps N` (simulation steps, a debug command), `poll` (how often the mod reads) |
 | Game | `launch` / `restart` (with `--load SAVE` or `--new ...`), `quit`, `load SAVE` (with `--add` / `--remove` / `--param`), `save NAME`, `saves`, `info SAVE` (its mods and settings), `newgame` (from the main menu), `state` (from the game log; works in the menu), `company` |
 | Reading | `entities`, `stations` (`--catchment`), `lines` (`--problems`), `depots`, `vehicles` (`--state`), `models`, `persons`, `industry-workers`, `industry-stocks`, `finance`, `running-costs`, `around` (what is near a point), `lanes`, `parcels`, `water`, `reach` (can a place be got to), `stock list` |
 | Building (test maps) | `build` (a construction; `--remove`), `fit` (where a construction fits), `road` (a straight or curved piece; `--batch`), `lights --off`, `terrain`, `town` (and `town connections` / `connect` / `develop` / `size`), `connect` (track or road between two ends, with Track Connector) |
