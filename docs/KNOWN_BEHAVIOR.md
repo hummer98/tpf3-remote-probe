@@ -87,6 +87,22 @@ Not checked yet:
 - `modhub publish` of an update (see "Uploading a mod"). `modhub status`, `validate` and a first upload were
   checked on 2026-11-22.
 
+## Proposals sent from a game script (a mod's script event)
+
+Checked in game on 2026-11-26.
+
+- A game script's `handleEvent` can send `api.cmd.sendCommand(api.cmd.make.buildProposal(...)` /
+  `makeWorldBuildProposalCmd(...), callback)`, and the callback runs. The base's on-road stop (`small_old.con`) was
+  placed this way, with `replaceSegment` and a `SimpleStreetProposal.EdgeObject`. The answer's `resultEntities` came
+  back empty.
+- An edge-object `.con` that holds a subconstruction with a stock (an OUTPUT `stockList`), sent the same way,
+  crashed the game natively. No Lua error was logged. Whether the stock is the cause was not isolated.
+- An off-road construction (placed with `build`) can hold a station and a stock-only subconstruction (no industry).
+  A game script can write that stock's amount.
+- A construction built with `build --no-owner` got a road joined to its mouth with `road --from-node`. A line
+  through its station could be made, but putting a vehicle on that line was refused with "Unkown" (sic). In the
+  picture its mouth showed a no-entry sign. The cause is not known.
+
 ## Notes
 
 - **Exchange folder.** `recordings` is used first. The base lists every file in `mod_presets` as a mod preset (no

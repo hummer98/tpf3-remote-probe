@@ -84,6 +84,21 @@
 - `modhub publish` の更新 (「MOD を上げる」を参照)。`modhub status`・`validate`・最初のアップロードは 2026-11-22 に
   確認済み。
 
+## ゲームスクリプトから送る提案（MOD の script event）
+
+2026-11-26 にゲーム内で確認。
+
+- ゲームスクリプトの `handleEvent` から、`api.cmd.sendCommand(api.cmd.make.buildProposal(...)` /
+  `makeWorldBuildProposalCmd(...), callback)` を送れる。callback も呼ばれる。バニラの路上の停留所（`small_old.con`）
+  は、`replaceSegment` と `SimpleStreetProposal.EdgeObject` を使って、この形で置けた。答えの `resultEntities`
+  は空だった。
+- 在庫（OUTPUT の `stockList`）を持つ subconstruction を入れた edge object の `.con` を、同じ形で送ると、ゲームが
+  ネイティブのクラッシュで落ちた。Lua のエラーは出ない。在庫が原因かどうかは、切り分けていない。
+- 道路の外に置く建設物（`build` で置く）には、駅と、在庫だけの subconstruction（産業なし）を同居させられる。その
+  在庫の量は、ゲームスクリプトから書ける。
+- `build --no-owner` で建てた建設物の口に、`road --from-node` で道路をつないだ。その駅を通る路線は作れたが、車両を
+  路線に入れると "Unkown"（原文のまま）で断られた。絵では、口に進入禁止の印が出ていた。原因は分かっていない。
+
 ## メモ
 
 - **交換フォルダ。** `recordings` を最初に使います。本体は `mod_presets` の全ファイルを MOD プリセットとして並べる
