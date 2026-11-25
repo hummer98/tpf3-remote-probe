@@ -1876,9 +1876,11 @@ end
 -- of a stub). streetConnectorSystem.getConstructionEntityForNode gives the construction for the nodes of its frozen
 -- pieces (the mouth too) and -1 for the far ends of free pieces (spec.armEndsOwned: those too); spec.noNodeOwner:
 -- it is not there (the probe goes through getConstructionEntityForEdge: the construction for its frozen pieces, -1
--- for its free ones). Like the engine (a guess from Overpass Builder's refusal and a forest in a game, 2026-11-23): a
--- construction's node set-up removed or added is an assertion; a piece to a frozen node, or a new node on an old
--- node (within 0.01 m), is refused (Construction not possible).
+-- for its free ones). A construction's nodes have a set-up with no lane connections (a bus terminal's mouth read so
+-- in a game, 2026-11-26); one that is not frozen takes a set-up removed and added as a town node does (a guess: not
+-- checked in a game yet). Like the engine (a guess from Overpass Builder's refusal): a frozen node's set-up removed
+-- or added is an assertion; a piece to a frozen node, or a new node on an old node (within 0.01 m), is refused
+-- (Construction not possible).
 function M.installBuild(g, spec)
 	spec = spec or {}
 	local cons = spec.cons or {}
@@ -2227,7 +2229,7 @@ function M.installBuild(g, spec)
 		-- a lane it has
 		local removing, adding = {}, {}
 		for _, n in ipairs(street.nodeConfigsToRemove or {}) do
-			if g.conNode[n] then crash("nodeConfigsToRemove: node " .. tostring(n) .. " is a construction's") end
+			if g.frozenNode[n] then crash("nodeConfigsToRemove: node " .. tostring(n) .. " is a construction's frozen node") end
 			if not (g.nodes[n] and g.nodeConfig[n]) then crash("nodeConfigsToRemove: node " .. tostring(n) .. " has no set-up") end
 			removing[n] = true
 		end
@@ -2237,7 +2239,7 @@ function M.installBuild(g, spec)
 			local n = nc.entity
 			if not (newNodes[n] or g.nodes[n]) then crash("nodeConfigsToAdd: no node " .. tostring(n)) end
 			if adding[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " twice") end
-			if g.conNode[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " is a construction's") end
+			if g.frozenNode[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " is a construction's frozen node") end
 			if g.nodes[n] and g.nodeConfig[n] and not removing[n] then crash("nodeConfigsToAdd: node " .. tostring(n) .. " keeps its set-up") end
 			adding[n] = true
 			for _, lc in ipairs((nc.comp or {}).laneConnections or {}) do
