@@ -9113,6 +9113,8 @@ test("road --ignore-errors: sent with ignoreErrors on, built past a non-critical
 	eq(a2.unforced.errors[1], "Collision", "what the build without --ignore-errors was refused for")
 	eq(a2.unforced.collisionEntities[1], 4343); eq(a2.unforced.collisions, 1); eq(a2.unforcedCritical, nil)
 	eq(a2.unforced.refused, true, "a message, critical or not: the unforced build was refused")
+	eq(a2.unforced.verdict, "refused", "a message with critical not set: the unforced verdict says refused too")
+	eq(a2.errorsRefusal, nil, "built: no errorsRefusal left on the answer")
 	truthy(a2.unforcedContexts.own and a2.unforcedContexts.build, "both contexts")
 	truthy(a2.edge and g.edges[a2.edge], "the piece stands"); eq(#a2.nodes, 2)
 	eq(#g.buildCmds, 2, "asked of the engine (makeProposalData), sent once")

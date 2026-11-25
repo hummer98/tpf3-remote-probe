@@ -496,4 +496,42 @@ return function(t)
 		eq(rg.buildCmds[#rg.buildCmds].context.gatherFields, true)
 		truthy(not g.crashed, g.crashed); truthy(not rg.crashed, rg.crashed)
 	end)
+
+	-- 2026-11-26 (probe-flat-base-t2): fit said buildable for a road depot over a road's node (17078) and a piece
+	-- just built (33354); the build was refused "衝突" twice. Its dry run: critical false, messages ["衝突"], the two
+	-- in collisionEntities. A message with critical not set refuses a build sent without ignoreErrors, so the check
+	-- says refused for it too
+	test("build / road --dry-run --engine-check: messages with critical not set refuse it, as the build is refused", function()
+		local SOFT = function(x, y) return y > 3000 and 17078 or nil end
+		local g = buildWorld({ softBlockedCon = SOFT })
+		local d = buildRun(g, 2810, string.format('{ res = %q, at = "0,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.buildable, false); eq(d.verdict, "refused"); eq(d.critical, nil, "the engine's critical kept")
+		eq(d.errorsRefusal, true); eq(d.errors[1], "衝突"); eq(d.collisions[1], 17078)
+		truthy(d.error:find("would refuse it: 衝突 (errorState.messages, critical not set", 1, true), d.error)
+		eq(d.engineContexts.own.verdict, "refused"); eq(d.engineContexts.build.verdict, "refused")
+		eq(d.engineContexts.build.errorsRefusal, true)
+		truthy(d.footprint, "the box still given")
+		eq(#g.buildCmds, 0, "nothing sent")
+		-- the build there: refused by the engine, as the check said
+		local a = buildRun(g, 2811, string.format('{ res = %q, at = "0,3600" }', RAMP))
+		eq(a.ok, false); truthy(a.error:find("refused it: 衝突", 1, true), a.error); eq(next(g.built), nil)
+		-- away from it: buildable, no errorsRefusal, and it is built
+		d = buildRun(g, 2812, string.format('{ res = %q, at = "0,100", dryRun = true, engineCheck = true }', RAMP))
+		truthy(d.ok, d.error); eq(d.verdict, "buildable"); eq(d.buildable, true); eq(d.errorsRefusal, nil)
+		a = buildRun(g, 2813, string.format('{ res = %q, at = "0,100" }', RAMP))
+		truthy(a.ok, a.error); eq(a.errorsRefusal, nil)
+		-- critical with messages: a critical refusal, no errorsRefusal
+		g = buildWorld({ blocked = function(x, y) return y > 3000 and 601 or nil end })
+		d = buildRun(g, 2814, string.format('{ res = %q, at = "0,3600", dryRun = true, engineCheck = true }', RAMP))
+		eq(d.ok, false); eq(d.critical, true); eq(d.errorsRefusal, nil)
+		truthy(d.error:find("would refuse it: Collision (dry run", 1, true), d.error)
+		-- a road piece over a soft collision: its dry run refused too (the build without --ignore-errors is)
+		local r = roadWorld({ softBlocked = function(x, y) return y > 1000 and 4343 or nil end })
+		local b = roadRun(r, 2815, '{ from = "0,1500", to = "0,1600", dryRun = true, engineCheck = true }')
+		eq(b.ok, false); eq(b.verdict, "refused"); eq(b.buildable, false); eq(b.errorsRefusal, true)
+		truthy(b.error:find("Collision (errorState.messages, critical not set", 1, true), b.error)
+		local rb = roadRun(r, 2816, '{ from = "0,1500", to = "0,1600" }')
+		eq(rb.ok, false)
+		truthy(not g.crashed, g.crashed); truthy(not r.crashed, r.crashed)
+	end)
 end

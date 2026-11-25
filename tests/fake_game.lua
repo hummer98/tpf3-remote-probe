@@ -1869,7 +1869,9 @@ end
 -- its errorState critical false with the same infos, the log "ProposalData error: 陸上に配置");
 -- spec.landInfosBuildOnly: not in makeProposalData alone (the engine's own context); spec.landInfosOwnOnly: only there
 -- spec.softBlocked(x, y): a road piece's collision named with critical false: refused without ignoreErrors, built
--- with it; spec.ignoreCritical: ignoreErrors builds past a critical error too (the API says it does not)
+-- with it; spec.ignoreCritical: ignoreErrors builds past a critical error too (the API says it does not);
+-- spec.softBlockedCon(x, y): the same for a construction at its point (2026-11-26: a road depot over a road's node
+-- and a new piece, the check critical false with messages "衝突" and the build refused for it)
 -- The octree finds the constructions in g.built by their transf's position.
 -- A construction's shape may have free pieces (shape.free = { { i, j } }: an industry's arms, street_cross_01 / 02,
 -- not among its frozenEdges) and frozen nodes (shape.frozenNodes = { i }: CONSTRUCTION.frozenNodes, the inner end
@@ -2373,6 +2375,11 @@ function M.installBuild(g, spec)
 				data.errorState.critical = true
 				table.insert(data.errorState.messages, "Collision")
 				table.insert(data.collisionInfo.collisionEntities, { entity = hit })
+			end
+			local soft = spec.softBlockedCon and spec.softBlockedCon(ce.transf[13], ce.transf[14])
+			if soft then
+				table.insert(data.errorState.messages, "衝突")
+				table.insert(data.collisionInfo.collisionEntities, { entity = soft })
 			end
 			local onWater = spec.landOnly and spec.landOnly(ce.transf[13], ce.transf[14])
 			local own = ctx and ctx.engineOwn

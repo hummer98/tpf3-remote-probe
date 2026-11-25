@@ -472,6 +472,17 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   run had `海岸線に配置` ("place on the coastline") the same way. Infos that do not refuse a build are not seen yet: if
   one turns up, the check says refused where the build would go. `fit` also skips a place whose check is buildable
   with infos (an older mod's answer).
+- `errorState.messages` (the check's `errors`) with `critical` not set count as a refusal in the same way:
+  `buildable: false`, `verdict: "refused"`, `errorsRefusal: true`, and `error` says the messages with
+  `(errorState.messages, critical not set: ...)`; `critical` is left out. Why: a build is sent without ignoreErrors
+  (all but `road --ignore-errors`), and the engine builds past non-critical errors only with it. Measured
+  2026-11-26: a road depot over a road's node and a piece just built was `critical false` with messages `衝突`
+  ("collision") in the check, and the build was refused `衝突` twice; before this the check, and `fit`, said
+  `buildable` there. `fit` also skips a place whose check is buildable with messages (an older mod's answer). So
+  `road --ignore-errors --dry-run` over such errors answers `ok: false` (its verdict is the unforced one), and a
+  refused build's answer keeps `errorsRefusal`. The verdict is still the stricter of the two contexts, so a dry run
+  with `--join-streets` or `--remove-buildings` may be refused where only the engine's own context (no streets
+  joined, no buildings taken) has such messages. Not checked in a game yet with this version.
 - `--collision-detail` (`build` and `road`; with a build, or with `--dry-run --engine-check`; off by default, the
   answer grows): the engine's whole `ProposalData` copied out into `collisionDetail`, field by field as the game's
   types name them (`api/tealdef/api/type.d.tl` `ProposalData`): `collisionInfo` (`collisionEntities[].entity`,
@@ -1260,7 +1271,8 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   build: its from snaps to the mouth's new node; the road piece is not asked of the engine), `refusedFirst` (the places the engine refused, with their `hits`). A place the
   engine calls buildable only with warnings, or with town buildings it would take, is not taken: that verdict is
   in the engine's own context, and the build gathers no fields or buildings (a road refused so, 2026-11-23). A
-  place with `errorState.infos` only is refused too (see `build`: such a build is refused, 2026-11-23). An
+  place with `errorState.infos` only is refused too (see `build`: such a build is refused, 2026-11-23), and so is
+  one with `errorState.messages` and `critical` not set (see `build`: refused `衝突`, 2026-11-26). An
   engine that cannot be asked stops it (`checked: false`), not counted as a refusal. None free: `ok: false`, "no
   free place", and `blockers` (what stood in the way of most places: id, kind, name, place, count);
   `tooFewHouses` counts free places with too few houses. At most 200000 places are tried (each against the
