@@ -179,6 +179,28 @@ not are in [Known behaviour](docs/KNOWN_BEHAVIOR.md).
 [AGENTS.md](AGENTS.md) is written for coding agents (Claude Code, Codex, ...): how to read the answers, a first
 round, and the rules to keep. Point your agent at it.
 
+## MCP server
+
+`tools/tf3ctl_mcp.py` offers the same commands as MCP (Model Context Protocol) tools, for clients that take MCP
+servers. It is a thin wrapper over stdio: each tool runs one `tf3ctl.py` command and returns its JSON answer, exit
+code and stderr. The tool list is read from `tf3ctl.py`'s own options, and tf3ctl's checks (owner, test saves, coop,
+the configuration file) apply as on the command line. Python 3.8+, standard library only. Claude Code and Codex can
+also run `tf3ctl.py` directly; the rules in [AGENTS.md](AGENTS.md) are the same either way.
+
+```
+claude mcp add tf3ctl -- python3 /path/to/tools/tf3ctl_mcp.py --owner my-agent
+```
+
+- `--owner` (else `$TF3CTL_OWNER`) is sent with every command. `--tf3ctl PATH` runs another copy of the tool.
+- Tool names are the commands with `_` for `-` and spaces: `keep_log`, `stock_set`, `town_develop`. Arguments are
+  the long options without `--` (`dry_run: true`, `add: ["my_mod"]`).
+- Left out: `pointer` (it moves this machine's pointer) and `modhub publish` / `publish-clear` (uploading is a
+  person's step). `--other-owner-ok` is not offered: on a game
+  that a person started, use `coop start` with them. `vehicles` / `persons` with `every` need `count`.
+- Calls run one at a time: a long call (`run`) holds the others, and a cancel from the client does not stop it.
+- A call waits as long as the command's own `--timeout` values allow. Long commands (`launch`, `run`) may need a
+  longer tool timeout in the client (Claude Code: the `MCP_TOOL_TIMEOUT` environment variable, in ms).
+
 ## More
 
 - [docs/REFERENCE.md](docs/REFERENCE.md): every command, the configuration file, the mod settings, the

@@ -24,6 +24,10 @@ is separate and does not follow the release version.
   evaluates Lua text on them.
 - `lanes`: each piece also gives `tangent0` / `tangent1`, `node0Position` / `node1Position` and `endOffset0` /
   `endOffset1` (each end's point less its node's), so an end beside its node can be seen before building one.
+- `tools/tf3ctl_mcp.py`: an MCP server (stdio, standard library only) that offers tf3ctl's commands as tools, so
+  clients that take MCP servers can use the tool, and people looking for an MCP server find it. A thin wrapper: the
+  tool list comes from tf3ctl's own parser and every call runs `tf3ctl.py` with its checks; `pointer` and
+  `modhub publish` / `publish-clear` are left out. README: "MCP server".
 
 ## [1.0.2] - 2026-11-25
 

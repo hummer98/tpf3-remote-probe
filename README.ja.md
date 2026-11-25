@@ -170,6 +170,28 @@ MOD は自分の命令を足せます。命令の表を返す `content/remote_pr
 [AGENTS.md](AGENTS.md) (英語) はコーディングエージェント (Claude Code、Codex など) 向けです。答えの読み方、最初の一周、
 守る決まりが書いてあります。エージェントにはこれを読ませてください。
 
+## MCP サーバー
+
+`tools/tf3ctl_mcp.py` は、同じ命令を MCP (Model Context Protocol) のツールとして見せます。MCP のサーバーを使える
+クライアント向けです。stdio の薄い包みで、ツール 1 つが `tf3ctl.py` の命令を 1 回動かし、JSON の答え・終了コード・
+stderr を返します。ツールの一覧は `tf3ctl.py` 自身のオプションから作り、tf3ctl の検査 (owner、試験用のセーブ、coop、
+設定ファイル) はコマンドラインと同じく効きます。Python 3.8 以上、標準ライブラリだけです。Claude Code と Codex は
+`tf3ctl.py` をそのまま使うこともできます。どちらでも [AGENTS.md](AGENTS.md) の決まりは同じです。
+
+```
+claude mcp add tf3ctl -- python3 /path/to/tools/tf3ctl_mcp.py --owner my-agent
+```
+
+- `--owner` (なければ `$TF3CTL_OWNER`) を毎回の命令に付けます。`--tf3ctl PATH` で別の写しのツールを動かします。
+- ツールの名前は命令の `-` と空白を `_` にしたものです: `keep_log`、`stock_set`、`town_develop`。引数は長いオプションから
+  `--` を取ったものです (`dry_run: true`、`add: ["my_mod"]`)。
+- 外したもの: `pointer` (この機械のポインタを動かす) と `modhub publish` / `publish-clear` (アップロードは人の手順)。
+  `--other-owner-ok` も出していません。人が起動したゲームでは、その人と `coop start` で。`vehicles` / `persons` の
+  `every` には `count` が要ります。
+- 呼び出しは 1 つずつです。長い呼び出し (`run`) の間はほかを待たせ、クライアントからの取り消しでは止まりません。
+- 呼び出しは、命令自身の `--timeout` の値のぶんだけ待ちます。長い命令 (`launch`、`run`) では、クライアントのツールの
+  時間切れを延ばす必要があるかもしれません (Claude Code: 環境変数 `MCP_TOOL_TIMEOUT`、ミリ秒)。
+
 ## ほかの文書
 
 - [docs/REFERENCE.ja.md](docs/REFERENCE.ja.md): 全部の命令、設定ファイル、MOD の設定、環境変数、テスト、実装メモ。
