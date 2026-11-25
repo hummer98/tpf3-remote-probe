@@ -387,7 +387,8 @@ function M.new(ctx)
 				v = ok and tonumber(v) or nil
 				if v and v >= 0 then
 					local c = comp(v, "CONSTRUCTION")
-					-- (a construction that does not read: taken as the node's, so that its set-up is left alone)
+					-- (a construction that does not read: taken as the node's, so that road refuses it: its frozen
+					-- nodes cannot be told)
 					if not c or setOf(ids(core.field(c, "frozenEdges")))[e] then owner, by = v, "frozenEdge"; break end
 				end
 			end
@@ -405,7 +406,7 @@ function M.new(ctx)
 			for _, e in ipairs(segs or {}) do if not frozenE[e] then frozen = false end end
 		end
 		return { construction = owner, fileName = c and tostring(core.field(c, "fileName")) or nil, frozen = frozen,
-			by = by, frozenNodesUnread = fn == nil or nil }, unread
+			by = by, frozenNodesUnread = fn == nil or nil, unreadConstruction = c == nil or nil }, unread
 	end
 
 	-- a node as the answers show it: id, position, how many street pieces meet there, whether it has its set-up
@@ -1404,11 +1405,23 @@ function M.new(ctx)
 	-- the rules here do (a vehicle lane counted over all laneConfigs: a number that points at no vehicle lane, or
 	-- past the last lane, says the engine counts otherwise, and a wrong number could kill the game)
 	--
-	-- A construction's node (constructionOfNode: an industry's stub end, the far end of one of its arms when the
-	-- engine counts it the construction's) is joined without touching its set-up: { keep = con }. Overpass Builder
-	-- refuses before sending any proposal that takes a construction's node set-up off (overpass_probe.script.tl,
-	-- "construction-owned"); whether the engine joins the new piece's lanes there itself is not checked in a game.
-	-- A construction's frozen node (the stub's inner end) is refused: the engine refused a road joined there.
+	-- A construction's node that is not frozen (constructionOfNode: a station's or depot's mouth, an industry's
+	-- stub end, the far end of one of its arms when the engine counts it the construction's) is joined the same
+	-- way, its set-up remade with the old connections kept and the new piece's added (the answer's plan also
+	-- names the construction). It used to be joined with its set-up left as it was, after Overpass Builder's
+	-- refusal of a proposal that takes a construction-owned node's set-up off (overpass_probe.script.tl); in a
+	-- game (2026-11-26) a bus terminal's mouth joined that way kept an empty laneConnections, showed a no-entry
+	-- sign, and no vehicle could be put on a line through it. road_tunnel_ramp measured the same before: at a
+	-- construction's node left alone, a road of another type let pedestrians on and no car. No API computes the
+	-- connections (engine.d.tl / util.d.tl / cmd.d.tl have none, and the proposal data has no street proposal),
+	-- so they are written here as at a town node. Sidewalks are not among them (LaneConnection has no
+	-- pedestrian flag; the engine joins those itself, as it did at the node left alone). Overpass Builder's
+	-- fence is kept where the engine owns the node outright: a frozen node (the stub's inner end) is refused, as
+	-- the engine refused a road joined there. Not checked in a game yet whether the engine takes the remade
+	-- set-up at a construction's mouth (e2e to come).
+	-- At a construction's node whose old connections are empty while two or more pieces meet there (the engine's
+	-- own pieces joined without explicit connections), the connections among those pieces are written too: the
+	-- new set-up replaces the empty one, and the new piece's connections alone would leave the old pieces unjoined.
 	-- news: the new pieces at the node (one for road; a batch's every piece that ends there)
 	local function planJoin(endp, news)
 		local node = endp.node
@@ -1428,11 +1441,15 @@ function M.new(ctx)
 					"(the build answer's connectable: kind mouth or arm; road --inspect-node %d shows this node)", node,
 					con.construction, tostring(con.fileName), node)
 			end
-			return { keep = con, pieces = #others, via = via }
+			-- (its frozen nodes cannot be told then, and a frozen node's set-up is not to be remade)
+			if con.unreadConstruction then
+				return nil, string.format("node %d is construction %d's, whose CONSTRUCTION component could not be " ..
+					"read: whether the node is one it keeps (frozen) cannot be told", node, con.construction)
+			end
 		end
-		if conUnread then
-			return nil, "whether node " .. node .. " is a construction's could not be read (" .. conUnread .. "); its " ..
-				"set-up is not to be remade if it is"
+		if conUnread and not con then
+			return nil, "whether node " .. node .. " is a construction's could not be read (" .. conUnread .. "); a " ..
+				"construction's frozen node's set-up is not to be remade"
 		end
 		local rules = nodeRules(node, others, news)
 		if rules == nil then return nil, "the lanes of the pieces at node " .. node .. " could not be read" end
@@ -1464,7 +1481,18 @@ function M.new(ctx)
 			return nil, "the connections of node " .. node .. " number lanes otherwise than this command (" .. bad ..
 				" is no vehicle lane when all lanes are counted)"
 		end
-		return { rules = rules, old = old, via = via }
+		if con and #others >= 2 then
+			local okN, nOld = pcall(function() return #core.toList(old.laneConnections) end)
+			if not okN then return nil, "the connections of node " .. node .. " could not be read" end
+			if nOld == 0 then
+				local all = {}
+				for _, o in ipairs(others) do all[#all + 1] = o end
+				for _, p in ipairs(news) do all[#all + 1] = p end
+				rules = nodeRules(node, {}, all)
+				if rules == nil then return nil, "the lanes of the pieces at node " .. node .. " could not be read" end
+			end
+		end
+		return { rules = rules, old = old, via = via, con = con, pieces = #others }
 	end
 
 	-- the road pieces near either end and the middle, by id: taken before sending, so a piece found afterwards
@@ -1530,9 +1558,10 @@ function M.new(ctx)
 	local NOTE_BRIDGE = "sent as a bridge piece (BaseEdge type BRIDGE, typeIndex this type's id); not checked in a " ..
 		"game yet whether the engine takes it as one (pillars, abutments, a bridge low over the ground): look at it " ..
 		"(frame, around --kinds street --lanes)"
-	local NOTE_KEEP = "joined to a construction's node: its junction set-up is the construction's and was left as it " ..
-		"is (neither removed nor remade); whether the engine joins the new piece's lanes there is not checked in a " ..
-		"game yet: look at it, and whether vehicles take the new piece"
+	local NOTE_CON = "joined to a construction's node (not a frozen one): its junction set-up was remade as a town " ..
+		"node's, its old connections kept and the new piece's lanes joined to the construction's pieces (sidewalks " ..
+		"left to the engine); not checked in a game yet whether the engine keeps that set-up there: look at it " ..
+		"(road --inspect-node, frame: no no-entry sign) and whether vehicles take the new piece"
 
 	-- what the engine says of a proposal without building it: api.engine.util.proposal.makeProposalData, called
 	-- here in the guiUpdate (the GUI thread: Overpass Builder calls it there with a SimpleProposal alone; Track
@@ -1814,12 +1843,11 @@ function M.new(ctx)
 				for _, e in ipairs(nd.ends) do
 					local endp = endOfPiece(e)
 					endp.piecesFrom = plan.via
-					if plan.keep then
-						endp.construction, endp.constructionFile = plan.keep.construction, plan.keep.fileName
-						endp.pieces, endp.nodeConfigKept = plan.pieces, true
-						P[e[1]].out.caution = NOTE_KEEP
-					else
-						endp.laneRules = #plan.rules
+					endp.laneRules = #plan.rules
+					if plan.con then
+						endp.construction, endp.constructionFile = plan.con.construction, plan.con.fileName
+						endp.pieces = plan.pieces
+						P[e[1]].out.caution = NOTE_CON
 					end
 					if #nd.ends > 1 then endp.sharedBy = #nd.ends end
 				end
@@ -1997,7 +2025,7 @@ function M.new(ctx)
 		end
 		-- junction set-ups: each new node its own (a dead end, or the batch's pieces there joined), each joined node
 		-- its old one plus the new pieces' connections (straight on where it makes two pieces, a junction's where
-		-- more), a construction's node none (its set-up is left as it is). One that cannot be made refuses the
+		-- more), a construction's node (not frozen) likewise (planJoin says why). One that cannot be made refuses the
 		-- command: nothing is sent (a node left without one, or without the new piece, is what killed the game or
 		-- keeps vehicles off the piece)
 		local cfgAdd, cfgRemove = {}, {}
@@ -2009,7 +2037,6 @@ function M.new(ctx)
 					return
 				end
 				local plan = nd.plan
-				if plan.keep then return end
 				-- (the old connections anew: those read from the engine are not to be written, Smart Lanes' notes)
 				local conns = {}
 				for _, lc in ipairs(core.toList(plan.old.laneConnections)) do
@@ -2103,17 +2130,16 @@ function M.new(ctx)
 		-- without one killed the game, 2026-11-23 01:03) have run all the same and are not skipped
 		local force = r.ignoreErrors == true
 		if force then
-			-- a construction's node (its set-up left as it is, NOTE_KEEP): whether the engine joins the new piece's
-			-- lanes there is not checked in a game, and an error it gives there may be what stands between the
-			-- game and a node without lanes for the new piece (as the node without a set-up that killed it): not
-			-- forced (review 2026-11-24)
+			-- a construction's node (its set-up remade, NOTE_CON): whether the engine takes a remade set-up there is
+			-- not checked in a game, and an error it gives there may be what stands between the game and a node
+			-- the engine cannot use (as the node without a set-up that killed it): not forced (review 2026-11-24)
 			for _, nd in ipairs(nodeList) do
-				if nd.plan and nd.plan.keep then
+				if nd.plan and nd.plan.con then
 					local first = nd.ends[1]
-					return fail(c.id, string.format("%s: node %d is construction %d's (its junction set-up is left as " ..
-						"it is): ignoreErrors does not join a construction's node (not checked in a game what the " ..
-						"engine makes of it); build it without --ignore-errors: nothing sent", at(first[1], first[2]),
-						nd.node, nd.plan.keep.construction))
+					return fail(c.id, string.format("%s: node %d is construction %d's: ignoreErrors does not join a " ..
+						"construction's node (not checked in a game what the engine makes of its remade set-up); " ..
+						"build it without --ignore-errors: nothing sent", at(first[1], first[2]),
+						nd.node, nd.plan.con.construction))
 				end
 			end
 			local okV, v, form, both = pcall(engineCheck, sp, r.removeFields, r.removeBuildings, nil, r.collisionDetail)
@@ -2277,8 +2303,10 @@ function M.new(ctx)
 		-- what road would do with this node as an end
 		if con and con.frozen then
 			out.road = "refused: a construction's frozen node"
+		elseif con and con.unreadConstruction then
+			out.road = "refused: a construction's node whose CONSTRUCTION could not be read"
 		elseif con then
-			out.road = "joined, its set-up left as it is (a construction's node)"
+			out.road = "joined, its set-up remade with the new piece's connections (a construction's node)"
 		elseif out.nodeConfig == false then
 			out.road = "refused: no junction set-up"
 		elseif type(out.nodeConfig) ~= "table" then
@@ -2476,8 +2504,8 @@ function M.new(ctx)
 		end
 		local con, unread = constructionOfNode(n, segs)
 		if con then
-			return fail(c.id, string.format("node %d is construction %d's (%s): its junction set-up is the " ..
-				"construction's, and lights does not change it: nothing sent", n, con.construction, tostring(con.fileName)))
+			return fail(c.id, string.format("node %d is construction %d's (%s): lights does not change a " ..
+				"construction's node (not checked in a game what the engine makes of it): nothing sent", n, con.construction, tostring(con.fileName)))
 		end
 		if unread then
 			return fail(c.id, "whether node " .. n .. " is a construction's could not be read (" .. unread .. "): nothing sent")

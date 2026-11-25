@@ -9456,7 +9456,7 @@ test("build: an industry's connectable ends: the stub's mouth (3 pieces) and its
 	truthy(not g.crashed, g.crashed)
 end)
 
-test("road to an industry: an arm's far end joins; the mouth joins with its set-up left alone; the frozen end is refused", function()
+test("road to an industry: an arm's far end joins; the mouth joins with its set-up remade; the frozen end is refused", function()
 	local g, b = forestWorld()
 	local con = b.entity
 	local d = b.construction
@@ -9466,19 +9466,29 @@ test("road to an industry: an arm's far end joins; the mouth joins with its set-
 	local a = roadRun(g, 1031, '{ from = "272.1,159.5", to = "272.1,259.5" }')
 	truthy(a.ok, a.error); eq(a.to.node, arm.node); eq(a.to.laneRules, 2); eq(a.to.nodeConfigKept, nil); eq(a.caution, nil)
 	eq(a.to.piecesFrom, "streetSystem"); eq(#g.nodeConns[arm.node], 2)
-	-- the mouth (the T, 3 pieces, the construction's node): joined, its set-up neither removed nor added
+	-- the mouth (the T, 3 pieces, the construction's node, its old set-up with no connections): joined, its set-up
+	-- taken off and remade: the four pieces joined as a junction (each one's arriving road lane to the other three's
+	-- leaving one: 4 x 3), the old pieces among themselves too (their empty list would leave them unjoined)
 	local before = #g.buildCmds
 	a = roadRun(g, 1032, '{ from = "212.1,159.5", to = "212.1,259.5" }')
-	truthy(a.ok, a.error); eq(a.to.node, mouth.node); eq(a.to.construction, con); eq(a.to.nodeConfigKept, true)
-	eq(a.to.pieces, 3); eq(a.to.laneRules, nil); truthy(a.caution:find("left as it", 1, true), a.caution)
+	truthy(a.ok, a.error); eq(a.to.node, mouth.node); eq(a.to.construction, con); eq(a.to.nodeConfigKept, nil)
+	eq(a.to.pieces, 3); eq(a.to.laneRules, 12); truthy(a.caution:find("remade", 1, true), a.caution)
 	eq(#g.buildCmds, before + 1)
 	local st = getmetatable(getmetatable(g.buildCmds[#g.buildCmds].proposal).store.streetProposal).store
-	eq(#(st.nodeConfigsToRemove or {}), 0, "no set-up taken off")
-	eq(#st.nodeConfigsToAdd, 1); eq(st.nodeConfigsToAdd[1].entity, -1, "only the new node's")
-	eq(g.edges[a.edge].node1, mouth.node)
-	-- dry run to the mouth: the engine's verdict, the same plan
+	eq(#st.nodeConfigsToRemove, 1); eq(st.nodeConfigsToRemove[1], mouth.node, "the mouth's set-up taken off")
+	eq(#st.nodeConfigsToAdd, 2, "the new node's and the mouth's")
+	eq(g.edges[a.edge].node1, mouth.node); eq(#g.nodeConns[mouth.node], 12)
+	local joined = {}
+	for _, lc in ipairs(g.nodeConns[mouth.node]) do joined[lc.segment0 .. ">" .. lc.segment1] = true end
+	for _, p0 in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(mouth.node)) do
+		for _, p1 in ipairs(api.engine.system.streetSystem.getNodeStreetSegments(mouth.node)) do
+			if p0 ~= p1 then truthy(joined[p0 .. ">" .. p1], "piece " .. p0 .. " to " .. p1) end
+		end
+	end
+	-- dry run to the mouth: the engine's verdict, the same plan (the mouth now has 4 pieces and connections: the
+	-- new piece's 2 x 4 added to the ones there)
 	a = roadRun(g, 1033, '{ from = "180,200", to = "212.1,259.5", dryRun = true, engineCheck = true }')
-	truthy(a.ok, a.error); eq(a.checked, true); eq(a.to.nodeConfigKept, true)
+	truthy(a.ok, a.error); eq(a.checked, true); eq(a.to.construction, con); eq(a.to.laneRules, 8)
 	-- the frozen inner end: refused, dry run too, nothing sent or asked
 	local calls, sent = g.proposalDataCalls, #g.buildCmds
 	for i, dry in ipairs({ "false", "true" }) do
@@ -9491,7 +9501,90 @@ test("road to an industry: an arm's far end joins; the mouth joins with its set-
 	truthy(not g.crashed, g.crashed)
 end)
 
-test("road --ignore-errors: a construction's node (its set-up left as it is) is not forced; unforced it joins as before", function()
+-- a bus terminal as a game lays one (2026-11-26): one frozen entrance piece of the town's lanes (sidewalk, road
+-- back, road on, sidewalk) from its mouth (node0, 200,300) in to the frozen inner end (200,310); the mouth's set-up has
+-- no lane connections
+local TERMINAL = "::/station/street/bus_terminal_test.con"
+local function terminalWorld(spec)
+	spec = spec or {}
+	spec.cons = { [TERMINAL] = { cost = 0, shape = { nodes = { { 0, -30, 0 }, { 0, -20, 0 } }, edges = { { 1, 2 } },
+		frozenNodes = { 2 } } } }
+	spec.roads = spec.roads or { nodes = {}, edges = {} }
+	spec.height = spec.height or function() return 0 end
+	spec.streets = spec.streets or { [TOWN_OLD] = { yearTo = 1940, cost = 10 },
+		[TOWN_NEW] = { yearFrom = 1940, cost = 20, perSide = 2 } }
+	spec.year = spec.year or 1950
+	local g = roadWorld(spec)
+	local b = buildRun(g, 1035, string.format('{ res = %q, at = "200,330", noOwner = true }', TERMINAL))
+	truthy(b.ok, b.error)
+	local mouth, conEdge
+	for e in pairs(g.conEdge) do conEdge = e end
+	mouth = g.edges[conEdge].node0
+	return g, b, mouth, conEdge
+end
+
+test("road to a terminal's mouth (a construction's node, other lanes): the set-up remade with the lanes joined each way", function()
+	local g, b, mouth, conEdge = terminalWorld()
+	eq(g.conNode[mouth], b.entity); truthy(not g.frozenNode[mouth]); eq(#(g.nodeConns[mouth] or {}), 0, "empty, as read in a game")
+	local a = roadRun(g, 1036, '{ from = "200,200", to = "200,300", type = "town_new_medium" }')
+	truthy(a.ok, a.error); eq(a.to.node, mouth); eq(a.to.construction, b.entity); eq(a.to.constructionFile, TERMINAL)
+	eq(a.to.pieces, 1); eq(a.to.nodeConfigKept, nil); eq(a.to.laneRules, 4)
+	truthy(a.caution:find("remade", 1, true) and a.caution:find("not checked in a game", 1, true), a.caution)
+	local st = getmetatable(getmetatable(g.buildCmds[#g.buildCmds].proposal).store.streetProposal).store
+	eq(#st.nodeConfigsToRemove, 1); eq(st.nodeConfigsToRemove[1], mouth, "the mouth's old set-up taken off")
+	local entry
+	for _, nc in ipairs(st.nodeConfigsToAdd) do if nc.entity == mouth then entry = nc end end
+	truthy(entry, "and a new one added"); truthy(entry.comp.crosswalks ~= nil, "the old set-up's other fields kept")
+	-- the connections, in the new piece's ids: the terminal's piece (mouth = its node0: lane k is k - 1) brings its
+	-- road-back lane (1) out to the new piece's two leaving lanes; the new piece (mouth = its node1: lane k is
+	-- #lanes - k; lanes: sidewalk, back, back, on, on, sidewalk) brings its two arriving lanes (2, 1) to the
+	-- terminal's road-on lane (2). Every one withRoad, none a tram's, none a sidewalk.
+	local new = a.edge
+	local got = {}
+	for _, lc in ipairs(g.nodeConns[mouth]) do
+		got[#got + 1] = string.format("%d:%d>%d:%d", lc.segment0 == conEdge and 0 or lc.segment0 == new and 1 or -1, lc.lane0,
+			lc.segment1 == conEdge and 0 or lc.segment1 == new and 1 or -1, lc.lane1)
+		eq(lc.withRoad, true); eq(lc.withTram, false)
+	end
+	table.sort(got)
+	eq(table.concat(got, " "), "0:1>1:3 0:1>1:4 1:1>0:2 1:2>0:2")
+	truthy(not g.crashed, g.crashed)
+	-- a second road to the mouth: the first one's connections kept, the new one's added (a junction of three)
+	a = roadRun(g, 1037, '{ from = "300,300", to = "200,300", type = "town_new_medium" }')
+	truthy(a.ok, a.error); eq(a.to.pieces, 2)
+	local kept = 0
+	for _, lc in ipairs(g.nodeConns[mouth]) do
+		if (lc.segment0 == conEdge or lc.segment0 == new) and (lc.segment1 == conEdge or lc.segment1 == new) then kept = kept + 1 end
+	end
+	eq(kept, 4, "the first piece's connections kept"); eq(#g.nodeConns[mouth], 4 + a.to.laneRules)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road to a terminal's mouth: a dry run plans the same and sends nothing; the frozen inner end still refused", function()
+	local g, b, mouth = terminalWorld()
+	local sent = #g.buildCmds
+	local a = roadRun(g, 1038, '{ from = "200,200", to = "200,300", type = "town_new_medium", dryRun = true }')
+	truthy(a.ok, a.error); eq(a.to.construction, b.entity); eq(a.to.laneRules, 4); eq(#g.buildCmds, sent)
+	eq(#(g.nodeConns[mouth] or {}), 0)
+	a = roadRun(g, 1039, '{ from = "300,330", to = "200,310", type = "town_new_medium" }')
+	eq(a.ok, false); truthy(tostring(a.error):find("frozen node", 1, true), tostring(a.error)); eq(#g.buildCmds, sent)
+	-- the construction's CONSTRUCTION does not read: its frozen nodes cannot be told, so the mouth is refused too
+	local gc = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		if kind == api.type.ComponentType.CONSTRUCTION and e == b.entity then return nil end
+		return gc(e, kind)
+	end
+	a = roadRun(g, 1040, '{ from = "200,200", to = "200,300", type = "town_new_medium" }')
+	send(g, 1041, "roadInspect", string.format("{ node = %d }", mouth))
+	frames(g, FIRST + 2)
+	local ins = final(g, 1041)
+	api.engine.getComponent = gc
+	truthy(ins.ok, ins.error); truthy(tostring(ins.road):find("refused", 1, true), tostring(ins.road))
+	eq(a.ok, false); truthy(tostring(a.error):find("whose CONSTRUCTION component could not be read", 1, true), tostring(a.error)); eq(#g.buildCmds, sent)
+	truthy(not g.crashed, g.crashed)
+end)
+
+test("road --ignore-errors: a construction's node is not forced; unforced it joins as before", function()
 	local g, b = forestWorld()
 	local mouth = nodeAt(b.construction.connectable, "mouth")
 	local before, asked = #g.buildCmds, g.proposalDataCalls
@@ -9500,11 +9593,11 @@ test("road --ignore-errors: a construction's node (its set-up left as it is) is 
 	truthy(a.error:find("node " .. mouth.node, 1, true), a.error)
 	eq(#g.buildCmds, before, "nothing sent"); eq(g.proposalDataCalls, asked, "nothing asked")
 	a = roadRun(g, 1091, '{ from = "212.1,159.5", to = "212.1,259.5" }')
-	truthy(a.ok, a.error); eq(a.to.nodeConfigKept, true)
+	truthy(a.ok, a.error); eq(a.to.construction, b.entity); eq(a.to.laneRules, 12)
 	truthy(not g.crashed, g.crashed)
 end)
 
-test("road --align-to-edge to an industry's mouth (a construction's node, 3 pieces): alignEdge picks one; set-up left alone", function()
+test("road --align-to-edge to an industry's mouth (a construction's node, 3 pieces): alignEdge picks one; set-up remade", function()
 	local g, b = forestWorld()
 	local mouth = nodeAt(b.construction.connectable, "mouth")
 	local built = #g.buildCmds -- (the forest itself)
@@ -9519,35 +9612,35 @@ test("road --align-to-edge to an industry's mouth (a construction's node, 3 piec
 	for i, k in ipairs(plain.to.kinks) do
 		local r = roadRun(g, 1043 + i, string.format('{ from = "180,200", to = "212.1,259.5", alignToEdge = "to", alignEdge = %d, dryRun = true }', k.edge))
 		if r.ok then
-			eq(r.to.alignedTo.edge, k.edge); eq(r.to.kinkDeg, 0); eq(r.to.nodeConfigKept, true)
-			truthy(r.caution:find("left as it", 1, true), r.caution)
+			eq(r.to.alignedTo.edge, k.edge); eq(r.to.kinkDeg, 0); eq(r.to.construction, b.entity)
+			truthy(r.caution:find("remade", 1, true), r.caution)
 			took = took or k.edge
 		else
 			truthy(tostring(r.error):find("at most 90", 1, true), tostring(r.error))
 		end
 	end
 	truthy(took, "one of the T's pieces can be followed from this side")
-	-- built: the tangent sent is the one answered, the mouth's set-up untouched
+	-- built: the tangent sent is the one answered, the mouth's set-up remade
 	a = roadRun(g, 1049, string.format('{ from = "180,200", to = "212.1,259.5", alignToEdge = "to", alignEdge = %d }', took))
 	truthy(a.ok, a.error); eq(#g.buildCmds, built + 1)
 	local t1 = g.streetCmds[#g.streetCmds].comp.tangent1
 	truthy(math.abs(t1.x - a.tangent1.x) < 1e-3 and math.abs(t1.y - a.tangent1.y) < 1e-3)
 	local st = getmetatable(getmetatable(g.buildCmds[#g.buildCmds].proposal).store.streetProposal).store
-	eq(#(st.nodeConfigsToRemove or {}), 0, "no set-up taken off")
+	eq(#st.nodeConfigsToRemove, 1); eq(st.nodeConfigsToRemove[1], mouth.node)
 	truthy(not g.crashed, g.crashed)
 end)
 
 test("road to an industry: arm ends the engine counts the construction's, and no getConstructionEntityForNode", function()
-	-- an arm's far end owned by the construction: joined, set-up left alone
+	-- an arm's far end owned by the construction: joined, set-up remade (one old piece: the new one's lanes to it)
 	local g, b = forestWorld({ armEndsOwned = true })
 	local arm = nodeAt(b.construction.connectable, "arm", 142.1)
 	local a = roadRun(g, 1040, '{ from = "142.1,159.5", to = "142.1,259.5" }')
-	truthy(a.ok, a.error); eq(a.to.node, arm.node); eq(a.to.nodeConfigKept, true); eq(a.to.construction, b.entity)
+	truthy(a.ok, a.error); eq(a.to.node, arm.node); eq(a.to.laneRules, 2); eq(a.to.construction, b.entity)
 	-- no getConstructionEntityForNode: through the pieces (a frozen edge at the node): the mouth is still the
 	-- construction's, the inner end still frozen; an arm end (no frozen edge) is joined as a road end
 	g, b = forestWorld({ noNodeOwner = true })
 	a = roadRun(g, 1041, '{ from = "212.1,159.5", to = "212.1,259.5" }')
-	truthy(a.ok, a.error); eq(a.to.nodeConfigKept, true)
+	truthy(a.ok, a.error); eq(a.to.construction, b.entity); eq(a.to.laneRules, 12)
 	a = roadRun(g, 1042, '{ from = "300,300", to = "212.1,270" }')
 	eq(a.ok, false); truthy(tostring(a.error):find("frozen node", 1, true), tostring(a.error))
 	a = roadRun(g, 1043, '{ from = "272.1,159.5", to = "272.1,259.5" }')
@@ -9557,7 +9650,7 @@ test("road to an industry: arm ends the engine counts the construction's, and no
 	a = roadRun(g, 1044, '{ from = "300,300", to = "212.1,270" }')
 	eq(a.ok, false); truthy(tostring(a.error):find("frozen node", 1, true), tostring(a.error))
 	a = roadRun(g, 1045, '{ from = "212.1,159.5", to = "212.1,259.5" }')
-	truthy(a.ok, a.error); eq(a.to.nodeConfigKept, true)
+	truthy(a.ok, a.error); eq(a.to.construction, b.entity); eq(a.to.laneRules, 12)
 	truthy(not g.crashed, g.crashed)
 end)
 
@@ -9585,19 +9678,19 @@ test("road: pieces at a node from the street system; without it (or raising) the
 	truthy(not g.crashed, g.crashed)
 end)
 
-test("the fake: a construction's node set-up taken off or added is an assertion; a piece to a frozen node refused", function()
+test("the fake: a frozen node's set-up taken off or added is an assertion, a mouth's remade is not; a piece to a frozen node refused", function()
 	local g, b = forestWorld()
 	local mouth = nodeAt(b.construction.connectable, "mouth")
 	local inner
 	for n in pairs(g.frozenNode) do inner = n end
-	local function sendWith(node, fill)
+	local function sendWith(node, fill, y0)
 		local sp = api.type.SimpleProposal.new()
 		local e = api.type.SegmentAndEntity.new()
 		local p = g.nodes[node]
 		local nn = api.type.NodeAndEntity.new()
-		nn.entity, nn.comp.position = -1, { x = 400, y = 400, z = 0 }
+		nn.entity, nn.comp.position = -1, { x = 400, y = y0 or 400, z = 0 }
 		e.entity, e.comp.node0, e.comp.node1 = -2, -1, node
-		e.comp.position0, e.comp.position1 = { x = 400, y = 400, z = 0 }, { x = p.x, y = p.y, z = p.z }
+		e.comp.position0, e.comp.position1 = { x = 400, y = y0 or 400, z = 0 }, { x = p.x, y = p.y, z = p.z }
 		e.comp.roadTemplate, e.comp.laneConfigs = TOWN_OLD, g.townLanes()
 		sp.streetProposal.nodesToAdd, sp.streetProposal.edgesToAdd = { nn }, { e }
 		if fill then fill(sp) end
@@ -9607,17 +9700,29 @@ test("the fake: a construction's node set-up taken off or added is an assertion;
 			function(d, success) res = { d = d, success = success } end)
 		return ok, res
 	end
-	local ok = sendWith(mouth.node, function(sp) sp.streetProposal.nodeConfigsToRemove = { mouth.node } end)
-	eq(ok, false); truthy(tostring(g.crashed):find("is a construction's", 1, true), tostring(g.crashed))
+	local ok = sendWith(mouth.node, function(sp) sp.streetProposal.nodeConfigsToRemove = { inner } end)
+	eq(ok, false); truthy(tostring(g.crashed):find("is a construction's frozen node", 1, true), tostring(g.crashed))
 	local entry = api.type.BaseNodeLaneConnectionAndEntity.new()
+	entry.entity = inner
+	ok = sendWith(mouth.node, function(sp) sp.streetProposal.nodeConfigsToAdd = { entry } end)
+	eq(ok, false); truthy(tostring(g.crashed):find("is a construction's frozen node", 1, true), tostring(g.crashed))
+	-- the mouth's set-up added without the old one taken off: as at a town node, an assertion
+	entry = api.type.BaseNodeLaneConnectionAndEntity.new()
 	entry.entity = mouth.node
 	ok = sendWith(mouth.node, function(sp) sp.streetProposal.nodeConfigsToAdd = { entry } end)
-	eq(ok, false); truthy(tostring(g.crashed):find("is a construction's", 1, true), tostring(g.crashed))
+	eq(ok, false); truthy(tostring(g.crashed):find("keeps its set-up", 1, true), tostring(g.crashed))
 	local res
 	ok, res = sendWith(inner)
 	truthy(ok, g.crashed); eq(res.success, false); eq(res.d.resultProposalData.errorState.messages[1], "Construction not possible")
 	ok, res = sendWith(mouth.node)
 	truthy(ok, g.crashed); eq(res.success, true, "the mouth, its set-up untouched")
+	-- the mouth's set-up taken off and added: built
+	entry = api.type.BaseNodeLaneConnectionAndEntity.new()
+	entry.entity = mouth.node
+	ok, res = sendWith(mouth.node, function(sp)
+		sp.streetProposal.nodeConfigsToRemove, sp.streetProposal.nodeConfigsToAdd = { mouth.node }, { entry }
+	end, 450)
+	truthy(ok, g.crashed); eq(res.success, true, "the mouth, its set-up remade")
 end)
 
 test("road: whether a node is a construction's cannot be read either way: refused, nothing sent (review 2026-11-23)", function()
@@ -9724,7 +9829,7 @@ test("road --inspect-node (roadInspect): pieces, construction, set-up, octree; r
 	eq(type(a.nodeConfig), "table"); eq(#a.nodeConfig.laneConnections, 0); eq(a.nodeConfig.trafficLightStates, 0)
 	eq(#a.octree, 3); eq(a.octree[1].radius, 1); eq(a.octree[3].radius, 20)
 	truthy(a.octree[3].count >= 3); truthy(a.octree[3].edges[1].atNode ~= nil)
-	truthy(a.road:find("left as it is", 1, true), a.road)
+	truthy(a.road:find("remade", 1, true) and a.road:find("construction's node", 1, true), a.road)
 	local seg = a.streetSegments[1]
 	truthy(seg.edge and seg.street == true)
 	-- the frozen end; a plain road node; a node without a set-up; no node
