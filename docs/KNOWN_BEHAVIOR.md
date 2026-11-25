@@ -54,6 +54,8 @@ Checked (build 40444, 2026-11-15 to 2026-11-17):
 - `buy --via cmd` and `depots` answer in the expected shape. An earlier version of the gui way bought at the store
   price.
 - `frame`.
+- `calendar-speed` (2026-11-25, on a flat test map): the default day length read 4000 ms (1x). 0.25 set 16000 ms
+  and the date then moved 2 days in 40 s of game time, against 10 at 1x; 0 stopped the date; 1 set 4000 ms again.
 
 Not checked yet:
 
@@ -65,8 +67,7 @@ Not checked yet:
   a small save first; the details are under Implementation notes.
 - `window` and `event` opening windows, the speed label's position and look, `tool` closing a window with `pop`.
 - The ×8 / ×16 buttons in game: their look and width beside the base buttons, the lit button, and the speed they set.
-- `calendar-speed`, entirely: the default day length the game reports, whether the set value shows in the
-  "Calendar Speed" slider in the "Weather and Time" window, and whether the date then moves at the new pace.
+- `calendar-speed`: whether the set value shows in the "Calendar Speed" slider in the "Weather and Time" window.
 - Whether `app.quit` ends the game without a confirmation dialog.
 - `connect`, entirely: see "Connections" under Implementation notes for what may go wrong, riskiest first.
 - `build`, entirely (see "One construction on the map"). `road`, entirely (see "One straight road").
