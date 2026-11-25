@@ -641,10 +641,15 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   station's, depot's or industry's mouth, is joined as a town node is: its junction set-up is taken off and remade
   with its old connections and the new piece's (below). Where its old connections are empty and two or more
   pieces already meet there (an industry's T), the connections among those pieces are written too. The end gets
-  `construction`, `constructionFile`, `pieces` and `laneRules`, the answer a `caution` (not checked in a game
-  yet). Earlier versions left such a node's set-up as it was (`nodeConfigKept: true`, no longer answered): a bus
-  terminal's mouth joined that way kept no lane connections, showed a no-entry sign, and no vehicle could be put
-  on a line through it. A construction's frozen node (the stub's inner end) is refused before sending, dry run
+  `construction`, `constructionFile`, `pieces` and `laneRules`, the answer a `caution`. Earlier versions left such
+  a node's set-up as it was (`nodeConfigKept: true`, no longer answered): a bus terminal's mouth joined that way
+  kept no lane connections, showed a no-entry sign, and no vehicle could be put on a line through it. Checked in
+  a game (2026-11-26) at two bus terminals' mouths and a road depot's: the engine built the pieces with no
+  errors (dry run with `--engine-check` too), a mouth read afterwards had four lane connections (from the lanes
+  coming in to those going out, none to a sidewalk), and a line between the two terminals had no `noPath`, took
+  a bus and was run through both stops. Not checked in a game: an industry's mouth (the T), a construction
+  upgraded or replaced afterwards, and whether pedestrians walk there. A construction's frozen node (the stub's
+  inner end) is refused before sending, dry run
   too, and so is a node of a construction whose `CONSTRUCTION` does not read.
 - Junction set-ups (`BaseNodeConfig`, sent as `nodeConfigsToAdd` / `nodeConfigsToRemove`): each new node gets
   one (a dead end: no lane connections), and a joined node keeps its own connections and gets the new piece's:
@@ -734,8 +739,8 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   yet: save it under a test save's name and load that save first. The mod checks the save's name again (tf3ctl
   sends it), and refuses `ignoreErrors` on every command but `road`. The probe's own checks are not skipped: an end
   at a node without a junction set-up, with traffic lights, or whose set-up does not read is refused as before
-  (a road joined at a node without one once ended the game), and an end at a construction's node (its set-up remade, not checked in a game
-  yet) is not forced at all. With `--dry-run` the engine is asked
+  (a road joined at a node without one once ended the game), and an end at a construction's node (its set-up remade; not checked in a game with
+  errors ignored) is not forced at all. With `--dry-run` the engine is asked
   (`--engine-check` is implied) and nothing is built: the answer is the unforced verdict, with `ignoredErrors:
   false`. **Not checked in a game yet** (written 2026-11-24): whether the engine builds a colliding piece, whether
   vehicles take it, and whether it survives a save and a load.
@@ -807,8 +812,9 @@ autosave loaded again saves under any name.
 - **Not checked in game yet** (written 2026-11-22): in particular whether `api.type.NodeAndEntity` /
   `SegmentAndEntity` / `PlayerOwned` are reachable under those names (the probe also tries `api.type.Proposal.*`),
   whether the default `streetEdge` is enough, whether the engine takes a construction's node as an end with its
-  set-up remade with the new piece's lane connections, and vehicles then pass it (written 2026-11-26; with the
-  set-up left alone, as before, a terminal's mouth kept no connections; a forest's inner end is refused), whether makeProposalData answers in the guiUpdate as in Overpass Builder's tool,
+  set-up remade with the new piece's lane connections at an industry's mouth, and vehicles then pass it (checked
+  at bus terminals' and a road depot's mouths on 2026-11-26: taken, and a bus ran a line through the terminals; with the set-up left
+  alone, as before, a terminal's mouth kept no connections; a forest's inner end is refused), whether makeProposalData answers in the guiUpdate as in Overpass Builder's tool,
   what the callback's entities hold, whether nodes are indeed not in the octree, and what becomes of a town road
   the new piece crosses (the proposal adds no crossing node: does the engine add one, refuse, or lay one over
   the other).

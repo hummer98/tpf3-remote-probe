@@ -102,8 +102,11 @@ Checked in game on 2026-11-26.
 - A construction built with `build --no-owner` got a road joined to its mouth with `road --from-node`. A line
   through its station could be made, but putting a vehicle on that line was refused with "Unkown" (sic). In the
   picture its mouth showed a no-entry sign. The mouth's junction set-up had no lane connections (`road` joined a
-  construction's node with its set-up left as it was); this is taken as the cause, not yet measured. `road` now remakes that set-up with the new piece's lane
-  connections, as at a town node (not checked in a game yet whether vehicles then pass).
+  construction's node with its set-up left as it was). `road` now remakes that set-up with the new piece's lane
+  connections, as at a town node. Measured in a game (2026-11-26) with two bus terminals and a road depot joined
+  so (whether `--no-owner` itself matters was not tested): a mouth then had four lane connections, a line between
+  the terminals had no `noPath`, `buy --line` took a bus and it ran through both stops. Not checked: an
+  industry's mouth (a T), a construction upgraded or replaced afterwards, whether pedestrians walk there.
 
 ## Lua in the game (`eval`)
 

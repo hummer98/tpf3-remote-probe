@@ -1417,8 +1417,12 @@ function M.new(ctx)
 	-- so they are written here as at a town node. Sidewalks are not among them (LaneConnection has no
 	-- pedestrian flag; the engine joins those itself, as it did at the node left alone). Overpass Builder's
 	-- fence is kept where the engine owns the node outright: a frozen node (the stub's inner end) is refused, as
-	-- the engine refused a road joined there. Not checked in a game yet whether the engine takes the remade
-	-- set-up at a construction's mouth (e2e to come).
+	-- the engine refused a road joined there. In a game (2026-11-26) the engine took the remade set-up at two
+	-- bus terminals' mouths and a road depot's (no errors; a mouth read afterwards had its new lane connections,
+	-- from the lanes coming in to those going out, none to a sidewalk), and a bus ran a line between the two
+	-- terminals.
+	-- Not checked in a game: an industry's mouth (a T), --ignore-errors, a construction upgraded or replaced
+	-- afterwards, and whether pedestrians walk there.
 	-- At a construction's node whose old connections are empty while two or more pieces meet there (the engine's
 	-- own pieces joined without explicit connections), the connections among those pieces are written too: the
 	-- new set-up replaces the empty one, and the new piece's connections alone would leave the old pieces unjoined.
@@ -1560,8 +1564,10 @@ function M.new(ctx)
 		"(frame, around --kinds street --lanes)"
 	local NOTE_CON = "joined to a construction's node (not a frozen one): its junction set-up was remade as a town " ..
 		"node's, its old connections kept and the new piece's lanes joined to the construction's pieces (sidewalks " ..
-		"left to the engine); not checked in a game yet whether the engine keeps that set-up there: look at it " ..
-		"(road --inspect-node, frame: no no-entry sign) and whether vehicles take the new piece"
+		"left to the engine); checked in a game (2026-11-26) at bus terminals' and a road depot's mouths (the engine " ..
+		"took the set-up, a bus ran a line through the terminals), not checked in a game yet at an industry's mouth, " ..
+		"after the construction is upgraded or replaced, or for pedestrians: look at it (road --inspect-node: " ..
+		"laneConnections; frame: no no-entry sign) and whether vehicles take the new piece"
 
 	-- what the engine says of a proposal without building it: api.engine.util.proposal.makeProposalData, called
 	-- here in the guiUpdate (the GUI thread: Overpass Builder calls it there with a SimpleProposal alone; Track
@@ -2130,14 +2136,16 @@ function M.new(ctx)
 		-- without one killed the game, 2026-11-23 01:03) have run all the same and are not skipped
 		local force = r.ignoreErrors == true
 		if force then
-			-- a construction's node (its set-up remade, NOTE_CON): whether the engine takes a remade set-up there is
-			-- not checked in a game, and an error it gives there may be what stands between the game and a node
-			-- the engine cannot use (as the node without a set-up that killed it): not forced (review 2026-11-24)
+			-- a construction's node (its set-up remade, NOTE_CON): whether the engine takes a remade set-up there
+			-- with its errors ignored is not checked in a game, and an error it gives there may be what stands
+			-- between the game and a node the engine cannot use (as the node without a set-up that killed it): not
+			-- forced (review 2026-11-24)
 			for _, nd in ipairs(nodeList) do
 				if nd.plan and nd.plan.con then
 					local first = nd.ends[1]
 					return fail(c.id, string.format("%s: node %d is construction %d's: ignoreErrors does not join a " ..
-						"construction's node (not checked in a game what the engine makes of its remade set-up); " ..
+						"construction's node (not checked in a game what the engine makes of its remade set-up with " ..
+						"errors ignored); " ..
 						"build it without --ignore-errors: nothing sent", at(first[1], first[2]),
 						nd.node, nd.plan.con.construction))
 				end

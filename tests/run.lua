@@ -9529,7 +9529,11 @@ test("road to a terminal's mouth (a construction's node, other lanes): the set-u
 	local a = roadRun(g, 1036, '{ from = "200,200", to = "200,300", type = "town_new_medium" }')
 	truthy(a.ok, a.error); eq(a.to.node, mouth); eq(a.to.construction, b.entity); eq(a.to.constructionFile, TERMINAL)
 	eq(a.to.pieces, 1); eq(a.to.nodeConfigKept, nil); eq(a.to.laneRules, 4)
-	truthy(a.caution:find("remade", 1, true) and a.caution:find("not checked in a game", 1, true), a.caution)
+	truthy(a.caution:find("remade", 1, true), a.caution)
+	-- the caution says what a game showed (a terminal's and a depot's mouth) and what it did not (an industry's)
+	truthy(a.caution:find("checked in a game (2026-11-26) at bus terminals' and a road depot's mouths", 1, true), a.caution)
+	truthy(a.caution:find("not checked in a game yet at an industry's mouth", 1, true), a.caution)
+	truthy(a.caution:find("or for pedestrians", 1, true), a.caution)
 	local st = getmetatable(getmetatable(g.buildCmds[#g.buildCmds].proposal).store.streetProposal).store
 	eq(#st.nodeConfigsToRemove, 1); eq(st.nodeConfigsToRemove[1], mouth, "the mouth's old set-up taken off")
 	local entry
@@ -9591,6 +9595,7 @@ test("road --ignore-errors: a construction's node is not forced; unforced it joi
 	local a = roadRun(g, 1090, '{ from = "212.1,159.5", to = "212.1,259.5", ignoreErrors = true, _testSave = "probe-x" }')
 	eq(a.ok, false); truthy(tostring(a.error):find("does not join a construction's node", 1, true), tostring(a.error))
 	truthy(a.error:find("node " .. mouth.node, 1, true), a.error)
+	truthy(a.error:find("with errors ignored", 1, true), a.error)
 	eq(#g.buildCmds, before, "nothing sent"); eq(g.proposalDataCalls, asked, "nothing asked")
 	a = roadRun(g, 1091, '{ from = "212.1,159.5", to = "212.1,259.5" }')
 	truthy(a.ok, a.error); eq(a.to.construction, b.entity); eq(a.to.laneRules, 12)

@@ -9,18 +9,6 @@ is separate and does not follow the release version.
 
 ## [Unreleased]
 
-### Fixed
-
-- `road` to a construction's node that is not frozen (a station's, depot's or industry's mouth) remakes its
-  junction set-up as at a town node: the old connections kept, the new piece's road and tram lanes joined to the
-  construction's pieces (and, where the old list was empty and two or more pieces met there, those pieces to each
-  other). It used to leave that set-up as it was, and in a game a bus terminal's mouth joined so kept no lane
-  connections: a no-entry sign, `lines --problems` noPath, and `buy --line` refused with "Unkown". The end's
-  answer now has `construction`, `constructionFile`, `pieces` and `laneRules`; `nodeConfigKept` is no longer
-  answered, and `road --inspect-node` says the set-up is remade. A frozen node, and a node of a construction whose
-  `CONSTRUCTION` does not read, are refused; `--ignore-errors` still does not join a construction's node. Not
-  checked in a game yet.
-
 ## [1.1.0] - 2026-11-26
 
 ### Added
@@ -81,6 +69,18 @@ is separate and does not follow the release version.
 
 - The `fit` example in the reference named the base road depot as `::/depots/road/road_depot.con`; it is
   `depots/road/road_depot/road_depot.con`.
+- `road` to a construction's node that is not frozen (a station's, depot's or industry's mouth) remakes its
+  junction set-up as at a town node: the old connections kept, the new piece's road and tram lanes joined to the
+  construction's pieces (and, where the old list was empty and two or more pieces met there, those pieces to each
+  other). It used to leave that set-up as it was, and in a game a bus terminal's mouth joined so kept no lane
+  connections: a no-entry sign, `lines --problems` noPath, and `buy --line` refused with "Unkown". The end's
+  answer now has `construction`, `constructionFile`, `pieces` and `laneRules`; `nodeConfigKept` is no longer
+  answered, and `road --inspect-node` says the set-up is remade. A frozen node, and a node of a construction whose
+  `CONSTRUCTION` does not read, are refused; `--ignore-errors` still does not join a construction's node.
+  Checked in a game (2026-11-26) at two bus terminals' mouths and a road depot's: built with no errors, a mouth
+  then had four lane connections, a line between the terminals had no noPath and a bus ran it; an industry's
+  mouth, `--ignore-errors`, a construction upgraded or replaced afterwards, and whether pedestrians walk there
+  are not checked yet.
 
 ## [1.0.2] - 2026-11-25
 
