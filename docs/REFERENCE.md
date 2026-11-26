@@ -1433,7 +1433,8 @@ longer than a section is split between groups (2673). A branch leaving at 100,0 
   looking along the first range (the example's 2673 is -5); nil when a middle could not be worked out (the
   group's `acrossWhy` says why, and its `width` is nil). A range's `ends` (`begin` and `end`): `at`, `edge`, `bound`, `node`, `trackPieces` and `kind`:
   `joinsGroup` (the same piece's same bound, or the same node, is in another group: `joins` lists them;
-  `junction: true` beside it when that node has 3 or more track pieces, a fork as well),
+  `junction: true` beside it when that node has 3 or more track pieces, a fork as well; a `junction` end has it
+  too, so `junction` alone finds every fork),
   `deadEnd` (1 track piece at the node), `continues` (2), `junction` (3 or more), `insidePiece` (the bound is not
   0 or 1 and no other group goes on from it), `unknown`.
 - Length and curvature are **worked out** here: a piece's curve is taken as the Hermite of `BASE_EDGE`'s

@@ -146,7 +146,7 @@ return function(t)
 		-- ends: A begins where the track goes on, ends at the branch; B begins at a junction, ends at a dead end
 		eq(A.ends[1].kind, "continues"); eq(A.ends[1].node, 11); eq(A.ends[1].trackPieces, 2)
 		eq(A.ends[2].kind, "continues"); eq(A.ends[2].node, 12)
-		eq(B.ends[1].kind, "junction"); eq(B.ends[1].trackPieces, 3); eq(B.ends[2].kind, "deadEnd"); eq(B.ends[2].node, 14)
+		eq(B.ends[1].kind, "junction"); eq(B.ends[1].junction, true); eq(B.ends[1].trackPieces, 3); eq(B.ends[2].kind, "deadEnd"); eq(B.ends[2].junction, nil); eq(B.ends[2].node, 14)
 		eq(#s.deadEnds, 1); eq(s.deadEnds[1].group, 1); eq(s.deadEnds[1].at, "end"); eq(s.deadEnds[1].node, 14)
 		eq(s.deadEnds[1].edge, 802); eq(#g1.joins, 0); eq(s.groupsInOrder, nil, "one group: no order")
 		eq(#s.edgeShares, 2); eq(s.edgeShares[2].edge, 802); eq(s.edgeShares[2].share, 1); eq(s.edgeShares[2].groups[1], 1)

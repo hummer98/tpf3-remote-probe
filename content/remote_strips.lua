@@ -502,6 +502,7 @@ function M.run(args, opts)
 						d.kind = b and "insidePiece" or "unknown"
 					else
 						d.kind = M.endKind(d.trackPieces)
+						if d.kind == "junction" then d.junction = true end -- (one field to look for a fork by)
 					end
 					if d.kind == "deadEnd" then dead[#dead + 1] = { group = g.group, at = which, node = node, edge = one.edge } end
 					return d

@@ -1326,7 +1326,7 @@ python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
   (上の例の 2673 は -5)。真ん中が計算できないときは nil (group の `acrossWhy` に理由、`width` も nil)。range の `ends` (`begin` と `end`): `at`、
   `edge`、`bound`、`node`、`trackPieces`、`kind`: `joinsGroup` (同じ edge の同じ bound か、同じ node が、ほかの group に
   ある。`joins` にその group。その node の線路が 3 本以上なら、分かれ目でもあるので `junction: true` を
-  並べて出す)、`deadEnd` (その node の線路が 1 本)、`continues` (2 本)、`junction` (3 本以上)、
+  並べて出す。kind が `junction` の端にも付くので、分かれ目は `junction` だけで探せる)、`deadEnd` (その node の線路が 1 本)、`continues` (2 本)、`junction` (3 本以上)、
   `insidePiece` (bound が 0 でも 1 でもなく、ほかの group にも続かない)、`unknown`。
 - 長さと曲率は、ここで**計算したもの**です。edge の曲線を `BASE_EDGE` の `position0/1` と `tangent0/1` の Hermite と
   見て、range の `bounds` をその曲線のパラメータと見ています (どちらも【推測】)。`pieces`: 出会った edge
