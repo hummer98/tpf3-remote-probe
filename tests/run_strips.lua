@@ -45,10 +45,12 @@ return function(t)
 			[14] = { comps = { BASE_NODE = {} } }, [15] = { comps = { BASE_NODE = {} } }, [18] = { comps = { BASE_NODE = {} } },
 			[19] = { comps = { BASE_NODE = {} } }, [20] = { comps = { BASE_NODE = {} } },
 			-- the strips
+			-- (a range group is a section cut across: both tracks side by side in one group)
 			[901] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = {
-				{ { edge = 801, bounds = { 0, 1 } } }, { { edge = 802, bounds = { 0, 1 } } } } } } },
+				{ { edge = 801, bounds = { 0, 1 } }, { edge = 802, bounds = { 0, 1 } } } } } } },
+			-- two sections one after the other: 801's second half, then 806 from 801's end node
 			[903] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = {
-				{ { edge = 801, bounds = { 0.5, 1 } }, { edge = 806, bounds = { 0, 1 } } } } },
+				{ { edge = 801, bounds = { 0.5, 1 } } }, { { edge = 806, bounds = { 0, 1 } } } } },
 				BRIDGE = { intervals = { { splines = { {}, {} }, railingModels = { { 77, mat(150, 20, 1) }, { 78, mat(160, 30, 1) } } } } } } },
 			-- an empty strip: no range groups
 			[904] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = {} } } },
@@ -125,26 +127,31 @@ return function(t)
 		eq(core.COMMANDS.strips, true); eq(core.CHANGES_GAME.strips, nil); eq(core.MENU_COMMANDS.strips, nil)
 	end)
 
-	test("strips: a double track tunnel, two groups side by side, its ends and its kind", function()
+	test("strips: a double track tunnel, one section with both tracks, their ends and its kind", function()
 		local g = stripsGame()
 		local a = run(g, 3101, '{ edges = "802" }')
-		truthy(a.ok, a.error); eq(a.where, "gui"); truthy(a.note:find("not checked in a game", 1, true), a.note)
+		truthy(a.ok, a.error); eq(a.where, "gui"); truthy(a.note:find("Not checked in a game yet", 1, true), a.note)
+		truthy(a.note:find("one section of the strip cut across", 1, true), a.note)
 		eq(a.stripCount, 1); eq(a.stripsRead, 1); eq(a.asked[1].edge, 802); eq(a.asked[1].strips[1], 901)
 		local s = a.strips[1]
 		eq(s.strip, 901); eq(s.stripInfo.carrier, "RAIL"); eq(s.stripInfo.edgeType, "TUNNEL"); eq(s.stripInfo.edgeTypeIndex, 0)
-		eq(s.isTunnel, true); eq(s.isBridge, false); eq(s.groupCount, 2); eq(s.laneType, "unread")
-		local g1, g2 = s.groups[1], s.groups[2]
-		eq(g1.edges[1], 801); eq(g2.edges[1], 802); eq(g1.length, 100); eq(g2.length, 100); eq(s.length, 100)
-		eq(g1.across, 0); eq(g2.across, 5, "track B 5 m to the right")
+		eq(s.isTunnel, true); eq(s.isBridge, false); eq(s.groupCount, 1); eq(s.laneType, "unread")
+		local g1 = s.groups[1]
+		local A, B = g1.ranges[1], g1.ranges[2]
+		eq(table.concat(g1.edges, ","), "801,802"); eq(g1.rangeCount, 2); eq(g1.length, 100); eq(s.length, 100)
+		eq(g1.lengthMin, 100); eq(g1.lengthMax, 100); eq(A.share, 1); eq(B.length, 100)
+		eq(A.across, 0); eq(B.across, 5, "track B 5 m to the right"); eq(g1.width, 5)
 		eq(g1.curvature.mean, 0); eq(g1.curvature.turnDeg, 0)
-		eq(g1.ranges[1].from.z, -10); eq(g1.ranges[1].bounds[1], 0); eq(g1.ranges[1].bounds[2], 1)
+		eq(A.from.z, -10); eq(A.bounds[1], 0); eq(A.bounds[2], 1)
 		-- ends: A begins where the track goes on, ends at the branch; B begins at a junction, ends at a dead end
-		eq(g1.ends[1].kind, "continues"); eq(g1.ends[1].node, 11); eq(g1.ends[1].trackPieces, 2)
-		eq(g1.ends[2].kind, "continues"); eq(g1.ends[2].node, 12)
-		eq(g2.ends[1].kind, "junction"); eq(g2.ends[1].trackPieces, 3); eq(g2.ends[2].kind, "deadEnd"); eq(g2.ends[2].node, 14)
-		eq(#s.deadEnds, 1); eq(s.deadEnds[1].group, 2); eq(s.deadEnds[1].at, "end"); eq(s.deadEnds[1].node, 14)
+		eq(A.ends[1].kind, "continues"); eq(A.ends[1].node, 11); eq(A.ends[1].trackPieces, 2)
+		eq(A.ends[2].kind, "continues"); eq(A.ends[2].node, 12)
+		eq(B.ends[1].kind, "junction"); eq(B.ends[1].trackPieces, 3); eq(B.ends[2].kind, "deadEnd"); eq(B.ends[2].node, 14)
+		eq(#s.deadEnds, 1); eq(s.deadEnds[1].group, 1); eq(s.deadEnds[1].at, "end"); eq(s.deadEnds[1].node, 14)
+		eq(s.deadEnds[1].edge, 802); eq(#g1.joins, 0); eq(s.groupsInOrder, nil, "one group: no order")
+		eq(#s.edgeShares, 2); eq(s.edgeShares[2].edge, 802); eq(s.edgeShares[2].share, 1); eq(s.edgeShares[2].groups[1], 1)
 		-- as read
-		eq(s.rangeGroups[2][1].edge, 802); eq(s.rangeGroups[2][1].bounds[2], 1)
+		eq(s.rangeGroups[1][2].edge, 802); eq(s.rangeGroups[1][2].bounds[2], 1)
 		eq(s.bridge, "none (no BRIDGE component read)"); eq(#s.unread, 0)
 		-- the pieces used, and what is never read
 		eq(#a.pieces, 2); eq(a.pieces[1].edge, 801); eq(a.pieces[1].type, "TUNNEL"); eq(a.pieces[1].track, true)
@@ -160,13 +167,20 @@ return function(t)
 		eq(table.concat(a.asked[1].strips, ","), "901,903"); eq(a.asked[2].strips[1], 903)
 		local s = byKey(a.strips, "strip", 903)
 		eq(s.isBridge, true); eq(s.isTunnel, false); eq(s.stripInfo.edgeType, "BRIDGE")
-		local gr = s.groups[1]
-		eq(table.concat(gr.edges, ","), "801,806"); eq(gr.ranges[1].length, 50, "half of 801")
-		near(gr.ranges[2].length, math.pi * 50, 0.5, "the quarter circle"); near(gr.length, 50 + math.pi * 50, 0.5)
-		near(gr.curvature.turnDeg, 90, 1, "left"); truthy(gr.curvature.mean > 0); near(gr.curvature.maxAbs, 0.01, 0.002)
-		eq(gr.ranges[1].from.x, 50); eq(gr.ranges[2].to.y, 100)
-		eq(gr.ends[1].kind, "insidePiece"); eq(gr.ends[1].bound, 0.5); eq(gr.ends[1].node, nil)
-		eq(gr.ends[2].kind, "deadEnd"); eq(gr.ends[2].node, 15); eq(s.deadEnds[1].edge, 806)
+		eq(s.groupCount, 2)
+		local g1, g2 = s.groups[1], s.groups[2]
+		eq(g1.edges[1], 801); eq(g2.edges[1], 806); eq(g1.ranges[1].length, 50, "half of 801"); eq(g1.ranges[1].share, 0.5)
+		near(g2.ranges[1].length, math.pi * 50, 0.5, "the quarter circle"); near(s.length, 50 + math.pi * 50, 0.5, "sections added")
+		eq(g1.length, 50); near(g2.length, math.pi * 50, 0.5)
+		near(g2.curvature.turnDeg, 90, 1, "left"); truthy(g2.curvature.mean > 0); near(g2.curvature.maxAbs, 0.01, 0.002)
+		eq(g1.curvature.turnDeg, 0); truthy(s.curvatureMean > 0)
+		eq(g1.ranges[1].from.x, 50); eq(g2.ranges[1].to.y, 100); eq(g1.width, 0); eq(g1.ranges[1].across, 0)
+		local e1, e2 = g1.ranges[1].ends, g2.ranges[1].ends
+		eq(e1[1].kind, "insidePiece"); eq(e1[1].bound, 0.5); eq(e1[1].node, nil)
+		eq(e1[2].kind, "joinsGroup", "801's end node is 806's start"); eq(e1[2].node, 12); eq(e1[2].joins[1], 2)
+		eq(e2[1].kind, "joinsGroup"); eq(e2[1].joins[1], 1)
+		eq(e2[2].kind, "deadEnd"); eq(e2[2].node, 15); eq(#s.deadEnds, 1); eq(s.deadEnds[1].edge, 806)
+		eq(g1.joins[1], 2); eq(g2.joins[1], 1); eq(s.groupsInOrder, true)
 		eq(s.bridge.intervals, 1); eq(s.bridge.list[1].splines, 2); eq(s.bridge.list[1].railingModels, 2)
 		local m = s.bridge.list[1].models
 		eq(m[1].model, 77); eq(m[1].name, "railroad/tunnel_wall.mdl"); eq(m[1].at.x, 150); eq(m[2].name, nil, "no name read")
@@ -215,7 +229,7 @@ return function(t)
 		local a = run(g, 3141, '{ edges = "801" }')
 		truthy(a.ok, a.error); eq(a.stripCount, 2)
 		local s = byKey(a.strips, "strip", 903)
-		eq(s.stripInfo.carrier, "RAIL"); eq(s.groups[1].edges[2], 806); eq(s.bridge.list[1].models[1].at.y, 20)
+		eq(s.stripInfo.carrier, "RAIL"); eq(s.groups[2].edges[1], 806); eq(s.groups[1].ranges[1].ends[2].joins[1], 2); eq(s.bridge.list[1].models[1].at.y, 20)
 		local l = run(g, 3142, '{ edges = "801", limit = 1 }')
 		eq(l.stripCount, 1); eq(l.stripsTruncated, true)
 		truthy(not g.crashed, g.crashed)
@@ -227,7 +241,7 @@ return function(t)
 		local nu = stripsGame({ noUtil = true })
 		local u = run(nu, 3145, '{ edges = "802" }')
 		truthy(u.ok, u.error); truthy(table.concat(u.strips[1].unread, "|"):find("parallelStrip.getStripInfo", 1, true))
-		eq(u.strips[1].isTunnel, nil); eq(u.strips[1].groups[2].across, 5)
+		eq(u.strips[1].isTunnel, nil); eq(u.strips[1].groups[1].ranges[2].across, 5)
 		truthy(not ng.crashed and not nu.crashed)
 	end)
 
@@ -272,10 +286,109 @@ return function(t)
 		truthy(not g.crashed and not mg.crashed)
 	end)
 
+	-- the shape measured in a game (2026-11-26, probe-flat-base-2): tunnel tracks 2669 (0,0 -> 100,0) and 2671
+	-- (100,0 -> 200,0) end to end, 2673 (0,5 -> 200,5) beside them, and 2674 branching off at 100,0 (36.641 m, 30
+	-- degrees to the right) in a strip of its own. The engine gave strip 2686's rangeGroups as
+	-- [[2669 0-1, 2673 0-0.5], [2671 0-1, 2673 0.5-1]]: a group is a section cut across, 2673 split between two
+	local function measuredWorld()
+		local w = world()
+		local R, th = 70, math.rad(30)
+		local Kb = 4 * R * math.tan(th / 4) -- a Hermite arc of 30 degrees, radius 70
+		w[2669] = track(31, 32, v(0, 0, -15), v(100, 0, -15), nil, nil, "TUNNEL")
+		w[2671] = track(32, 33, v(100, 0, -15), v(200, 0, -15), nil, nil, "TUNNEL")
+		w[2673] = track(34, 35, v(0, 5, -15), v(200, 5, -15), nil, nil, "TUNNEL")
+		w[2674] = track(32, 36, v(100, 0, -15), v(100 + R * math.sin(th), -R * (1 - math.cos(th)), -15),
+			v(Kb, 0, 0), v(Kb * math.cos(th), -Kb * math.sin(th), 0), "TUNNEL")
+		for n = 31, 36 do w[n] = { comps = { BASE_NODE = {} } } end
+		w[2686] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = {
+			{ { edge = 2669, bounds = { 0, 1 } }, { edge = 2673, bounds = { 0, 0.5 } } },
+			{ { edge = 2671, bounds = { 0, 1 } }, { edge = 2673, bounds = { 0.5, 1 } } } } } } }
+		w[2684] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = { { { edge = 2674, bounds = { 0, 1 } } } } } } }
+		-- an empty group among others, and an empty group alone (edge cases, not seen in a game)
+		w[2690] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = { {}, { { edge = 2669, bounds = { 0, 1 } } } } } } }
+		w[2691] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = { {} } } } }
+		return w
+	end
+	local MEASURED = {
+		strips = { [2669] = { 2686 }, [2671] = { 2686 }, [2673] = { 2686 }, [2674] = { 2684 } },
+		info = { [2686] = { carrier = "RAIL", edgeType = "TUNNEL", edgeTypeIndex = 1 },
+			[2684] = { carrier = "RAIL", edgeType = "TUNNEL", edgeTypeIndex = 1 }, [2690] = {}, [2691] = {} },
+		nodeTracks = { [31] = { 2669 }, [32] = { 2669, 2671, 2674 }, [33] = { 2671 }, [34] = { 2673 }, [35] = { 2673 },
+			[36] = { 2674 } },
+	}
+
+	test("strips: the shape measured in a game, sections cut across, a piece split between two of them", function()
+		local g = stripsGame(MEASURED, measuredWorld())
+		local a = run(g, 3161, '{ edges = "2669,2674" }')
+		truthy(a.ok, a.error); eq(a.stripCount, 2)
+		local s = byKey(a.strips, "strip", 2686)
+		eq(s.isTunnel, true); eq(s.stripInfo.edgeTypeIndex, 1); eq(s.groupCount, 2); eq(s.laneType, "unread")
+		local g1, g2 = s.groups[1], s.groups[2]
+		eq(table.concat(g1.edges, ","), "2669,2673"); eq(table.concat(g2.edges, ","), "2671,2673")
+		-- each section's length along the strip, and the strip's: the sections added up
+		eq(g1.length, 100); eq(g2.length, 100); eq(g1.lengthMin, 100); eq(g1.lengthMax, 100); eq(s.length, 200)
+		eq(g1.ranges[2].length, 100, "half of 2673"); eq(g1.ranges[2].share, 0.5); eq(g1.ranges[1].share, 1)
+		-- across: 2673 lies 5 m to the left of 2669 (and of 2671) looking along them
+		eq(g1.ranges[1].across, 0); eq(g1.ranges[2].across, -5); eq(g2.ranges[2].across, -5); eq(g1.width, 5); eq(g2.width, 5)
+		eq(g1.ranges[2].from.y, 5); eq(g1.ranges[2].to.x, 100); eq(g2.ranges[2].from.x, 100)
+		-- ends: where a section meets the next (the same node, or the same cut through a piece) and where the strip ends
+		local e69, e73a, e71, e73b = g1.ranges[1].ends, g1.ranges[2].ends, g2.ranges[1].ends, g2.ranges[2].ends
+		eq(e69[1].kind, "deadEnd"); eq(e69[1].node, 31)
+		eq(e69[2].kind, "joinsGroup", "the node 2671 starts at"); eq(e69[2].node, 32); eq(e69[2].joins[1], 2)
+		eq(e69[2].trackPieces, 3, "the branch counted, but the strip goes on")
+		eq(e73a[1].kind, "deadEnd"); eq(e73a[2].kind, "joinsGroup", "the same cut through 2673"); eq(e73a[2].bound, 0.5)
+		eq(e73a[2].node, nil); eq(e73a[2].joins[1], 2)
+		eq(e71[1].kind, "joinsGroup"); eq(e71[1].joins[1], 1); eq(e71[2].kind, "deadEnd"); eq(e71[2].node, 33)
+		eq(e73b[1].kind, "joinsGroup"); eq(e73b[1].bound, 0.5); eq(e73b[2].kind, "deadEnd"); eq(e73b[2].node, 35)
+		eq(#s.deadEnds, 4); eq(g1.joins[1], 2); eq(#g1.joins, 1); eq(g2.joins[1], 1); eq(s.groupsInOrder, true)
+		-- each piece's share of the strip: 2673 half in each group, whole in all
+		local sh = byKey(s.edgeShares, "edge", 2673)
+		eq(sh.share, 1); eq(table.concat(sh.groups, ","), "1,2"); eq(byKey(s.edgeShares, "edge", 2669).share, 1)
+		eq(#s.edgeShares, 3)
+		-- as read
+		eq(s.rangeGroups[2][2].edge, 2673); eq(s.rangeGroups[2][2].bounds[1], 0.5)
+		-- the branch: a strip of its own, one group of one piece
+		local b = byKey(a.strips, "strip", 2684)
+		eq(b.groupCount, 1); eq(#b.groups[1].ranges, 1); near(b.length, 36.652, 0.05, "the 30 degree arc")
+		near(b.groups[1].curvature.turnDeg, -30, 0.5, "to the right"); eq(b.groups[1].width, 0)
+		eq(b.groups[1].ranges[1].across, 0); eq(#b.groups[1].joins, 0); eq(b.groupsInOrder, nil)
+		eq(b.groups[1].ranges[1].ends[1].kind, "junction"); eq(b.groups[1].ranges[1].ends[2].kind, "deadEnd")
+		-- an empty group: nothing measured in it, the strip's length from the rest; an empty group alone: no length
+		local stripsOf = function(sp)
+			local gg = stripsGame({ strips = sp, info = MEASURED.info, nodeTracks = MEASURED.nodeTracks }, measuredWorld())
+			return gg, run(gg, 3162, '{ edges = "2669" }')
+		end
+		local g3, d = stripsOf({ [2669] = { 2690, 2691 } })
+		truthy(d.ok, d.error)
+		local e = byKey(d.strips, "strip", 2690)
+		eq(e.groupCount, 2); eq(e.groups[1].rangeCount, 0); eq(#e.groups[1].ranges, 0); eq(e.groups[1].length, nil)
+		eq(e.groups[1].width, nil); eq(e.groups[1].acrossWhy, nil); eq(e.groups[1].lengthWhy, nil); eq(e.length, 100)
+		eq(e.groups[2].ranges[1].ends[2].kind, "junction", "no section after it in this strip")
+		eq(e.groupsInOrder, false, "group 1 joins nothing")
+		local f = byKey(d.strips, "strip", 2691)
+		eq(f.groupCount, 1); eq(f.length, nil); eq(#f.edgeShares, 0); eq(#f.deadEnds, 0)
+		local ok, js = pcall(core.json, d)
+		truthy(ok, tostring(js))
+		truthy(not g.crashed and not g3.crashed, g.crashed or g3.crashed)
+	end)
+
+	test("strips: across or length that cannot be worked out is said so (a piece with no curve beside one)", function()
+		local w = world()
+		w[2692] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = {
+			{ { edge = 801, bounds = { 0, 1 } }, { edge = 808, bounds = { 0, 1 } } } } } } }
+		local g = stripsGame({ strips = { [801] = { 2692 } }, info = { [2692] = { carrier = "RAIL" } } }, w)
+		local a = run(g, 3171, '{ edges = "801" }')
+		truthy(a.ok, a.error)
+		local gr = a.strips[1].groups[1]
+		eq(gr.ranges[1].across, 0); eq(gr.ranges[2].across, nil); eq(gr.width, nil); truthy(gr.acrossWhy)
+		eq(gr.length, nil); truthy(gr.lengthWhy); eq(a.strips[1].length, nil)
+		truthy(not g.crashed, g.crashed)
+	end)
+
 	test("strips: run() as eval --gs calls it (where gs, os.time), the same answer", function()
 		local g = stripsGame()
 		local a = S.run({ edges = { 802 } }, { where = "gs" })
-		truthy(a.ok, a.error); eq(a.where, "gs"); eq(a.strips[1].strip, 901); eq(a.strips[1].groups[2].across, 5)
+		truthy(a.ok, a.error); eq(a.where, "gs"); eq(a.strips[1].strip, 901); eq(a.strips[1].groups[1].ranges[2].across, 5)
 		local bad = S.run({}, { where = "gs" })
 		eq(bad.ok, false); eq(bad.where, "gs")
 		local ok, js = pcall(core.json, a)

@@ -1246,17 +1246,19 @@ class EndToEndTest(unittest.TestCase):
         self.ctl("--owner", "tester", "mod", sample, "speed", '{"speed": 1}')
 
     def test_9xz_strips(self):
-        # the fake's double track tunnel at y 7600: strip 9640, a range group for each track (9631 5 m to the
-        # right of 9630), 9631's far end a dead end; read in the GUI's state, nothing sent to the game
+        # the fake's double track tunnel at y 7600: strip 9640, one range group (a section cut across) holding both
+        # tracks (9631 5 m to the right of 9630), 9631's far end a dead end; read in the GUI's state, nothing sent
         code, res = self.ctl("strips", "--edge", "9631")
         self.assertEqual(code, 0, res)
         self.assertEqual(res["where"], "gui")
         s = res["strips"][0]
         self.assertEqual((s["strip"], s["isTunnel"], s["stripInfo"]["carrier"]), (9640, True, "RAIL"))
-        self.assertEqual([g["edges"] for g in s["groups"]], [[9630], [9631]])
-        self.assertEqual([g["across"] for g in s["groups"]], [0, 5])
+        self.assertEqual([g["edges"] for g in s["groups"]], [[9630, 9631]])
+        self.assertEqual([r["across"] for r in s["groups"][0]["ranges"]], [0, 5])
+        self.assertEqual((s["groups"][0]["width"], s["groups"][0]["joins"]), (5, []))
         self.assertEqual(s["length"], 100)
-        self.assertEqual(s["deadEnds"], [{"group": 2, "at": "end", "node": 9635, "edge": 9631}])
+        self.assertEqual(s["deadEnds"], [{"group": 1, "at": "end", "node": 9635, "edge": 9631}])
+        self.assertEqual([e["share"] for e in s["edgeShares"]], [1, 1])
         self.assertEqual(s["laneType"], "unread")
         self.assertIn("lane.type", res["unread"][0])
         code, res = self.ctl("strips", "--at", "0,7598", "--radius", "10")

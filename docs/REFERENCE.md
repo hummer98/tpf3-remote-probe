@@ -1388,10 +1388,13 @@ python3 tools/tf3ctl.py strips --edge 9010[,9011,...] [--limit N] [--gs]
 python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
 ```
 
-**Not checked in a game yet** (written 2026-11-26). Everything below comes from the API's type definitions
-(`baseParallelStripSystem.getStrips`, `parallelStrip.getStripInfo` / `isTunnel` / `isBridge`, the
-`BASE_PARALLEL_STRIP` and `BRIDGE` components); which of them the game's Lua states really have is the first
-thing to check.
+Written 2026-11-26 from the API's type definitions (`baseParallelStripSystem.getStrips`,
+`parallelStrip.getStripInfo` / `isTunnel` / `isBridge`, the `BASE_PARALLEL_STRIP` and `BRIDGE` components).
+**Seen in a game** (2026-11-26, a flat test map): three tunnel tracks, 2669 (0,0 to 100,0), 2671 (100,0 to
+200,0) and 2673 (0,5 to 200,5), are one strip (TUNNEL, RAIL), and its `rangeGroups` are
+`[[2669 0-1, 2673 0-0.5], [2671 0-1, 2673 0.5-1]]`: **a range group is one section of the strip cut across**
+(the tracks side by side in that section, each with the part of its piece it uses), not one track. A piece
+longer than a section is split between groups (2673). A branch leaving at 100,0 is a strip of its own.
 
 - Reads only (no warning to others, nothing sent to the game). The engine joins tracks laid side by side into a
   "parallel strip" (the base's tunnel and bridge walls are built per strip). `--edge`: up to 20 piece ids
@@ -1405,15 +1408,24 @@ thing to check.
   `dropped` when the octree gave more than the list holds (then "no track" may mean "not all looked at"),
   `timeTruncated` and `looked` when the 2 s ran out during the scan.
 - Per strip (`strips`): `strip`, `stripInfo` (`carrier` RAIL / TRAM / ..., `edgeType` NORMAL / BRIDGE / TUNNEL,
-  `edgeTypeIndex`), `isTunnel`, `isBridge`, `groupCount`, `length` (the longest group, metres),
-  `curvatureMean` (signed, 1/m, + turns left), `deadEnds`, `laneType` (always `"unread"`), `bridge` (the
+  `edgeTypeIndex`), `isTunnel`, `isBridge`, `groupCount`, `length` (the sections' lengths added up, metres;
+  missing when a curve did not read), `curvatureMean` (signed, 1/m, + turns left), `groupsInOrder` (2 groups or
+  more: true when each group joins the next, so the list's order is the order along the strip; false otherwise,
+  a guess either way), `edgeShares` (per piece: `edge`, `groups` it is in, `share` = the part of it used, 1 =
+  all), `deadEnds` (`group`, `at`, `node`, `edge`), `laneType` (always `"unread"`), `bridge` (the
   `BRIDGE` component's intervals: `splines`, `railingModels`, at most 8 `models` with `name` and `at`),
   `rangeGroups` (as read: `edge` and `bounds` only) and `unread` (what this strip lacked).
-- Per group (`groups`; a group is taken to be one track along the strip, a guess): `edges` (the pieces in
-  order), `ranges` (`edge`, `bounds`, `length`, `from`, `to`), `length`, `curvature` (`mean`, `maxAbs`,
-  `turnDeg`), `across` (metres from group 1's start, + to the right looking along group 1) and `ends`
-  (`begin` and `end`: `node`, `trackPieces` and `kind`: `deadEnd` (1 track piece at the node), `continues` (2),
-  `junction` (3 or more), `insidePiece` (the bound is not 0 or 1)).
+- Per group (`groups`, one section cut across): `edges` (the tracks' pieces side by side), `ranges` (per
+  track: `edge`, `bounds`, `share` (the part of the piece, 0 to 1), `length`, `from`, `to`, `across` and `ends`),
+  `length` (the section's length: the mean of its ranges', with `lengthMin` / `lengthMax`; `lengthWhy` when a
+  curve did not read), `curvature` (`mean`, `maxAbs`, `turnDeg`), `width` (metres between the outermost tracks;
+  5 for the two tracks above) and `joins` (the groups this one touches).
+- A range's `across`: metres from the group's first range, measured between the ranges' middles, + to the right
+  looking along the first range (the example's 2673 is -5); `acrossWhy` instead when a middle could not be
+  worked out. A range's `ends` (`begin` and `end`): `at`, `edge`, `bound`, `node`, `trackPieces` and `kind`:
+  `joinsGroup` (the same piece's same bound, or the same node, is in another group: `joins` lists them),
+  `deadEnd` (1 track piece at the node), `continues` (2), `junction` (3 or more), `insidePiece` (the bound is not
+  0 or 1 and no other group goes on from it), `unknown`.
 - Length and curvature are **worked out** here: a piece's curve is taken as the Hermite of `BASE_EDGE`'s
   `position0/1` and `tangent0/1`, and a range's `bounds` as that curve's parameter (both guesses). `pieces`
   lists the pieces met (`from`, `to`, `tangent0/1`, `length`, `laneCount`).
@@ -1425,8 +1437,9 @@ thing to check.
   may be large (up to 1 MB): with `--gs`, use a small `--limit` and do not save just after.
 - To check in a game: whether the GUI state has `baseParallelStripSystem`; how `rangeGroups` reads (or
   `rangeGroups_native`, `groupsFrom`); whether `getStripInfo` works in both states; whether a tunnel's strip has a
-  `BRIDGE` component; the sign of `across`; whether `bounds` are the curve's parameter; `--at` round a node
-  where a street meets a track (`getNodeTrackSegments` given a street's node).
+  `BRIDGE` component; the sign of `across`; whether `bounds` are the curve's parameter; whether the groups are
+  listed in order along the strip; `--at` round a node where a street meets a track (`getNodeTrackSegments`
+  given a street's node).
 
 ### Where a construction fits (`fit`)
 

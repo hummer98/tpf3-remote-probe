@@ -4172,7 +4172,8 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			position0 = { x = -50, y = 7400, z = 0 }, position1 = { x = 50, y = 7400, z = 0 },
 			laneConfigs = M.TRAM_ELECTRIC_LANES() }, BASE_EDGE_STREET = {} } } } })
 	-- strips: a double track tunnel at y 7600 (track 9630 at y 7600, track 9631 5 m to its right), one strip 9640
-	-- with a range group for each; the second track ends in a dead end
+	-- with one range group holding both (a group is a section cut across, as seen in a game 2026-11-26); the second
+	-- track ends in a dead end
 	local function tunnelTrack(n0, n1, y)
 		return { box = { -50, y - 1, -20, 50, y + 1, 0 }, comps = { BASE_EDGE = { roadType = "TRACK", type = "TUNNEL",
 			typeIndex = 0, node0 = n0, node1 = n1, position0 = { x = -50, y = y, z = -10 },
@@ -4181,8 +4182,8 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 	M.installAround(g, { things = {
 		[9630] = tunnelTrack(9632, 9633, 7600), [9631] = tunnelTrack(9634, 9635, 7595),
 		[9632] = { comps = {} }, [9633] = { comps = {} }, [9634] = { comps = {} }, [9635] = { comps = {} },
-		[9640] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = { { { edge = 9630, bounds = { 0, 1 } } },
-			{ { edge = 9631, bounds = { 0, 1 } } } } } } } } })
+		[9640] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = { { { edge = 9630, bounds = { 0, 1 } },
+			{ edge = 9631, bounds = { 0, 1 } } } } } } } } })
 	M.installStrips(g, { strips = { [9630] = { 9640 }, [9631] = { 9640 } },
 		info = { [9640] = { carrier = "RAIL", edgeType = "TUNNEL", edgeTypeIndex = 0 } },
 		nodeTracks = { [9632] = { 9630, 9629 }, [9633] = { 9630, 9628 }, [9634] = { 9631, 9627 }, [9635] = { 9631 } } })

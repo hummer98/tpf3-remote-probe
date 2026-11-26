@@ -5873,11 +5873,11 @@ def around_args(ns):
 STRIPS_EDGES_MAX = 20  # the mod's core.STRIPS_EDGES_MAX
 STRIPS_RADIUS_MAX = 500  # the mod's core.STRIPS_RADIUS.max (default 30)
 STRIPS_LIMIT_MAX = 40  # the mod's core.STRIPS_LIMIT.max (default 20)
-STRIPS_GS_DEPTH = 16  # eval's most: the answer nests 8 deep (strips, groups, ranges, bounds)
+STRIPS_GS_DEPTH = 16  # eval's most: the answer nests 9 deep (strips, groups, ranges, ends)
 STRIPS_GS_CHARS = 1000000  # eval's most
 # the answer's lists: eval --gs gives an empty Lua list as {} (its dump does not know it was a list)
 STRIPS_LISTS = {"strips", "groups", "ranges", "edges", "rangeGroups", "ends", "deadEnds", "unread", "asked",
-                "pieces", "list", "models", "missing", "bounds"}
+                "pieces", "list", "models", "missing", "bounds", "joins", "edgeShares"}
 
 
 def strips_args(ns):
@@ -6988,8 +6988,9 @@ def make_parser():
                     "as lanes --edge gives them without the transport network")
     st = sub.add_parser("strips", help="read only: the engine's parallel strips of tracks (a tunnel's or bridge's "
                         "walls go along them): kind (carrier, edge type, tunnel, bridge), range groups as read (each "
-                        "group's pieces in order, with bounds), length, curvature, ends (dead end, junction), across "
-                        "offsets, BRIDGE's placed pieces, and what could not be read (lane.type among them)")
+                        "a section of the strip cut across: the tracks side by side in it, with bounds), each "
+                        "section's length and curvature, each track's across offset and ends (into another section, "
+                        "dead end, junction), BRIDGE's placed pieces, and what could not be read (lane.type among them)")
     st.add_argument("--edge", metavar="ID[,ID...]", help="track piece ids (around --kinds track), at most %d"
                     % STRIPS_EDGES_MAX)
     st.add_argument("--at", metavar="X,Y", help="every track piece within --radius of the point (for a negative x "

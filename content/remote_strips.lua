@@ -1,9 +1,10 @@
 -- strips (read only): the engine's parallel strips of tracks, the pieces a tunnel's or bridge's walls and railings
 -- are made along. For each strip: what kind (carrier, edge type, tunnel, bridge), its range groups as read (each
--- group's pieces in order, with the fraction of each piece taken), a length and a curvature worked out from the
--- pieces' curves, the ends (a dead end, the track going on, a junction, or the strip ending inside a piece), how far
--- each group lies across from the first, the BRIDGE component's placed pieces (when the strip has one), and the
--- fields that could not be read. Used by the strips command: given pieces (--edge) or every track piece near a
+-- group a section of the strip cut across: the tracks side by side in it, with the fraction of each piece it
+-- takes), each section's length and curvature worked out from the pieces' curves, how far each track lies across
+-- from the section's first, each range's ends (into another section, a dead end, the track going on, a junction,
+-- or inside a piece), which sections join which, the BRIDGE component's placed pieces (when the strip has one), and
+-- the fields that could not be read. Used by the strips command: given pieces (--edge) or every track piece near a
 -- point (--at, --radius). Read in the GUI's Lua state, or in the probe's game script through eval --gs (tf3ctl strips
 -- --gs): run() is the same in both, and the answer's where says which.
 --
@@ -25,23 +26,30 @@
 -- that did not read.
 -- Every engine call is in pcall and asked only about entities the engine says exist. Nothing is sent or changed.
 --
+-- Measured in a game (2026-11-26, probe-flat-base-2: tunnel tracks 2669 0,0-100,0 and 2671 100,0-200,0 end to end,
+-- 2673 0,5-200,5 beside them, 2674 branching off at 100,0): 2669, 2671 and 2673 share strip 2686, whose rangeGroups
+-- are [[2669 0-1, 2673 0-0.5], [2671 0-1, 2673 0.5-1]]; the branch is strip 2684 of its own. So a range group is
+-- one section of the strip cut across (the tracks side by side there), not one track along the strip, and a piece
+-- can be split between sections.
 -- Guesses (said in the answer's note): a piece's curve is the cubic Hermite of position0 / 1 and tangent0 / 1, and a
--- range's bounds are that curve's parameter; a range group is one track along the strip (so groups side by side are
--- the lanes). Not checked in a game yet (written 2026-11-26).
+-- range's bounds are that curve's parameter; across is measured between the ranges' middles; the groups are read in
+-- their order along the strip (groupsInOrder says whether each joins the next, it is not taken for granted).
 local M = {}
 
 M.MOD = "hummer_remote_probe"
 M.STRIPS_MAX = 40 -- strips per answer (more: cut, stripsTruncated)
-M.GROUPS_MAX = 16 -- range groups per strip read
+M.GROUPS_MAX = 64 -- range groups per strip read (each a section along it: a long strip has many)
 M.RANGES_MAX = 64 -- ranges per group read
 M.INTERVALS_MAX = 16 -- BRIDGE intervals per strip read
 M.MODELS_MAX = 8 -- placed pieces per interval given (the count is always given)
 M.SAMPLES = 16 -- steps along a range for its length and curvature (Simpson's rule: even)
 M.TIME_MS = 2000 -- the most one answer reads for (the whole read runs in one frame)
 M.EPS = 1e-4 -- a bound this near 0 or 1 is the piece's end
-M.NOTE = "read only; not checked in a game yet. A piece's curve is taken as the Hermite of position0/1 and " ..
-	"tangent0/1, a range's bounds as its parameter, and a range group as one track along the strip (guesses). " ..
-	"across: + to the right of group 1 looking along it. lane.type, the railing intervals and their dead-end " ..
+M.NOTE = "read only. A range group is one section of the strip cut across: the tracks side by side in it, a " ..
+	"piece longer than a section split between groups (seen in a game 2026-11-26). Not checked in a game yet: a " ..
+	"piece's curve as the Hermite of position0/1 and tangent0/1, a range's bounds as its parameter, across between " ..
+	"the ranges' middles (+ to the right of the group's first range looking along it), the groups' order along the " ..
+	"strip (groupsInOrder: whether each joins the next). lane.type, the railing intervals and their dead-end " ..
 	"intervals are given to the tunnel's updateFn only and are not read (unread)"
 -- what is never read, whichever strip (see the head of the file)
 M.NEVER_READ = { "lane.type (given to the tunnel's updateFn only)",
@@ -361,7 +369,10 @@ function M.run(args, opts)
 		if type(tun) == "boolean" then out.isTunnel = tun else un("parallelStrip.isTunnel") end
 		local bri = util and try(function() return util.isBridge(s) end)
 		if type(bri) == "boolean" then out.isBridge = bri else un("parallelStrip.isBridge") end
-		-- range groups
+		-- range groups. Measured 2026-11-26 (three tunnel tracks, 2669 and 2671 end to end beside 2673 twice as
+		-- long): rangeGroups = [[2669 0-1, 2673 0-0.5], [2671 0-1, 2673 0.5-1]]. So a group is one section of the
+		-- strip, cut across: the ranges of the tracks side by side in it, and a piece longer than a section is in
+		-- more than one group, a part in each. A group is not one track along the strip.
 		local bps = comp(s, "BASE_PARALLEL_STRIP")
 		local rg = bps and field(bps, "rangeGroups")
 		if rg == nil and bps then rg = field(bps, "rangeGroups_native"); out.groupsFrom = rg ~= nil and "rangeGroups_native" or nil end
@@ -371,8 +382,7 @@ function M.run(args, opts)
 		local nG = size(rg)
 		out.groupCount = nG
 		if nG > M.GROUPS_MAX then out.groupsTruncated = true end
-		local first -- group 1's start and direction, for across
-		local totalTurn, totalPlan = 0, 0
+		-- first pass: each range as read, measured on its piece's curve
 		for gi = 1, math.min(nG, M.GROUPS_MAX) do
 			local grp = at(rg, gi)
 			local g = { group = gi, edges = {}, ranges = {} }
@@ -380,7 +390,6 @@ function M.run(args, opts)
 			local nR = size(grp)
 			g.rangeCount = nR
 			if nR > M.RANGES_MAX then g.rangesTruncated = true end
-			local len, plan, turn, maxK, measured = 0, 0, 0, 0, true
 			for ri = 1, math.min(nR, M.RANGES_MAX) do
 				local rr = at(grp, ri)
 				local e = tonumber(field(rr, "edge"))
@@ -389,77 +398,163 @@ function M.run(args, opts)
 				-- a bound that did not read is false, not a hole (a hole would break the JSON array)
 				local bb = { r6(b0) or false, r6(b1) or false }
 				rawG[#rawG + 1] = { edge = e, bounds = core.array({ bb[1], bb[2] }) }
-				local one = { edge = e, bounds = core.array({ bb[1], bb[2] }) }
+				local one = { edge = e, bounds = core.array({ bb[1], bb[2] }),
+					share = finite(b0) and finite(b1) and r6(math.abs(b1 - b0)) or nil }
 				if e == nil then un("rangeGroups[" .. gi .. "][" .. ri .. "].edge") end
 				if b0 == nil or b1 == nil then un("rangeGroups[" .. gi .. "][" .. ri .. "].bounds") end
 				g.edges[#g.edges + 1] = e
 				local p = e and piece(e)
 				if e and not p then one.error = "the piece does not exist or has no BASE_EDGE" end
 				local m = p and p.curve and b0 and b1 and M.measure(p.curve, b0, b1)
+				if m then one.length = r3(m.length) end
+				if p and p.curve and b0 and b1 then
+					one.from, one.to = rv(M.point(p.curve, b0)), rv(M.point(p.curve, b1))
+					-- the middle of the range and the way it runs there (bounds read 1 to 0: the other way)
+					local mid = (b0 + b1) / 2
+					local dir = M.direction(p.curve, mid)
+					if b1 < b0 then dir = { x = -dir.x, y = -dir.y, z = -dir.z } end
+					one._mid, one._dir = M.point(p.curve, mid), dir
+				end
+				one._m, one._p, one._b = m, p, { b0, b1 }
+				g.ranges[#g.ranges + 1] = one
+			end
+			groups[#groups + 1] = g
+			raw[#raw + 1] = core.array(rawG)
+		end
+		-- every range end in the strip, to tell an end shared with another group (the strip goes on into the next
+		-- section) from an end of the strip
+		local endsAll = {}
+		for _, g in ipairs(groups) do
+			for _, one in ipairs(g.ranges) do
+				for k = 1, 2 do
+					local b = one._b[k]
+					local side = M.endOf(b)
+					endsAll[#endsAll + 1] = { group = g.group, edge = one.edge, bound = b,
+						node = side and one._p and one._p[side] or nil }
+				end
+			end
+		end
+		local function joinsOf(gi, e, b, node)
+			local found = {}
+			for _, x in ipairs(endsAll) do
+				if x.group ~= gi and not found[x.group] then
+					local sameCut = e ~= nil and x.edge == e and finite(b) and finite(x.bound) and math.abs(x.bound - b) <= M.EPS
+					if sameCut or (node ~= nil and x.node == node) then found[x.group] = true end
+				end
+			end
+			local list = {}
+			for k in pairs(found) do list[#list + 1] = k end
+			table.sort(list)
+			return list
+		end
+		-- second pass: each section's length, curvature and width, each range's across and ends
+		local totalLen, totalTurn, totalPlan, allMeasured, anyMeasured = 0, 0, 0, true, false
+		local shares, shareOrder = {}, {}
+		local dead = {}
+		for _, g in ipairs(groups) do
+			local nR = #g.ranges
+			local len, lmin, lmax, plan, turn, maxK, measured = 0, nil, nil, 0, 0, 0, nR > 0
+			-- (the first range's middle kept apart: its working fields are cleared as the loop passes it)
+			local refMid, refDir = g.ranges[1] and g.ranges[1]._mid, g.ranges[1] and g.ranges[1]._dir
+			local lo, hi, acrossOk = 0, 0, nR > 0
+			local joins = {}
+			for _, one in ipairs(g.ranges) do
+				local m = one._m
 				if m then
-					one.length = r3(m.length)
 					len, plan, turn = len + m.length, plan + m.plan, turn + m.turn
+					lmin = (lmin == nil or m.length < lmin) and m.length or lmin
+					lmax = (lmax == nil or m.length > lmax) and m.length or lmax
 					if m.maxCurvature > maxK then maxK = m.maxCurvature end
 				else
 					measured = false
 				end
-				if p and p.curve and b0 and b1 then
-					one.from, one.to = rv(M.point(p.curve, b0)), rv(M.point(p.curve, b1))
-					local dir = M.direction(p.curve, b0)
-					if b1 < b0 then dir = { x = -dir.x, y = -dir.y, z = -dir.z } end
-					if ri == 1 then g.start, g.startDir = one.from, dir end
-					g.finish = one.to
+				-- across: from the group's first range, at the middles of both, + to the right looking along the
+				-- first one (a straight line through its middle: right for parallel tracks, rough on a tight curve)
+				local a = refMid and refDir and one._mid and M.across(refMid, refDir, one._mid)
+				if a then
+					one.across = r3(a)
+					if a < lo then lo = a end
+					if a > hi then hi = a end
+				else
+					acrossOk = false
 				end
-				-- the group's ends: the first range's start and the last one's end
-				local function endAt(b, which)
+				local function endAt(k, which)
+					local b = one._b[k]
 					local side = M.endOf(b)
-					local d = { at = which, edge = e, bound = r6(b) }
-					if side == nil then
+					local d = { at = which, edge = one.edge, bound = r6(b) }
+					local node = side and one._p and one._p[side] or nil
+					d.node = node
+					if side then d.trackPieces = trackCount(node) end
+					local j = joinsOf(g.group, one.edge, b, node)
+					if #j > 0 then
+						d.kind = "joinsGroup"
+						d.joins = core.array(j)
+						for _, x in ipairs(j) do joins[x] = true end
+					elseif side == nil then
 						d.kind = b and "insidePiece" or "unknown"
 					else
-						local node = p and p[side]
-						d.node = node
-						d.trackPieces = trackCount(node)
 						d.kind = M.endKind(d.trackPieces)
 					end
+					if d.kind == "deadEnd" then dead[#dead + 1] = { group = g.group, at = which, node = node, edge = one.edge } end
 					return d
 				end
-				if ri == 1 then g.beginEnd = endAt(b0, "begin") end
-				if ri == math.min(nR, M.RANGES_MAX) then g.endEnd = endAt(b1, "end") end
-				g.ranges[#g.ranges + 1] = one
+				one.ends = core.array({ endAt(1, "begin"), endAt(2, "end") })
+				if one.edge then
+					local sh = shares[one.edge]
+					if not sh then
+						sh = { edge = one.edge, groups = {}, share = 0 }
+						shares[one.edge] = sh; shareOrder[#shareOrder + 1] = sh
+					end
+					sh.groups[#sh.groups + 1] = g.group
+					sh.share = one.share and sh.share and sh.share + one.share or false
+				end
+				one._mid, one._dir, one._m, one._p, one._b = nil, nil, nil, nil, nil
 			end
-			g.edges = core.array(g.edges)
-			g.ranges = core.array(g.ranges)
-			if nR > 0 and measured then
-				g.length = r3(len)
-				g.curvature = { mean = plan > 0 and r6(turn / plan) or nil, maxAbs = r6(maxK), turnDeg = r3(math.deg(turn)) }
-				totalTurn, totalPlan = totalTurn + turn, totalPlan + plan
+			if measured then
+				-- the section's length along the strip: the mean of its tracks' (side by side on a curve the outer
+				-- one is longer: lengthMin / lengthMax)
+				g.length = r3(len / nR)
+				g.lengthMin, g.lengthMax = r3(lmin), r3(lmax)
+				g.curvature = { mean = plan > 0 and r6(turn / plan) or nil, maxAbs = r6(maxK), turnDeg = r3(math.deg(turn / nR)) }
+				totalLen, totalTurn, totalPlan = totalLen + len / nR, totalTurn + turn / nR, totalPlan + plan / nR
+				anyMeasured = true
 			elseif nR > 0 then
 				g.lengthWhy = "a piece's curve or a range's bounds did not read"
+				allMeasured = false
 			end
-			g.ends = core.array({ g.beginEnd, g.endEnd })
-			g.beginEnd, g.endEnd = nil, nil
-			if g.start and g.startDir then
-				if not first then first = { a = g.start, d = g.startDir } end
-				g.across = r3(M.across(first.a, first.d, g.start))
+			if acrossOk then
+				g.width = r3(hi - lo)
+			elseif nR > 0 then
+				g.acrossWhy = "a range's middle could not be worked out (its piece's curve or bounds did not read)"
 			end
-			g.startDir = nil
-			groups[#groups + 1] = g
-			raw[#raw + 1] = core.array(rawG)
+			local jl = {}
+			for k in pairs(joins) do jl[#jl + 1] = k end
+			table.sort(jl)
+			g.joins = core.array(jl)
+			g.edges = core.array(g.edges)
+			g.ranges = core.array(g.ranges)
 		end
 		out.groups = core.array(groups)
 		out.rangeGroups = core.array(raw) -- (as read: edge and bounds only)
-		-- the strip as a whole: the longest group's length, the ends that are dead ends
-		local longest
-		for _, g in ipairs(groups) do if g.length and (longest == nil or g.length > longest) then longest = g.length end end
-		out.length = longest
+		-- the strip as a whole: its sections' lengths added up (nil when one did not measure; an empty group adds
+		-- nothing)
+		out.length = allMeasured and anyMeasured and r3(totalLen) or nil
 		out.curvatureMean = totalPlan > 0 and r6(totalTurn / totalPlan) or nil
-		local dead = {}
-		for _, g in ipairs(groups) do
-			for _, d in ipairs(g.ends) do
-				if d.kind == "deadEnd" then dead[#dead + 1] = { group = g.group, at = d.at, node = d.node, edge = d.edge } end
+		-- the groups as read one after another along the strip: each joins the next (nil with fewer than two)
+		if #groups >= 2 then
+			local chain = true
+			for i = 1, #groups - 1 do
+				local ok = false
+				for _, x in ipairs(groups[i].joins) do if x == i + 1 then ok = true end end
+				if not ok then chain = false end
 			end
+			out.groupsInOrder = chain
 		end
+		local sl = {}
+		for _, sh in ipairs(shareOrder) do
+			sl[#sl + 1] = { edge = sh.edge, groups = core.array(sh.groups), share = sh.share and r6(sh.share) or nil }
+		end
+		out.edgeShares = core.array(sl)
 		out.deadEnds = core.array(dead)
 		out.laneType = "unread"
 		-- BRIDGE: the placed pieces (a tunnel's walls, if tunnels carry it)

@@ -1286,9 +1286,12 @@ python3 tools/tf3ctl.py strips --edge 9010[,9011,...] [--limit N] [--gs]
 python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
 ```
 
-**ゲーム内では未確認** (2026-11-26 に書いたもの)。以下は API の型の定義 (`baseParallelStripSystem.getStrips`、
-`parallelStrip.getStripInfo` / `isTunnel` / `isBridge`、コンポーネント `BASE_PARALLEL_STRIP` と `BRIDGE`) から
-書きました。ゲームのどちらの Lua の状態にそれがあるかを、まず確認します。
+2026-11-26 に API の型の定義 (`baseParallelStripSystem.getStrips`、`parallelStrip.getStripInfo` / `isTunnel` /
+`isBridge`、コンポーネント `BASE_PARALLEL_STRIP` と `BRIDGE`) から書きました。**ゲームで見たこと** (2026-11-26、
+平らな試験用の地図): トンネルの線路 2669 (0,0 から 100,0)、2671 (100,0 から 200,0)、2673 (0,5 から 200,5) は
+1 つの strip (TUNNEL、RAIL) で、その `rangeGroups` は `[[2669 0-1, 2673 0-0.5], [2671 0-1, 2673 0.5-1]]`。
+**range group は、strip を横に切った 1 区間**で (その区間に並ぶ線路と、それぞれが edge のどこを使うか)、線路 1 本では
+ありません。区間より長い edge は、いくつかの group に分かれて入ります (2673)。100,0 から出る分岐は、別の strip です。
 
 - 読むだけです (ほかの担当への警告なし、ゲームには何も送りません)。エンジンは横に並んだ線路を
   「parallel strip」にまとめます (バニラのトンネルと橋の壁は strip ごとに建ちます)。`--edge`: edge の id を 20 本まで
@@ -1300,15 +1303,22 @@ python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
   出会った edge と線路の数。octree が一覧に入る数より多く返したら `dropped` (そのとき「線路が無い」は「全部は見ていない」
   かもしれません)。走査の途中で 2 秒を超えたら `timeTruncated` と `looked`。
 - strip ごと (`strips`): `strip`、`stripInfo` (`carrier` RAIL / TRAM / ...、`edgeType` NORMAL / BRIDGE / TUNNEL、
-  `edgeTypeIndex`)、`isTunnel`、`isBridge`、`groupCount`、`length` (一番長い group、m)、`curvatureMean` (符号つき、
-  1/m、+ は左へ曲がる)、`deadEnds`、`laneType` (いつも `"unread"`)、`bridge` (コンポーネント `BRIDGE` の区間:
+  `edgeTypeIndex`)、`isTunnel`、`isBridge`、`groupCount`、`length` (区間の長さの合計、m。曲線が読めないときは無し)、
+  `curvatureMean` (符号つき、1/m、+ は左へ曲がる)、`groupsInOrder` (group が 2 つ以上のとき。どの group も次の group に
+  つながれば true で、一覧の順が strip に沿った順。そうでなければ false。どちらも【推測】)、`edgeShares` (edge ごとに
+  `edge`、入っている `groups`、`share` = 使っている割合、1 = 全部)、`deadEnds` (`group`、`at`、`node`、`edge`)、
+  `laneType` (いつも `"unread"`)、`bridge` (コンポーネント `BRIDGE` の区間:
   `splines`、`railingModels`、`models` を 8 個まで `name` と `at` つき)、`rangeGroups` (読んだまま: `edge` と
   `bounds` だけ)、`unread` (その strip で読めなかったもの)。
-- group ごと (`groups`。1 つの group は strip に沿った線路 1 本と見ています。【推測】): `edges` (順に並んだ edge)、
-  `ranges` (`edge`、`bounds`、`length`、`from`、`to`)、`length`、`curvature` (`mean`、`maxAbs`、`turnDeg`)、
-  `across` (group 1 の始まりからの m。group 1 に沿って見て右が +)、`ends` (`begin` と `end`: `node`、`trackPieces`、
-  `kind`: `deadEnd` (その node の線路が 1 本)、`continues` (2 本)、`junction` (3 本以上)、`insidePiece` (bound が
-  0 でも 1 でもない))。
+- group ごと (`groups`、横に切った 1 区間): `edges` (横に並ぶ線路の edge)、`ranges` (線路ごとに `edge`、`bounds`、
+  `share` (edge のうち使っている割合、0〜1)、`length`、`from`、`to`、`across`、`ends`)、`length` (区間の長さ: range の
+  長さの平均。`lengthMin` / `lengthMax` も。曲線が読めないときは `lengthWhy`)、`curvature` (`mean`、`maxAbs`、
+  `turnDeg`)、`width` (いちばん外の線路どうしの m。上の例の 2 本なら 5)、`joins` (この group が接する group)。
+- range の `across`: group の最初の range からの m。range の真ん中どうしで測り、最初の range に沿って見て右が +
+  (上の例の 2673 は -5)。真ん中が計算できないときは、代わりに `acrossWhy`。range の `ends` (`begin` と `end`): `at`、
+  `edge`、`bound`、`node`、`trackPieces`、`kind`: `joinsGroup` (同じ edge の同じ bound か、同じ node が、ほかの group に
+  ある。`joins` にその group)、`deadEnd` (その node の線路が 1 本)、`continues` (2 本)、`junction` (3 本以上)、
+  `insidePiece` (bound が 0 でも 1 でもなく、ほかの group にも続かない)、`unknown`。
 - 長さと曲率は、ここで**計算したもの**です。edge の曲線を `BASE_EDGE` の `position0/1` と `tangent0/1` の Hermite と
   見て、range の `bounds` をその曲線のパラメータと見ています (どちらも【推測】)。`pieces`: 出会った edge
   (`from`、`to`、`tangent0/1`、`length`、`laneCount`)。
@@ -1320,7 +1330,8 @@ python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
   `--gs` では `--limit` を小さくし、直後に保存しないでください。
 - ゲーム内で確認すること: GUI の状態に `baseParallelStripSystem` があるか。`rangeGroups` がどう読めるか
   (`rangeGroups_native` なら `groupsFrom`)。`getStripInfo` が両方の状態で動くか。トンネルの strip に `BRIDGE` が
-  あるか。`across` の符号。`bounds` が曲線のパラメータか。街路と線路がつながる node の近くでの `--at`
+  あるか。`across` の符号。`bounds` が曲線のパラメータか。group が strip に沿った順に並ぶか。街路と線路がつながる
+  node の近くでの `--at`
   (`getNodeTrackSegments` に街路の node を渡したとき)。
 
 ### 建造物を置ける場所 (`fit`)
