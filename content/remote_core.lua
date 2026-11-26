@@ -58,6 +58,8 @@ M.COMMANDS.reach = true
 M.COMMANDS.around = true
 -- lanes (remote_lanes.lua): read only, in a game
 M.COMMANDS.edgeLanes = true
+-- strips (remote_strips.lua): read only, in a game
+M.COMMANDS.strips = true
 
 ---------------------------------------------------------------------------------------------------------------------
 -- mod settings (mod.json params): each arrives as a 1-based index into these lists
@@ -4455,6 +4457,44 @@ function M.edgeLanesRequest(args)
 	end
 	if args.network ~= nil and type(args.network) ~= "boolean" then return nil, "network must be true or false" end
 	return { edges = out, network = args.network ~= false }
+end
+
+-- strips (read only, remote_strips.lua): edges ("a,b", a list or one id: 1-STRIPS_EDGES_MAX track pieces) or at
+-- (x,y) and radius (default STRIPS_RADIUS.default m), not both; limit (strips per answer, 1-STRIPS_LIMIT.max) ->
+-- { edges } or { x, y, radius }, with limit; or nil and why
+M.STRIPS_EDGES_MAX = 20
+M.STRIPS_RADIUS = { default = 30, max = 500 } -- m (a strip runs on beyond the circle: a small circle is enough)
+M.STRIPS_LIMIT = { default = 20, max = 40 } -- (remote_strips.lua's STRIPS_MAX)
+function M.stripsRequest(args)
+	args = type(args) == "table" and args or {}
+	local limit = M.STRIPS_LIMIT.default
+	if args.limit ~= nil then
+		limit = wholeNumber(args.limit)
+		if limit == nil or limit < 1 or limit > M.STRIPS_LIMIT.max then
+			return nil, "limit must be a whole number 1-" .. M.STRIPS_LIMIT.max
+		end
+	end
+	if args.edges ~= nil and args.at ~= nil then return nil, "give edges or at, not both" end
+	if args.edges ~= nil then
+		local r, err = M.edgeLanesRequest({ edges = args.edges })
+		if not r then return nil, err end
+		if #r.edges > M.STRIPS_EDGES_MAX then return nil, "edges: at most " .. M.STRIPS_EDGES_MAX .. " pieces" end
+		return { edges = r.edges, limit = limit }
+	end
+	if args.at == nil then return nil, "give edges (piece ids) or at (x,y in metres)" end
+	local p, err = M.numberList(args.at, 3)
+	if not p then return nil, "at: " .. err end
+	if #p < 2 then return nil, "at needs x,y (finite numbers)" end
+	local L = M.BUILD_LIMITS.xy
+	if math.abs(p[1]) > L or math.abs(p[2]) > L then return nil, "at: x and y must be within " .. L end
+	local r = M.STRIPS_RADIUS.default
+	if args.radius ~= nil then
+		r = tonumber(args.radius)
+		if not finite(r) or r <= 0 or r > M.STRIPS_RADIUS.max then
+			return nil, string.format("radius must be more than 0 and at most %g m", M.STRIPS_RADIUS.max)
+		end
+	end
+	return { x = p[1], y = p[2], radius = r, limit = limit }
 end
 
 -- a transf's turn about the vertical (radians) from its first column (m11, m12: cos, sin); nil when not readable

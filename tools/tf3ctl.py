@@ -5806,6 +5806,103 @@ def around_args(ns):
     return args
 
 
+STRIPS_EDGES_MAX = 20  # the mod's core.STRIPS_EDGES_MAX
+STRIPS_RADIUS_MAX = 500  # the mod's core.STRIPS_RADIUS.max (default 30)
+STRIPS_LIMIT_MAX = 40  # the mod's core.STRIPS_LIMIT.max (default 20)
+STRIPS_GS_DEPTH = 16  # eval's most: the answer nests 8 deep (strips, groups, ranges, bounds)
+STRIPS_GS_CHARS = 1000000  # eval's most
+# the answer's lists: eval --gs gives an empty Lua list as {} (its dump does not know it was a list)
+STRIPS_LISTS = {"strips", "groups", "ranges", "edges", "rangeGroups", "ends", "deadEnds", "unread", "asked",
+                "pieces", "list", "models", "missing", "bounds"}
+
+
+def strips_args(ns):
+    """strips: --edge ID[,ID...] or --at X,Y [--radius R], --limit; checked as the mod checks them."""
+    if (ns.edge is None) == (ns.at is None):
+        raise ToolError("give --edge ID[,ID...] or --at X,Y (one of them)")
+    args = {}
+    if ns.edge is not None:
+        if ns.radius is not None:
+            raise ToolError("--radius goes with --at, not --edge")
+        parts = [p.strip() for p in ns.edge.split(",")]
+        try:
+            ids = [int(p) for p in parts]
+        except ValueError:
+            raise ToolError("--edge must be piece ids separated by commas (around --kinds track lists them)")
+        if not ids or len(ids) > STRIPS_EDGES_MAX or any(i < 0 for i in ids):
+            raise ToolError("--edge: 1-%d piece ids, each 0 or more" % STRIPS_EDGES_MAX)
+        args["edges"] = ids
+    else:
+        try:
+            at = [float(x) for x in ns.at.split(",")]
+        except ValueError:
+            raise ToolError("--at must be numbers: x,y (for a negative x write --at=-100,50)")
+        if len(at) != 2 or any(x != x or abs(x) == float("inf") for x in at):
+            raise ToolError("--at must be x,y (finite numbers)")
+        args["at"] = at
+        if ns.radius is not None:
+            if not (0 < ns.radius <= STRIPS_RADIUS_MAX):
+                raise ToolError("--radius must be more than 0 and at most %d m" % STRIPS_RADIUS_MAX)
+            args["radius"] = ns.radius
+    if ns.limit is not None:
+        if not 1 <= ns.limit <= STRIPS_LIMIT_MAX:
+            raise ToolError("--limit must be 1-%d" % STRIPS_LIMIT_MAX)
+        args["limit"] = ns.limit
+    return args
+
+
+def strips_gs_code(args):
+    """The Lua eval --gs runs for strips --gs: remote_strips.lua's run, in the game script's state, with args."""
+    def lua(v):
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, (int, float)):
+            return repr(v)
+        if isinstance(v, list):
+            return "{" + ", ".join(lua(x) for x in v) + "}"
+        if isinstance(v, dict):
+            return "{" + ", ".join("%s = %s" % (k, lua(x)) for k, x in sorted(v.items())) + "}"
+        raise ToolError("strips: cannot write %r as Lua" % (v,))
+    return ('return require("hummer_remote_probe::/remote_strips.lua").run(%s, { where = "gs" })' % lua(args))
+
+
+def strips_lists(v, key=None):
+    """{} back to [] under the answer's list keys (eval --gs's dump)."""
+    if isinstance(v, dict):
+        if key in STRIPS_LISTS and not v:
+            return []
+        return {k: strips_lists(x, k) for k, x in v.items()}
+    if isinstance(v, list):
+        return [strips_lists(x) for x in v]
+    return v
+
+
+def cmd_strips(ns):
+    """strips: the engine's parallel strips of tracks (read only). Without --gs read in the GUI's Lua state; with --gs
+    in the probe's game script, through eval --gs (so only with "eval": true in the configuration file, and with the
+    mod setting gameScript on: --param hummer_remote_probe:gameScript=2)."""
+    args = strips_args(ns)
+    if not ns.gs:
+        return send("strips", args, timeout=60)
+    if not CONFIG["eval"]:
+        raise config_needed("strips --gs (sent through eval --gs)", "eval")
+    res = send("eval", {"code": strips_gs_code(args), "gs": True, "depth": STRIPS_GS_DEPTH,
+                        "maxChars": STRIPS_GS_CHARS}, timeout=EVAL_TIMEOUT_SEC)
+    if not isinstance(res, dict) or res.get("ok") is False:
+        return res  # eval's own refusal (gameScript off, a Lua error): shown as it is, exit 1
+    value = res.get("value")
+    if not isinstance(value, dict):
+        raise ToolError("strips --gs: the game script gave no answer table (%s)%s"
+                        % (str(value)[:200], "; try a smaller --limit" if res.get("truncated") else ""))
+    out = strips_lists(value)
+    out["where"] = "gs"
+    out["evalWhere"] = res.get("where")
+    if res.get("truncated"):
+        out["evalTruncated"] = True
+    out["gsNote"] = EVAL_GS_NOTE
+    return out
+
+
 REACH_RADIUS_MAX = 500  # the mod's RADIUS_MAX (remote_reach.lua)
 REACH_LIMIT_MAX = 200  # the mod's TARGETS_LIST_MAX
 
@@ -6814,6 +6911,18 @@ def make_parser():
     ar.add_argument("--limit", type=int, help="entries listed, nearest first (default 200, at most %d)" % AROUND_LIMIT_MAX)
     ar.add_argument("--lanes", action="store_true", help="also each street's and track's lanes (the nearest 100), "
                     "as lanes --edge gives them without the transport network")
+    st = sub.add_parser("strips", help="read only: the engine's parallel strips of tracks (a tunnel's or bridge's "
+                        "walls go along them): kind (carrier, edge type, tunnel, bridge), range groups as read (each "
+                        "group's pieces in order, with bounds), length, curvature, ends (dead end, junction), across "
+                        "offsets, BRIDGE's placed pieces, and what could not be read (lane.type among them)")
+    st.add_argument("--edge", metavar="ID[,ID...]", help="track piece ids (around --kinds track), at most %d"
+                    % STRIPS_EDGES_MAX)
+    st.add_argument("--at", metavar="X,Y", help="every track piece within --radius of the point (for a negative x "
+                    "write --at=-100,50)")
+    st.add_argument("--radius", type=float, help="metres, with --at (default 30, at most %d)" % STRIPS_RADIUS_MAX)
+    st.add_argument("--limit", type=int, help="strips listed (default 20, at most %d)" % STRIPS_LIMIT_MAX)
+    st.add_argument("--gs", action="store_true", help="read in the probe's game script (through eval --gs: needs "
+                    "\"eval\": true in the configuration file and --param hummer_remote_probe:gameScript=2 at load)")
     la = sub.add_parser("lanes", help="read only: road or track pieces' lanes, left to right looking from node0 to "
                         "node1: number, side and metres from the middle, direction, transport modes (TRAM, "
                         "ELECTRIC_TRAM, BUS, CAR, PERSON, ...), speed, width; the piece's street type, bridge or "
@@ -7282,6 +7391,8 @@ def main(argv=None):
             res = send("around", around_args(ns), timeout=60)
         elif ns.cmd == "lanes":
             res = send("edgeLanes", lanes_args(ns))
+        elif ns.cmd == "strips":
+            res = cmd_strips(ns)
         elif ns.cmd == "fit":
             res = cmd_fit(ns)
         elif ns.cmd == "persons":

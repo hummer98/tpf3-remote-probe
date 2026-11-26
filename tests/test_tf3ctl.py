@@ -1214,6 +1214,31 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(res["kind"], "noExt")
         self.ctl("--owner", "tester", "mod", sample, "speed", '{"speed": 1}')
 
+    def test_9xz_strips(self):
+        # the fake's double track tunnel at y 7600: strip 9640, a range group for each track (9631 5 m to the
+        # right of 9630), 9631's far end a dead end; read in the GUI's state, nothing sent to the game
+        code, res = self.ctl("strips", "--edge", "9631")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["where"], "gui")
+        s = res["strips"][0]
+        self.assertEqual((s["strip"], s["isTunnel"], s["stripInfo"]["carrier"]), (9640, True, "RAIL"))
+        self.assertEqual([g["edges"] for g in s["groups"]], [[9630], [9631]])
+        self.assertEqual([g["across"] for g in s["groups"]], [0, 5])
+        self.assertEqual(s["length"], 100)
+        self.assertEqual(s["deadEnds"], [{"group": 2, "at": "end", "node": 9635, "edge": 9631}])
+        self.assertEqual(s["laneType"], "unread")
+        self.assertIn("lane.type", res["unread"][0])
+        code, res = self.ctl("strips", "--at", "0,7598", "--radius", "10")
+        self.assertEqual(code, 0, res)
+        self.assertEqual([a["edge"] for a in res["asked"]], [9630, 9631])
+        self.assertEqual(res["stripCount"], 1)
+        code, res = self.ctl("strips", "--at", "0,-90000", "--radius", "5")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["strips"], res["asked"]), ([], []), "nothing in the radius: empty lists")
+        code, res = self.ctl("strips", "--edge", "99999")
+        self.assertEqual(code, 1, res)
+        self.assertIn("no such piece", res["error"])
+
     def test_9xz_lanes(self):
         # the fake's electric tram street 9620 (the base's town_new_medium_tram_electrified lanes): track on the
         # outer road lanes, 2 (left, against the piece) and 5 (right)
@@ -1703,6 +1728,84 @@ class QuitLaunchTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(tf3ctl.main(["lanes", "--edge", "x"]), 2, "refused before sending")
         self.assertEqual(sent, [("edgeLanes", {"edges": [5, 6]})])
+
+    def test_strips_args_and_main(self):
+        parse = tf3ctl.make_parser().parse_args
+
+        def args(*a):
+            return tf3ctl.strips_args(parse(["strips"] + list(a)))
+        self.assertEqual(args("--edge", "9010"), {"edges": [9010]})
+        self.assertEqual(args("--edge", " 1, 2 ", "--limit", "3"), {"edges": [1, 2], "limit": 3})
+        self.assertEqual(args("--at=-10,20.5"), {"at": [-10.0, 20.5]})
+        self.assertEqual(args("--at", "1,2", "--radius", "50"), {"at": [1.0, 2.0], "radius": 50.0})
+        too_many = ",".join(str(i) for i in range(tf3ctl.STRIPS_EDGES_MAX + 1))
+        for bad in ([], ["--edge", "1", "--at", "1,2"], ["--edge", "a"], ["--edge", ""], ["--edge", "1,,2"],
+                    ["--edge=-1"], ["--edge", too_many], ["--edge", "1", "--radius", "5"], ["--at", "1"],
+                    ["--at", "a,b"], ["--at", "nan,1"], ["--at", "1,2", "--radius", "0"],
+                    ["--at", "1,2", "--radius", str(tf3ctl.STRIPS_RADIUS_MAX + 1)], ["--edge", "1", "--limit", "0"],
+                    ["--edge", "1", "--limit", str(tf3ctl.STRIPS_LIMIT_MAX + 1)]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                args(*bad)
+        self.assertNotIn("strips", tf3ctl.CHANGES_GAME)
+        self.assertFalse(tf3ctl.changes_game("strips", {"edges": [1]}))
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args, timeout))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["strips", "--edge", "5,6"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["strips", "--edge", "x"]), 2, "refused before sending")
+        self.assertEqual(sent, [("strips", {"edges": [5, 6]}, 60)])
+
+    def test_strips_gs_through_eval(self):
+        # --gs: the same run() in the game script, sent as eval --gs; only with "eval": true in the configuration
+        ns = tf3ctl.make_parser().parse_args(["strips", "--at=-5,7", "--radius", "40", "--limit", "2", "--gs"])
+        code = tf3ctl.strips_gs_code(tf3ctl.strips_args(ns))
+        self.assertEqual(code, 'return require("hummer_remote_probe::/remote_strips.lua").run('
+                               '{at = {-5.0, 7.0}, limit = 2, radius = 40.0}, { where = "gs" })')
+        self.assertIn("edges = {1, 2}", tf3ctl.strips_gs_code({"edges": [1, 2]}))
+        sent = []
+        answer = {"ok": True, "where": "script", "value": {"ok": True, "where": "gs", "strips": {}, "asked": {},
+                  "unread": ["lane.type"], "scan": {"radius": 40}, "pieces": {},
+                  "x": {"strips": [{"groups": [{"edges": {}, "ends": {}, "curvature": {}}]}]}}}
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args, timeout))
+            return json.loads(json.dumps(answer))
+        old = tf3ctl.CONFIG
+        try:
+            tf3ctl.CONFIG = dict(old, eval=False)
+            with unittest.mock.patch.object(tf3ctl, "send", fake_send):
+                with self.assertRaises(tf3ctl.ToolError) as cm:
+                    tf3ctl.cmd_strips(ns)
+                self.assertIn('"eval": true', str(cm.exception))
+                self.assertEqual(sent, [], "nothing sent without the configuration")
+                tf3ctl.CONFIG = dict(old, eval=True)
+                res = tf3ctl.cmd_strips(ns)
+                self.assertEqual(sent[0][0], "eval")
+                self.assertEqual(sent[0][1]["gs"], True)
+                self.assertEqual(sent[0][1]["code"], code)
+                self.assertEqual((sent[0][1]["depth"], sent[0][1]["maxChars"]), (16, 1000000))
+                self.assertEqual(sent[0][2], tf3ctl.EVAL_TIMEOUT_SEC)
+                self.assertEqual((res["where"], res["evalWhere"]), ("gs", "script"))
+                self.assertEqual((res["strips"], res["asked"], res["pieces"]), ([], [], []), "{} back to []")
+                self.assertEqual(res["scan"], {"radius": 40}, "not a list: kept")
+                g = res["x"]["strips"][0]["groups"][0]
+                self.assertEqual((g["edges"], g["ends"], g["curvature"]), ([], [], {}))
+                self.assertIn("about a minute", res["gsNote"])
+                answer["value"] = "<too large: 2000000 characters>"
+                answer["truncated"] = True
+                with self.assertRaises(tf3ctl.ToolError) as cm:
+                    tf3ctl.cmd_strips(ns)
+                self.assertIn("smaller --limit", str(cm.exception))
+                answer.clear()
+                answer.update({"ok": False, "error": "gameScript is off"})
+                self.assertEqual(tf3ctl.cmd_strips(ns), {"ok": False, "error": "gameScript is off"})
+        finally:
+            tf3ctl.CONFIG = old
 
     def test_around_args_and_main(self):
         parse = tf3ctl.make_parser().parse_args

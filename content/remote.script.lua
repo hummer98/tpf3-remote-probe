@@ -1432,6 +1432,11 @@ local around = (ug_require or require)(MOD .. "::/remote_around.lua").new({ core
 	lanes = function(e) return lanes.read(e) end, lanesNote = lanesMod.NOTE })
 for k, fn in pairs(around.handlers) do handlers[k] = fn end
 build.setDescribeHits(around.describe)
+-- strips (remote_strips.lua): read only, the engine's parallel strips of tracks (a tunnel's or bridge's walls go
+-- along them): range groups, length, curvature, ends, BRIDGE's placed pieces
+local strips = (ug_require or require)(MOD .. "::/remote_strips.lua").new({ core = core, answer = answer, fail = fail,
+	appTime = fineTime })
+for k, fn in pairs(strips.handlers) do handlers[k] = fn end
 -- terrain (remote_terrain.lua, terrain_work.lua): a rectangle made flat or a slope; terrainApi looks at the functions
 local terrain = (ug_require or require)(MOD .. "::/remote_terrain.lua").new({ core = core, answer = answer, fail = fail,
 	appTime = appTime, try = try, say = say, publishUi = publishUi, mod = MOD,
