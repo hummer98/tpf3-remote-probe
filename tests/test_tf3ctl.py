@@ -2027,6 +2027,18 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(len(out["refusedFirst"]), 2)
         self.assertIn("陸上に配置", out["refusedFirst"][0]["error"])
         self.assertIn("infos (海岸線に配置)", out["refusedFirst"][1]["error"])
+        # messages with critical not set: refused by this mod (errorsRefusal), and an older mod's buildable with
+        # messages not taken either (the build is refused for them, 2026-11-26); the third place taken
+        sender, calls = make([{"ok": False, "buildable": False, "verdict": "refused", "errors": ["衝突"],
+                               "errorsRefusal": True, "error": "the engine would refuse it: 衝突 (errorState.messages"},
+                              {"ok": True, "buildable": True, "verdict": "buildable", "errors": ["衝突"]},
+                              {"ok": True, "buildable": True, "verdict": "buildable", "errors": []}])
+        out = tf3ctl.cmd_fit(ns, sender=sender)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(len(out["refusedFirst"]), 2)
+        self.assertIn("衝突 (errorState.messages", out["refusedFirst"][0]["error"])
+        self.assertIn("messages (衝突)", out["refusedFirst"][1]["error"])
+        self.assertTrue(out["checked"]); self.assertIn("build --res x.con", out["build"])
         # the engine could not be asked: said so, not "refused"
         sender, calls = make([{"ok": True, "checked": False, "engineCheck": "not available: x"}])
         out = tf3ctl.cmd_fit(ns, sender=sender)

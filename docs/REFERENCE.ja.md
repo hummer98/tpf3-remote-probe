@@ -443,6 +443,17 @@ python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engi
   `ProposalData error: 陸上に配置`)。前の回では `海岸線に配置` も同じでした。建てられるのに infos が付く例はまだ見ていません。
   もし出たら、建てられる所を断ると答えることになります。`fit` は、確認の答えが buildable でも infos があれば (前の版の
   MOD の答え)、その場所を採りません。
+- `critical` が立たずに `errorState.messages` (確認の答えの `errors`) があるときも、同じく断りとして扱います:
+  `buildable: false`、`verdict: "refused"`、`errorsRefusal: true` で、`error` にその文と
+  `(errorState.messages, critical not set: ...)` が入ります。`critical` は付きません。わけ: build は ignoreErrors なしで
+  送られ (`road --ignore-errors` のほかは全部)、エンジンが critical でないエラーを越えて建てるのは、それがあるときだけです。
+  2026-11-26 の計測: 道路の node と直前に建てた道路に重なる道路の車庫は、確認で `critical false`、messages に `衝突` で、
+  本番の build は2回とも `衝突` で断られました。この版の前は、確認も `fit` も、そこを `buildable` と答えていました。`fit` は、
+  確認の答えが buildable でも messages があれば (前の版の MOD の答え)、その場所を採りません。このため
+  `road --ignore-errors --dry-run` は、そういうエラーがあると `ok: false` を返します (答えは強制しない場合の判定)。
+  断られた本番の build の答えにも `errorsRefusal` が残ります。答えは今も2つの context の厳しい方なので、`--join-streets`
+  や `--remove-buildings` の dry run は、エンジン自身の context (道路を整理せず、建物を取り除かない) だけにそういう
+  messages があるときも断りになることがあります。この版での確認は **ゲーム内では未確認**です。
 - `--collision-detail` (`build` と `road`。建てるときか、`--dry-run --engine-check` と一緒に。初期設定では出しません。
   答えが大きくなるため): エンジンの `ProposalData` を丸ごと `collisionDetail` に写します。欄はゲームの型
   (`api/tealdef/api/type.d.tl` の `ProposalData`) が名前を挙げるとおり: `collisionInfo` (`collisionEntities[].entity`・
@@ -1164,7 +1175,8 @@ python3 tools/tf3ctl.py fit --res x.con --at 1200,800 --size 20,30 --check 0    
   道路そのものはエンジンに聞いていない)、`refusedFirst` (エンジンが断った候補と `hits`)。エンジンが警告つきで建てられると言った候補と、町の建物を
   取り除くと言った候補は採りません。その答えはエンジン自身の context でのもので、本番の build は畑も建物も集めない
   ためです (道路で 2026-11-23 にそうして断られた)。`errorState.infos` だけがある候補も断られたと数えます (`build` を参照。
-  そういう build は断られる、2026-11-23)。エンジンに聞けなかったときは、断られたとは数えずに止まります
+  そういう build は断られる、2026-11-23)。`critical` が立たずに `errorState.messages` がある候補も同じです (`build` を参照。
+  2026-11-26 に `衝突` で断られた)。エンジンに聞けなかったときは、断られたとは数えずに止まります
   (`checked: false`)。空きが無ければ `ok: false`・「no free place」と、`blockers` (いちばん多くの候補を邪魔した物:
   id・種類・名前・位置・数)。空いていても家が足りなかった候補の数は `tooFewHouses` です。試す候補は 200000 個までです
   (それぞれ近くの物とだけ比べます。家 1600 戸の町で 85000 個がおよそ 2 秒)。途中で止まったときは `complete` が false

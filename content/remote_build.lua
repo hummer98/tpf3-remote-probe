@@ -248,6 +248,11 @@ function M.new(ctx)
 			-- game's log "ProposalData error: 陸上に配置"). By the field, not its words (they change with the
 			-- game's language); infos that do not refuse a build are not seen yet
 			infosRefusal = critical ~= true and infos ~= nil and #infos > 0 or nil,
+			-- messages with critical not set: taken as a refusal too. makeWorldBuildProposalCmd builds past
+			-- non-critical errors only with ignoreErrors (api/tealdef/api/cmd.d.tl), and every build but a forced
+			-- road is sent without it (2026-11-26: a road depot over a road's node and a new piece, the check
+			-- critical false with messages "衝突", the build refused "衝突" twice). By the field, as infosRefusal
+			errorsRefusal = critical ~= true and errors ~= nil and #errors > 0 or nil,
 			errorStateRead = read,
 			collisions = #hit > 0 and core.array(hit) or nil,
 			-- the boxes of the constructions the proposal adds (ProposalData.toAddData[i].boundingVolume, type.d.tl):
@@ -306,13 +311,18 @@ function M.new(ctx)
 			"raised: " .. v.callbackError)) or "nothing read") .. ")", false
 	end
 
-	-- whether a verdict refuses: critical, or infos only (infosRefusal, in verdict above)
+	-- whether a verdict refuses (a build sent without ignoreErrors): critical, messages with critical not set
+	-- (errorsRefusal), or infos only (infosRefusal), in verdict above
 	local function refuses(v)
-		return v ~= nil and (v.critical == true or v.infosRefusal == true)
+		return v ~= nil and (v.critical == true or v.errorsRefusal == true or v.infosRefusal == true)
 	end
 
-	-- the reason a dry run gives for its refusal: reasonOf's, but infos only named as such (critical not set)
+	-- the reason a dry run gives for its refusal: reasonOf's, but messages or infos with critical not set named so
 	local function dryReason(v)
+		if not v.critical and v.errorsRefusal then
+			return table.concat(v.errors, "; ") .. " (errorState.messages, critical not set: a build without " ..
+				"ignoreErrors is refused for it)"
+		end
 		if v.critical or not v.infosRefusal then return (reasonOf(v)) end
 		return table.concat(v.infos, "; ") .. " (errorState.infos, critical not set: the engine refuses such a " ..
 			"build all the same)"
@@ -821,9 +831,9 @@ function M.new(ctx)
 	local function finish(job)
 		local out, res = job.out, job.result
 		for k, v in pairs(res.verdict) do out[k] = v end
-		-- (infosRefusal is a dry run's mark: a build is judged by its success, and one that stood with infos is
-		-- no refusal)
-		if res.success then out.infosRefusal = nil end
+		-- (infosRefusal and errorsRefusal are a dry run's marks: a build is judged by its success, and one that
+		-- stood with infos or messages, a forced road's, is no refusal)
+		if res.success then out.infosRefusal, out.errorsRefusal = nil, nil end
 		out.balanceBefore, out.balanceAfter = job.before, balance()
 		if out.balanceBefore and out.balanceAfter then out.spent = out.balanceBefore - out.balanceAfter end
 		if job.kind == "road" then
@@ -1584,6 +1594,7 @@ function M.new(ctx)
 		local warned = v.warnings ~= nil and #v.warnings > 0
 		return { verdict = refuses(v) and "refused" or (warned and "buildable with warnings" or "buildable"),
 			critical = v.critical, errors = v.errors, warnings = v.warnings, infos = v.infos, infosRefusal = v.infosRefusal,
+			errorsRefusal = v.errorsRefusal,
 			collisions = v.collisions and #v.collisions or nil, cost = v.cost, errorStateRead = v.errorStateRead }
 	end
 	function engineCheck(sp, fields, buildings, streets, detail)
@@ -2155,7 +2166,7 @@ function M.new(ctx)
 				local u = summary(v)
 				u.form = form
 				-- (whether the unforced build would have been refused: ignoredErrors only says it was sent forced)
-				u.refused = refuses(v) or (v.errors ~= nil and #v.errors > 0)
+				u.refused = refuses(v)
 				u.collisionEntities = v.collisions and core.array(v.collisions) or nil
 				u.collisionDetail = v.collisionDetail
 				out.unforced = u

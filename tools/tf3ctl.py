@@ -4512,6 +4512,13 @@ def cmd_fit(ns, sender=None):
             refused.append({"place": cand, "error": "the engine's check has infos (%s): such a build is refused"
                             % "; ".join(res.get("infos"))})
             continue
+        # messages with critical not set and a buildable verdict (an older mod's answer: this one says refused,
+        # errorsRefusal): a build sent without ignoreErrors is refused for them (2026-11-26, a road depot over a
+        # road's node, "衝突" in the check, the build refused): not taken
+        if isinstance(res, dict) and res.get("buildable") and res.get("errors"):
+            refused.append({"place": cand, "error": "the engine's check has messages (%s): such a build is refused"
+                            % "; ".join(res.get("errors")), "hits": res.get("hits")})
+            continue
         if isinstance(res, dict) and res.get("ok") and res.get("buildable") and not doubt:
             out.update(place=cand, checked=True, engine={k: res.get(k) for k in ("verdict", "cost", "warnings",
                                                                                   "engineContext")})

@@ -9,6 +9,22 @@ is separate and does not follow the release version.
 
 ## [Unreleased]
 
+### Fixed
+
+- `build --dry-run --engine-check`, `road --dry-run --engine-check` and `fit`'s checks said `buildable` where the
+  engine's check had messages (`errorState.messages`, its errors) with `critical` not set, and the build, sent
+  without ignoreErrors, was refused for them (measured 2026-11-26: a road depot over a road's node and a piece just
+  built, the check `critical false` with messages `衝突` and both in `collisionEntities`, the build refused `衝突`
+  twice). Such a check is a refusal now: `buildable: false`, `verdict: "refused"`, `errorsRefusal: true` (new), and
+  `error` gives the messages with `(errorState.messages, critical not set: ...)`; `critical` is left out as before.
+  So the verdicts of `engineContexts`, `unforced` (`road --ignore-errors`) and `lights --dry-run` count them too.
+  `fit` also skips a place whose check is buildable with messages (an older mod's answer). Nothing sent changes: a
+  build or a road is sent as before, and a forced road is still built past such errors; but
+  `road --ignore-errors --dry-run` over such errors now answers `ok: false` (its verdict is the unforced one). A
+  refused build's answer keeps `errorsRefusal` too. As the stricter of the two contexts is still the verdict, a
+  dry run with `--join-streets` or `--remove-buildings` may now be refused where only the engine's own context (which
+  joins no streets and takes no buildings) has such messages. Not checked in a game yet.
+
 ## [1.1.0] - 2026-11-26
 
 ### Added
