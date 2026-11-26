@@ -1416,7 +1416,8 @@ longer than a section is split between groups (2673). A branch leaving at 100,0 
   `dropped` when the octree gave more than the list holds (then "no track" may mean "not all looked at"),
   `timeTruncated` and `looked` when the 2 s ran out during the scan.
 - Per strip (`strips`): `strip`, `stripInfo` (`carrier` RAIL / TRAM / ..., `edgeType` NORMAL / BRIDGE / TUNNEL,
-  `edgeTypeIndex`), `isTunnel`, `isBridge`, `groupCount`, `length` (the sections' lengths added up, metres;
+  `edgeTypeIndex`), `isTunnel`, `isBridge`, `groupCount`, `groupsTruncated` (true past 64 groups: only the first 64 are read, and `length`,
+  `groupsInOrder`, `edgeShares` and the ends' `joinsGroup` cover those only; `groupsTruncatedWhy` says so), `length` (the sections' lengths added up, metres;
   missing when a curve did not read), `curvatureMean` (signed, 1/m, + turns left), `groupsInOrder` (2 groups or
   more: true when each group joins the next, so the list's order is the order along the strip; false otherwise,
   a guess either way), `edgeShares` (per piece: `edge`, `groups` it is in, `share` = the part of it used, 1 =
@@ -1429,8 +1430,8 @@ longer than a section is split between groups (2673). A branch leaving at 100,0 
   curve did not read), `curvature` (`mean`, `maxAbs`, `turnDeg`), `width` (metres between the outermost tracks;
   5 for the two tracks above) and `joins` (the groups this one touches).
 - A range's `across`: metres from the group's first range, measured between the ranges' middles, + to the right
-  looking along the first range (the example's 2673 is -5); `acrossWhy` instead when a middle could not be
-  worked out. A range's `ends` (`begin` and `end`): `at`, `edge`, `bound`, `node`, `trackPieces` and `kind`:
+  looking along the first range (the example's 2673 is -5); nil when a middle could not be worked out (the
+  group's `acrossWhy` says why, and its `width` is nil). A range's `ends` (`begin` and `end`): `at`, `edge`, `bound`, `node`, `trackPieces` and `kind`:
   `joinsGroup` (the same piece's same bound, or the same node, is in another group: `joins` lists them),
   `deadEnd` (1 track piece at the node), `continues` (2), `junction` (3 or more), `insidePiece` (the bound is not
   0 or 1 and no other group goes on from it), `unknown`.

@@ -5873,7 +5873,7 @@ def around_args(ns):
 STRIPS_EDGES_MAX = 20  # the mod's core.STRIPS_EDGES_MAX
 STRIPS_RADIUS_MAX = 500  # the mod's core.STRIPS_RADIUS.max (default 30)
 STRIPS_LIMIT_MAX = 40  # the mod's core.STRIPS_LIMIT.max (default 20)
-STRIPS_GS_DEPTH = 16  # eval's most: the answer nests 9 deep (strips, groups, ranges, ends)
+STRIPS_GS_DEPTH = 16  # eval's most: the answer nests 10 deep (strips, groups, ranges, ends, joins)
 STRIPS_GS_CHARS = 1000000  # eval's most
 # the answer's lists: eval --gs gives an empty Lua list as {} (its dump does not know it was a list)
 STRIPS_LISTS = {"strips", "groups", "ranges", "edges", "rangeGroups", "ends", "deadEnds", "unread", "asked",
@@ -5937,7 +5937,8 @@ def strips_lists(v, key=None):
             return []
         return {k: strips_lists(x, k) for k, x in v.items()}
     if isinstance(v, list):
-        return [strips_lists(x) for x in v]
+        # rangeGroups' items are lists with no key of their own: an empty group comes back as {} too
+        return [strips_lists(x, key if key == "rangeGroups" else None) for x in v]
     return v
 
 

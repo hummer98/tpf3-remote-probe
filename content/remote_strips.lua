@@ -381,7 +381,12 @@ function M.run(args, opts)
 		local groups, raw = {}, {}
 		local nG = size(rg)
 		out.groupCount = nG
-		if nG > M.GROUPS_MAX then out.groupsTruncated = true end
+		if nG > M.GROUPS_MAX then
+			-- (what is worked out over the groups covers the ones read only: say so beside the numbers)
+			out.groupsTruncated = true
+			out.groupsTruncatedWhy = "only the first " .. M.GROUPS_MAX .. " groups were read: length, groupsInOrder,"
+				.. " edgeShares and the ends' joinsGroup cover those only"
+		end
 		-- first pass: each range as read, measured on its piece's curve
 		for gi = 1, math.min(nG, M.GROUPS_MAX) do
 			local grp = at(rg, gi)

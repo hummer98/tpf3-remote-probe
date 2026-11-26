@@ -1830,6 +1830,19 @@ class QuitLaunchTest(unittest.TestCase):
             self.assertEqual(tf3ctl.main(["strips", "--edge", "x"]), 2, "refused before sending")
         self.assertEqual(sent, [("strips", {"edges": [5, 6]}, 60)])
 
+    def test_strips_lists_joins_edge_shares_and_empty_range_groups(self):
+        # eval --gs dumps an empty Lua table as {}: the new list keys, and an empty group inside rangeGroups (a list
+        # item, no key of its own), come back as []; a dict that is not a list stays
+        v = {"strips": [{"rangeGroups": [{}, [{"edge": 1, "bounds": [0, 1]}]], "edgeShares": {},
+                         "groups": [{"joins": {}, "ranges": [{"ends": {"begin": {"joins": {}}}}]}]}]}
+        out = tf3ctl.strips_lists(v)
+        s = out["strips"][0]
+        self.assertEqual(s["rangeGroups"], [[], [{"edge": 1, "bounds": [0, 1]}]])
+        self.assertEqual(s["edgeShares"], [])
+        self.assertEqual(s["groups"][0]["joins"], [])
+        self.assertEqual(s["groups"][0]["ranges"][0]["ends"]["begin"]["joins"], [])
+        self.assertIsInstance(s["groups"][0]["ranges"][0]["ends"], dict, "ends is a record (begin/end): kept")
+
     def test_strips_gs_through_eval(self):
         # --gs: the same run() in the game script, sent as eval --gs; only with "eval": true in the configuration
         ns = tf3ctl.make_parser().parse_args(["strips", "--at=-5,7", "--radius", "40", "--limit", "2", "--gs"])

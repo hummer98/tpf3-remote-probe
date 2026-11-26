@@ -385,6 +385,20 @@ return function(t)
 		truthy(not g.crashed, g.crashed)
 	end)
 
+	test("strips: past GROUPS_MAX, the groups read only, and the answer says what that covers", function()
+		local g = stripsGame(MEASURED, measuredWorld())
+		local keep = S.GROUPS_MAX
+		S.GROUPS_MAX = 1
+		local ok, a = pcall(S.run, { edges = { 2669 } }, {})
+		S.GROUPS_MAX = keep
+		truthy(ok, tostring(a)); truthy(a.ok, a.error)
+		local s = byKey(a.strips, "strip", 2686)
+		eq(s.groupCount, 2); eq(s.groupsTruncated, true); eq(#s.groups, 1)
+		truthy(tostring(s.groupsTruncatedWhy):find("first 1 groups", 1, true), tostring(s.groupsTruncatedWhy))
+		eq(s.length, 100, "the group read only"); eq(s.groupsInOrder, nil)
+		truthy(not g.crashed, g.crashed)
+	end)
+
 	test("strips: run() as eval --gs calls it (where gs, os.time), the same answer", function()
 		local g = stripsGame()
 		local a = S.run({ edges = { 802 } }, { where = "gs" })

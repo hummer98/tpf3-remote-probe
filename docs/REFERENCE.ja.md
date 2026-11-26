@@ -1310,7 +1310,8 @@ python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
   出会った edge と線路の数。octree が一覧に入る数より多く返したら `dropped` (そのとき「線路が無い」は「全部は見ていない」
   かもしれません)。走査の途中で 2 秒を超えたら `timeTruncated` と `looked`。
 - strip ごと (`strips`): `strip`、`stripInfo` (`carrier` RAIL / TRAM / ...、`edgeType` NORMAL / BRIDGE / TUNNEL、
-  `edgeTypeIndex`)、`isTunnel`、`isBridge`、`groupCount`、`length` (区間の長さの合計、m。曲線が読めないときは無し)、
+  `edgeTypeIndex`)、`isTunnel`、`isBridge`、`groupCount`、`groupsTruncated` (group が 64 を超えると true。読むのは最初の 64 だけで、`length`、
+  `groupsInOrder`、`edgeShares`、端の `joinsGroup` もその分だけ。`groupsTruncatedWhy` にそう書く)、`length` (区間の長さの合計、m。曲線が読めないときは無し)、
   `curvatureMean` (符号つき、1/m、+ は左へ曲がる)、`groupsInOrder` (group が 2 つ以上のとき。どの group も次の group に
   つながれば true で、一覧の順が strip に沿った順。そうでなければ false。どちらも【推測】)、`edgeShares` (edge ごとに
   `edge`、入っている `groups`、`share` = 使っている割合、1 = 全部)、`deadEnds` (`group`、`at`、`node`、`edge`)、
@@ -1322,7 +1323,7 @@ python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
   長さの平均。`lengthMin` / `lengthMax` も。曲線が読めないときは `lengthWhy`)、`curvature` (`mean`、`maxAbs`、
   `turnDeg`)、`width` (いちばん外の線路どうしの m。上の例の 2 本なら 5)、`joins` (この group が接する group)。
 - range の `across`: group の最初の range からの m。range の真ん中どうしで測り、最初の range に沿って見て右が +
-  (上の例の 2673 は -5)。真ん中が計算できないときは、代わりに `acrossWhy`。range の `ends` (`begin` と `end`): `at`、
+  (上の例の 2673 は -5)。真ん中が計算できないときは nil (group の `acrossWhy` に理由、`width` も nil)。range の `ends` (`begin` と `end`): `at`、
   `edge`、`bound`、`node`、`trackPieces`、`kind`: `joinsGroup` (同じ edge の同じ bound か、同じ node が、ほかの group に
   ある。`joins` にその group)、`deadEnd` (その node の線路が 1 本)、`continues` (2 本)、`junction` (3 本以上)、
   `insidePiece` (bound が 0 でも 1 でもなく、ほかの group にも続かない)、`unknown`。
