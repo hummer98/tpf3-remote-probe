@@ -494,6 +494,9 @@ function M.run(args, opts)
 					if #j > 0 then
 						d.kind = "joinsGroup"
 						d.joins = core.array(j)
+						-- (a node that goes on into another group can be a fork too, as 2669's end where 2674
+						-- branches off: kept readable beside the kind)
+						if side and M.endKind(d.trackPieces) == "junction" then d.junction = true end
 						for _, x in ipairs(j) do joins[x] = true end
 					elseif side == nil then
 						d.kind = b and "insidePiece" or "unknown"

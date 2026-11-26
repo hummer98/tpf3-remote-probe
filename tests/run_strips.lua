@@ -335,6 +335,9 @@ return function(t)
 		local e69, e73a, e71, e73b = g1.ranges[1].ends, g1.ranges[2].ends, g2.ranges[1].ends, g2.ranges[2].ends
 		eq(e69[1].kind, "deadEnd"); eq(e69[1].node, 31)
 		eq(e69[2].kind, "joinsGroup", "the node 2671 starts at"); eq(e69[2].node, 32); eq(e69[2].joins[1], 2)
+		-- that node is also where 2674 branches off: a fork, said beside the kind
+		eq(e69[2].junction, true, "2669's end is 2674's fork"); eq(e71[1].junction, true, "the same node, 2671's start")
+		eq(e73a[2].junction, nil, "a cut inside 2673: no node, no fork"); eq(e69[1].junction, nil)
 		eq(e69[2].trackPieces, 3, "the branch counted, but the strip goes on")
 		eq(e73a[1].kind, "deadEnd"); eq(e73a[2].kind, "joinsGroup", "the same cut through 2673"); eq(e73a[2].bound, 0.5)
 		eq(e73a[2].node, nil); eq(e73a[2].joins[1], 2)
