@@ -275,6 +275,38 @@ python3 tools/tf3ctl.py pointer 0.5,0.47 [--px]          # ゲームの中のポ
 `camera` の返事は、動かした後に読み直した値です。数は先に確認します。NaN・無限大・1e6 を超える中心・1〜1e5 の外の
 距離・±2π を超える angle・±π/2 を超える pitch は断ります。`--entity` は entity があるかを確認します。メインメニューでは断ります。
 
+**フリーカメラ** (`camera --free`・`--eye` / `--look`・`--mouse`。ゲームではまだ確認していません)。ふだんのカメラが行かない所、
+たとえば地面の下のトンネルの中を見るためのものです。
+
+```
+python3 tools/tf3ctl.py camera --free on                                  # 本体の目のボタンと同じ。そのツールをツールのスタックに積む
+python3 tools/tf3ctl.py camera --free on --eye 1200,-800,-12 --look 1260,-800,-14   # 切り替えてから目を置く
+python3 tools/tf3ctl.py camera --eye 1200,-800,-12 --look 1260,-800,-14 --method focus  # 目だけを動かす
+python3 tools/tf3ctl.py camera --free off                                 # ふだんのカメラに戻す
+```
+
+- `--free on|off` は速度ボタン経由です (ツールのスタックはそこにしかありません)。本体の目のボタンと ESC と同じく、本体の
+  `free_cam_options.FreeCamTool` を積む・外します。もう有効なとき (そのツールが一番上) の 2 回目の `on` は何も積みません。
+  `--via toggle` は代わりに `api.gui.camera.toggleFreeCamera()` だけを呼びます。このときの状態は probe の見込みで、
+  見込みの上ですでにそうなっている切り替えは送りません。
+- 目を置く API はありません。`--eye` と `--look` を、中心 (見る点)・距離・angle・pitch に直し、`--method data`
+  (`setCameraData`。高さなし)・`focus` (`focusPosition`。高さあり)・`both` (既定。前者のあと後者) で送ります。ゲームが angle と
+  pitch をどちら向きに取るかは分からないので、返事で目を読み直します: `camera.eye` (`getEye`)・`camera.center` (`getCenter`)・
+  `eyeOff` (頼んだ目と読んだ目の距離)。カメラはすぐ (`cameraAtOnce`) と 0.3 秒後 (`camera`) に読みます。
+- 返事の `freeCam`: `on`、`source` (ツールのスタックの一番上を読めたら `toolStack`、ほかは `estimated`)、`action` (`pushed`・
+  `popped`・`toggled`・`none`)、`activeBefore` / `activeAfter`。フリーカメラが有効かを読む API はありません。引数の無い
+  `camera` は、最後の見込みを `camera.freeCam` に返します。積む・外すの直後に読んだスタックがそれと食い違うとき (スタックが
+  1 フレーム遅れて反映するかもしれない) は、`source` を `estimated` にし、読んだ値を `stackNote` に書きます。
+- 2 つのやり方を混ぜないでください: toggle はツールをスタックに積まないので、あとの `--free off` (ツール) は外す物が無く、
+  toggle で入れたフリーカメラは ESC で抜けられないかもしれません (確認していません)。見込みが無いとき (読み込みのあと一度も
+  送っていない) の `--free off --via toggle` は、フリーカメラを入れてしまうかもしれないので断ります。
+- 共同作業の間は、`--mouse attach` の前にユーザーと決めてください (ユーザーのマウスをフリーカメラに取ります)。
+- `--mouse attach|detach`: `isFreeCameraMouseAttached` が違うと言うときだけ `toggleFreeCameraMouseAttachment` を呼びます。
+- 柵は `camera --set` と同じです (ゲームを変える側。共同作業の間も通る)。`--set`・`--entity`・`--focus`・`--distance` とは
+  一緒に使えません。メインメニューでは断ります。速度ボタンが画面に無いと、`--free` は動かず (10 秒後に返事)、目も置きません。
+- ゲームではまだ確認していないこと: この方法で目が地面の下に入れるか、`setCameraData` / `focusPosition` がフリーカメラの目を
+  動かすか、angle と pitch の符号。
+
 `build-tool` は、建設メニューの 1 つの建物の配置ツールを開きます。本体のイベント 2 つを、速度ボタン経由で順に送ります
 (次を送る前にメニューが開くよう、1.5 秒あけます)。まず `setMenuFilter` にその建物のタグ
 (`resName`、`--template` 付きなら `resName@N`) を送ってメニューにそれだけを出し、次に `constructionMenuSelectTabForConstruction`
@@ -572,6 +604,7 @@ python3 tools/tf3ctl.py road --from-node 4077 [--from 1504.5,-300] --to 1620,-30
 python3 tools/tf3ctl.py road --inspect-node 4077     # 読むだけ: 1つの node について road が読むもの
 python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # 試験用のセーブだけ (tf3ctl が確認します): 交差点の信号を外す
 python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車線 (「道路の車線」を参照)
+python3 tools/tf3ctl.py strips --edge 9010           # 読むだけ: 線路が入っている parallel strip (「並んだ線路の帯」を参照)
 ```
 
 - 2点 (x,y[,z]、メートル。z が無ければ地形の高さ) の間に、まっすぐな道路を1本、クリック無しで建てます。
@@ -780,6 +813,65 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   車庫の口では 2026-11-26 に確認した: 受け付け、ターミナルを通る路線をバスが走った。以前の版のように設定をそのまま残すと、
   ターミナルの口のつながりは空のままだった。伐採場の内側の端は断る)、guiUpdate で makeProposalData が Overpass Builder のツールと同じように答えるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
   どうなるか (proposal に交差の node は入れていない: エンジンが足すか、断るか、重ねるか)。
+
+### 座標で線路を引く (`track`)
+
+```
+python3 tools/tf3ctl.py track --from 0,0 --to 200,0 --type simple [--dry-run [--engine-check]]
+python3 tools/tf3ctl.py track --from 0,0,-15 --to 200,0,-15 --type simple --tunnel tunnel_a   # 地下
+python3 tools/tf3ctl.py track --from-node 8202 --to 160,100 --type standard [--tangent-to 1,0.2]
+python3 tools/tf3ctl.py track --batch pieces.json [--dry-run [--engine-check]] [--collision-detail]
+```
+
+- 2026-11-26 に書きました。**ゲーム内では未確認** [推測]: 動かしたのは単体テスト (偽のエンジン) だけです。答えを
+  信じる前に絵 (`frame`) で見て、まず `--dry-run --engine-check` で試してください。
+- `road` が道路を引くのと同じやり方で、クリックなしに線路を引きます。`SimpleStreetProposal` を
+  `api.cmd.makeWorldBuildProposalCmd` で送り、1 本ずつ type 1 (線路。`road` は 0) の `SegmentAndEntity` にします。
+  `roadType` は TRACK、`laneConfigs` は template のもの、`distance` は template の `trackDistance` (読めないときは
+  送らず、`trackDistanceNote` に書きます)。線路の node には分岐の設定 (`BaseNodeConfig`) を送りません。context は
+  `road` と同じ (何も壊さない、エラーを無視しない) です。ゲームを変える側で、試験用のセーブ向けです (確認はしません)。
+- `--type` は必須です。線路の street template の resName か、バニラの線路のファイル名 (`simple`・`standard`・
+  `high_speed`。`::/infrastructure/track/<名前>/` の下を探します)。`roadType` が TRACK でない template (道路) と、
+  ゲームの年にまだ無いものは断り、何も送りません。
+- `--tunnel RES` は線路を地下に引きます。`api.res.tunnelTypeRep` の resName か、バニラのトンネルのファイル名
+  (`tunnel_a` は `::/infrastructure/tunnel/tunnel_a.tunnel`。読めなければ、バニラのもう一つの置き場
+  `::/infrastructure/tunnel/tunnel/tunnel_a.tunnel` も試します)。線路の edge の種類を `TUNNEL`、`typeIndex` をその
+  種類の id にして送ります。知らない種類は、そこにある名前を添えて断ります。運ぶものが `RAIL` を含まない種類
+  (`tunnel_a_car`) も断ります。運ぶものが読めないときは断らず `carriersNote` に書きます。`--tunnel` では両端の z が
+  必須です (地面の高さはトンネルの高さではないため)。既存の node の端は node の高さです。答えの `tunnel`: `name`・
+  `id`・`carriesRail`、建てたあとは `built` (新しい線路の edge の種類と `typeIndex` を読み直したもの、`asSent`)。
+  [推測] 入口の無い、全部が地下の線路をエンジンが受けるか、どれだけ深くないといけないかは未確認です。
+- 端: `--from` / `--to` は x,y[,z] (z なしは地面の高さ)、または `--from-node` / `--to-node` で線路のある既存の node
+  (端はその node の位置。道路の node は断ります)。snap はありません。既存の node の上の点は断ります (node で
+  指定してください)。`road` のずらした端 (node と点を一緒に書く形) はありません。`--tangent-from` / `--tangent-to`
+  は `road` と同じで、答えに `turnDeg`・`curved`・`radiusApprox` (弦 / (2 sin(曲がり / 2))。円弧としての値です
+  [推測]: エンジンの曲線は 3 次曲線) が入り、template の `minCurveRadiusBuild` より小さいと `radiusWarning` が
+  出ます (断りはしません)。
+- `--batch FILE`: 1 つの提案に 16 本まで。まとめて判定し、まとめて建てます。JSON の配列で、1 本ずつ `from`・`to`・
+  `from-node` / `to-node` (線路の既存の node の id か、何本かで共有する新しい node の `"@名前"`)・`type` (1 本ごとに
+  必須)・`tunnel`・`tangent-from`・`tangent-to` (フラグの綴りか MOD の綴り `fromNode`・`tangentTo` など) を書きます。
+  `--dry-run`・`--engine-check`・`--collision-detail` は提案全体に効きます。3 本が出会う node は分岐器で、答えの端に
+  `meeting` 3 と `switchNote` が入ります (設定は送らず、分岐器はエンジンに任せます [推測]、未確認)。トンネルで使う
+  名前の node には z が要ります。既存の node が分岐器になるときは、端に
+  `existingSwitchWarning` も入ります (道路では分岐の設定の無い node につないでゲームが落ちました。線路でどうなるかは
+  未確認なので、まず `--dry-run --engine-check` で)。共同作業の間は `road` と同じく通ります。
+- 答え: `ok`、`track` true、1 本なら `edge` と `edges`。`--batch` なら `pieces` (1 本ずつの端・曲がり・半径) と
+  `pieceEdges` (ファイルの順の、新しい edge の id) と `namedNodes` (`@名前` ごとの node の id)。エンジンが断ったら
+  `ok` false で、`error` に「the engine refused it: 」とエンジンの言葉そのもの、邪魔な物 (`hits`、頼めば
+  `collisionDetail`) が入ります。`--dry-run --engine-check` では「the engine would refuse it: ... (dry run: nothing
+  sent)」です。`--dry-run` だけ (`checked` false) はエンジンに何も聞きません。
+- 例: 高さ 0 の平らな地面の 15 m 下に、5 m 離れた 2 本の線路と、1 本目の `@sw` から分かれて約 36 m の弦で 30 度
+  曲がる線路 (半径 約 70 m):
+
+```json
+[
+  {"from": [0, 0, -15], "toNode": "@sw", "to": [100, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"fromNode": "@sw", "to": [200, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"from": [0, 5, -15], "to": [200, 5, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"fromNode": "@sw", "tangentFrom": [1, 0], "to": [135, -9.378, -15], "tangentTo": [0.866, -0.5],
+   "type": "simple", "tunnel": "tunnel_a"}
+]
+```
 
 ### 長方形の範囲の地面 (`terrain`)
 
@@ -1152,6 +1244,50 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
 - **ゲーム内では未確認** (2026-11-23 に書いたもの): ゲームの `laneConfigs` がテンプレートの順と offset のままか、
   `transportModes` のキーが enum の値か (`modeKeys`。歩道が `CARGO,PERSON` と読めれば合っている)、transport network の
   edges が車線ごとにどうなっているか。
+
+### 並んだ線路の帯 (`strips`、読むだけ)
+
+```
+python3 tools/tf3ctl.py strips --edge 9010[,9011,...] [--limit N] [--gs]
+python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
+```
+
+**ゲーム内では未確認** (2026-11-26 に書いたもの)。以下は API の型の定義 (`baseParallelStripSystem.getStrips`、
+`parallelStrip.getStripInfo` / `isTunnel` / `isBridge`、コンポーネント `BASE_PARALLEL_STRIP` と `BRIDGE`) から
+書きました。ゲームのどちらの Lua の状態にそれがあるかを、まず確認します。
+
+- 読むだけです (ほかの担当への警告なし、ゲームには何も送りません)。エンジンは横に並んだ線路を
+  「parallel strip」にまとめます (バニラのトンネルと橋の壁は strip ごとに建ちます)。`--edge`: edge の id を 20 本まで
+  (`around --kinds track` で分かります)。`--at x,y`: その点から `--radius` m 以内 (初期設定 30、500 まで) を曲線が通る
+  線路の edge。出会った strip は 1 回ずつ読み、`--limit` 本まで (初期設定 20、40 まで。超えたら `stripsTruncated`)、
+  2 秒まで (`timeUp`。`--gs` ではゲームスクリプトの時計が秒単位なので、3 秒近くまで延びます)。
+- `asked`: 頼んだ (見つけた) edge ごとに `strips` (`getStrips` が返した strip の id) か `error`。`missing`: エンジンに
+  無い id。`ok` が false になるのは、`--edge` が全部無いときだけ ("no such piece")。`scan` (`--at` のとき): 点・半径・
+  出会った edge と線路の数。octree が一覧に入る数より多く返したら `dropped` (そのとき「線路が無い」は「全部は見ていない」
+  かもしれません)。走査の途中で 2 秒を超えたら `timeTruncated` と `looked`。
+- strip ごと (`strips`): `strip`、`stripInfo` (`carrier` RAIL / TRAM / ...、`edgeType` NORMAL / BRIDGE / TUNNEL、
+  `edgeTypeIndex`)、`isTunnel`、`isBridge`、`groupCount`、`length` (一番長い group、m)、`curvatureMean` (符号つき、
+  1/m、+ は左へ曲がる)、`deadEnds`、`laneType` (いつも `"unread"`)、`bridge` (コンポーネント `BRIDGE` の区間:
+  `splines`、`railingModels`、`models` を 8 個まで `name` と `at` つき)、`rangeGroups` (読んだまま: `edge` と
+  `bounds` だけ)、`unread` (その strip で読めなかったもの)。
+- group ごと (`groups`。1 つの group は strip に沿った線路 1 本と見ています。【推測】): `edges` (順に並んだ edge)、
+  `ranges` (`edge`、`bounds`、`length`、`from`、`to`)、`length`、`curvature` (`mean`、`maxAbs`、`turnDeg`)、
+  `across` (group 1 の始まりからの m。group 1 に沿って見て右が +)、`ends` (`begin` と `end`: `node`、`trackPieces`、
+  `kind`: `deadEnd` (その node の線路が 1 本)、`continues` (2 本)、`junction` (3 本以上)、`insidePiece` (bound が
+  0 でも 1 でもない))。
+- 長さと曲率は、ここで**計算したもの**です。edge の曲線を `BASE_EDGE` の `position0/1` と `tangent0/1` の Hermite と
+  見て、range の `bounds` をその曲線のパラメータと見ています (どちらも【推測】)。`pieces`: 出会った edge
+  (`from`、`to`、`tangent0/1`、`length`、`laneCount`)。
+- 答えの `unread`: `lane.type`、手すりの区間、行き止まりの区間、`railingWidth`、入口が要るかの印は、トンネルの
+  `updateFn` にだけ渡るので、読みません。そのあとに、読めなかったもの。
+- `--gs` は、同じ読み取りを probe のゲームスクリプトで動かします (`where: "gs"`)。`eval --gs` で送るので、設定
+  ファイルの `"eval": true` と、MOD の設定 `--param hummer_remote_probe:gameScript=2` が要ります。`--gs` なしは
+  `where: "gui"`。ゲームスクリプトは eval の答えを 1 分ほど持ち、strips の答えは大きくなることがあります (1 MB まで)。
+  `--gs` では `--limit` を小さくし、直後に保存しないでください。
+- ゲーム内で確認すること: GUI の状態に `baseParallelStripSystem` があるか。`rangeGroups` がどう読めるか
+  (`rangeGroups_native` なら `groupsFrom`)。`getStripInfo` が両方の状態で動くか。トンネルの strip に `BRIDGE` が
+  あるか。`across` の符号。`bounds` が曲線のパラメータか。街路と線路がつながる node の近くでの `--at`
+  (`getNodeTrackSegments` に街路の node を渡したとき)。
 
 ### 建造物を置ける場所 (`fit`)
 

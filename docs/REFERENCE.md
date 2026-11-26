@@ -288,6 +288,41 @@ python3 tools/tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer on
 1e6, a distance outside 1-1e5, an angle beyond +-2 pi or a pitch beyond +-pi/2 are refused. `--entity` checks that
 the entity exists. Refused in the main menu.
 
+**Free camera** (`camera --free`, `--eye` / `--look`, `--mouse`; not checked in a game yet). For looking where the
+ordinary camera does not go, e.g. under the ground into a tunnel:
+
+```
+python3 tools/tf3ctl.py camera --free on                                  # the base's eye button: its tool on the tool stack
+python3 tools/tf3ctl.py camera --free on --eye 1200,-800,-12 --look 1260,-800,-14   # switch, then place the eye
+python3 tools/tf3ctl.py camera --eye 1200,-800,-12 --look 1260,-800,-14 --method focus  # move the eye only
+python3 tools/tf3ctl.py camera --free off                                 # back to the ordinary camera
+```
+
+- `--free on|off` goes through the speed control (the tool stack is only there): it pushes or pops the base's
+  `free_cam_options.FreeCamTool`, as the base's eye button and ESC do. A second `on` (the tool already active)
+  pushes nothing. `--via toggle` calls `api.gui.camera.toggleFreeCamera()` alone instead; then the state is this
+  probe's own estimate, and a toggle the estimate says is done already is not sent.
+- No API sets an eye. `--eye` + `--look` become a centre (the look point), distance, angle and pitch, and are sent
+  with `--method data` (`setCameraData`, no height), `focus` (`focusPosition`, with the height) or `both`
+  (default, the one then the other). Which way the game turns angle and pitch is not known, so the answer reads the
+  eye back: `camera.eye` (`getEye`), `camera.center` (`getCenter`), and `eyeOff`, the distance between the eye asked
+  for and the one read. The camera is read at once (`cameraAtOnce`) and 0.3 s later (`camera`).
+- `freeCam` in the answer: `on`, `source` (`toolStack` when the tool stack's active tool was read, else
+  `estimated`), `action` (`pushed`, `popped`, `toggled`, `none`), `activeBefore` / `activeAfter`. No API reads
+  whether the free camera is on; a plain `camera` answers the last estimate as `camera.freeCam`. When the stack
+  read right after a push or pop disagrees with it (the stack may take it a frame later), `source` is `estimated`
+  and `stackNote` says what was read.
+- Do not mix the two ways: a toggle does not put the tool on the stack, so a later `--free off` (tool) finds nothing
+  to pop, and ESC may not leave a free camera turned on by a toggle (not checked). `--free off --via toggle` with no
+  estimate (nothing sent since the load) is refused, as it might turn the free camera on.
+- During coop, agree with the user before `--mouse attach` (it takes the user's mouse for the free camera).
+- `--mouse attach|detach`: `toggleFreeCameraMouseAttachment` when `isFreeCameraMouseAttached` says otherwise.
+- The same fence as `camera --set` (it changes the game; allowed in coop). Not with `--set`, `--entity`, `--focus`
+  or `--distance`. Refused in the main menu; without the speed control on screen `--free` is not run (answered
+  after 10 s) and the eye is not placed.
+- Not checked in a game yet: whether the eye can go under the ground this way, whether `setCameraData` /
+  `focusPosition` move the free camera's eye, and the sign of angle and pitch.
+
 `build-tool` opens the construction menu's placing tool for one construction, with two base events sent through
 the speed control one after the other (1.5 s apart, so the menu is open before the next one):
 `setMenuFilter` with the construction's tag (`resName`, or `resName@N` with `--template`), so the menu lists only
@@ -607,6 +642,7 @@ python3 tools/tf3ctl.py road --from-node 4077 [--from 1504.5,-300] --to 1620,-30
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
 python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only (checked): a junction's light off
 python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lanes (see "A road's lanes")
+python3 tools/tf3ctl.py strips --edge 9010           # read only: the parallel strips a track is in (see "Parallel strips")
 ```
 
 - Builds one straight road piece between two points (x,y[,z], metres; no z: the terrain's height), with no click:
@@ -843,6 +879,68 @@ autosave loaded again saves under any name.
   what the callback's entities hold, whether nodes are indeed not in the octree, and what becomes of a town road
   the new piece crosses (the proposal adds no crossing node: does the engine add one, refuse, or lay one over
   the other).
+
+### Track pieces by coordinates (`track`)
+
+```
+python3 tools/tf3ctl.py track --from 0,0 --to 200,0 --type simple [--dry-run [--engine-check]]
+python3 tools/tf3ctl.py track --from 0,0,-15 --to 200,0,-15 --type simple --tunnel tunnel_a   # underground
+python3 tools/tf3ctl.py track --from-node 8202 --to 160,100 --type standard [--tangent-to 1,0.2]
+python3 tools/tf3ctl.py track --batch pieces.json [--dry-run [--engine-check]] [--collision-detail]
+```
+
+- Written 2026-11-26. **Not checked in a game yet** [guess]: only the unit tests (the fake engine) have run it.
+  Look at the result (`frame`) before trusting an answer, and try `--dry-run --engine-check` first.
+- Builds track pieces the way `road` builds road pieces, with no click: a `SimpleStreetProposal` sent as
+  `api.cmd.makeWorldBuildProposalCmd`, each piece a `SegmentAndEntity` of type 1 (track; `road` sends 0) with
+  `roadType` TRACK, the template's `laneConfigs`, and `distance` the template's `trackDistance` when it reads (else
+  none sent, said in `trackDistanceNote`). No junction set-ups (`BaseNodeConfig`) are sent for track nodes. The
+  same context as `road` (nothing knocked down, errors not ignored). Changes the game: meant for test saves (not
+  checked).
+- `--type` is required: a track's street template, its resName or a base track's file name (`simple`,
+  `standard`, `high_speed`, looked for under `::/infrastructure/track/<name>/`). A template whose `roadType` is
+  not TRACK (a road) is refused, and one not to be had in the game's year; nothing is sent.
+- `--tunnel RES` builds the piece underground: a tunnel type's resName as `api.res.tunnelTypeRep` knows it, or a
+  base tunnel's file name (`tunnel_a` is `::/infrastructure/tunnel/tunnel_a.tunnel`; when that does not read, the
+  base's other path `::/infrastructure/tunnel/tunnel/tunnel_a.tunnel` is tried). The piece goes with its edge
+  type `TUNNEL` and `typeIndex` the type's id. An unknown type is refused with the names there; one whose
+  carriers read without `RAIL` (`tunnel_a_car`) is refused; carriers that do not read are said
+  (`carriersNote`), not refused. Both ends' z are required with `--tunnel` (the terrain's height is no tunnel's);
+  an end on an existing node takes the node's height. The answer's `tunnel`: `name`, `id`, `carriesRail`, and
+  after a build `built` (the new piece's edge type and `typeIndex` read back, `asSent`). [guess] whether the
+  engine takes a piece wholly under the ground with no portal, and how deep it must lie, are not checked.
+- Ends: `--from` / `--to` as x,y[,z] (no z: the terrain's height), or `--from-node` / `--to-node` with an existing
+  node that has a track piece (the end is the node's own point; a road's node is refused). There is no snap: a
+  point on an existing node is refused (give the node). `road`'s shifted end (a node and a point together) is not
+  there. `--tangent-from` / `--tangent-to` as `road`'s: the answer gives `turnDeg`, `curved` and `radiusApprox`
+  (the chord over 2 sin(turn / 2), a circle's arc [guess]: the engine's own curve is a cubic), with
+  `radiusWarning` below the template's `minCurveRadiusBuild` (said, not refused).
+- `--batch FILE`: at most 16 pieces in one proposal, judged and built together. A JSON list, each piece an object
+  of `from`, `to`, `from-node` / `to-node` (an existing track node's id, or `"@name"` for a new node the pieces
+  share), `type` (required in each piece), `tunnel`, `tangent-from`, `tangent-to` (the flags' names or the mod's:
+  `fromNode`, `tangentTo`, ...). `--dry-run`, `--engine-check` and `--collision-detail` go for the whole proposal.
+  A node where three pieces meet is a switch: the answer's end says `meeting` 3 and `switchNote` (no set-up is
+  sent; the engine is left to make the switch [guess], not checked). At an existing node the end also says
+  `existingSwitchWarning` (road crashed the game joining a node with no junction set-up; whether track does is not
+  checked: try `--dry-run --engine-check` first). A named node used with a tunnel needs its z. During coop `track`
+  goes as `road` does.
+- The answer: `ok`, `track` true, `edge` and `edges` (one piece), or `pieces` (each piece's ends, turn, radius)
+  with `pieceEdges` (each piece's new edge id, in the file's order) and `namedNodes` (each `@name`'s node id).
+  Refused by the engine: `ok` false and `error` "the engine refused it: " with the engine's own words, the hits
+  in the way (`hits`, and `collisionDetail` when asked); with `--dry-run --engine-check`, "the engine would refuse
+  it: ... (dry run: nothing sent)". A dry run alone (`checked` false) asks the engine nothing.
+- Example: two tracks 5 m apart 15 m under flat ground at 0, and a branch off the first at `@sw` turning 30
+  degrees over a chord of about 36 m (a radius of about 70 m):
+
+```json
+[
+  {"from": [0, 0, -15], "toNode": "@sw", "to": [100, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"fromNode": "@sw", "to": [200, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"from": [0, 5, -15], "to": [200, 5, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"fromNode": "@sw", "tangentFrom": [1, 0], "to": [135, -9.378, -15], "tangentTo": [0.866, -0.5],
+   "type": "simple", "tunnel": "tunnel_a"}
+]
+```
 
 ### The ground in a rectangle (`terrain`)
 
@@ -1246,6 +1344,53 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
 - **Not checked in game yet** (written 2026-11-23): whether the game's `laneConfigs` keep the template's order
   and offsets, whether `transportModes`' keys are the enum's values (`modeKeys`: a sidewalk should read
   `CARGO,PERSON`), what the transport network's edges are per lane.
+
+### Parallel strips (`strips`, read only)
+
+```
+python3 tools/tf3ctl.py strips --edge 9010[,9011,...] [--limit N] [--gs]
+python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
+```
+
+**Not checked in a game yet** (written 2026-11-26). Everything below comes from the API's type definitions
+(`baseParallelStripSystem.getStrips`, `parallelStrip.getStripInfo` / `isTunnel` / `isBridge`, the
+`BASE_PARALLEL_STRIP` and `BRIDGE` components); which of them the game's Lua states really have is the first
+thing to check.
+
+- Reads only (no warning to others, nothing sent to the game). The engine joins tracks laid side by side into a
+  "parallel strip" (the base's tunnel and bridge walls are built per strip). `--edge`: up to 20 piece ids
+  (`around --kinds track` gives them); `--at x,y`: the track pieces whose curve passes within `--radius` metres
+  (initially 30, at most 500) of the point. Each strip met is read once; at most `--limit` strips (initially 20,
+  at most 40; more: `stripsTruncated`), within 2 s (`timeUp`; with `--gs` the game script's clock counts whole
+  seconds, so up to about 3 s).
+- `asked`: per piece asked or found, `strips` (the strip ids `getStrips` gave) or an `error`; `missing`: ids
+  the engine does not have. `ok` is false only when every `--edge` is missing ("no such piece"). `scan` (with
+  `--at`): the point, the radius, how many pieces and tracks were met;
+  `dropped` when the octree gave more than the list holds (then "no track" may mean "not all looked at"),
+  `timeTruncated` and `looked` when the 2 s ran out during the scan.
+- Per strip (`strips`): `strip`, `stripInfo` (`carrier` RAIL / TRAM / ..., `edgeType` NORMAL / BRIDGE / TUNNEL,
+  `edgeTypeIndex`), `isTunnel`, `isBridge`, `groupCount`, `length` (the longest group, metres),
+  `curvatureMean` (signed, 1/m, + turns left), `deadEnds`, `laneType` (always `"unread"`), `bridge` (the
+  `BRIDGE` component's intervals: `splines`, `railingModels`, at most 8 `models` with `name` and `at`),
+  `rangeGroups` (as read: `edge` and `bounds` only) and `unread` (what this strip lacked).
+- Per group (`groups`; a group is taken to be one track along the strip, a guess): `edges` (the pieces in
+  order), `ranges` (`edge`, `bounds`, `length`, `from`, `to`), `length`, `curvature` (`mean`, `maxAbs`,
+  `turnDeg`), `across` (metres from group 1's start, + to the right looking along group 1) and `ends`
+  (`begin` and `end`: `node`, `trackPieces` and `kind`: `deadEnd` (1 track piece at the node), `continues` (2),
+  `junction` (3 or more), `insidePiece` (the bound is not 0 or 1)).
+- Length and curvature are **worked out** here: a piece's curve is taken as the Hermite of `BASE_EDGE`'s
+  `position0/1` and `tangent0/1`, and a range's `bounds` as that curve's parameter (both guesses). `pieces`
+  lists the pieces met (`from`, `to`, `tangent0/1`, `length`, `laneCount`).
+- `unread` (the answer's): `lane.type`, the railing intervals, the dead-end intervals, `railingWidth` and the
+  need-entry flags are given only to the tunnel's `updateFn`, so they are never read; then whatever did not read.
+- `--gs` runs the same reader in the probe's game script (`where: "gs"`), through `eval --gs`: only with
+  `"eval": true` in the configuration file and the mod setting `--param hummer_remote_probe:gameScript=2`.
+  Without `--gs`, `where: "gui"`. The game script keeps eval's answer for about a minute, and a strips answer
+  may be large (up to 1 MB): with `--gs`, use a small `--limit` and do not save just after.
+- To check in a game: whether the GUI state has `baseParallelStripSystem`; how `rangeGroups` reads (or
+  `rangeGroups_native`, `groupsFrom`); whether `getStripInfo` works in both states; whether a tunnel's strip has a
+  `BRIDGE` component; the sign of `across`; whether `bounds` are the curve's parameter; `--at` round a node
+  where a street meets a track (`getNodeTrackSegments` given a street's node).
 
 ### Where a construction fits (`fit`)
 

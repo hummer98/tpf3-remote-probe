@@ -1109,6 +1109,39 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("camera", "--set", "1,2", "--entity", "3")
         self.assertEqual(code, 2, "refused by the tool")
 
+    def test_9x_camera_free(self):
+        # the same fence as camera --set: any argument changes the game, none only reads
+        self.assertTrue(tf3ctl.changes_game("camera", {"free": "on"}))
+        self.assertTrue(tf3ctl.changes_game("camera", {"eye": "1,2,3", "look": "4,5,6"}))
+        self.assertFalse(tf3ctl.changes_game("camera", {}))
+        # eye below the ground, no switch: placed at once, getEye read back
+        code, res = self.ctl("camera", "--eye", "100,0,-20", "--look=-1,0,-30")  # a negative X needs the = form
+        self.assertEqual(code, 0, res)
+        self.assertAlmostEqual(res["camera"]["eye"]["z"], -20, places=6)
+        self.assertEqual(res["sent"]["method"], "both")
+        self.assertIn("not checked in a game", res["note"])
+        # toggle through the speed control: switched, the state an estimate
+        code, res = self.ctl("camera", "--free", "on", "--via", "toggle")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["freeCam"]["on"], res["freeCam"]["source"], res["freeCam"]["action"]),
+                         (True, "estimated", "toggled"))
+        code, res = self.ctl("camera", "--free", "on", "--via", "toggle")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["freeCam"]["action"], "none", "a second on is not toggled again")
+        code, res = self.ctl("camera")
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["camera"]["freeCam"])
+        # the tool's way needs the base's tool stack, which this fake speed control has not
+        code, res = self.ctl("camera", "--free", "off")
+        self.assertEqual(code, 1, res)
+        self.assertIn("toolStack", res["error"])
+        for bad in (["--eye", "1,2,3"], ["--look", "1,2,3"], ["--eye", "1,2", "--look", "1,2,3"],
+                    ["--eye", "a,b,c", "--look", "1,2,3"], ["--eye", "1,2,nan", "--look", "1,2,3"],
+                    ["--via", "toggle"], ["--method", "data"], ["--free", "off", "--eye", "1,2,3", "--look", "4,5,6"],
+                    ["--free", "on", "--set", "1,2"], ["--free", "on", "--distance", "5"]):
+            code, res = self.ctl("camera", *bad)
+            self.assertEqual(code, 2, bad)
+
     def test_9x_build_tool(self):
         code, res = self.ctl("build-tool", "--res", "station/street/bus_stop.con", "--template", "2", "--seconds", "5")
         self.assertEqual(code, 0, res)
@@ -1180,6 +1213,31 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("mod", "example_mod", "x")
         self.assertEqual(res["kind"], "noExt")
         self.ctl("--owner", "tester", "mod", sample, "speed", '{"speed": 1}')
+
+    def test_9xz_strips(self):
+        # the fake's double track tunnel at y 7600: strip 9640, a range group for each track (9631 5 m to the
+        # right of 9630), 9631's far end a dead end; read in the GUI's state, nothing sent to the game
+        code, res = self.ctl("strips", "--edge", "9631")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["where"], "gui")
+        s = res["strips"][0]
+        self.assertEqual((s["strip"], s["isTunnel"], s["stripInfo"]["carrier"]), (9640, True, "RAIL"))
+        self.assertEqual([g["edges"] for g in s["groups"]], [[9630], [9631]])
+        self.assertEqual([g["across"] for g in s["groups"]], [0, 5])
+        self.assertEqual(s["length"], 100)
+        self.assertEqual(s["deadEnds"], [{"group": 2, "at": "end", "node": 9635, "edge": 9631}])
+        self.assertEqual(s["laneType"], "unread")
+        self.assertIn("lane.type", res["unread"][0])
+        code, res = self.ctl("strips", "--at", "0,7598", "--radius", "10")
+        self.assertEqual(code, 0, res)
+        self.assertEqual([a["edge"] for a in res["asked"]], [9630, 9631])
+        self.assertEqual(res["stripCount"], 1)
+        code, res = self.ctl("strips", "--at", "0,-90000", "--radius", "5")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["strips"], res["asked"]), ([], []), "nothing in the radius: empty lists")
+        code, res = self.ctl("strips", "--edge", "99999")
+        self.assertEqual(code, 1, res)
+        self.assertIn("no such piece", res["error"])
 
     def test_9xz_lanes(self):
         # the fake's electric tram street 9620 (the base's town_new_medium_tram_electrified lanes): track on the
@@ -1707,6 +1765,84 @@ class QuitLaunchTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(tf3ctl.main(["lanes", "--edge", "x"]), 2, "refused before sending")
         self.assertEqual(sent, [("edgeLanes", {"edges": [5, 6]})])
+
+    def test_strips_args_and_main(self):
+        parse = tf3ctl.make_parser().parse_args
+
+        def args(*a):
+            return tf3ctl.strips_args(parse(["strips"] + list(a)))
+        self.assertEqual(args("--edge", "9010"), {"edges": [9010]})
+        self.assertEqual(args("--edge", " 1, 2 ", "--limit", "3"), {"edges": [1, 2], "limit": 3})
+        self.assertEqual(args("--at=-10,20.5"), {"at": [-10.0, 20.5]})
+        self.assertEqual(args("--at", "1,2", "--radius", "50"), {"at": [1.0, 2.0], "radius": 50.0})
+        too_many = ",".join(str(i) for i in range(tf3ctl.STRIPS_EDGES_MAX + 1))
+        for bad in ([], ["--edge", "1", "--at", "1,2"], ["--edge", "a"], ["--edge", ""], ["--edge", "1,,2"],
+                    ["--edge=-1"], ["--edge", too_many], ["--edge", "1", "--radius", "5"], ["--at", "1"],
+                    ["--at", "a,b"], ["--at", "nan,1"], ["--at", "1,2", "--radius", "0"],
+                    ["--at", "1,2", "--radius", str(tf3ctl.STRIPS_RADIUS_MAX + 1)], ["--edge", "1", "--limit", "0"],
+                    ["--edge", "1", "--limit", str(tf3ctl.STRIPS_LIMIT_MAX + 1)]):
+            with self.assertRaises(tf3ctl.ToolError, msg=bad):
+                args(*bad)
+        self.assertNotIn("strips", tf3ctl.CHANGES_GAME)
+        self.assertFalse(tf3ctl.changes_game("strips", {"edges": [1]}))
+        sent = []
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args, timeout))
+            return {"ok": True}
+        tf3ctl.send = fake_send
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["strips", "--edge", "5,6"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(tf3ctl.main(["strips", "--edge", "x"]), 2, "refused before sending")
+        self.assertEqual(sent, [("strips", {"edges": [5, 6]}, 60)])
+
+    def test_strips_gs_through_eval(self):
+        # --gs: the same run() in the game script, sent as eval --gs; only with "eval": true in the configuration
+        ns = tf3ctl.make_parser().parse_args(["strips", "--at=-5,7", "--radius", "40", "--limit", "2", "--gs"])
+        code = tf3ctl.strips_gs_code(tf3ctl.strips_args(ns))
+        self.assertEqual(code, 'return require("hummer_remote_probe::/remote_strips.lua").run('
+                               '{at = {-5.0, 7.0}, limit = 2, radius = 40.0}, { where = "gs" })')
+        self.assertIn("edges = {1, 2}", tf3ctl.strips_gs_code({"edges": [1, 2]}))
+        sent = []
+        answer = {"ok": True, "where": "script", "value": {"ok": True, "where": "gs", "strips": {}, "asked": {},
+                  "unread": ["lane.type"], "scan": {"radius": 40}, "pieces": {},
+                  "x": {"strips": [{"groups": [{"edges": {}, "ends": {}, "curvature": {}}]}]}}}
+
+        def fake_send(cmd, args=None, timeout=20, **kw):
+            sent.append((cmd, args, timeout))
+            return json.loads(json.dumps(answer))
+        old = tf3ctl.CONFIG
+        try:
+            tf3ctl.CONFIG = dict(old, eval=False)
+            with unittest.mock.patch.object(tf3ctl, "send", fake_send):
+                with self.assertRaises(tf3ctl.ToolError) as cm:
+                    tf3ctl.cmd_strips(ns)
+                self.assertIn('"eval": true', str(cm.exception))
+                self.assertEqual(sent, [], "nothing sent without the configuration")
+                tf3ctl.CONFIG = dict(old, eval=True)
+                res = tf3ctl.cmd_strips(ns)
+                self.assertEqual(sent[0][0], "eval")
+                self.assertEqual(sent[0][1]["gs"], True)
+                self.assertEqual(sent[0][1]["code"], code)
+                self.assertEqual((sent[0][1]["depth"], sent[0][1]["maxChars"]), (16, 1000000))
+                self.assertEqual(sent[0][2], tf3ctl.EVAL_TIMEOUT_SEC)
+                self.assertEqual((res["where"], res["evalWhere"]), ("gs", "script"))
+                self.assertEqual((res["strips"], res["asked"], res["pieces"]), ([], [], []), "{} back to []")
+                self.assertEqual(res["scan"], {"radius": 40}, "not a list: kept")
+                g = res["x"]["strips"][0]["groups"][0]
+                self.assertEqual((g["edges"], g["ends"], g["curvature"]), ([], [], {}))
+                self.assertIn("about a minute", res["gsNote"])
+                answer["value"] = "<too large: 2000000 characters>"
+                answer["truncated"] = True
+                with self.assertRaises(tf3ctl.ToolError) as cm:
+                    tf3ctl.cmd_strips(ns)
+                self.assertIn("smaller --limit", str(cm.exception))
+                answer.clear()
+                answer.update({"ok": False, "error": "gameScript is off"})
+                self.assertEqual(tf3ctl.cmd_strips(ns), {"ok": False, "error": "gameScript is off"})
+        finally:
+            tf3ctl.CONFIG = old
 
     def test_around_args_and_main(self):
         parse = tf3ctl.make_parser().parse_args
@@ -5717,6 +5853,20 @@ class CoopTest(unittest.TestCase):
                      ["save", "probe-x", "--user-asked"]):
             self.assertTrue(p.parse_args(argv).user_asked, argv)
 
+    def test_track_goes_in_coop_as_road_and_counts_on_a_persons_save(self):
+        """track (lay track by coordinates) goes in coop as road does: a change, counted on a person's save, not on
+        a test save; its dry run is not counted."""
+        self.record("alice")
+        self.start()
+        self.assertFalse(self.goes("track", {"from": [0, 0, -15], "to": [100, 0, -15]})["count"], "a test save")
+        self.loaded("my-own-save")
+        self.assertTrue(self.goes("track", {"from": [0, 0, -15], "to": [100, 0, -15]})["count"], "a person's save")
+        self.assertIsNone(tf3ctl.check_game_owner("track", {"from": [0, 0], "to": [1, 0], "dryRun": True}),
+                          "a plain dry run only reads")
+        self.assertFalse(self.goes("track", {"from": [0, 0], "to": [1, 0], "dryRun": True,
+                                             "engineCheck": True})["count"], "the engine's check is not counted")
+        self.assertIn("track", tf3ctl.CHANGES_GAME)
+
     def test_calendar_speed_goes_without_the_user_asked_and_reading_always(self):
         self.loaded("my-own-save")  # a person's save: a change there is counted, the calendar as speed is not
         self.record("alice")
@@ -6579,6 +6729,131 @@ class RoadBatchTest(_ForceBase):
         # a _testSave written into the file's pieces or beside them by hand is not tf3ctl's word: dropped
         a = self.sent("road", dict(self.batch(self.TWO), _testSave="probe-x"))
         self.assertNotIn("_testSave", a)
+
+
+class TrackTest(_ForceBase):
+    """track (2026-11-26): track pieces by coordinates as road builds roads, on the ground or in a tunnel; one
+    piece by flags or --batch FILE. Its flags are checked by road_args (the same words), --type is required, a
+    tunnel's ends need z; road's own options (snap, bridge, alignment, fields, buildings, forced) are not there."""
+
+    ACCEPT = [
+        {"from": [0, 0, -15], "toNode": "@sw", "to": [100, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+        {"fromNode": "@sw", "to": [200, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+        {"from": [0, 5, -15], "to": [200, 5, -15], "type": "simple", "tunnel": "tunnel_a"},
+        {"fromNode": "@sw", "tangentFrom": [1, 0], "to": [135, -9.378, -15], "tangentTo": [0.866, -0.5],
+         "type": "simple", "tunnel": "tunnel_a"}]
+
+    def setUp(self):
+        super().setUp()
+        self.files = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.files, ignore_errors=True)
+
+    def one(self, *a):
+        return tf3ctl.track_args(self.p.parse_args(["track"] + list(a)))
+
+    def batch(self, pieces, *a):
+        path = os.path.join(self.files, "pieces.json")
+        write(path, json.dumps(pieces))
+        return tf3ctl.track_batch_args(self.p.parse_args(["track", "--batch", path] + list(a)))
+
+    def bad(self, why, f, *a):
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            f(*a)
+        self.assertIn(why, str(cm.exception))
+
+    def test_one_piece(self):
+        self.assertEqual(self.one("--from", "0,0", "--to", "60,0", "--type", "simple"),
+                         {"from": [0.0, 0.0], "to": [60.0, 0.0], "type": "simple"})
+        a = self.one("--from", "0,0,-15", "--to", "80,0,-15", "--type", " simple ", "--tunnel", " tunnel_a ",
+                     "--tangent-to", "1,0.2", "--dry-run", "--engine-check", "--collision-detail")
+        self.assertEqual(a, {"from": [0.0, 0.0, -15.0], "to": [80.0, 0.0, -15.0], "type": "simple",
+                             "tunnel": "tunnel_a", "tangentTo": [1.0, 0.2], "dryRun": True, "engineCheck": True,
+                             "collisionDetail": True})
+        self.assertEqual(self.one("--from-node", "8202", "--to", "160,100,-15", "--type", "simple", "--tunnel",
+                                  "tunnel_a")["fromNode"], 8202, "a node's end has the node's height")
+        self.assertIn('["tunnel"] = "tunnel_a"', tf3ctl.to_lua(a))
+
+    def test_one_piece_refused_before_sending(self):
+        self.bad("track needs --type", self.one, "--from", "0,0", "--to", "60,0")
+        self.bad("--type is empty", self.one, "--from", "0,0", "--to", "60,0", "--type", " ")
+        self.bad("track needs --from (or --from-node) and --to (or --to-node)", self.one, "--from", "0,0", "--type", "simple")
+        self.bad("--from needs z with --tunnel", self.one, "--from", "0,0", "--to", "60,0,-15", "--type", "simple",
+                 "--tunnel", "tunnel_a")
+        self.bad("--to needs z with --tunnel", self.one, "--from", "0,0,-15", "--to", "60,0", "--type", "simple",
+                 "--tunnel", "tunnel_a")
+        self.bad("tunnel must be", self.one, "--from", "0,0,1", "--to", "60,0,1", "--type", "simple", "--tunnel", "")
+        self.bad("--engine-check goes with --dry-run only", self.one, "--from", "0,0", "--to", "60,0", "--type", "simple",
+                 "--engine-check")
+        self.bad("road's only", self.one, "--from-node", "8201", "--from", "1,100", "--to", "-60,100", "--type", "simple")
+        self.bad("are the same node", self.one, "--from-node", "8201", "--to-node", "8201", "--type", "simple")
+        for flag in (["--snap", "1"], ["--bridge", "concrete"], ["--align-to-edge", "from"], ["--ignore-errors"],
+                     ["--remove-fields"], ["--remove-buildings"], ["--inspect-node", "5"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.p.parse_args(["track", "--from", "0,0", "--to", "1,0", "--type", "simple"] + flag)
+
+    def test_acceptance_batch(self):
+        a = self.batch(self.ACCEPT)
+        self.assertEqual(set(a), {"batch"})
+        b = a["batch"]
+        self.assertEqual(len(b), 4)
+        self.assertEqual(b[0], {"from": [0.0, 0.0, -15.0], "toNode": "@sw", "to": [100.0, 0.0, -15.0], "type": "simple",
+                                "tunnel": "tunnel_a"})
+        self.assertEqual(b[1], {"fromNode": "@sw", "to": [200.0, 0.0, -15.0], "type": "simple", "tunnel": "tunnel_a"})
+        self.assertEqual(b[3]["tangentFrom"], [1.0, 0.0])
+        self.assertEqual(b[3]["tangentTo"], [0.866, -0.5])
+        a = self.batch(self.ACCEPT, "--dry-run", "--engine-check", "--collision-detail")
+        self.assertEqual((a["dryRun"], a["engineCheck"], a["collisionDetail"]), (True, True, True))
+        self.assertIn("--batch", " ".join(self.p._subparsers._group_actions[0].choices["track"].format_help().split()))
+
+    def test_bad_batches_send_nothing(self):
+        self.bad("a JSON list of pieces", self.batch, {"from": "0,0"})
+        self.bad("the list is empty", self.batch, [])
+        many = [{"from": [i * 20, 0], "to": [i * 20, 50], "type": "simple"} for i in range(17)]
+        self.bad("17 pieces, at most 16", self.batch, many)
+        self.assertEqual(len(self.batch(many[:16])["batch"]), 16)
+        for why, pieces in (
+                ("piece 2: not a JSON object", [self.ACCEPT[2], 5]),
+                ("piece 1: give type", [{"from": "0,0", "to": "10,0"}]),
+                ("piece 1: unknown key 'snap'", [{"from": "0,0", "to": "10,0", "type": "simple", "snap": 0}]),
+                ("unknown key 'bridge'", [{"from": "0,0", "to": "10,0", "type": "simple", "bridge": "concrete"}]),
+                ("unknown key 'align-to-edge'", [{"from": "0,0", "to": "10,0", "type": "simple", "align-to-edge": "from"}]),
+                ("unknown key 'dryRun'", [{"from": "0,0", "to": "10,0", "type": "simple", "dryRun": True}]),
+                ("piece 1: tunnel must be", [{"from": "0,0,-1", "to": "10,0,-1", "type": "simple", "tunnel": 5}]),
+                ("piece 1: --from needs z with --tunnel", [{"from": "0,0", "to": "10,0,-1", "type": "simple",
+                                                            "tunnel": "tunnel_a"}]),
+                ("type must be a string", [{"from": "0,0", "to": "10,0", "type": 5}]),
+                ("piece 1: track needs --from (or --from-node)", [{"from": "0,0", "type": "simple"}]),
+                ("a new node's name is @", [{"from-node": "a", "to": "1,0", "type": "simple"}]),
+                ("road's only", [{"from-node": 8201, "from": "1,100", "to": "-60,100", "type": "simple"}]),
+        ):
+            self.bad(why, self.batch, pieces)
+        for flag in (["--from", "0,0"], ["--type", "simple"], ["--tunnel", "tunnel_a"], ["--from-node", "7"]):
+            path = os.path.join(self.files, "pieces.json")
+            write(path, json.dumps(self.ACCEPT))
+            self.bad("goes in each piece there", tf3ctl.track_batch_args,
+                     self.p.parse_args(["track", "--batch", path] + flag))
+
+    def test_fences_as_roads(self):
+        """track goes through send's fences as road does: it changes the game, --dry-run alone does not, the engine
+        asked does; during coop it goes as road does (D-20261126-08: no fences added to coop)."""
+        self.assertIn("track", tf3ctl.CHANGES_GAME)
+        self.assertTrue(tf3ctl.changes_game("track", self.batch(self.ACCEPT)))
+        self.assertFalse(tf3ctl.changes_game("track", self.batch(self.ACCEPT, "--dry-run")))
+        self.assertTrue(tf3ctl.changes_game("track", self.batch(self.ACCEPT, "--dry-run", "--engine-check")))
+        self.assertEqual(self.sent("track", self.batch(self.ACCEPT))["batch"][0]["tunnel"], "tunnel_a")
+        tf3ctl.coop_start(60, "look at the tunnel together")
+        self.assertEqual(self.sent("track", self.batch(self.ACCEPT))["batch"][0]["type"], "simple")
+
+    def test_main_sends_nothing_for_a_bad_piece(self):
+        path = os.path.join(self.files, "pieces.json")
+        write(path, json.dumps([self.ACCEPT[0], {"from": "0,9", "to": "10,9"}]))
+        written, err = [], io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "write_command", lambda *a: written.append(a)), \
+                contextlib.redirect_stdout(err), contextlib.redirect_stderr(err):
+            code = tf3ctl.main(["--owner", "alice", "track", "--batch", path])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(written, [])
+        self.assertIn("--batch piece 2: give type", err.getvalue())
 
 
 class ForcedSaveTest(_ForceBase):

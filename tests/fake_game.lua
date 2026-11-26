@@ -1444,8 +1444,28 @@ function M.new(dir, opts)
 			-- the camera as getCameraData's Vec5f: centre x, y, distance, angle, pitch
 			getCameraData = function() local c = g.cam; return { x = c.x, y = c.y, z = c.distance, w = c.angle, q = c.pitch } end,
 			setCameraData = function(v) g.cam = { x = v.x, y = v.y, distance = v.z, angle = v.w, pitch = v.q } end,
-			focusPosition = function(p, d) g.cam.x, g.cam.y, g.cam.distance = p.x, p.y, d; g.focusedAt = p end,
+			focusPosition = function(p, d) g.cam.x, g.cam.y, g.cam.z, g.cam.distance = p.x, p.y, p.z, d; g.focusedAt = p end,
 			getHeightAboveTerrain = function() return g.cam.distance * 0.5 end,
+			-- free camera: the eye is the centre (its height from focusPosition, else 0) moved out by distance along
+			-- angle and pitch (remote_core.eyeLookTarget's way: which way the game turns them is not known)
+			getEye = function()
+				inGame("getEye")
+				local c = g.cam
+				local cp = math.cos(c.pitch or 0)
+				return { x = c.x + c.distance * cp * math.cos(c.angle or 0), y = c.y + c.distance * cp * math.sin(c.angle or 0),
+					z = (c.z or 0) + c.distance * math.sin(c.pitch or 0) }
+			end,
+			getCenter = function() inGame("getCenter"); return { x = g.cam.x, y = g.cam.y, z = g.cam.z or 0 } end,
+			toggleFreeCamera = function()
+				inGame("toggleFreeCamera")
+				g.freeCam = not g.freeCam
+				g.freeCamToggles = (g.freeCamToggles or 0) + 1
+			end,
+			isFreeCameraMouseAttached = function() inGame("isFreeCameraMouseAttached"); return g.freeCamMouse == true end,
+			toggleFreeCameraMouseAttachment = function()
+				inGame("toggleFreeCameraMouseAttachment")
+				g.freeCamMouse = not g.freeCamMouse
+			end,
 		}, game = {
 			getEstimatedMaximumGameSpeed = function() return opts.maxSpeed or 0 end,
 			-- per-mod GUI save data held by the game (C++): every Lua state sees the same
@@ -2068,7 +2088,11 @@ function M.installBuild(g, spec)
 			local RT = api.type.enum.RoadType
 			return { roadType = RT and RT[s.roadType or "STREET"] or nil, streetStyle = s.style or (name .. ".style"),
 				availability = { yearFrom = s.yearFrom or 0, yearTo = s.yearTo or 0 }, cost = s.cost or 10,
-				laneConfigs = s.noLanes and {} or townLanes(s.modesUnread, s.perSide) }
+				laneConfigs = s.noLanes and {} or townLanes(s.modesUnread, s.perSide),
+				-- (a track's: the base tracks' 5 m and 55 m, standard.lua; spec.streets[name].trackDistance /
+				-- minCurveRadius set them, noTrackDistance leaves it out)
+				trackDistance = s.roadType == "TRACK" and not s.noTrackDistance and (s.trackDistance or 5) or nil,
+				minCurveRadiusBuild = s.roadType == "TRACK" and (s.minCurveRadius or 55) or nil }
 		end,
 	}
 	-- bridge types (road --bridge): spec.bridges = { [resName] = { carriers = { "ROAD", ... }, yearFrom, yearTo,
@@ -2098,6 +2122,33 @@ function M.installBuild(g, spec)
 			return { carriers = cs, availability = { yearFrom = b.yearFrom or 0, yearTo = b.yearTo or 0 } }
 		end,
 		getAll = function() local out = {} for i, n in ipairs(bridgeNames) do out[9 + i] = n end return out end,
+	}
+	-- tunnel types (track --tunnel): spec.tunnels = { [resName] = { carriers, yearFrom, yearTo, noCarriers } }, as the
+	-- bridges; by default the base's rail tunnel and its road one (res/config: tunnel_a carries RAIL, tunnel_a_car
+	-- ROAD). Ids from 30, so that one is never taken for a bridge's or a template's. tunnelTypeRep is a ResTypeRep of
+	-- BridgeType (res.d.tl)
+	local tunnels = spec.tunnels or {
+		["::/infrastructure/tunnel/tunnel_a.tunnel"] = { carriers = { "RAIL" } },
+		["::/infrastructure/tunnel/tunnel_a_car.tunnel"] = { carriers = { "ROAD" } },
+	}
+	local tunnelNames = {}
+	for name in pairs(tunnels) do tunnelNames[#tunnelNames + 1] = name end
+	table.sort(tunnelNames)
+	g.tunnelNames = tunnelNames
+	api.res.tunnelTypeRep = {
+		find = function(name) for i, n in ipairs(tunnelNames) do if n == name then return 29 + i end end return -1 end,
+		get = function(idx)
+			local name = tunnelNames[idx - 29]
+			if not name then crash("tunnelTypeRep.get(" .. tostring(idx) .. ")") end
+			local t = tunnels[name]
+			local cs
+			if not t.noCarriers then
+				cs = {}
+				for _, k in ipairs(t.carriers or {}) do cs[#cs + 1] = api.type.enum.Carrier[k] end
+			end
+			return { carriers = cs, availability = { yearFrom = t.yearFrom or 0, yearTo = t.yearTo or 0 } }
+		end,
+		getAll = function() local out = {} for i, n in ipairs(tunnelNames) do out[29 + i] = n end return out end,
 	}
 	api.engine.util.getYear = function() return spec.year end
 	g.streetCmds = {}
@@ -2261,7 +2312,9 @@ function M.installBuild(g, spec)
 			local c = e.comp
 			for _, k in ipairs({ "node0", "node1" }) do
 				if not (g.nodes[c[k]] or newNodes[c[k]]) then crash("street proposal: no node " .. tostring(c[k])) end
-				if g.nodes[c[k]] and not g.nodeConfig[c[k]] then
+				-- (a road's piece only: whether a track piece at such a node asserts is not known; the track
+				-- command sends no set-ups, as parallel_tracks and nova's elevated rail do not)
+				if g.nodes[c[k]] and not g.nodeConfig[c[k]] and c.roadType ~= api.type.enum.RoadType.TRACK then
 					local n = 0
 					for _, ed in pairs(g.edges) do if ed.node0 == c[k] or ed.node1 == c[k] then n = n + 1 end end
 					if n >= 2 then crash("GetComponentDataIndex: node " .. tostring(c[k]) .. " has no BaseNodeConfig") end
@@ -2283,11 +2336,24 @@ function M.installBuild(g, spec)
 				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
+			-- the piece's kind (SegmentAndEntity type: 0 street, 1 track, type.d.tl), its roadType and its template's
+			-- agree (a guess at what the engine asserts; a script's road sends type 0 and STREET). A piece with no
+			-- roadType (the tests' hand-made ones) and type -1 (the record's own) are let be, as before
+			local RT = api.type.enum.RoadType
+			local tplType = RT[streets[c.roadTemplate].roadType or "STREET"]
+			if c.roadType ~= nil and c.roadType ~= tplType then
+				crash("street proposal: roadType " .. tostring(c.roadType) .. " with template " .. tostring(c.roadTemplate))
+			end
+			if e.type ~= nil and e.type ~= -1 and e.type ~= (c.roadType or tplType) then
+				crash("street proposal: SegmentAndEntity type " .. tostring(e.type) .. " with roadType " .. tostring(c.roadType or tplType))
+			end
 			-- the edge type and its typeIndex (a guess at what the engine asserts: a bridge whose index is no bridge
 			-- type's, a plain piece with an index)
 			local BET = api.type.enum.BaseEdgeType
 			if c.type == BET.BRIDGE then
 				if not bridgeNames[(c.typeIndex or -1) - 9] then crash("street proposal: bridge type index " .. tostring(c.typeIndex)) end
+			elseif c.type == BET.TUNNEL then
+				if not tunnelNames[(c.typeIndex or -1) - 29] then crash("street proposal: tunnel type index " .. tostring(c.typeIndex)) end
 			elseif c.type == BET.NORMAL then
 				if c.typeIndex ~= -1 then crash("street proposal: a plain piece with typeIndex " .. tostring(c.typeIndex)) end
 			else
@@ -2571,7 +2637,8 @@ function M.installBuild(g, spec)
 			local c = e.comp
 			g.edges[g.nextEntity] = { node0 = idOf[c.node0] or c.node0, node1 = idOf[c.node1] or c.node1,
 				roadTemplate = c.roadTemplate, roadType = c.roadType == 1 and "TRACK" or "STREET", player = e.playerOwned and e.playerOwned.player,
-				laneConfigs = copy(c.laneConfigs), tangent0 = copy(c.tangent0), tangent1 = copy(c.tangent1) }
+				laneConfigs = copy(c.laneConfigs), tangent0 = copy(c.tangent0), tangent1 = copy(c.tangent1),
+				distance = c.distance }
 			-- (a bridge keeps its edge type and index, as the engine's BASE_EDGE; a plain piece as before)
 			if c.type ~= api.type.enum.BaseEdgeType.NORMAL then
 				g.edges[g.nextEntity].type, g.edges[g.nextEntity].typeIndex = c.type, c.typeIndex
@@ -3493,6 +3560,116 @@ function M.installAround(g, spec)
 end
 
 
+-- The engine's side of strips (remote_strips.lua): the parallel strips of tracks, over installAround's things (call
+-- installAround first: the pieces, their nodes and the strips are things there, the strips with comps
+-- BASE_PARALLEL_STRIP { rangeGroups = { { { edge, bounds = { b0, b1 } }, ... }, ... } } and BRIDGE { intervals }).
+-- spec.strips = { [edge] = { strip, ... } } (getStrips), spec.info = { [strip] = { carrier = "RAIL", edgeType =
+-- "TUNNEL", edgeTypeIndex = 0 } } (getStripInfo; isTunnel / isBridge from its edgeType, spec.tunnel / spec.bridge
+-- = { [strip] = bool } over it), spec.nodeTracks = { [node] = { edge, ... } } (getNodeTrackSegments).
+-- The engine's assertions, as the other fakes (a guess of where it asserts): getStrips of an entity that does not
+-- exist, getStripInfo / isTunnel / isBridge of one that is not a strip, getNodeTrackSegments of one that is not a
+-- node, getComponent of an entity that does not exist: g.crashed and an error.
+-- spec.noSystem: no baseParallelStripSystem in this Lua state (the GUI's might not have it); spec.noUtil: no
+-- api.engine.util.parallelStrip; spec.userdata: the strip components given as the engine's userdata (# and [i] or
+-- .key only, no pairs); spec.getStripsRaises = { [edge] = true }: getStrips errors without a crash.
+function M.installStrips(g, spec)
+	spec = spec or {}
+	g.stripCalls = { getStrips = 0, getStripInfo = 0, isTunnel = 0, isBridge = 0, getNodeTrackSegments = 0 }
+	local CT = api.type.ComponentType
+	CT.BASE_PARALLEL_STRIP = CT.BASE_PARALLEL_STRIP or "BASE_PARALLEL_STRIP"
+	CT.BRIDGE = CT.BRIDGE or "BRIDGE"
+	api.type.enum.Carrier = api.type.enum.Carrier or { ROAD = 0, RAIL = 1, TRAM = 2, OTHER = 3, AIR = 4, WATER = 5 }
+	local function crash(msg) g.crashed = "ASSERT: " .. msg; error(g.crashed) end
+	local strips, info, nodeTracks = spec.strips or {}, spec.info or {}, spec.nodeTracks or {}
+	local isStrip = {}
+	for s in pairs(info) do isStrip[s] = true end
+	for _, list in pairs(strips) do for _, s in ipairs(list) do isStrip[s] = true end end
+	-- a table as the engine's userdata: [i], .key, # and methods by name only
+	local function ud(v)
+		if type(v) ~= "table" or not spec.userdata then return v end
+		local u = newproxy(true)
+		local mt = getmetatable(u)
+		mt.__index = function(_, k)
+			local x = v[k]
+			if x == nil and type(k) == "string" and not (k == "getTransl") then error("no field " .. k) end
+			return type(x) == "table" and ud(x) or x
+		end
+		mt.__len = function() return #v end
+		return u
+	end
+	local exists = api.engine.entityExists
+	local getComponent = api.engine.getComponent
+	api.engine.getComponent = function(e, kind)
+		-- (only the kinds strips asks for: the rest of the fake game asks for others of entities it makes up)
+		local mine = kind == "BASE_EDGE" or kind == "BASE_PARALLEL_STRIP" or kind == "BRIDGE"
+		if mine and not exists(e) then crash("getComponent of no entity " .. tostring(e)) end
+		local c = getComponent(e, kind)
+		if kind == "BASE_PARALLEL_STRIP" or kind == "BRIDGE" then return ud(c) end
+		return c
+	end
+	local util = api.engine.util
+	if not spec.noSystem then
+		api.engine.system.baseParallelStripSystem = { getStrips = function(e)
+			g.stripCalls.getStrips = g.stripCalls.getStrips + 1
+			if not exists(e) then crash("getStrips of no entity " .. tostring(e)) end
+			if (spec.getStripsRaises or {})[e] then error("getStrips: not now") end
+			local out = {}
+			for i, s in ipairs(strips[e] or {}) do out[i] = s end
+			return spec.userdata and ud(out) or out
+		end }
+	else
+		api.engine.system.baseParallelStripSystem = nil
+	end
+	local function strip(s, what)
+		g.stripCalls[what] = g.stripCalls[what] + 1
+		if not isStrip[s] then crash(what .. " of " .. tostring(s) .. ", not a strip") end
+	end
+	if not spec.noUtil then
+		util.parallelStrip = {
+			getStripInfo = function(s)
+				strip(s, "getStripInfo")
+				local i = info[s] or {}
+				local out = { carrier = i.carrier and api.type.enum.Carrier[i.carrier],
+					edgeType = i.edgeType and api.type.enum.BaseEdgeType[i.edgeType], edgeTypeIndex = i.edgeTypeIndex }
+				return spec.userdata and ud(out) or out
+			end,
+			isTunnel = function(s)
+				strip(s, "isTunnel")
+				if (spec.tunnel or {})[s] ~= nil then return spec.tunnel[s] end
+				return (info[s] or {}).edgeType == "TUNNEL"
+			end,
+			isBridge = function(s)
+				strip(s, "isBridge")
+				if (spec.bridge or {})[s] ~= nil then return spec.bridge[s] end
+				return (info[s] or {}).edgeType == "BRIDGE"
+			end,
+		}
+	else
+		util.parallelStrip = nil
+	end
+	api.engine.system.streetSystem = api.engine.system.streetSystem or {}
+	local oldTracks = api.engine.system.streetSystem.getNodeTrackSegments
+	api.engine.system.streetSystem.getNodeTrackSegments = function(n)
+		g.stripCalls.getNodeTrackSegments = g.stripCalls.getNodeTrackSegments + 1
+		if nodeTracks[n] then
+			local out = {}
+			for i, e in ipairs(nodeTracks[n]) do out[i] = e end
+			return out
+		end
+		if oldTracks then return oldTracks(n) end
+		crash("getNodeTrackSegments: no node " .. tostring(n))
+	end
+	api.res = api.res or {}
+	api.res.modelRep = api.res.modelRep or {}
+	local getName = api.res.modelRep.getName
+	api.res.modelRep.getName = function(id)
+		if (spec.modelNames or {})[id] then return spec.modelNames[id] end
+		if getName then return getName(id) end
+		error("no model " .. tostring(id))
+	end
+end
+
+
 -- The engine's side of parcels (remote_parcels.lua): road pieces, their nodes, parcels and the buildings on them.
 -- spec.nodes = { [node] = { x, y, z } }; spec.edges = { [edge] = { node0, node1, street (default true),
 -- construction (default -1) } }; spec.parcels = { [parcel] = { edge, left (boolean), faces = { { { x, y, z }, ... } },
@@ -3978,6 +4155,21 @@ if arg and arg[0] and arg[0]:match("fake_game%.lua$") and arg[1] then
 			roadTemplate = "town_new_medium_tram_electrified.lua", node0 = 9621, node1 = 9622,
 			position0 = { x = -50, y = 7400, z = 0 }, position1 = { x = 50, y = 7400, z = 0 },
 			laneConfigs = M.TRAM_ELECTRIC_LANES() }, BASE_EDGE_STREET = {} } } } })
+	-- strips: a double track tunnel at y 7600 (track 9630 at y 7600, track 9631 5 m to its right), one strip 9640
+	-- with a range group for each; the second track ends in a dead end
+	local function tunnelTrack(n0, n1, y)
+		return { box = { -50, y - 1, -20, 50, y + 1, 0 }, comps = { BASE_EDGE = { roadType = "TRACK", type = "TUNNEL",
+			typeIndex = 0, node0 = n0, node1 = n1, position0 = { x = -50, y = y, z = -10 },
+			position1 = { x = 50, y = y, z = -10 }, tangent0 = { x = 100, y = 0, z = 0 }, tangent1 = { x = 100, y = 0, z = 0 } } } }
+	end
+	M.installAround(g, { things = {
+		[9630] = tunnelTrack(9632, 9633, 7600), [9631] = tunnelTrack(9634, 9635, 7595),
+		[9632] = { comps = {} }, [9633] = { comps = {} }, [9634] = { comps = {} }, [9635] = { comps = {} },
+		[9640] = { comps = { BASE_PARALLEL_STRIP = { rangeGroups = { { { edge = 9630, bounds = { 0, 1 } } },
+			{ { edge = 9631, bounds = { 0, 1 } } } } } } } } })
+	M.installStrips(g, { strips = { [9630] = { 9640 }, [9631] = { 9640 } },
+		info = { [9640] = { carrier = "RAIL", edgeType = "TUNNEL", edgeTypeIndex = 0 } },
+		nodeTracks = { [9632] = { 9630, 9629 }, [9633] = { 9630, 9628 }, [9634] = { 9631, 9627 }, [9635] = { 9631 } } })
 	local start = os.clock()
 	local wall = 0
 	local speedControl

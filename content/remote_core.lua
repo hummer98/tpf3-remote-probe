@@ -58,6 +58,8 @@ M.COMMANDS.reach = true
 M.COMMANDS.around = true
 -- lanes (remote_lanes.lua): read only, in a game
 M.COMMANDS.edgeLanes = true
+-- strips (remote_strips.lua): read only, in a game
+M.COMMANDS.strips = true
 
 ---------------------------------------------------------------------------------------------------------------------
 -- mod settings (mod.json params): each arrives as a 1-based index into these lists
@@ -740,6 +742,11 @@ function M.openRequest(o)
 		out.tool = { module = tool.module, field = type(tool.field) == "string" and tool.field or nil,
 			close = tool.close == true }
 	end
+	-- freeCam: on (true / false) and via (tool / toggle); the speed control pushes, pops or toggles
+	local fc = o.freeCam
+	if type(fc) == "table" and type(fc.on) == "boolean" and M.FREECAM_VIAS[fc.via] then
+		out.freeCam = { on = fc.on, via = fc.via }
+	end
 	return out
 end
 
@@ -760,6 +767,16 @@ end
 M.OPEN_RELAY_SEC = 10 -- a request the speed control has not taken by then is dropped and answered as not relayed
 M.OPEN_REPORTS_KEPT = 20 -- what the speed control did with the last requests, under MOD .. ".open"
 
+-- what the speed control did with a free camera request: action (pushed, popped, toggled, none), and whether the
+-- free camera tool was the active one on the tool stack before and after (nil: not read). Plain values only.
+M.FREECAM_ACTIONS = { pushed = true, popped = true, toggled = true, none = true }
+function M.freeCamReport(f)
+	if type(f) ~= "table" then return nil end
+	local function bool(v) if v == true or v == false then return v end return nil end
+	return { action = M.FREECAM_ACTIONS[f.action] and f.action or nil, activeBefore = bool(f.activeBefore),
+		activeAfter = bool(f.activeAfter) }
+end
+
 -- the speed control's reports (getGuiSaveData(MOD .. ".open")): seq -> { error = text or nil, skipped = bool }.
 -- skipped: in the list at the speed control's first read, so taken as left over from the last game, not run
 function M.openReports(d)
@@ -769,7 +786,8 @@ function M.openReports(d)
 		local seq = type(r) == "table" and tonumber(r.seq) or nil
 		if seq then
 			-- the first word on a request stands: a later "skipped" for one already run must not undo it
-			out[seq] = out[seq] or { error = r.error ~= nil and tostring(r.error) or nil, skipped = r.skipped == true }
+			out[seq] = out[seq] or { error = r.error ~= nil and tostring(r.error) or nil, skipped = r.skipped == true,
+				freeCam = M.freeCamReport(r.freeCam) }
 		end
 	end
 	return out
@@ -880,6 +898,89 @@ function M.cameraTarget(cur, set)
 	if math.abs(out.angle) > L.angle then return nil, "angle must be within +-2 pi" end
 	if math.abs(out.pitch) > L.pitch then return nil, "pitch must be within +-pi/2" end
 	return out
+end
+
+-- free camera (camera free / eye / look / mouse). The base enters it by pushing free_cam_options.FreeCamTool on
+-- the game's tool stack (its push calls api.gui.camera.toggleFreeCamera, its pop leaveFollowCameraCockpit:
+-- game_bar_widgets.tl, free_cam_options.tl); via "toggle" calls toggleFreeCamera alone, in case the tool's way
+-- does not take. method: how the eye is moved, as no API sets an eye: "data" setCameraData (a centre without a
+-- height), "focus" focusPosition (a point with its height), "both" the one then the other.
+M.FREECAM_MODULE = "/gui/main/free_cam_options.tl"
+M.FREECAM_FIELD = "FreeCamTool"
+M.FREECAM_TOOL_NAME = "FreeCam" -- its react.RegisterTool name
+M.FREECAM_VIAS = { tool = true, toggle = true }
+M.FREECAM_METHODS = { data = true, focus = true, both = true }
+M.FREECAM_READ_SEC = 0.3 -- the camera is read again this long after a move (a move may show a frame later)
+
+-- "x,y,z" (or a list of three) within the camera's limits -> { x, y, z } or nil, why
+local function point3(v, what)
+	local p, err = M.numberList(v, 3)
+	if not p then return nil, what .. ": " .. err end
+	if #p ~= 3 then return nil, what .. ": give x,y,z" end
+	local L = M.CAMERA_LIMITS.xy
+	for _, n in ipairs(p) do
+		if math.abs(n) > L then return nil, what .. ": within " .. L end
+	end
+	return { x = p[1], y = p[2], z = p[3] }
+end
+
+-- args: free ("on" / "off"), via, eye + look (both or neither), method, mouse ("attach" / "detach").
+-- -> nil (none of them given: an ordinary camera command), or the request, or false and why
+function M.freeCamRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.free == nil and args.eye == nil and args.look == nil and args.mouse == nil
+		and args.via == nil and args.method == nil then
+		return nil
+	end
+	local r = {}
+	if args.free ~= nil then
+		if args.free ~= "on" and args.free ~= "off" then return false, "free must be on or off" end
+		r.free = args.free
+	end
+	if args.via ~= nil then
+		if r.free == nil then return false, "via goes with free" end
+		if not M.FREECAM_VIAS[args.via] then return false, "via must be tool or toggle" end
+	end
+	r.via = args.via or (r.free and "tool" or nil)
+	if (args.eye == nil) ~= (args.look == nil) then return false, "give eye and look together" end
+	if args.eye ~= nil then
+		if r.free == "off" then return false, "eye and look do not go with free off" end
+		local err
+		r.eye, err = point3(args.eye, "eye")
+		if not r.eye then return false, err end
+		r.look, err = point3(args.look, "look")
+		if not r.look then return false, err end
+		local t, errT = M.eyeLookTarget(r.eye, r.look)
+		if not t then return false, errT end
+		r.target = t
+	end
+	if args.method ~= nil then
+		if r.eye == nil then return false, "method goes with eye and look" end
+		if not M.FREECAM_METHODS[args.method] then return false, "method must be data, focus or both" end
+	end
+	r.method = r.eye and (args.method or "both") or nil
+	if args.mouse ~= nil then
+		if args.mouse ~= "attach" and args.mouse ~= "detach" then return false, "mouse must be attach or detach" end
+		r.mouse = args.mouse
+	end
+	return r
+end
+
+-- an eye and the point it looks at -> what setCameraData / focusPosition take: the centre (the look point),
+-- distance (eye to look), angle (heading of the eye seen from the centre, atan2 of y over x) and pitch (up from
+-- the centre's level, asin). Which way the game turns its angle is not known: the answer reads the eye back.
+function M.eyeLookTarget(eye, look)
+	local dx, dy, dz = eye.x - look.x, eye.y - look.y, eye.z - look.z
+	local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+	local L = M.CAMERA_LIMITS
+	if not (d >= L.distance[1] and d <= L.distance[2]) then
+		return nil, string.format("eye and look must be %g-%g apart", L.distance[1], L.distance[2])
+	end
+	local pitch = math.asin(math.max(-1, math.min(1, dz / d)))
+	-- math.atan2 is gone from Lua 5.3 on, where math.atan takes y, x
+	local atan2 = math.atan2 or math.atan
+	local angle = (dx == 0 and dy == 0) and 0 or atan2(dy, dx)
+	return { x = look.x, y = look.y, z = look.z, distance = d, angle = angle, pitch = pitch }
 end
 
 -- build tool: the menu filter tag of a construction (construction.tl: resName, or resName@N with a template)
@@ -1517,6 +1618,133 @@ function M.roadBatchRequest(args)
 	return out
 end
 
+-- track (remote_build.lua B.track): track pieces put by coordinates, as road puts road pieces: one piece (from / to,
+-- fromNode / toNode, tangentFrom / tangentTo), or several in one proposal (batch, with "@a" names for the new nodes
+-- they share: roadBatchRequest's rules). type is required: a track's street template (standard, high_speed, ... or
+-- its resName). tunnel: a tunnel type (tunnelTypeRep: tunnel_a, ... or its resName): the piece is sent as a tunnel
+-- of that type, and then every end needs its height given (a point's z, an existing node's or a named node's), since
+-- a tunnel's height is its own, not the terrain's. No snap (an end joins a node only when named), no bridge, no
+-- alignToEdge, no removeFields / removeBuildings / ignoreErrors: road's options that have not been looked at for
+-- track. dryRun, engineCheck and collisionDetail as road's (roadOptions' fences).
+M.COMMANDS.track = true
+M.CHANGES_GAME.track = true -- (its dry run too, as road's)
+M.TRACK_BATCH_MAX = M.ROAD_BATCH_MAX
+do -- (track's helpers kept out of the file's locals)
+	local TRACK_ROAD_ONLY = { "snap", "bridge", "alignToEdge", "alignEdge", "removeFields", "removeBuildings", "ignoreErrors" }
+	local TRACK_PIECE_KEYS = { from = true, to = true, fromNode = true, toNode = true, type = true, tunnel = true,
+		tangentFrom = true, tangentTo = true }
+	-- a piece's road-only keys: why it is refused, or nil
+	local function trackRoadOnly(args, head)
+		for _, k in ipairs(TRACK_ROAD_ONLY) do
+			if args[k] ~= nil then return head .. k .. " goes with road only, not with track: nothing sent" end
+		end
+		return nil
+	end
+	-- one track piece's own values: roadPiece's ends (snap 0: no joining by distance), then type and tunnel
+	local function trackPiece(args, nodes)
+		local ends = {}
+		for k in pairs(TRACK_PIECE_KEYS) do
+			if k ~= "type" and k ~= "tunnel" then ends[k] = args[k] end
+		end
+		ends.snap = 0
+		local p, err = roadPiece(ends, nodes)
+		if not p then return nil, err end
+		p, err = roadWays(ends, p)
+		if not p then return nil, err end
+		local t = args.type
+		if t == nil then
+			return nil, "give type: a track's street template (standard, high_speed, standard_catenary, ... or its resName)"
+		end
+		if type(t) ~= "string" or not t:find("%S") or t:find("[%c@]") or #t > 512 then
+			return nil, "type must be a track's street template resName (or a base track's file name, e.g. standard)"
+		end
+		p.type = t:match("^%s*(.-)%s*$")
+		local tunnel = args.tunnel
+		if tunnel ~= nil then
+			if type(tunnel) ~= "string" or not tunnel:find("%S") or tunnel:find("[%c@]") or #tunnel > 512 then
+				return nil, "tunnel must be a tunnel type's resName (or a base tunnel's file name, e.g. tunnel_a)"
+			end
+			p.tunnel = tunnel:match("^%s*(.-)%s*$")
+			-- a point end of a tunnel needs its z (an existing node's height is the node's; a named node's: checked below)
+			for _, k in ipairs({ "from", "to" }) do
+				if p[k] and p[k][3] == nil then
+					return nil, k .. " needs z with tunnel: a tunnel's height is given, not the terrain's (x,y,z)"
+				end
+			end
+		end
+		p.track = true
+		return p
+	end
+	function M.trackRequest(args)
+		args = type(args) == "table" and args or {}
+		if args.batch ~= nil then return nil, "batch goes with trackBatchRequest (track --batch)" end
+		local why = trackRoadOnly(args, "")
+		if why then return nil, why end
+		local p, err = trackPiece(args, false)
+		if not p then return nil, err end
+		return roadOptions(args, p)
+	end
+	function M.trackBatchRequest(args)
+		args = type(args) == "table" and args or {}
+		local why = trackRoadOnly(args, "")
+		if why then return nil, why end
+		local list = args.batch
+		if type(list) ~= "table" then return nil, "batch must be a list of pieces (each as track's from, to, type, ...): nothing sent" end
+		local n = 0
+		for _ in pairs(list) do n = n + 1 end
+		if n ~= #list then return nil, "batch must be a list of pieces (1, 2, ... in order), not a table with other keys: nothing sent" end
+		if n == 0 then return nil, "batch is empty: give at least one piece: nothing sent" end
+		if n > M.TRACK_BATCH_MAX then
+			return nil, string.format("batch has %d pieces: at most %d in one proposal: nothing sent", n, M.TRACK_BATCH_MAX)
+		end
+		for k in pairs(args) do
+			if TRACK_PIECE_KEYS[k] then return nil, tostring(k) .. " goes in each piece of batch, not beside it: nothing sent" end
+		end
+		-- each piece checked as track's own, then the whole as road's batch (the named nodes, the lengths)
+		local plain = {}
+		for i, el in ipairs(list) do
+			local head = "piece " .. i .. ": "
+			if type(el) ~= "table" then return nil, head .. "not a table of from, to, type, ...: nothing sent" end
+			for k in pairs(el) do
+				if not TRACK_PIECE_KEYS[k] then
+					return nil, head .. "unknown key " .. tostring(k) .. " (from, to, fromNode, toNode, type, tunnel, " ..
+						"tangentFrom, tangentTo): nothing sent"
+				end
+			end
+			local p, perr = trackPiece(el, true)
+			if not p then return nil, head .. perr .. ": nothing sent" end
+			local copy = {}
+			for k, v in pairs(el) do
+				if k ~= "type" and k ~= "tunnel" then copy[k] = v end
+			end
+			copy.snap = 0
+			plain[i] = copy
+		end
+		local opts = {}
+		for k, v in pairs(args) do
+			if k ~= "batch" then opts[k] = v end
+		end
+		opts.batch = plain
+		local out, err = M.roadBatchRequest(opts)
+		if not out then return nil, err end
+		for i, p in ipairs(out.pieces) do
+			local own = trackPiece(list[i], true)
+			p.type, p.tunnel, p.track = own.type, own.tunnel, true
+			-- a named end of a tunnel: its node's z must be given at one of its ends
+			if p.tunnel then
+				for _, k in ipairs({ "from", "to" }) do
+					local name = p[k .. "Node"]
+					if type(name) == "string" and out.named[name].z == nil then
+						return nil, "piece " .. i .. ": node " .. name .. " needs z with tunnel (give it at one of its ends): nothing sent"
+					end
+				end
+			end
+		end
+		out.track = true
+		return out
+	end
+end
+
 -- a direction shorter than this is no direction (a tangent given as 0,0, or a piece's tangent that reads as 0)
 M.ROAD_MIN_DIR = 1e-6
 -- the most a curved piece's end may turn off its chord (degrees): past a right angle the curve runs back behind
@@ -1562,6 +1790,16 @@ function M.angleDeg(u, v)
 	u, v = unitWay(u.x, u.y), unitWay(v.x, v.y)
 	if not (u and v) then return nil end
 	return math.deg(math.acos(math.max(-1, math.min(1, u.x * v.x + u.y * v.y))))
+end
+
+-- the radius of a circle's arc that leaves one end of a chord chordLen metres long turned thetaDeg degrees from
+-- the way it comes in at the other (the angle between a piece's two tangents on the map): chord / (2 sin(theta/2)),
+-- or nil when it does not turn (a straight piece) or the values are no numbers. A Hermite piece is near such an arc
+-- when its ends turn alike off the chord; when they do not, this is only a rough measure
+function M.arcRadius(chordLen, thetaDeg)
+	if type(chordLen) ~= "number" or type(thetaDeg) ~= "number" or chordLen ~= chordLen or thetaDeg ~= thetaDeg then return nil end
+	if thetaDeg < 1e-6 or chordLen <= 0 then return nil end
+	return chordLen / (2 * math.sin(math.rad(thetaDeg) / 2))
 end
 
 -- road --inspect-node (read only): one node's id
@@ -4243,6 +4481,44 @@ function M.edgeLanesRequest(args)
 	end
 	if args.network ~= nil and type(args.network) ~= "boolean" then return nil, "network must be true or false" end
 	return { edges = out, network = args.network ~= false }
+end
+
+-- strips (read only, remote_strips.lua): edges ("a,b", a list or one id: 1-STRIPS_EDGES_MAX track pieces) or at
+-- (x,y) and radius (default STRIPS_RADIUS.default m), not both; limit (strips per answer, 1-STRIPS_LIMIT.max) ->
+-- { edges } or { x, y, radius }, with limit; or nil and why
+M.STRIPS_EDGES_MAX = 20
+M.STRIPS_RADIUS = { default = 30, max = 500 } -- m (a strip runs on beyond the circle: a small circle is enough)
+M.STRIPS_LIMIT = { default = 20, max = 40 } -- (remote_strips.lua's STRIPS_MAX)
+function M.stripsRequest(args)
+	args = type(args) == "table" and args or {}
+	local limit = M.STRIPS_LIMIT.default
+	if args.limit ~= nil then
+		limit = wholeNumber(args.limit)
+		if limit == nil or limit < 1 or limit > M.STRIPS_LIMIT.max then
+			return nil, "limit must be a whole number 1-" .. M.STRIPS_LIMIT.max
+		end
+	end
+	if args.edges ~= nil and args.at ~= nil then return nil, "give edges or at, not both" end
+	if args.edges ~= nil then
+		local r, err = M.edgeLanesRequest({ edges = args.edges })
+		if not r then return nil, err end
+		if #r.edges > M.STRIPS_EDGES_MAX then return nil, "edges: at most " .. M.STRIPS_EDGES_MAX .. " pieces" end
+		return { edges = r.edges, limit = limit }
+	end
+	if args.at == nil then return nil, "give edges (piece ids) or at (x,y in metres)" end
+	local p, err = M.numberList(args.at, 3)
+	if not p then return nil, "at: " .. err end
+	if #p < 2 then return nil, "at needs x,y (finite numbers)" end
+	local L = M.BUILD_LIMITS.xy
+	if math.abs(p[1]) > L or math.abs(p[2]) > L then return nil, "at: x and y must be within " .. L end
+	local r = M.STRIPS_RADIUS.default
+	if args.radius ~= nil then
+		r = tonumber(args.radius)
+		if not finite(r) or r <= 0 or r > M.STRIPS_RADIUS.max then
+			return nil, string.format("radius must be more than 0 and at most %g m", M.STRIPS_RADIUS.max)
+		end
+	end
+	return { x = p[1], y = p[2], radius = r, limit = limit }
 end
 
 -- a transf's turn about the vertical (radians) from its first column (m11, m12: cos, sin); nil when not readable

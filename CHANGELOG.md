@@ -16,6 +16,11 @@ is separate and does not follow the release version.
   one out, an `--add` of one already in is not added twice. The answer names them in `plan.officialMods` (the
   editor's answer too); a mod older than the key, which starts the game without them, gets a warning. Measured
   2026-11-26: `launch --new` started a game with the probe alone.
+- `track`: track pieces by coordinates as `road` builds roads (RoadType TRACK, SegmentAndEntity type 1), on the
+  ground or underground with `--tunnel` (edge type TUNNEL, the tunnel type's id); `--from-node` / `--to-node`,
+  `--tangent-from` / `--tangent-to`, `--batch` (at most 16, `"@name"` shared nodes), `--dry-run --engine-check`,
+  `--collision-detail`. The answer gives the edges and the engine's words when it refuses. Not checked in a game
+  yet.
 
 ### Changed
 
