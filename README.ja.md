@@ -110,7 +110,7 @@ tf3ctl.py quit
 | 時間 | `status` (日付・速度・MOD。`luaLoad`: load・loadstring・setfenv があるか)、`speed N` (UI の 4 倍より上。ゲームの見積もりが上限)、`pause`、`calendar-speed [0.25]` (本体のカレンダーのスライダー、0.25x〜4x。読む・変える)、`run --days / --months / --until` (そのあと止める)、`steps N` (シミュレーションの歩み、debug の命令)、`poll` (MOD が読む間隔) |
 | ゲーム | `launch` / `restart` (`--load SAVE` か `--new ...`)、`quit`、`load SAVE` (`--add` / `--remove` / `--param`)、`save NAME`、`saves`、`info SAVE` (その MOD と設定)、`newgame` (メインメニューから)、`state` (ゲームのログから。メニューでも使える)、`company` |
 | 読む | `entities`、`stations` (`--catchment`)、`lines` (`--problems`)、`depots`、`vehicles` (`--state`)、`models`、`persons`、`industry-workers`、`industry-stocks`、`finance`、`running-costs`、`around` (ある点の周りの物)、`lanes`、`parcels`、`water`、`reach` (その場所へ行けるか)、`stock list` |
-| 建てる (試験用の地図) | `build` (建物。`--remove`)、`fit` (建物を置ける場所)、`road` (まっすぐ・曲がった 1 本。`--batch`)、`lights --off`、`terrain`、`town` (と `town connections` / `connect` / `develop` / `size`)、`connect` (2 つの端の間の線路・道路。Track Connector を使う) |
+| 建てる (試験用の地図) | `build` (建物。`--remove`)、`fit` (建物を置ける場所)、`road` (まっすぐ・曲がった 1 本。`--batch`)、`track` (線路。トンネルも。`--batch`。ゲーム内では未確認)、`lights --off`、`terrain`、`town` (と `town connections` / `connect` / `develop` / `size`)、`connect` (2 つの端の間の線路・道路。Track Connector を使う) |
 | 車両・所持金・路線 | `buy`、`duplicate`、`replace`、`sell`、`money`、`line create / update / delete`、`rename` |
 | GUI | `window` (entity の窓を開く)、`event` (react のイベント)、`tool` (音楽・カレンダー・通知)、`camera`、`build-tool`、`script-event`、`frame` (Steam の録画からの静止画、Linux)、`pointer` (既定で切) |
 | 自分の MOD の命令 | `mod --list`、`mod <modId> <命令> [JSON]` (MOD が `remote_probe_ext.lua` で出す命令) |

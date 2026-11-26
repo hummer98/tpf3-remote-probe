@@ -6513,6 +6513,131 @@ class RoadBatchTest(_ForceBase):
         self.assertNotIn("_testSave", a)
 
 
+class TrackTest(_ForceBase):
+    """track (2026-11-26): track pieces by coordinates as road builds roads, on the ground or in a tunnel; one
+    piece by flags or --batch FILE. Its flags are checked by road_args (the same words), --type is required, a
+    tunnel's ends need z; road's own options (snap, bridge, alignment, fields, buildings, forced) are not there."""
+
+    ACCEPT = [
+        {"from": [0, 0, -15], "toNode": "@sw", "to": [100, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+        {"fromNode": "@sw", "to": [200, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+        {"from": [0, 5, -15], "to": [200, 5, -15], "type": "simple", "tunnel": "tunnel_a"},
+        {"fromNode": "@sw", "tangentFrom": [1, 0], "to": [135, -9.378, -15], "tangentTo": [0.866, -0.5],
+         "type": "simple", "tunnel": "tunnel_a"}]
+
+    def setUp(self):
+        super().setUp()
+        self.files = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.files, ignore_errors=True)
+
+    def one(self, *a):
+        return tf3ctl.track_args(self.p.parse_args(["track"] + list(a)))
+
+    def batch(self, pieces, *a):
+        path = os.path.join(self.files, "pieces.json")
+        write(path, json.dumps(pieces))
+        return tf3ctl.track_batch_args(self.p.parse_args(["track", "--batch", path] + list(a)))
+
+    def bad(self, why, f, *a):
+        with self.assertRaises(tf3ctl.ToolError) as cm:
+            f(*a)
+        self.assertIn(why, str(cm.exception))
+
+    def test_one_piece(self):
+        self.assertEqual(self.one("--from", "0,0", "--to", "60,0", "--type", "simple"),
+                         {"from": [0.0, 0.0], "to": [60.0, 0.0], "type": "simple"})
+        a = self.one("--from", "0,0,-15", "--to", "80,0,-15", "--type", " simple ", "--tunnel", " tunnel_a ",
+                     "--tangent-to", "1,0.2", "--dry-run", "--engine-check", "--collision-detail")
+        self.assertEqual(a, {"from": [0.0, 0.0, -15.0], "to": [80.0, 0.0, -15.0], "type": "simple",
+                             "tunnel": "tunnel_a", "tangentTo": [1.0, 0.2], "dryRun": True, "engineCheck": True,
+                             "collisionDetail": True})
+        self.assertEqual(self.one("--from-node", "8202", "--to", "160,100,-15", "--type", "simple", "--tunnel",
+                                  "tunnel_a")["fromNode"], 8202, "a node's end has the node's height")
+        self.assertIn('["tunnel"] = "tunnel_a"', tf3ctl.to_lua(a))
+
+    def test_one_piece_refused_before_sending(self):
+        self.bad("track needs --type", self.one, "--from", "0,0", "--to", "60,0")
+        self.bad("--type is empty", self.one, "--from", "0,0", "--to", "60,0", "--type", " ")
+        self.bad("track needs --from (or --from-node) and --to (or --to-node)", self.one, "--from", "0,0", "--type", "simple")
+        self.bad("--from needs z with --tunnel", self.one, "--from", "0,0", "--to", "60,0,-15", "--type", "simple",
+                 "--tunnel", "tunnel_a")
+        self.bad("--to needs z with --tunnel", self.one, "--from", "0,0,-15", "--to", "60,0", "--type", "simple",
+                 "--tunnel", "tunnel_a")
+        self.bad("tunnel must be", self.one, "--from", "0,0,1", "--to", "60,0,1", "--type", "simple", "--tunnel", "")
+        self.bad("--engine-check goes with --dry-run only", self.one, "--from", "0,0", "--to", "60,0", "--type", "simple",
+                 "--engine-check")
+        self.bad("road's only", self.one, "--from-node", "8201", "--from", "1,100", "--to", "-60,100", "--type", "simple")
+        self.bad("are the same node", self.one, "--from-node", "8201", "--to-node", "8201", "--type", "simple")
+        for flag in (["--snap", "1"], ["--bridge", "concrete"], ["--align-to-edge", "from"], ["--ignore-errors"],
+                     ["--remove-fields"], ["--remove-buildings"], ["--inspect-node", "5"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.p.parse_args(["track", "--from", "0,0", "--to", "1,0", "--type", "simple"] + flag)
+
+    def test_acceptance_batch(self):
+        a = self.batch(self.ACCEPT)
+        self.assertEqual(set(a), {"batch"})
+        b = a["batch"]
+        self.assertEqual(len(b), 4)
+        self.assertEqual(b[0], {"from": [0.0, 0.0, -15.0], "toNode": "@sw", "to": [100.0, 0.0, -15.0], "type": "simple",
+                                "tunnel": "tunnel_a"})
+        self.assertEqual(b[1], {"fromNode": "@sw", "to": [200.0, 0.0, -15.0], "type": "simple", "tunnel": "tunnel_a"})
+        self.assertEqual(b[3]["tangentFrom"], [1.0, 0.0])
+        self.assertEqual(b[3]["tangentTo"], [0.866, -0.5])
+        a = self.batch(self.ACCEPT, "--dry-run", "--engine-check", "--collision-detail")
+        self.assertEqual((a["dryRun"], a["engineCheck"], a["collisionDetail"]), (True, True, True))
+        self.assertIn("--batch", " ".join(self.p._subparsers._group_actions[0].choices["track"].format_help().split()))
+
+    def test_bad_batches_send_nothing(self):
+        self.bad("a JSON list of pieces", self.batch, {"from": "0,0"})
+        self.bad("the list is empty", self.batch, [])
+        many = [{"from": [i * 20, 0], "to": [i * 20, 50], "type": "simple"} for i in range(17)]
+        self.bad("17 pieces, at most 16", self.batch, many)
+        self.assertEqual(len(self.batch(many[:16])["batch"]), 16)
+        for why, pieces in (
+                ("piece 2: not a JSON object", [self.ACCEPT[2], 5]),
+                ("piece 1: give type", [{"from": "0,0", "to": "10,0"}]),
+                ("piece 1: unknown key 'snap'", [{"from": "0,0", "to": "10,0", "type": "simple", "snap": 0}]),
+                ("unknown key 'bridge'", [{"from": "0,0", "to": "10,0", "type": "simple", "bridge": "concrete"}]),
+                ("unknown key 'align-to-edge'", [{"from": "0,0", "to": "10,0", "type": "simple", "align-to-edge": "from"}]),
+                ("unknown key 'dryRun'", [{"from": "0,0", "to": "10,0", "type": "simple", "dryRun": True}]),
+                ("piece 1: tunnel must be", [{"from": "0,0,-1", "to": "10,0,-1", "type": "simple", "tunnel": 5}]),
+                ("piece 1: --from needs z with --tunnel", [{"from": "0,0", "to": "10,0,-1", "type": "simple",
+                                                            "tunnel": "tunnel_a"}]),
+                ("type must be a string", [{"from": "0,0", "to": "10,0", "type": 5}]),
+                ("piece 1: track needs --from (or --from-node)", [{"from": "0,0", "type": "simple"}]),
+                ("a new node's name is @", [{"from-node": "a", "to": "1,0", "type": "simple"}]),
+                ("road's only", [{"from-node": 8201, "from": "1,100", "to": "-60,100", "type": "simple"}]),
+        ):
+            self.bad(why, self.batch, pieces)
+        for flag in (["--from", "0,0"], ["--type", "simple"], ["--tunnel", "tunnel_a"], ["--from-node", "7"]):
+            path = os.path.join(self.files, "pieces.json")
+            write(path, json.dumps(self.ACCEPT))
+            self.bad("goes in each piece there", tf3ctl.track_batch_args,
+                     self.p.parse_args(["track", "--batch", path] + flag))
+
+    def test_fences_as_roads(self):
+        """track goes through send's fences as road does: it changes the game, --dry-run alone does not, the engine
+        asked does; it is not among coop's commands (refused during coop)."""
+        self.assertIn("track", tf3ctl.CHANGES_GAME)
+        self.assertTrue(tf3ctl.changes_game("track", self.batch(self.ACCEPT)))
+        self.assertFalse(tf3ctl.changes_game("track", self.batch(self.ACCEPT, "--dry-run")))
+        self.assertTrue(tf3ctl.changes_game("track", self.batch(self.ACCEPT, "--dry-run", "--engine-check")))
+        self.assertEqual(self.sent("track", self.batch(self.ACCEPT))["batch"][0]["tunnel"], "tunnel_a")
+        tf3ctl.coop_start(60, "look at the tunnel together")
+        self.refused("track", self.batch(self.ACCEPT), "coop")
+
+    def test_main_sends_nothing_for_a_bad_piece(self):
+        path = os.path.join(self.files, "pieces.json")
+        write(path, json.dumps([self.ACCEPT[0], {"from": "0,9", "to": "10,9"}]))
+        written, err = [], io.StringIO()
+        with unittest.mock.patch.object(tf3ctl, "write_command", lambda *a: written.append(a)), \
+                contextlib.redirect_stdout(err), contextlib.redirect_stderr(err):
+            code = tf3ctl.main(["--owner", "alice", "track", "--batch", path])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(written, [])
+        self.assertIn("--batch piece 2: give type", err.getvalue())
+
+
 class ForcedSaveTest(_ForceBase):
     """After road --ignore-errors went to this run of the game (a build, not --dry-run), save goes to probe-force-*
     names only (2026-11-24): a state built past the engine's checks must not land in a test base or a person's

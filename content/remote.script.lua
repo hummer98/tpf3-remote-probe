@@ -1277,6 +1277,7 @@ local build = (ug_require or require)(MOD .. "::/remote_build.lua").new({ core =
 handlers.build = build.handle
 handlers.water = build.water
 handlers.road = build.road
+handlers.track = build.track
 handlers.roadInspect = build.roadInspect -- (read only)
 handlers.lightsOff = build.lightsOff -- (test saves only: a junction's traffic light taken off)
 -- around (remote_around.lua): read only, what stands near a point (kinds, names, boxes; constructions' mouths);

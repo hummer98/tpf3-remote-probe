@@ -2068,7 +2068,11 @@ function M.installBuild(g, spec)
 			local RT = api.type.enum.RoadType
 			return { roadType = RT and RT[s.roadType or "STREET"] or nil, streetStyle = s.style or (name .. ".style"),
 				availability = { yearFrom = s.yearFrom or 0, yearTo = s.yearTo or 0 }, cost = s.cost or 10,
-				laneConfigs = s.noLanes and {} or townLanes(s.modesUnread, s.perSide) }
+				laneConfigs = s.noLanes and {} or townLanes(s.modesUnread, s.perSide),
+				-- (a track's: the base tracks' 5 m and 55 m, standard.lua; spec.streets[name].trackDistance /
+				-- minCurveRadius set them, noTrackDistance leaves it out)
+				trackDistance = s.roadType == "TRACK" and not s.noTrackDistance and (s.trackDistance or 5) or nil,
+				minCurveRadiusBuild = s.roadType == "TRACK" and (s.minCurveRadius or 55) or nil }
 		end,
 	}
 	-- bridge types (road --bridge): spec.bridges = { [resName] = { carriers = { "ROAD", ... }, yearFrom, yearTo,
@@ -2098,6 +2102,33 @@ function M.installBuild(g, spec)
 			return { carriers = cs, availability = { yearFrom = b.yearFrom or 0, yearTo = b.yearTo or 0 } }
 		end,
 		getAll = function() local out = {} for i, n in ipairs(bridgeNames) do out[9 + i] = n end return out end,
+	}
+	-- tunnel types (track --tunnel): spec.tunnels = { [resName] = { carriers, yearFrom, yearTo, noCarriers } }, as the
+	-- bridges; by default the base's rail tunnel and its road one (res/config: tunnel_a carries RAIL, tunnel_a_car
+	-- ROAD). Ids from 30, so that one is never taken for a bridge's or a template's. tunnelTypeRep is a ResTypeRep of
+	-- BridgeType (res.d.tl)
+	local tunnels = spec.tunnels or {
+		["::/infrastructure/tunnel/tunnel_a.tunnel"] = { carriers = { "RAIL" } },
+		["::/infrastructure/tunnel/tunnel_a_car.tunnel"] = { carriers = { "ROAD" } },
+	}
+	local tunnelNames = {}
+	for name in pairs(tunnels) do tunnelNames[#tunnelNames + 1] = name end
+	table.sort(tunnelNames)
+	g.tunnelNames = tunnelNames
+	api.res.tunnelTypeRep = {
+		find = function(name) for i, n in ipairs(tunnelNames) do if n == name then return 29 + i end end return -1 end,
+		get = function(idx)
+			local name = tunnelNames[idx - 29]
+			if not name then crash("tunnelTypeRep.get(" .. tostring(idx) .. ")") end
+			local t = tunnels[name]
+			local cs
+			if not t.noCarriers then
+				cs = {}
+				for _, k in ipairs(t.carriers or {}) do cs[#cs + 1] = api.type.enum.Carrier[k] end
+			end
+			return { carriers = cs, availability = { yearFrom = t.yearFrom or 0, yearTo = t.yearTo or 0 } }
+		end,
+		getAll = function() local out = {} for i, n in ipairs(tunnelNames) do out[29 + i] = n end return out end,
 	}
 	api.engine.util.getYear = function() return spec.year end
 	g.streetCmds = {}
@@ -2261,7 +2292,9 @@ function M.installBuild(g, spec)
 			local c = e.comp
 			for _, k in ipairs({ "node0", "node1" }) do
 				if not (g.nodes[c[k]] or newNodes[c[k]]) then crash("street proposal: no node " .. tostring(c[k])) end
-				if g.nodes[c[k]] and not g.nodeConfig[c[k]] then
+				-- (a road's piece only: whether a track piece at such a node asserts is not known; the track
+				-- command sends no set-ups, as parallel_tracks and nova's elevated rail do not)
+				if g.nodes[c[k]] and not g.nodeConfig[c[k]] and c.roadType ~= api.type.enum.RoadType.TRACK then
 					local n = 0
 					for _, ed in pairs(g.edges) do if ed.node0 == c[k] or ed.node1 == c[k] then n = n + 1 end end
 					if n >= 2 then crash("GetComponentDataIndex: node " .. tostring(c[k]) .. " has no BaseNodeConfig") end
@@ -2283,11 +2316,24 @@ function M.installBuild(g, spec)
 				end
 			end
 			if not streets[c.roadTemplate] then crash("street proposal: no template " .. tostring(c.roadTemplate)) end
+			-- the piece's kind (SegmentAndEntity type: 0 street, 1 track, type.d.tl), its roadType and its template's
+			-- agree (a guess at what the engine asserts; a script's road sends type 0 and STREET). A piece with no
+			-- roadType (the tests' hand-made ones) and type -1 (the record's own) are let be, as before
+			local RT = api.type.enum.RoadType
+			local tplType = RT[streets[c.roadTemplate].roadType or "STREET"]
+			if c.roadType ~= nil and c.roadType ~= tplType then
+				crash("street proposal: roadType " .. tostring(c.roadType) .. " with template " .. tostring(c.roadTemplate))
+			end
+			if e.type ~= nil and e.type ~= -1 and e.type ~= (c.roadType or tplType) then
+				crash("street proposal: SegmentAndEntity type " .. tostring(e.type) .. " with roadType " .. tostring(c.roadType or tplType))
+			end
 			-- the edge type and its typeIndex (a guess at what the engine asserts: a bridge whose index is no bridge
 			-- type's, a plain piece with an index)
 			local BET = api.type.enum.BaseEdgeType
 			if c.type == BET.BRIDGE then
 				if not bridgeNames[(c.typeIndex or -1) - 9] then crash("street proposal: bridge type index " .. tostring(c.typeIndex)) end
+			elseif c.type == BET.TUNNEL then
+				if not tunnelNames[(c.typeIndex or -1) - 29] then crash("street proposal: tunnel type index " .. tostring(c.typeIndex)) end
 			elseif c.type == BET.NORMAL then
 				if c.typeIndex ~= -1 then crash("street proposal: a plain piece with typeIndex " .. tostring(c.typeIndex)) end
 			else
@@ -2571,7 +2617,8 @@ function M.installBuild(g, spec)
 			local c = e.comp
 			g.edges[g.nextEntity] = { node0 = idOf[c.node0] or c.node0, node1 = idOf[c.node1] or c.node1,
 				roadTemplate = c.roadTemplate, roadType = c.roadType == 1 and "TRACK" or "STREET", player = e.playerOwned and e.playerOwned.player,
-				laneConfigs = copy(c.laneConfigs), tangent0 = copy(c.tangent0), tangent1 = copy(c.tangent1) }
+				laneConfigs = copy(c.laneConfigs), tangent0 = copy(c.tangent0), tangent1 = copy(c.tangent1),
+				distance = c.distance }
 			-- (a bridge keeps its edge type and index, as the engine's BASE_EDGE; a plain piece as before)
 			if c.type ~= api.type.enum.BaseEdgeType.NORMAL then
 				g.edges[g.nextEntity].type, g.edges[g.nextEntity].typeIndex = c.type, c.typeIndex

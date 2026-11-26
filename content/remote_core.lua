@@ -1502,6 +1502,133 @@ function M.roadBatchRequest(args)
 	return out
 end
 
+-- track (remote_build.lua B.track): track pieces put by coordinates, as road puts road pieces: one piece (from / to,
+-- fromNode / toNode, tangentFrom / tangentTo), or several in one proposal (batch, with "@a" names for the new nodes
+-- they share: roadBatchRequest's rules). type is required: a track's street template (standard, high_speed, ... or
+-- its resName). tunnel: a tunnel type (tunnelTypeRep: tunnel_a, ... or its resName): the piece is sent as a tunnel
+-- of that type, and then every end needs its height given (a point's z, an existing node's or a named node's), since
+-- a tunnel's height is its own, not the terrain's. No snap (an end joins a node only when named), no bridge, no
+-- alignToEdge, no removeFields / removeBuildings / ignoreErrors: road's options that have not been looked at for
+-- track. dryRun, engineCheck and collisionDetail as road's (roadOptions' fences).
+M.COMMANDS.track = true
+M.CHANGES_GAME.track = true -- (its dry run too, as road's)
+M.TRACK_BATCH_MAX = M.ROAD_BATCH_MAX
+do -- (track's helpers kept out of the file's locals)
+	local TRACK_ROAD_ONLY = { "snap", "bridge", "alignToEdge", "alignEdge", "removeFields", "removeBuildings", "ignoreErrors" }
+	local TRACK_PIECE_KEYS = { from = true, to = true, fromNode = true, toNode = true, type = true, tunnel = true,
+		tangentFrom = true, tangentTo = true }
+	-- a piece's road-only keys: why it is refused, or nil
+	local function trackRoadOnly(args, head)
+		for _, k in ipairs(TRACK_ROAD_ONLY) do
+			if args[k] ~= nil then return head .. k .. " goes with road only, not with track: nothing sent" end
+		end
+		return nil
+	end
+	-- one track piece's own values: roadPiece's ends (snap 0: no joining by distance), then type and tunnel
+	local function trackPiece(args, nodes)
+		local ends = {}
+		for k in pairs(TRACK_PIECE_KEYS) do
+			if k ~= "type" and k ~= "tunnel" then ends[k] = args[k] end
+		end
+		ends.snap = 0
+		local p, err = roadPiece(ends, nodes)
+		if not p then return nil, err end
+		p, err = roadWays(ends, p)
+		if not p then return nil, err end
+		local t = args.type
+		if t == nil then
+			return nil, "give type: a track's street template (standard, high_speed, standard_catenary, ... or its resName)"
+		end
+		if type(t) ~= "string" or not t:find("%S") or t:find("[%c@]") or #t > 512 then
+			return nil, "type must be a track's street template resName (or a base track's file name, e.g. standard)"
+		end
+		p.type = t:match("^%s*(.-)%s*$")
+		local tunnel = args.tunnel
+		if tunnel ~= nil then
+			if type(tunnel) ~= "string" or not tunnel:find("%S") or tunnel:find("[%c@]") or #tunnel > 512 then
+				return nil, "tunnel must be a tunnel type's resName (or a base tunnel's file name, e.g. tunnel_a)"
+			end
+			p.tunnel = tunnel:match("^%s*(.-)%s*$")
+			-- a point end of a tunnel needs its z (an existing node's height is the node's; a named node's: checked below)
+			for _, k in ipairs({ "from", "to" }) do
+				if p[k] and p[k][3] == nil then
+					return nil, k .. " needs z with tunnel: a tunnel's height is given, not the terrain's (x,y,z)"
+				end
+			end
+		end
+		p.track = true
+		return p
+	end
+	function M.trackRequest(args)
+		args = type(args) == "table" and args or {}
+		if args.batch ~= nil then return nil, "batch goes with trackBatchRequest (track --batch)" end
+		local why = trackRoadOnly(args, "")
+		if why then return nil, why end
+		local p, err = trackPiece(args, false)
+		if not p then return nil, err end
+		return roadOptions(args, p)
+	end
+	function M.trackBatchRequest(args)
+		args = type(args) == "table" and args or {}
+		local why = trackRoadOnly(args, "")
+		if why then return nil, why end
+		local list = args.batch
+		if type(list) ~= "table" then return nil, "batch must be a list of pieces (each as track's from, to, type, ...): nothing sent" end
+		local n = 0
+		for _ in pairs(list) do n = n + 1 end
+		if n ~= #list then return nil, "batch must be a list of pieces (1, 2, ... in order), not a table with other keys: nothing sent" end
+		if n == 0 then return nil, "batch is empty: give at least one piece: nothing sent" end
+		if n > M.TRACK_BATCH_MAX then
+			return nil, string.format("batch has %d pieces: at most %d in one proposal: nothing sent", n, M.TRACK_BATCH_MAX)
+		end
+		for k in pairs(args) do
+			if TRACK_PIECE_KEYS[k] then return nil, tostring(k) .. " goes in each piece of batch, not beside it: nothing sent" end
+		end
+		-- each piece checked as track's own, then the whole as road's batch (the named nodes, the lengths)
+		local plain = {}
+		for i, el in ipairs(list) do
+			local head = "piece " .. i .. ": "
+			if type(el) ~= "table" then return nil, head .. "not a table of from, to, type, ...: nothing sent" end
+			for k in pairs(el) do
+				if not TRACK_PIECE_KEYS[k] then
+					return nil, head .. "unknown key " .. tostring(k) .. " (from, to, fromNode, toNode, type, tunnel, " ..
+						"tangentFrom, tangentTo): nothing sent"
+				end
+			end
+			local p, perr = trackPiece(el, true)
+			if not p then return nil, head .. perr .. ": nothing sent" end
+			local copy = {}
+			for k, v in pairs(el) do
+				if k ~= "type" and k ~= "tunnel" then copy[k] = v end
+			end
+			copy.snap = 0
+			plain[i] = copy
+		end
+		local opts = {}
+		for k, v in pairs(args) do
+			if k ~= "batch" then opts[k] = v end
+		end
+		opts.batch = plain
+		local out, err = M.roadBatchRequest(opts)
+		if not out then return nil, err end
+		for i, p in ipairs(out.pieces) do
+			local own = trackPiece(list[i], true)
+			p.type, p.tunnel, p.track = own.type, own.tunnel, true
+			-- a named end of a tunnel: its node's z must be given at one of its ends
+			if p.tunnel then
+				for _, k in ipairs({ "from", "to" }) do
+					local name = p[k .. "Node"]
+					if type(name) == "string" and out.named[name].z == nil then
+						return nil, "piece " .. i .. ": node " .. name .. " needs z with tunnel (give it at one of its ends): nothing sent"
+					end
+				end
+			end
+		end
+		out.track = true
+		return out
+	end
+end
+
 -- a direction shorter than this is no direction (a tangent given as 0,0, or a piece's tangent that reads as 0)
 M.ROAD_MIN_DIR = 1e-6
 -- the most a curved piece's end may turn off its chord (degrees): past a right angle the curve runs back behind
@@ -1547,6 +1674,16 @@ function M.angleDeg(u, v)
 	u, v = unitWay(u.x, u.y), unitWay(v.x, v.y)
 	if not (u and v) then return nil end
 	return math.deg(math.acos(math.max(-1, math.min(1, u.x * v.x + u.y * v.y))))
+end
+
+-- the radius of a circle's arc that leaves one end of a chord chordLen metres long turned thetaDeg degrees from
+-- the way it comes in at the other (the angle between a piece's two tangents on the map): chord / (2 sin(theta/2)),
+-- or nil when it does not turn (a straight piece) or the values are no numbers. A Hermite piece is near such an arc
+-- when its ends turn alike off the chord; when they do not, this is only a rough measure
+function M.arcRadius(chordLen, thetaDeg)
+	if type(chordLen) ~= "number" or type(thetaDeg) ~= "number" or chordLen ~= chordLen or thetaDeg ~= thetaDeg then return nil end
+	if thetaDeg < 1e-6 or chordLen <= 0 then return nil end
+	return chordLen / (2 * math.sin(math.rad(thetaDeg) / 2))
 end
 
 -- road --inspect-node (read only): one node's id

@@ -834,6 +834,65 @@ autosave loaded again saves under any name.
   the new piece crosses (the proposal adds no crossing node: does the engine add one, refuse, or lay one over
   the other).
 
+### Track pieces by coordinates (`track`)
+
+```
+python3 tools/tf3ctl.py track --from 0,0 --to 200,0 --type simple [--dry-run [--engine-check]]
+python3 tools/tf3ctl.py track --from 0,0,-15 --to 200,0,-15 --type simple --tunnel tunnel_a   # underground
+python3 tools/tf3ctl.py track --from-node 8202 --to 160,100 --type standard [--tangent-to 1,0.2]
+python3 tools/tf3ctl.py track --batch pieces.json [--dry-run [--engine-check]] [--collision-detail]
+```
+
+- Written 2026-11-26. **Not checked in a game yet** [guess]: only the unit tests (the fake engine) have run it.
+  Look at the result (`frame`) before trusting an answer, and try `--dry-run --engine-check` first.
+- Builds track pieces the way `road` builds road pieces, with no click: a `SimpleStreetProposal` sent as
+  `api.cmd.makeWorldBuildProposalCmd`, each piece a `SegmentAndEntity` of type 1 (track; `road` sends 0) with
+  `roadType` TRACK, the template's `laneConfigs`, and `distance` the template's `trackDistance` when it reads (else
+  none sent, said in `trackDistanceNote`). No junction set-ups (`BaseNodeConfig`) are sent for track nodes. The
+  same context as `road` (nothing knocked down, errors not ignored). Changes the game: meant for test saves (not
+  checked).
+- `--type` is required: a track's street template, its resName or a base track's file name (`simple`,
+  `standard`, `high_speed`, looked for under `::/infrastructure/track/<name>/`). A template whose `roadType` is
+  not TRACK (a road) is refused, and one not to be had in the game's year; nothing is sent.
+- `--tunnel RES` builds the piece underground: a tunnel type's resName as `api.res.tunnelTypeRep` knows it, or a
+  base tunnel's file name (`tunnel_a` is `::/infrastructure/tunnel/tunnel_a.tunnel`; when that does not read, the
+  base's other path `::/infrastructure/tunnel/tunnel/tunnel_a.tunnel` is tried). The piece goes with its edge
+  type `TUNNEL` and `typeIndex` the type's id. An unknown type is refused with the names there; one whose
+  carriers read without `RAIL` (`tunnel_a_car`) is refused; carriers that do not read are said
+  (`carriersNote`), not refused. Both ends' z are required with `--tunnel` (the terrain's height is no tunnel's);
+  an end on an existing node takes the node's height. The answer's `tunnel`: `name`, `id`, `carriesRail`, and
+  after a build `built` (the new piece's edge type and `typeIndex` read back, `asSent`). [guess] whether the
+  engine takes a piece wholly under the ground with no portal, and how deep it must lie, are not checked.
+- Ends: `--from` / `--to` as x,y[,z] (no z: the terrain's height), or `--from-node` / `--to-node` with an existing
+  node that has a track piece (the end is the node's own point; a road's node is refused). There is no snap: a
+  point on an existing node is refused (give the node). `road`'s shifted end (a node and a point together) is not
+  there. `--tangent-from` / `--tangent-to` as `road`'s: the answer gives `turnDeg`, `curved` and `radiusApprox`
+  (the chord over 2 sin(turn / 2), a circle's arc [guess]: the engine's own curve is a cubic), with
+  `radiusWarning` below the template's `minCurveRadiusBuild` (said, not refused).
+- `--batch FILE`: at most 16 pieces in one proposal, judged and built together. A JSON list, each piece an object
+  of `from`, `to`, `from-node` / `to-node` (an existing track node's id, or `"@name"` for a new node the pieces
+  share), `type` (required in each piece), `tunnel`, `tangent-from`, `tangent-to` (the flags' names or the mod's:
+  `fromNode`, `tangentTo`, ...). `--dry-run`, `--engine-check` and `--collision-detail` go for the whole proposal.
+  A node where three pieces meet is a switch: the answer's end says `meeting` 3 and `switchNote` (no set-up is
+  sent; the engine is left to make the switch [guess], not checked). A named node used with a tunnel needs its z.
+- The answer: `ok`, `track` true, `edge` and `edges` (one piece), or `pieces` (each piece's ends, turn, radius)
+  with `pieceEdges` (each piece's new edge id, in the file's order) and `namedNodes` (each `@name`'s node id).
+  Refused by the engine: `ok` false and `error` "the engine refused it: " with the engine's own words, the hits
+  in the way (`hits`, and `collisionDetail` when asked); with `--dry-run --engine-check`, "the engine would refuse
+  it: ... (dry run: nothing sent)". A dry run alone (`checked` false) asks the engine nothing.
+- Example: two tracks 5 m apart 15 m under flat ground at 0, and a branch off the first at `@sw` turning 30
+  degrees over a chord of about 36 m (a radius of about 70 m):
+
+```json
+[
+  {"from": [0, 0, -15], "toNode": "@sw", "to": [100, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"fromNode": "@sw", "to": [200, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"from": [0, 5, -15], "to": [200, 5, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"fromNode": "@sw", "tangentFrom": [1, 0], "to": [135, -9.378, -15], "tangentTo": [0.866, -0.5],
+   "type": "simple", "tunnel": "tunnel_a"}
+]
+```
+
 ### The ground in a rectangle (`terrain`)
 
 ```

@@ -22,6 +22,7 @@ function M.new(ctx)
 	local built = {} -- [construction] = { res, x, y, z } for what this load of the probe built
 	local count = 0
 	local finishRoad, roadLost -- (the road command's, below)
+	local finishTrack, trackLost -- (the track command's, below)
 	local finishLights, lightsLost, lightPreference -- (the lights command's, below)
 	local joinsOf -- (below, before finish)
 	local streetEdgesNear -- (below, after place: place and joinsOf call it)
@@ -838,6 +839,8 @@ function M.new(ctx)
 		if out.balanceBefore and out.balanceAfter then out.spent = out.balanceBefore - out.balanceAfter end
 		if job.kind == "road" then
 			finishRoad(job, out, res)
+		elseif job.kind == "track" then
+			finishTrack(job, out, res)
 		elseif job.kind == "lights" then
 			finishLights(job, out, res)
 		elseif job.kind == "place" then
@@ -957,6 +960,7 @@ function M.new(ctx)
 	local function lost(job)
 		local why = string.format("no answer from the engine in %d s", RESULT_SEC)
 		if job.kind == "road" then return roadLost(job, why) end
+		if job.kind == "track" then return trackLost(job, why) end
 		if job.kind == "lights" then return lightsLost(job, why) end
 		if job.kind == "place" then
 			local o = job.out
@@ -2211,6 +2215,628 @@ function M.new(ctx)
 		end)
 		jobs[#jobs + 1] = job
 	end
+
+	---------------------------------------------------------------------------------------------------------------
+	-- track: track pieces put by coordinates, as road puts road pieces (core.trackRequest / trackBatchRequest): one
+	-- SimpleProposal whose pieces are SegmentAndEntity type 1 (type.d.tl: 0 street, 1 track), roadType TRACK, the
+	-- track template's style and lanes, and distance its trackDistance (BaseEdge.distance, engine.d.tl; the two
+	-- tracks of a double track's ballast bed, parallel_tracks' notes: without it no shared bed or catenary). No
+	-- junction set-ups are sent: neither parallel_tracks nor nova's elevated rail builder sends nodeConfigs for track
+	-- pieces (read in their sources), so a switch where pieces share a node is left to the engine. With a tunnel
+	-- type: BaseEdgeType TUNNEL and typeIndex its tunnelTypeRep id (res.d.tl: tunnelTypeRep is a ResTypeRep of
+	-- BridgeType). road's own functions are not used for what is a road's (snap, junction set-ups, alignToEdge):
+	-- the helpers here are track's. Not checked in a game yet (written 2026-11-26)
+	do
+		local NOTE_TRACK = "track pieces in a SimpleProposal (SegmentAndEntity type 1, roadType TRACK, distance the " ..
+			"template's trackDistance, no junction set-ups sent); not checked in a game yet: look at it (frame) " ..
+			"before trusting the answer"
+		local NOTE_TUNNEL = "sent as a tunnel piece (BaseEdge type TUNNEL, typeIndex this type's id) at the heights " ..
+			"given; not checked in a game yet whether the engine takes a piece wholly under the ground without " ..
+			"portals, or how deep it must lie"
+		local NOTE_SWITCH = "more than two track pieces meet at this node: no junction set-up is sent (the engine is " ..
+			"left to make the switch); not checked in a game yet whether it does"
+		local TRACK_DIRS = { "standard", "high_speed", "simple" }
+		local TUNNEL_NAMES_SHOWN = 12
+
+		-- the track pieces (BASE_EDGE of roadType TRACK) whose box meets a circle of r metres around x, y (as
+		-- streetEdgesNear for roads)
+		local function trackEdgesNear(x, y, r)
+			local track = enumOf("RoadType", "TRACK")
+			local out, seen = {}, {}
+			local function take(e)
+				e = tonumber(e)
+				if not e or seen[e] then return end
+				seen[e] = true
+				local be = comp(e, "BASE_EDGE")
+				local rt = be and core.field(be, "roadType")
+				if track ~= nil and rt ~= nil and rt == track then out[#out + 1] = e end
+			end
+			local list = try(function()
+				return api.engine.util.octree.findEntitiesInCircle(api.type.Vec2f.new(x, y), r, CT().BASE_EDGE)
+			end)
+			if list ~= nil then
+				for _, e in ipairs(core.toList(list)) do take(e) end
+			else
+				pcall(function()
+					local box = api.type.Box3.new(api.type.Vec3f.new(x - r, y - r, -1000), api.type.Vec3f.new(x + r, y + r, 5000))
+					api.engine.system.octreeSystem.findIntersectingEntities(box, function(e) take(e) end)
+				end)
+			end
+			table.sort(out)
+			return out
+		end
+		-- the track pieces near either end and the middle, by id (taken before sending)
+		local function trackPiecesAround(a, b)
+			local set = {}
+			local r = math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2) / 2 + 10
+			for _, e in ipairs(trackEdgesNear((a.x + b.x) / 2, (a.y + b.y) / 2, r)) do set[e] = true end
+			for _, q in ipairs({ a, b }) do
+				for _, e in ipairs(trackEdgesNear(q.x, q.y, 10)) do set[e] = true end
+			end
+			return set
+		end
+		-- a track piece not there before whose ends are at the two points
+		local function trackPieceBetween(a, b, before)
+			local function near(p, q) return p and math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2) <= MATCH_M end
+			for e in pairs(trackPiecesAround(a, b)) do
+				if not (before and before[e]) then
+					local be = comp(e, "BASE_EDGE")
+					local p0, p1 = nodePos(core.field(be, "node0")), nodePos(core.field(be, "node1"))
+					if (near(p0, a) and near(p1, b)) or (near(p0, b) and near(p1, a)) then return e end
+				end
+			end
+			return nil
+		end
+		-- an existing node (a road's or a track's) within SAME_M of a point, or nil
+		local function anyNodeOnPoint(x, y, z)
+			local best = nodeOnPoint(x, y, z)
+			for _, e in ipairs(trackEdgesNear(x, y, NEAR_PIECE_M)) do
+				local be = comp(e, "BASE_EDGE")
+				for _, k in ipairs({ "node0", "node1" }) do
+					local n = tonumber(be and core.field(be, k))
+					local p = n and nodePos(n)
+					if p then
+						local d = math.sqrt((p.x - x) ^ 2 + (p.y - y) ^ 2 + (p.z - z) ^ 2)
+						if d <= SAME_M and (not best or d < best.d) then best = { node = n, d = d } end
+					end
+				end
+			end
+			return best
+		end
+
+		-- the track template, or nil and why: a resName, or a base track's file name (standard, high_speed, simple)
+		local function trackTemplate(given, year)
+			local names = { given }
+			if not given:find("::/", 1, true) then
+				local stem = given:gsub("%.street_template$", "")
+				for _, d in ipairs(TRACK_DIRS) do
+					names[#names + 1] = string.format("::/infrastructure/track/%s/%s.street_template", d, stem)
+				end
+			end
+			for _, name in ipairs(names) do
+				local t = templateInfo(name)
+				if t then
+					if t.typeUnread then return nil, name .. ": its road type (or the RoadType enum) could not be read: nothing sent" end
+					if t.street then return nil, name .. " is a road (RoadType STREET), not a track: use road: nothing sent" end
+					if not availableIn(t.availability, year) then
+						return nil, string.format("%s is not to be had in %s (yearFrom %d, yearTo %d): nothing sent", name,
+							tostring(year), t.availability.yearFrom, t.availability.yearTo)
+					end
+					local raw = try(function() return api.res.streetTemplateRep.get(api.res.streetTemplateRep.find(name)) end)
+					t.trackDistance = tonumber(raw ~= nil and core.field(raw, "trackDistance") or nil)
+					t.minCurveRadius = tonumber(raw ~= nil and core.field(raw, "minCurveRadiusBuild") or nil)
+					return t
+				end
+			end
+			return nil, "no street template " .. given .. " (streetTemplateRep.find gives -1 for " .. table.concat(names, ", ") ..
+				"): nothing sent"
+		end
+
+		-- a tunnel type: a resName, or a base tunnel's file name (tunnel_a: ::/infrastructure/tunnel/tunnel_a.tunnel;
+		-- also looked for one folder deeper, road_tunnel_ramp's fallback for the base's other path). Its carriers must
+		-- hold RAIL (unread: said, not refused); its years are said, not refused (as road's bridge)
+		local function tunnelType(given, year)
+			local names = { given }
+			if not given:find("::", 1, true) then
+				names[#names + 1] = "::/infrastructure/tunnel/" .. given:gsub("%.tunnel$", "") .. ".tunnel"
+			end
+			for i = 1, #names do
+				local alt = names[i]:gsub("/tunnel/tunnel_", "/tunnel/tunnel/tunnel_")
+				if alt ~= names[i] then names[#names + 1] = alt end
+			end
+			local idx, name
+			for _, n in ipairs(names) do
+				local i = tonumber(try(function() return api.res.tunnelTypeRep.find(n) end))
+				if i and i >= 0 then idx, name = i, n; break end
+			end
+			if not idx then
+				local all = try(function() return api.res.tunnelTypeRep.getAll() end)
+				local there = {}
+				pcall(function()
+					for _, n in pairs(all) do if type(n) == "string" then there[#there + 1] = n end end
+				end)
+				table.sort(there)
+				local shown = {}
+				for i = 1, math.min(#there, TUNNEL_NAMES_SHOWN) do shown[i] = there[i] end
+				local list = #there == 0 and "none could be read (tunnelTypeRep.getAll)" or
+					string.format("%s%s (%d in all)", table.concat(shown, ", "), #there > #shown and ", ..." or "", #there)
+				return nil, "no tunnel type " .. given .. " (tunnelTypeRep.find gives -1 for " .. table.concat(names, ", ") ..
+					"); the tunnel types there: " .. list .. ": nothing sent"
+			end
+			local t = try(function() return api.res.tunnelTypeRep.get(idx) end)
+			local out = { name = name, id = idx, note = NOTE_TUNNEL }
+			local C = try(function() return api.type.enum.Carrier end)
+			local cs = t ~= nil and core.field(t, "carriers") or nil
+			local okC = C ~= nil and cs ~= nil and pcall(function()
+				local byValue = {}
+				for _, k in ipairs({ "ROAD", "RAIL", "TRAM", "AIR", "WATER", "OTHER" }) do
+					local v = try(function() return C[k] end)
+					if v ~= nil then byValue[v] = k end
+				end
+				local list, rail = {}, false
+				for _, c in ipairs(core.toList(cs)) do
+					list[#list + 1] = byValue[c] or tostring(c)
+					if c == C.RAIL then rail = true end
+				end
+				out.carriers, out.carriesRail = list, rail
+			end)
+			if not okC or out.carriers == nil then
+				out.carriers, out.carriesRail = nil, nil
+				out.carriersNote = "its carriers could not be read: not checked that it carries track"
+			elseif not out.carriesRail then
+				return nil, string.format("tunnel type %s carries %s, not RAIL: no track in it: nothing sent", name,
+					#out.carriers > 0 and table.concat(out.carriers, ", ") or "nothing")
+			end
+			local av = t ~= nil and core.field(t, "availability") or nil
+			if av ~= nil then
+				out.availability = { yearFrom = tonumber(core.field(av, "yearFrom")) or 0, yearTo = tonumber(core.field(av, "yearTo")) or 0 }
+				out.available = availableIn(out.availability, year)
+			end
+			return out
+		end
+
+		-- an end given as an existing node's id: a node with a track piece at it (a road's node is refused: a track
+		-- joined to a road is not this command's)
+		local function trackNodeEnd(n)
+			local exists = try(function() return api.engine.entityExists(n) end)
+			if exists == false then return nil, string.format("node %d: no such entity: nothing sent", n) end
+			local p = nodePos(n)
+			if not p then return nil, string.format("node %d: no such node (no BASE_NODE position): nothing sent", n) end
+			local segs = trackSegmentsAt(n)
+			if segs == nil then return nil, string.format("node %d: its track pieces could not be read: nothing sent", n) end
+			if #segs == 0 then
+				return nil, string.format("node %d has no track piece (the street system lists none; a road's node?): nothing sent", n)
+			end
+			return { node = n, x = p.x, y = p.y, z = p.z, byId = true, pieces = #segs }
+		end
+		-- an end given as a point: a new node there (z given, or the terrain's), refused on an existing node
+		local function trackEnd(pt)
+			local z, zFrom = pt[3], "given"
+			if z == nil then z, zFrom = heightAt(pt[1], pt[2]), "terrain" end
+			if z == nil then return nil, "the terrain's height could not be read: give z" end
+			local same = anyNodeOnPoint(pt[1], pt[2], z)
+			if same then
+				return nil, string.format("a new node here would be on node %d (%.2f m away): the engine refuses a proposal " ..
+					"with a node on another (Construction Not Possible): give that node (fromNode / toNode), or move this " ..
+					"end: nothing sent", same.node, same.d)
+			end
+			return { x = pt[1], y = pt[2], z = z, zFrom = zFrom }
+		end
+
+		function B.track(c)
+			local batch = type(c.args) == "table" and c.args.batch ~= nil
+			local r, err
+			if batch then r, err = core.trackBatchRequest(c.args) else r, err = core.trackRequest(c.args) end
+			if not r then return fail(c.id, err) end
+			local specs = batch and r.pieces or { r }
+			local function at(i, key)
+				if not batch then return key end
+				return key and ("piece " .. i .. " " .. key) or ("piece " .. i)
+			end
+			local function head(i) return batch and ("piece " .. i .. ": ") or "" end
+			local year = gameYear()
+			local namedEnds = {}
+			local function endOf(spec, key)
+				local nv = spec[key .. "Node"]
+				if type(nv) == "number" then
+					if spec[key] then
+						return nil, "an end both on node " .. nv .. " and at a point (an end beside its node) goes with road " ..
+							"only, not with track: nothing sent"
+					end
+					return trackNodeEnd(nv)
+				end
+				if type(nv) == "string" then
+					local base = namedEnds[nv]
+					if not base then
+						local q = r.named[nv]
+						local e, nerr = trackEnd({ q.x, q.y, q.z })
+						if not e then return nil, "node " .. nv .. ": " .. nerr end
+						e.name = nv
+						base = e
+						namedEnds[nv] = base
+					end
+					local own = {}
+					for k, v in pairs(base) do own[k] = v end
+					return own
+				end
+				return trackEnd(spec[key])
+			end
+			local P = {}
+			local tunnels = {}
+			for i, spec in ipairs(specs) do
+				local tpl, terr = trackTemplate(spec.type, year)
+				if not tpl then return fail(c.id, head(i) .. terr) end
+				local a, aerr = endOf(spec, "from")
+				if not a then return fail(c.id, at(i, "from") .. ": " .. aerr) end
+				local b, berr = endOf(spec, "to")
+				if not b then return fail(c.id, at(i, "to") .. ": " .. berr) end
+				if a.node and a.node == b.node then
+					return fail(c.id, head(i) .. string.format("both ends are node %d: nothing sent", a.node))
+				end
+				local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
+				local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+				if length < core.ROAD_LIMITS.minLength then
+					return fail(c.id, head(i) .. string.format("the piece would be %.2f m long: at least %g m: nothing sent",
+						length, core.ROAD_LIMITS.minLength))
+				end
+				local flatLen = math.sqrt(dx * dx + dy * dy)
+				if flatLen > core.ROAD_LIMITS.maxLength then
+					return fail(c.id, head(i) .. string.format("from and to are %.0f m apart: at most %g m for one piece: " ..
+						"nothing sent", flatLen, core.ROAD_LIMITS.maxLength))
+				end
+				local tunnel
+				if spec.tunnel then
+					local key = spec.tunnel
+					tunnel = tunnels[key]
+					if not tunnel then
+						local tuerr
+						tunnel, tuerr = tunnelType(key, year)
+						if not tunnel then return fail(c.id, at(i, "tunnel") .. ": " .. tuerr) end
+						tunnels[key] = tunnel
+					end
+				end
+				P[i] = { spec = spec, tpl = tpl, a = a, b = b, length = length, flatLen = flatLen, tunnel = tunnel }
+			end
+			-- the proposal's nodes: an existing node by its id, a named new node by its name, any other end its own
+			local nodeList, nodeBy = {}, {}
+			local function nodeOf(endp, i, key)
+				local k = endp.node or endp.name or endp
+				local nd = nodeBy[k]
+				if not nd then
+					nd = { endp = endp, node = endp.node, name = endp.name, ends = {} }
+					nodeBy[k] = nd
+					nodeList[#nodeList + 1] = nd
+				end
+				nd.ends[#nd.ends + 1] = { i, key }
+				return nd
+			end
+			for i, p in ipairs(P) do
+				p.n0, p.n1 = nodeOf(p.a, i, "from"), nodeOf(p.b, i, "to")
+			end
+			if batch then
+				for j = 1, #nodeList do
+					for k = j + 1, #nodeList do
+						local u, v = nodeList[j], nodeList[k]
+						if not u.node and not v.node then
+							local d = math.sqrt((u.endp.x - v.endp.x) ^ 2 + (u.endp.y - v.endp.y) ^ 2 + (u.endp.z - v.endp.z) ^ 2)
+							if d <= SAME_M then
+								return fail(c.id, string.format("%s and %s would be two new nodes %.2f m apart: the engine refuses " ..
+									"a node on another (Construction Not Possible). Give both ends one name (fromNode / toNode " ..
+									"\"@a\") to share one node: nothing sent", at(u.ends[1][1], u.ends[1][2]), at(v.ends[1][1], v.ends[1][2]), d))
+							end
+						end
+					end
+				end
+				for j = 1, #P do
+					for k = j + 1, #P do
+						local u, v = P[j], P[k]
+						if (u.n0 == v.n0 and u.n1 == v.n1) or (u.n0 == v.n1 and u.n1 == v.n0) then
+							return fail(c.id, string.format("pieces %d and %d join the same two nodes: give one: nothing sent", j, k))
+						end
+					end
+				end
+			end
+			local newCount = 0
+			for _, nd in ipairs(nodeList) do
+				if nd.node then
+					nd.id = nd.node
+				else
+					newCount = newCount + 1
+					nd.id = -newCount
+				end
+			end
+			for i, p in ipairs(P) do p.id = -(newCount + i) end
+			local normal, tunnelEnum, trackType = enumOf("BaseEdgeType", "NORMAL"), enumOf("BaseEdgeType", "TUNNEL"),
+				enumOf("RoadType", "TRACK")
+			if normal == nil or trackType == nil then
+				return fail(c.id, "api.type.enum.BaseEdgeType.NORMAL or RoadType.TRACK could not be read: nothing sent")
+			end
+			local function r3(v) return math.floor(v * 1000 + 0.5) / 1000 end
+			for i, p in ipairs(P) do
+				p.edgeType, p.typeIndex = normal, -1
+				if p.tunnel then
+					if tunnelEnum == nil then return fail(c.id, "api.type.enum.BaseEdgeType.TUNNEL could not be read: nothing sent") end
+					p.edgeType, p.typeIndex = tunnelEnum, p.tunnel.id
+				end
+				local ps = p.spec
+				local t0, t1, turns = core.roadTangents(p.a, p.b, ps.tangentFrom, ps.tangentTo)
+				if not t0 then return fail(c.id, head(i) .. tostring(t1) .. ": nothing sent") end
+				p.t0, p.t1 = t0, t1
+				local po = { from = p.a, to = p.b, template = p.tpl.name, length = p.length, year = year, note = NOTE_TRACK,
+					tunnel = p.tunnel, trackDistance = p.tpl.trackDistance }
+				po.tangent0 = { x = r3(t0.x), y = r3(t0.y), z = r3(t0.z) }
+				po.tangent1 = { x = r3(t1.x), y = r3(t1.y), z = r3(t1.z) }
+				po.curved = ps.tangentFrom ~= nil or ps.tangentTo ~= nil
+				if po.curved then
+					po.turnOffChord = { from = r3(turns[1]), to = r3(turns[2]) }
+					-- (the angle between the tangents on the map; the radius of the arc it makes over the chord: a rough
+					-- measure where the ends turn unlike off the chord)
+					local theta = core.angleDeg({ x = t0.x, y = t0.y }, { x = t1.x, y = t1.y })
+					local rad = theta and core.arcRadius(p.flatLen, theta)
+					if rad then
+						po.turnDeg, po.radiusApprox = r3(theta), r3(rad)
+						if p.tpl.minCurveRadius and rad < p.tpl.minCurveRadius then
+							po.radiusWarning = string.format("about %.1f m: below the template's minCurveRadiusBuild %g m " ..
+								"(the player's tool keeps above it; whether the engine refuses a proposal below it is not known)",
+								rad, p.tpl.minCurveRadius)
+						end
+					end
+				end
+				if p.tpl.trackDistance == nil then
+					po.trackDistanceNote = "the template's trackDistance could not be read: distance not sent"
+				end
+				p.out = po
+			end
+			for _, nd in ipairs(nodeList) do
+				local n = #nd.ends + (nd.node and nd.endp.pieces or 0)
+				if n > 2 then
+					for _, e in ipairs(nd.ends) do
+						local endp = e[2] == "from" and P[e[1]].a or P[e[1]].b
+						endp.meeting, endp.switchNote = n, NOTE_SWITCH
+					end
+				end
+				if #nd.ends > 1 then
+					for _, e in ipairs(nd.ends) do
+						local endp = e[2] == "from" and P[e[1]].a or P[e[1]].b
+						endp.sharedBy = #nd.ends
+					end
+				end
+			end
+			local out = batch and { batch = true, track = true, year = year, note = NOTE_TRACK } or P[1].out
+			out.track = true
+			local cx, cy = 0, 0
+			for _, p in ipairs(P) do
+				cx, cy = cx + (p.a.x + p.b.x) / 2 / #P, cy + (p.a.y + p.b.y) / 2 / #P
+			end
+			local mineBoxes = {}
+			for i, p in ipairs(P) do mineBoxes[i] = pieceBox(p.a, p.b) end
+			if batch then
+				local list = {}
+				for _, p in ipairs(P) do list[#list + 1] = p.out end
+				out.pieces = core.array(list)
+				out.centre = { x = cx, y = cy }
+				local pn, pe = {}, {}
+				for _, nd in ipairs(nodeList) do
+					local ends = {}
+					for _, e in ipairs(nd.ends) do ends[#ends + 1] = at(e[1], e[2]) end
+					pn[#pn + 1] = { id = nd.id, existing = nd.node ~= nil, name = nd.name, x = nd.endp.x, y = nd.endp.y,
+						z = nd.endp.z, ends = core.array(ends) }
+				end
+				for i, p in ipairs(P) do pe[#pe + 1] = { id = p.id, piece = i, node0 = p.n0.id, node1 = p.n1.id } end
+				out.proposal = { nodes = core.array(pn), edges = core.array(pe) }
+			end
+			if r.dryRun and not r.engineCheck then
+				out.ok, out.dryRun, out.checked = true, true, false
+				out.engineCheck = "not asked (use --engine-check)"
+				out.why = "checked here: the template, the tunnel type, the ends (an existing track node by its id, or a " ..
+					"new node at the point) and the lengths; the engine's check (collisions, terrain, money) comes with " ..
+					"--engine-check or a build"
+				return answer(c.id, out)
+			end
+			local sp = api.type.SimpleProposal.new()
+			local nodes = {}
+			for _, nd in ipairs(nodeList) do
+				if not nd.node then
+					local n = newRecord("NodeAndEntity")
+					n.entity = nd.id
+					n.comp.position = api.type.Vec3f.new(nd.endp.x, nd.endp.y, nd.endp.z)
+					nodes[#nodes + 1] = n
+				end
+			end
+			local edges = {}
+			for _, p in ipairs(P) do
+				local a, b, t0, t1 = p.a, p.b, p.t0, p.t1
+				local e = newRecord("SegmentAndEntity")
+				e.entity = p.id
+				e.type = 1 -- 0 street, 1 track
+				e.comp.node0, e.comp.node1 = p.n0.id, p.n1.id
+				e.comp.position0 = api.type.Vec3f.new(a.x, a.y, a.z)
+				e.comp.position1 = api.type.Vec3f.new(b.x, b.y, b.z)
+				e.comp.tangent0 = api.type.Vec3f.new(t0.x, t0.y, t0.z)
+				e.comp.tangent1 = api.type.Vec3f.new(t1.x, t1.y, t1.z)
+				e.comp.type = p.edgeType
+				e.comp.typeIndex = p.typeIndex
+				e.comp.roadType = trackType
+				e.comp.roadTemplate = p.tpl.name
+				if p.tpl.style ~= nil then e.comp.roadStyle = p.tpl.style end
+				if p.tpl.lanes ~= nil then e.comp.laneConfigs = p.tpl.lanes end
+				if p.tpl.trackDistance ~= nil then
+					local okD = pcall(function() e.comp.distance = p.tpl.trackDistance end)
+					if not okD then p.out.trackDistanceNote = "distance could not be set on the piece: not sent" end
+				end
+				pcall(function()
+					local po = newRecord("PlayerOwned")
+					po.player = player()
+					e.playerOwned = po
+				end)
+				edges[#edges + 1] = e
+			end
+			sp.streetProposal.nodesToAdd = nodes
+			sp.streetProposal.edgesToAdd = edges
+			out.newNodes = #nodes
+			if batch then out.edgesSent = #edges end
+			if r.dryRun then
+				out.dryRun = true
+				local v, form, both = engineCheck(sp, nil, nil, nil, r.collisionDetail)
+				if not v then
+					out.ok, out.checked = true, false
+					out.engineCheck = "not available: " .. tostring(form)
+					out.why = "checked here only: the template, the tunnel type, the ends and the lengths; the engine's " ..
+						"check (makeProposalData) could not be had, so collisions, terrain and money only come with a build"
+					return answer(c.id, out)
+				end
+				for k, val in pairs(v) do out[k] = val end
+				out.checked, out.engineCheck = true, "makeProposalData (" .. form .. ")"
+				contextsInto(out, both)
+				local no = refuses(v)
+				out.buildable = not no
+				local warned = v.warnings ~= nil and #v.warnings > 0
+				out.verdict = no and "refused" or (warned and "buildable with warnings" or "buildable")
+				out.engineContext = form == "SimpleProposal" and "the engine's own (the proposal alone): not the build's" or "the build's"
+				out.balance = balance()
+				if no then
+					out.ok = false
+					out.error = "the engine would refuse it: " .. dryReason(v) .. " (dry run: nothing sent)"
+					if out.collisions and describeHits then
+						local okH, hits = pcall(describeHits, out.collisions, cx, cy)
+						if okH then out.hits = hits else out.hitsError = tostring(hits) end
+					end
+					detailHits(out, cx, cy, mineBoxes)
+					return answer(c.id, out, "error")
+				end
+				detailHits(out, cx, cy, mineBoxes)
+				out.ok = true
+				return answer(c.id, out)
+			end
+			local before = {}
+			for _, p in ipairs(P) do
+				for e in pairs(trackPiecesAround(p.a, p.b)) do before[e] = true end
+			end
+			local job = { id = c.id, kind = "track", out = out, started = appTime(), before = balance(),
+				piecesBefore = before, sp = sp, ctxArgs = { false, false }, batch = batch,
+				detail = r.collisionDetail, boxes = r.collisionDetail and mineBoxes or nil }
+			if batch then
+				job.pieces = {}
+				for _, p in ipairs(P) do job.pieces[#job.pieces + 1] = p.out end
+			end
+			api.cmd.sendCommand(api.cmd.makeWorldBuildProposalCmd(sp, context(false, false), false, true), function(data, success, entities)
+				local ok, cerr = pcall(function()
+					local v = verdict(try(function() return data.resultProposalData end), "resultProposalData", job.detail)
+					local list = ids(try(function() return data.resultEntities end))
+					if #list == 0 then list = ids(entities) end
+					job.result = { success = success == true, verdict = v, entities = list }
+				end)
+				if not ok then job.result = { success = success == true, verdict = { callbackError = tostring(cerr) }, entities = {} } end
+			end)
+			jobs[#jobs + 1] = job
+		end
+
+		-- a built track piece read back: its nodes, its edge type and typeIndex (a tunnel's: whether the engine kept it
+		-- one of that type), and its distance
+		local function trackReadBack(po, e)
+			local be = comp(e, "BASE_EDGE")
+			po.node0, po.node1 = tonumber(core.field(be, "node0")), tonumber(core.field(be, "node1"))
+			local d = be and tonumber(core.field(be, "distance"))
+			po.distanceBuilt = d or "unread"
+			if po.tunnel then
+				local t, i = be and core.field(be, "type"), be and tonumber(core.field(be, "typeIndex"))
+				local names = {}
+				for _, k in ipairs({ "NORMAL", "BRIDGE", "TUNNEL" }) do
+					local v = enumOf("BaseEdgeType", k)
+					if v ~= nil then names[v] = k end
+				end
+				po.tunnel.built = { edgeType = t ~= nil and (names[t] or tostring(t)) or "unread", typeIndex = i or "unread",
+					asSent = t ~= nil and names[t] == "TUNNEL" and i == po.tunnel.id }
+			end
+		end
+
+		finishTrack = function(job, out, res)
+			local edges, nodes = {}, {}
+			for _, e in ipairs(res.entities) do
+				if comp(e, "BASE_EDGE") then edges[#edges + 1] = e elseif comp(e, "BASE_NODE") then nodes[#nodes + 1] = e end
+			end
+			if not job.batch then
+				if res.success and #edges == 0 then
+					local e = trackPieceBetween(out.from, out.to, job.piecesBefore)
+					if e then
+						edges[1] = e
+						out.why = "the result named no piece: found between the ends"
+					else
+						out.warning = "the engine said built, but no new track piece between the ends was found (look at the map)"
+					end
+				end
+				out.edges, out.nodes = core.array(edges), core.array(nodes)
+				out.edge = edges[1]
+				if res.success and edges[1] then trackReadBack(out, edges[1]) end
+				return
+			end
+			-- a batch: each piece's edge among the result's (its ends at the piece's, either way round), else found
+			-- between its ends; the named nodes' ids as built
+			local function near(p, q) return p and math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2 + (p.z - q.z) ^ 2) <= MATCH_M end
+			local used, missing, named = {}, 0, {}
+			for _, po in ipairs(job.pieces) do
+				local found
+				for _, e in ipairs(edges) do
+					if not used[e] then
+						local be = comp(e, "BASE_EDGE")
+						local p0, p1 = nodePos(core.field(be, "node0")), nodePos(core.field(be, "node1"))
+						if (near(p0, po.from) and near(p1, po.to)) or (near(p0, po.to) and near(p1, po.from)) then found = e; break end
+					end
+				end
+				if not found and res.success then
+					local e = trackPieceBetween(po.from, po.to, job.piecesBefore)
+					if e and not used[e] then
+						found = e
+						po.why = "the result named no piece between its ends: found between the ends"
+					end
+				end
+				if found then
+					used[found] = true
+					po.edge = found
+					trackReadBack(po, found)
+					for _, q in ipairs({ { po.from, po.node0, po.node1 }, { po.to, po.node1, po.node0 } }) do
+						local endp, n, other = q[1], q[2], q[3]
+						if endp.name and n then
+							if not near(nodePos(n), endp) then n = other end
+							if named[endp.name] and named[endp.name] ~= n then
+								out.namedNodesNote = "a named node came back as more than one node: look at the map"
+							end
+							named[endp.name] = named[endp.name] or n
+						end
+					end
+				elseif res.success then
+					missing = missing + 1
+				end
+			end
+			if res.success and missing > 0 then
+				out.warning = string.format("the engine said built, but %d of the %d pieces were not found between their ends " ..
+					"(look at the map)", missing, #job.pieces)
+			end
+			local list, have = {}, setOf(edges)
+			for _, po in ipairs(job.pieces) do
+				list[#list + 1] = po.edge or false
+				if po.edge and not have[po.edge] then edges[#edges + 1] = po.edge; have[po.edge] = true end
+			end
+			out.pieceEdges = core.array(list)
+			if next(named) then out.namedNodes = named end
+			out.edges, out.nodes = core.array(edges), core.array(nodes)
+		end
+
+		-- no callback in RESULT_SEC: the pieces may still have been built; looked for between their ends
+		trackLost = function(job, why)
+			local o = job.out
+			local list = {}
+			for _, po in ipairs(job.batch and job.pieces or { o }) do
+				local e = trackPieceBetween(po.from, po.to, job.piecesBefore)
+				if e then list[#list + 1] = e end
+			end
+			if #list == 0 then return fail(job.id, why .. "; no track piece between the ends (look at the map)") end
+			job.result = { success = true, verdict = {}, entities = list }
+			o.why = string.format("%s; %d of the %d pieces found between their ends", why, #list, job.batch and #job.pieces or 1)
+			return finish(job)
+		end
+	end
+
 
 	-- a junction set-up's trafficLightPreference (engine.d.tl BaseNodeConfig; type.d.tl TrafficLightPreference YES /
 	-- NO / AUTO): its name, by the enum's values, and its number; "unread" (and nil) when it does not read, the

@@ -9,6 +9,14 @@ is separate and does not follow the release version.
 
 ## [Unreleased]
 
+### Added
+
+- `track`: track pieces by coordinates as `road` builds roads (RoadType TRACK, SegmentAndEntity type 1), on the
+  ground or underground with `--tunnel` (edge type TUNNEL, the tunnel type's id); `--from-node` / `--to-node`,
+  `--tangent-from` / `--tangent-to`, `--batch` (at most 16, `"@name"` shared nodes), `--dry-run --engine-check`,
+  `--collision-detail`. The answer gives the edges and the engine's words when it refuses. Not checked in a game
+  yet.
+
 ## [1.1.1] - 2026-11-26
 
 ### Fixed
