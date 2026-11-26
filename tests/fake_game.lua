@@ -2259,6 +2259,7 @@ function M.installBuild(g, spec)
 					g.lightChecks[#g.lightChecks + 1] = { entity = c.entity, preference = c.comp.trafficLightPreference,
 						states = #((c.comp.trafficLightConfig or {}).states or {}) }
 				end
+				g.lightRemoves = copy(sp.nodeConfigsToRemove or {})
 				st = { trafficLight = true }
 			end
 		end
@@ -2549,13 +2550,34 @@ function M.installBuild(g, spec)
 			-- Proposal.StreetProposal; that the game's does so is a guess); spec.lightProposalNoConfigs: an empty one
 			local u = newproxy(true)
 			local tlc = { states = copy(config.states), trafficLightType = config.trafficLightType }
+			-- spec.lightProposalVectors: its lists as userdata vectors (# and [i] only, as the engine's may be);
+			-- spec.lightProposalRemoves: nodes in its nodeConfigsToRemove; spec.lightProposalRemovesUnread: that list
+			-- not there (nil)
 			local street = { nodeConfigsToAdd = spec.lightProposalNoConfigs and {} or
 				{ { entity = e, comp = { trafficLightPreference = pref, trafficLightConfig = copy(tlc) } } },
-				nodeConfigsToRemove = {} }
+				nodeConfigsToRemove = copy(spec.lightProposalRemoves or {}) }
+			if spec.lightProposalRemovesUnread then street.nodeConfigsToRemove = nil end
+			local function vector(t)
+				if t == nil then return nil end
+				local vu = newproxy(true)
+				local vm = getmetatable(vu)
+				vm.__len = function() return #t end
+				vm.__index = function(_, i)
+					if type(i) ~= "number" then error("vector: no field " .. tostring(i)) end
+					return t[i]
+				end
+				return vu
+			end
 			local mt = getmetatable(u)
 			mt.store = { kind = "Proposal", trafficLight = { entity = e, preference = pref, config = tlc } }
 			mt.__index = function(_, k)
-				if k == "proposal" then return copy(street) end
+				if k == "proposal" then
+					local c = copy(street)
+					if spec.lightProposalVectors then
+						c.nodeConfigsToAdd, c.nodeConfigsToRemove = vector(c.nodeConfigsToAdd), vector(c.nodeConfigsToRemove)
+					end
+					return c
+				end
 				error("no field " .. tostring(k))
 			end
 			return u

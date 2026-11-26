@@ -10582,6 +10582,29 @@ test("lights --off --dry-run: makeProposalData refuses a Proposal (as in a game 
 	truthy(not g.crashed, g.crashed)
 end)
 
+test("lights --off --dry-run: the proposal's lists read as userdata vectors too; a remove list that does not read is not an empty one", function()
+	-- vectors (# and [i] only): read as road's joins read the engine's lists, the set-up asked
+	local g = lightsWorld({ lightProposalVectors = true })
+	local a = lightsRun(g, 1527, '{ node = 9000, dryRun = true, _testSave = "probe-x" }')
+	truthy(a.ok, a.error); eq(a.checked, true, tostring(a.engineCheck)); eq(g.proposalDataCalls, 1)
+	eq(#g.lightChecks, 1); eq(g.lightChecks[1].entity, 9000); eq(#g.lightRemoves, 0)
+	-- a remove list with nodes in it: both lists go into the SimpleProposal (as vectors too)
+	for i, vec in ipairs({ false, true }) do
+		g = lightsWorld({ lightProposalRemoves = { 9000 }, lightProposalVectors = vec })
+		a = lightsRun(g, 1527 + i, '{ node = 9000, dryRun = true, _testSave = "probe-x" }')
+		truthy(a.ok, a.error); eq(a.checked, true, tostring(a.engineCheck))
+		eq(#g.lightChecks, 1); eq(g.lightChecks[1].entity, 9000)
+		eq(#g.lightRemoves, 1, "vectors " .. tostring(vec)); eq(g.lightRemoves[1], 9000)
+	end
+	-- the remove list not readable: not available, said; makeProposalData not called, nothing sent
+	g = lightsWorld({ lightProposalRemovesUnread = true })
+	a = lightsRun(g, 1530, '{ node = 9000, dryRun = true, _testSave = "probe-x" }')
+	truthy(a.ok, a.error); eq(a.checked, false); eq(a.sent, false)
+	truthy(a.engineCheck:find("nodeConfigsToRemove could not be read", 1, true), a.engineCheck)
+	eq(g.proposalDataCalls, 0); eq(#g.lightCmds, 0); eq(#g.buildCmds, 0)
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("lights --off: refused before anything is made: no test save, a bad node, two pieces or fewer, a construction's node", function()
 	local g = lightsWorld()
 	for i, save in ipairs({ "nil", '"aom-eu-1900"', '""' }) do

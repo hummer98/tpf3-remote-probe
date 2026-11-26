@@ -3201,14 +3201,21 @@ function M.new(ctx)
 				out.engineCheck = "not available: " .. why
 				return answer(c.id, out)
 			end
-			local okA, adds = pcall(function() return prop.proposal.nodeConfigsToAdd end)
-			local okR, rems = pcall(function() return prop.proposal.nodeConfigsToRemove end)
-			if not okA or type(adds) ~= "table" then
-				return unavailable("the proposal's nodeConfigsToAdd could not be read (" .. tostring(okA and type(adds) or adds) .. ")")
+			-- (the engine's lists come back as userdata vectors or Lua tables: read both, as road's joins do. A list
+			-- that does not read is not taken for an empty one: half a proposal asked of the engine may be an
+			-- assert's way down, so nothing is asked then)
+			local function list(key)
+				local ok, v = pcall(function() return prop.proposal[key] end)
+				local t = type(v)
+				if not ok or (t ~= "table" and t ~= "userdata") then
+					return nil, "the proposal's " .. key .. " could not be read (" .. tostring(ok and t or v) .. ")"
+				end
+				return core.toList(v)
 			end
-			local cfgAdd, cfgRemove = {}, {}
-			for _, x in ipairs(adds) do cfgAdd[#cfgAdd + 1] = x end
-			if okR and type(rems) == "table" then for _, x in ipairs(rems) do cfgRemove[#cfgRemove + 1] = x end end
+			local cfgAdd, whyA = list("nodeConfigsToAdd")
+			if not cfgAdd then return unavailable(whyA) end
+			local cfgRemove, whyR = list("nodeConfigsToRemove")
+			if not cfgRemove then return unavailable(whyR) end
 			if #cfgAdd == 0 then return unavailable("the proposal has no node set-up to add (nodeConfigsToAdd empty)") end
 			local okP, sp = pcall(function()
 				local s = api.type.SimpleProposal.new()
