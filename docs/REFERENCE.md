@@ -874,7 +874,10 @@ python3 tools/tf3ctl.py track --batch pieces.json [--dry-run [--engine-check]] [
   share), `type` (required in each piece), `tunnel`, `tangent-from`, `tangent-to` (the flags' names or the mod's:
   `fromNode`, `tangentTo`, ...). `--dry-run`, `--engine-check` and `--collision-detail` go for the whole proposal.
   A node where three pieces meet is a switch: the answer's end says `meeting` 3 and `switchNote` (no set-up is
-  sent; the engine is left to make the switch [guess], not checked). A named node used with a tunnel needs its z.
+  sent; the engine is left to make the switch [guess], not checked). At an existing node the end also says
+  `existingSwitchWarning` (road crashed the game joining a node with no junction set-up; whether track does is not
+  checked: try `--dry-run --engine-check` first). A named node used with a tunnel needs its z. During coop `track`
+  goes as `road` does.
 - The answer: `ok`, `track` true, `edge` and `edges` (one piece), or `pieces` (each piece's ends, turn, radius)
   with `pieceEdges` (each piece's new edge id, in the file's order) and `namedNodes` (each `@name`'s node id).
   Refused by the engine: `ok` false and `error` "the engine refused it: " with the engine's own words, the hits

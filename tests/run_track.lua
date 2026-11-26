@@ -105,6 +105,8 @@ return function(t)
 			{ { batch = { { from = "0,0", toNode = "@a", to = "10,0", type = "simple" },
 				{ fromNode = "@a", to = "20,0,-15", type = "simple", tunnel = "tunnel_a" } } }, "node @a needs z with tunnel" },
 			{ { batch = { { from = "0,0,-15", to = "10,0", type = "simple", tunnel = "tunnel_a" } } }, "piece 1: to needs z" },
+			{ { batch = { { from = "0,0", toNode = "@a", to = "10,0", type = "simple" },
+				{ from = "0,9", to = "10,9", type = "simple" } } }, "node @a is named at one end only" },
 		}) do
 			local ok, err = core.trackBatchRequest(bad[1])
 			eq(ok, nil, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err) .. " / " .. bad[2])
@@ -286,5 +288,34 @@ return function(t)
 		sp.streetProposal.edgesToAdd = { e }
 		ok, err = pcall(api.engine.util.proposal.makeProposalData, sp, nil)
 		eq(ok, false); truthy(tostring(err):find("tunnel type index 10", 1, true), tostring(err))
+	end)
+
+	test("track --batch: a switch at an existing node is warned (road crashed there), one at a new node is not", function()
+		local g = trackWorld()
+		local a = trackRun(g, 3080, '{ batch = { { fromNode = 8202, to = "160,100", type = "simple" }, ' ..
+			'{ fromNode = 8202, tangentFrom = "1,0", to = "150,80", tangentTo = "0.8,-0.6", type = "simple" } } }')
+		truthy(a.ok, a.error)
+		for i = 1, 2 do
+			eq(a.pieces[i].from.meeting, 3, "the piece there and the two new ones")
+			truthy(a.pieces[i].from.existingSwitchWarning:find("crashed", 1, true), "said loudly")
+		end
+		truthy(not g.crashed, g.crashed)
+		local b = trackRun(g, 3081, ACCEPT)
+		truthy(b.ok, b.error); eq(b.pieces[4].from.meeting, 3); eq(b.pieces[4].from.existingSwitchWarning, nil)
+	end)
+
+	test("track: no callback in time: the pieces built are looked for between their ends and answered", function()
+		local g = trackWorld({ lostCallback = true })
+		send(g, 3090, "track", '{ from = "0,0", to = "60,0", type = "simple" }')
+		frames(g, FIRST); frames(g, 40, 1)
+		local a = final(g, 3090)
+		truthy(a and a.ok, a and a.error); truthy(a.edge, "found between its ends")
+		truthy(tostring(a.why):find("no answer from the engine", 1, true), tostring(a.why))
+		-- lost and not built (in the way, no callback): an error, not a success
+		g = trackWorld({ lostCallback = true, blocked = function() return 1 end })
+		send(g, 3091, "track", '{ from = "0,0", to = "60,0", type = "simple" }')
+		frames(g, FIRST); frames(g, 40, 1)
+		a = final(g, 3091)
+		eq(a.ok, false); truthy(tostring(a.error):find("no track piece between the ends", 1, true), tostring(a.error))
 	end)
 end

@@ -2235,6 +2235,10 @@ function M.new(ctx)
 			"portals, or how deep it must lie"
 		local NOTE_SWITCH = "more than two track pieces meet at this node: no junction set-up is sent (the engine is " ..
 			"left to make the switch); not checked in a game yet whether it does"
+		-- road crashed the game (Engine.h GetComponentDataIndex) joining a node with no junction set-up, so road
+		-- refuses that; whether track does the same is not known, so it is said loudly rather than refused
+		local NOTE_EXISTING_SWITCH = "a switch at an existing node: road crashed the game joining a node with no " ..
+			"junction set-up; whether track does is not checked in a game: try --dry-run --engine-check first"
 		local TRACK_DIRS = { "standard", "high_speed", "simple" }
 		local TUNNEL_NAMES_SHOWN = 12
 
@@ -2593,6 +2597,7 @@ function M.new(ctx)
 					for _, e in ipairs(nd.ends) do
 						local endp = e[2] == "from" and P[e[1]].a or P[e[1]].b
 						endp.meeting, endp.switchNote = n, NOTE_SWITCH
+						if nd.node then endp.existingSwitchWarning = NOTE_EXISTING_SWITCH end
 					end
 				end
 				if #nd.ends > 1 then

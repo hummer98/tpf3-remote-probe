@@ -6617,14 +6617,14 @@ class TrackTest(_ForceBase):
 
     def test_fences_as_roads(self):
         """track goes through send's fences as road does: it changes the game, --dry-run alone does not, the engine
-        asked does; it is not among coop's commands (refused during coop)."""
+        asked does; during coop it goes as road does (D-20261126-08: no fences added to coop)."""
         self.assertIn("track", tf3ctl.CHANGES_GAME)
         self.assertTrue(tf3ctl.changes_game("track", self.batch(self.ACCEPT)))
         self.assertFalse(tf3ctl.changes_game("track", self.batch(self.ACCEPT, "--dry-run")))
         self.assertTrue(tf3ctl.changes_game("track", self.batch(self.ACCEPT, "--dry-run", "--engine-check")))
         self.assertEqual(self.sent("track", self.batch(self.ACCEPT))["batch"][0]["tunnel"], "tunnel_a")
         tf3ctl.coop_start(60, "look at the tunnel together")
-        self.refused("track", self.batch(self.ACCEPT), "coop")
+        self.assertEqual(self.sent("track", self.batch(self.ACCEPT))["batch"][0]["type"], "simple")
 
     def test_main_sends_nothing_for_a_bad_piece(self):
         path = os.path.join(self.files, "pieces.json")

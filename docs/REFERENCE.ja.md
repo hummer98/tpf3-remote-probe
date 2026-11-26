@@ -811,7 +811,9 @@ python3 tools/tf3ctl.py track --batch pieces.json [--dry-run [--engine-check]] [
   必須)・`tunnel`・`tangent-from`・`tangent-to` (フラグの綴りか MOD の綴り `fromNode`・`tangentTo` など) を書きます。
   `--dry-run`・`--engine-check`・`--collision-detail` は提案全体に効きます。3 本が出会う node は分岐器で、答えの端に
   `meeting` 3 と `switchNote` が入ります (設定は送らず、分岐器はエンジンに任せます [推測]、未確認)。トンネルで使う
-  名前の node には z が要ります。
+  名前の node には z が要ります。既存の node が分岐器になるときは、端に
+  `existingSwitchWarning` も入ります (道路では分岐の設定の無い node につないでゲームが落ちました。線路でどうなるかは
+  未確認なので、まず `--dry-run --engine-check` で)。共同作業の間は `road` と同じく通ります。
 - 答え: `ok`、`track` true、1 本なら `edge` と `edges`。`--batch` なら `pieces` (1 本ずつの端・曲がり・半径) と
   `pieceEdges` (ファイルの順の、新しい edge の id) と `namedNodes` (`@名前` ごとの node の id)。エンジンが断ったら
   `ok` false で、`error` に「the engine refused it: 」とエンジンの言葉そのもの、邪魔な物 (`hits`、頼めば

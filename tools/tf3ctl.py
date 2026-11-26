@@ -984,7 +984,7 @@ COOP_UNTIL_MAX_SEC = COOP_MINUTES_MAX * 60
 COOP_REASON_MAX = 200
 # what the coop client may send (after the reading commands, which always go): a person keeps the game itself
 # modChange: another mod's command, the same as event (a test command a mod ships); a save stays refused by "save"
-COOP_ALLOWED = {"camera", "window", "event", "build", "road", "stockSet", "money", "steps", "modChange"}
+COOP_ALLOWED = {"camera", "window", "event", "build", "road", "track", "stockSet", "money", "steps", "modChange"}
 # calendarSpeedSet: the calendar slider goes as speed does (the person's own control of the time)
 # evalWrite: any Lua on a test save (eval_write_check), and during coop only when the person asked
 COOP_USER_ASKED = {"speed", "run", "calendarSpeedSet", "evalWrite"}  # pause is speed 0: only when the person asked (--user-asked)
