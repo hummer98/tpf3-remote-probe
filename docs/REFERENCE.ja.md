@@ -120,7 +120,7 @@ python3 tools/tf3ctl.py poll --idle 5 --active 0.5    # コマンドファイル
 が入ります。値を付けると `makeGameSetCalendarSpeedCmd` を送り、ゲームが新しい値になったところで `before`・
 `after`・`sent`・`requested` を答えます (エンジンが断ったとき、5 秒のうちに変わらないときはエラー)。倍率は
 スライダーの段のどれかだけです。`--millis-per-day` は 0 か、100〜3600000 の整数です。変えるのは `speed` と同じく
-ゲームを変える命令に数えます (送り主の検査、共同作業の間は `--user-asked` が要る)。`run` は止めませんが、
+ゲームを変える命令に数えます (送り主の検査、共同作業の間も `speed` と同じく通る)。`run` は止めませんが、
 カレンダーが 0 だと、日付を目指す run はいつまでも着きません。
 
 ### セーブと新しいゲーム
@@ -696,8 +696,8 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   2つの context、check が critical と言ったときは `unforcedCritical` に注意が入ります。ほかに `ignoreErrors: true`・
   `ignoredErrors: true` (強制で送ったという印。無視する誤りがあったかは `unforced.refused`)・`testSave`・`ignoreErrorsNote` が付き、建てば普通の road と同じく `edge`・`edges`・`nodes` が入ります。
   読み込まれているセーブ (ゲームのログから読む) が試験用の名前 (設定ファイルの `testSavePrefixes`。初期設定は
-  `probe-*`) でないとき、また動いているゲームに共同作業 (coop) の印があるとき (有効・期限切れ・壊れた印の
-  どれでも) は、tf3ctl が断ります (終了コード 4、`"refused": "ignore-errors"`、何も送らない)。新しいゲームにはまだセーブの
+  `probe-*`) でないとき、また動いているゲームに、この `--owner` の有効な共同作業 (coop) でない印があるとき (ほかの
+  クライアントの印・期限切れ・壊れた印) は、tf3ctl が断ります (終了コード 4、`"refused": "ignore-errors"`、何も送らない)。新しいゲームにはまだセーブの
   名前が無いので、先に試験用の名前で保存し、そのセーブを読み込んでから使ってください。MOD の側でもセーブの名前
   (tf3ctl が送る) を確認し、`road` 以外の命令に付いた `ignoreErrors` は断ります。probe 自身の検査は外しません: 交差点の
   設定 (junction set-up) の無い node・信号のある node・設定を読めない node への接続は、これまでどおり断ります (設定の無い
@@ -725,7 +725,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   新しい node。snap しない。点は少なくとも 1 つの端で書き、書いた端どうしは 0.01 m 以内で同じであること。1 つの端に
   しか出てこない名前は断ります)。`--dry-run`・`--engine-check`・`--remove-fields`・`--remove-buildings`・
   `--ignore-errors`・`--collision-detail` は提案全体のものとしてコマンドラインに書き、1 本のときと同じ意味・同じ柵です (命令の名前は
-  `road` のまま送るので、`--ignore-errors` は試験用のセーブだけで coop の間は断る、強制の印、probe 自身の交差点の
+  `road` のまま送るので、`--ignore-errors` は試験用のセーブだけか、この owner の coop の間だけ、強制の印、probe 自身の交差点の
   設定の検査、が同じく効きます)。`--batch` と一緒の `--from`・`--to` など 1 本ぶんの引数は断ります。空の配列・17 本
   以上・JSON でないファイル・知らない key・誤った値は、何も送らずに断ります。名前を付けずに同じ点に置いた 2 つの新しい
   端 (1 つの名前を付けてください)、同じ 2 つの node の間の 2 本、既存の node の上の名前つきの node、道路の node でない
@@ -752,7 +752,7 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   (`trafficLightPreference` を NO) と「デフォルトにリセット」(信号の段階 `states` を空に。road は段階の有無で断り、「なし」
   だけでは段階が残るため)。交差点の設定にある信号の config を `clone` で写し (種類はそのまま)、
   `createTrafficLightProposal` を `makeWorldBuildProposalCmd(proposal, nil, false, true)` で送ります。
-  - **試験用のセーブだけで、coop の間は使えません**: `road --ignore-errors` と同じ決まりで tf3ctl が断ります
+  - **試験用のセーブだけか、この owner の coop の間だけ**: `road --ignore-errors` と同じ決まりで tf3ctl が断ります
     (終了コード 4、`"refused": "lights"`、何も送らない)。MOD もセーブの名前をもう一度確認します。持ち主の検査も
     通します (`--dry-run` も)。
   - 送る前に断るもの: 道路が 2 本以下の node (node の窓が信号を出すのは 3 本以上が集まる所だけ)、建物の node、
@@ -1017,7 +1017,7 @@ python3 tools/tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--colum
 - **書く形 (`--set-running X`・`--scale-running K`・`--set-maintenance Y`・`--scale-maintenance K`・`--set
   FIELD=X`・`--scale FIELD=K`。FIELD は `runningCosts`・`runningCostScale`・`maintenanceScale`) は試験用のセーブだけ**
   で、`road --ignore-errors` と同じ決まりです: 読み込んだセーブが試験用の名前であること (名前の無い新しいゲームは
-  `save probe-NAME` のあと `load probe-NAME`)、動いているゲームに coop の印が無いこと、owner の検査 (ゲームを変える
+  `save probe-NAME` のあと `load probe-NAME`)、またはこの owner の coop の間 (どのセーブでも)、owner の検査 (ゲームを変える
   命令)。MOD の側でもセーブの名前をもう一度確認します。型には整備費の額そのものは無く `maintenanceScale` だけなので、
   `--*-maintenance` はそれを書きます。
 - 欄はその場で書き (`modelRep.get(id).metadata.maintenance.<欄> = 値`)、読み直します。`--where script` (初期設定)
@@ -1584,8 +1584,8 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
 - **`--write`。** コードはすべてのグローバル (`game.interface`、`api.cmd` など) のある環境で動きます。
   - 試験用のセーブ (`testSavePrefixes`) を読み込んでいるときだけ送ります。tf3ctl がゲームのログから読み込んだ
     セーブの名前を送り、MOD ももう一度確認します。ほかのセーブでは断ります: 終了コード 4、`"refused": "eval"`。
-  - 共同作業 (coop) の間は、試験用のセーブで、coop の相手のクライアントが `--user-asked` を付けたときだけ送ります
-    (`"refused": "coop"`)。
+  - 共同作業 (coop) の間は、coop の相手のクライアントからなら、人のセーブでも `--user-asked` なしで送ります
+    (2026-11-26 から)。ほかのクライアントの coop と、期限切れ・壊れた印では、ほかのゲームを変える命令と同じく断ります。
   - ゲームを変える命令に数え (owner の検査)、答えに `saveNote` が付きます。コードが何をしたかはツールには
     分からず、保存すると残ります。
   - GUI では、速度ボタンのレシピの中でなく、プローブの `guiUpdate` の中で動きます。レシピの中でしか動かない
@@ -1695,11 +1695,10 @@ tf3ctl.py --owner bob coop end
 ```
 
 - `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。延長しても、印の変更の回数は引き継ぎます。
-- 効いている間、この owner が送れるもの: 読む命令の全部、`camera`、`window` (`--close-all` は除く)、`event`、`build` (と `fit`)、`road`、`stock set`、`money`、`steps`、ほかの MOD の命令 (`mod`。`modChange` で送るもの)。ユーザーのセーブでも同じです。
+- 効いている間、この owner は下の少しを除く全部の命令を送れます (2026-11-26 から。セーブが残っていれば、ゲーム中の変更はそれ以上守らない): 読む命令、`camera`、`window` (`--close-all` も)、`event`、`build`、`road`、`tool`、`buy`、`line`、`terrain`、`town`、`speed`、`run`、`pause`、`calendar-speed`、ほかの MOD の命令 (`mod`。`modChange` で送るもの) など。`--user-asked` は要りません。試験用のセーブ向けの命令 (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み・`eval --write`) も、ユーザーのセーブで通ります: tf3ctl が `_coop` (coop の owner) を送り、MOD はそれを試験用のセーブの名前の代わりに受けます。`speed`・`run`・`pause`・`calendar-speed`・`eval` の `--user-asked` は (古い台本のために) 受け付けますが、何も変えません。
   MOD の命令 (と `event`) が何をするかは、その MOD 次第です。下の拒否は tf3ctl 自身の命令に効くもので、保存する MOD の命令は止めません。
-- `--user-asked` (ユーザーに頼まれたとき) だけ: `speed`、`run`、`pause`、値を付けた `calendar-speed`、試験用のセーブでの `eval --write` (「ゲームの中で Lua を動かす」)。
 - `save` は試験用のセーブの名前にだけ (`testSavePrefixes`。`testSaveDigitFirst` なら数字 1 文字で始まる名前 `3-probe` も)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
-- ほかは断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`、`tool`、`buy`、`line`、`terrain`、`town`、`modhub` など。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。
+- ユーザーがするもので断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`。ほかに `modhub validate` / `publish` (メインメニューだけのもので、共有のゲームの用ではない)。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。
 - 読み込まれているセーブは、ゲームのログから読みます (起動から最後の `Loading game from file` / `Start new game`)。
 - 人のセーブで、ゲームを変える命令を MOD が受け取るたびに (`camera`・`window`・`speed`・`calendar-speed`・`save`・dry run は除く)、印に `"modified": true` を付け、`"changes"` を数えます。そのあと `status` と `coop end` が、共同作業で変更されていること、保存すると変更が残ることを出します。`coop end` は続けて、オートセーブには変更後の状態が入っていること、元に戻すには保存せずに名前のついたセーブを読み直すことを出します。文は `text` (英) と `textJa` (日)。
 - ほかのクライアントは、これまでどおり断ります (`--other-owner-ok` もこれまでどおり)。
@@ -1758,8 +1757,8 @@ MOD はこのファイルを読めないので、試験用セーブの名前と 
 **デバッグ命令**は、プレイヤーにはできない形でゲームを変えます: `stock set`・`steps`・`money`・`town develop` /
 `size` / `connect`・`company init`・`running-costs` の書き込み・`lights --off`・`road --ignore-errors`・
 `eval --write`。どれも試験用のセーブ向けですが、読み込んだセーブの名前 (`testSavePrefixes`) を確認するのは
-`road --ignore-errors`・`lights --off`・`running-costs` の書き込み (coop の間も断ります) と `eval --write` (coop の
-間は `--user-asked` のときだけ) の 4 つだけです。ほかは、デバッグのツールとしてどのセーブにも届きます (owner の
+`road --ignore-errors`・`lights --off`・`running-costs` の書き込み と `eval --write` の 4 つだけです (この owner の coop の
+間は、人のセーブでも通ります)。ほかは、デバッグのツールとしてどのセーブにも届きます (owner の
 検査はふつうどおり)。答え (dry run を除く) に `saveNote` が付きます: セーブの中身が変わり、保存すると変更が残ります
 (`running-costs` は、その起動の間の車両の型。`eval --write` は、コードがしたこと)。
 

@@ -2077,6 +2077,7 @@ function M.new(ctx)
 		if batch then out.edgesSent = #edges end
 		if r.ignoreErrors then
 			out.ignoreErrors, out.testSave, out.ignoreErrorsNote = true, r.testSave, NOTE_FORCE
+			out.coop = r.coop -- (the coop owner: on the person's save)
 		end
 		if r.dryRun then
 			-- (engineCheck) the same proposal a build sends, asked of the engine and not sent
@@ -2534,7 +2535,7 @@ function M.new(ctx)
 		if cfg == nil then return fail(c.id, "node " .. n .. " has no junction set-up (BASE_NODE_CONFIG): nothing sent") end
 		local before = lightsOf(cfg)
 		local out = { ok = true, node = n, x = p.x, y = p.y, z = p.z, before = before, testSave = r.testSave,
-			note = NOTE_LIGHTS }
+			coop = r.coop, note = NOTE_LIGHTS }
 		local okP, isNo = pcall(function() return cfg.trafficLightPreference == NO end)
 		if okP and isNo and before.trafficLightStates == 0 then
 			out.changed, out.sent = false, false

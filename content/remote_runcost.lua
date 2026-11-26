@@ -3,8 +3,9 @@
 -- to measure whether the engine bills a running cost rewritten during a game (2026-11-24): a price mod writes
 -- the purchase price into the models but bills the running costs' difference by hand.
 --
--- runningCostsSet, test saves only (tf3ctl names the loaded save in _testSave; core.runningCostsArgs refuses
--- without one), writes the fields of metadata.maintenance (core.RUNCOST_WRITABLE) in place:
+-- runningCostsSet, test saves only or in coop (tf3ctl names the loaded save in _testSave, and the coop owner in
+-- _coop; core.runningCostsArgs refuses without either), writes the fields of metadata.maintenance
+-- (core.RUNCOST_WRITABLE) in place:
 --   where "script" (default): in the game script (remote_gs.script.lua), through a script event, as price_probe
 --     wrote metadata.cost.price; needs the mod setting gameScript on. The game script answers in its state, which
 --     guiUpdate hands this script; the GUI reads the model again after it.
@@ -151,7 +152,7 @@ function M.new(ctx)
 		if not before then return fail(c.id, berr) end
 		local vs = vehiclesOf(m.id, a.limit)
 		local out = { ok = true, model = m, where = a.where, wroteIn = a.where == "script" and "game script" or "gui",
-			testSave = a.testSave, gameTime = gameTime(), before = { gui = before }, vehiclesBefore = vs,
+			testSave = a.testSave, coop = a.coop, gameTime = gameTime(), before = { gui = before }, vehiclesBefore = vs,
 			note = WRITE_NOTE }
 		local j = { id = c.id, model = m.id, limit = a.limit, out = out, startedAt = appTime(),
 			deadline = appTime() + core.RUNCOST_WAIT_SEC }

@@ -9165,6 +9165,21 @@ test("road --ignore-errors: refused without a test save named, and on other comm
 	truthy(not g.crashed, g.crashed)
 end)
 
+-- coop (2026-11-26, D-20261126-08): tf3ctl names the --owner whose coop is on (_coop); then road --ignore-errors goes
+-- on the person's save too (tf3ctl keeps their saves by refusing a save to their names)
+test("road --ignore-errors in coop (_coop): sent on the person's save; coop in the answer; a blank _coop refuses", function()
+	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end, ignoreCritical = true })
+	local a = roadRun(g, 1080, '{ from = "0,1500", to = "0,1600", ignoreErrors = true, _testSave = "aom-eu-1900", _coop = "alice" }')
+	truthy(a.ok, a.error); eq(g.buildCmds[1].ignoreErrors, true); eq(a.coop, "alice")
+	for i, coop in ipairs({ '""', '"  "', "true", "5" }) do
+		local n = #g.buildCmds
+		local b = roadRun(g, 1080 + i, '{ from = "0,1700", to = "0,1800", ignoreErrors = true, _testSave = "aom-eu-1900", _coop = '
+			.. coop .. ' }')
+		eq(b.ok, false, coop); truthy(b.error:find("test saves only", 1, true), b.error); eq(#g.buildCmds, n, "nothing sent")
+	end
+	truthy(not g.crashed, g.crashed)
+end)
+
 test("road --ignore-errors: the junction set-up checks still refuse before sending (2026-11-23 01:03)", function()
 	-- a node without a junction set-up within snap: refused, nothing sent, forced or not
 	local g = roadWorld({ roads = { nodes = { [8001] = { x = 100, y = 0, z = 0 }, [8002] = { x = 0, y = 0, z = 0 } },
@@ -9917,6 +9932,38 @@ test("core.lightsOffRequest: node, dryRun, a test save's name (a second fence); 
 		local no, why = core.lightsOffRequest(bad[1])
 		eq(no, nil); truthy(why:find(bad[2], 1, true), why)
 	end
+end)
+
+test("core.testSaveOrCoop: a non-blank coop owner, or a test save's name; lightsOff, runningCostsSet, evalWrite in coop", function()
+	truthy(core.testSaveOrCoop("aom-eu-1900", nil, "alice")); truthy(core.testSaveOrCoop(nil, nil, "alice"))
+	truthy(core.testSaveOrCoop("probe-x", nil, nil)); truthy(core.testSaveOrCoop("shot-1", { prefixes = { "shot-" } }, ""))
+	for _, coop in ipairs({ "", "  ", true, 5, false }) do
+		truthy(not core.testSaveOrCoop("aom-eu-1900", nil, coop), tostring(coop))
+	end
+	truthy(not core.testSaveOrCoop("aom-eu-1900", nil, nil), "nil")
+	local r = core.lightsOffRequest({ node = 9000, _testSave = "aom-eu-1900", _coop = "alice" })
+	eq(r.node, 9000); eq(r.coop, "alice"); eq(r.testSave, "aom-eu-1900")
+	eq(core.lightsOffRequest({ node = 9000, _testSave = "probe-x" }).coop, nil, "no coop: none in the request")
+	truthy(select(2, core.lightsOffRequest({ node = 9000, _testSave = "aom-eu-1900", _coop = " " })):find("test saves only", 1, true))
+	-- running-costs --set-*: tf3ctl's args, then the game script's request and its own check
+	local a = core.runningCostsArgs({ model = 101, ops = { { field = "runningCosts", scale = 2 } }, _testSave = "aom-eu-1900",
+		_coop = "alice" }, true)
+	truthy(a); eq(a.coop, "alice")
+	local p = core.runningCostRequest(7, 101, a)
+	eq(p.coop, "alice")
+	truthy(core.runningCostRequestChecked(p))
+	p.coop = nil
+	truthy(select(2, core.runningCostRequestChecked(p)):find("test saves only", 1, true), "the script's check: no coop, no test save")
+	truthy(select(2, core.runningCostsArgs({ model = 101, ops = { { field = "runningCosts", scale = 2 } },
+		_testSave = "aom-eu-1900", _coop = "" }, true)):find("test saves only", 1, true))
+	-- eval --write: the same, through evalRequest and evalRequestChecked
+	local e = core.evalArgs({ code = "return 1", _testSave = "aom-eu-1900", _coop = "alice" }, true)
+	truthy(e); eq(e.coop, "alice")
+	local q = core.evalRequest(8, e, true)
+	eq(q.coop, "alice"); truthy(core.evalRequestChecked(q, true))
+	q.coop = "   "
+	truthy(select(2, core.evalRequestChecked(q, true)):find("test saves only", 1, true))
+	eq(core.evalArgs({ code = "return 1", _coop = "alice" }, false).coop, nil, "eval without write: no coop needed")
 end)
 
 test("lights --off: the window's proposal (config cloned, phases emptied, NO, no Context, not forced, player-initiated); read back; road joins then", function()

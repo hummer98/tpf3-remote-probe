@@ -1189,6 +1189,18 @@ function M.testSaveRules(rules)
 	end
 	return { prefixes = prefixes, digitFirst = rules.digitFirst == true }
 end
+-- the test-save-only commands' second fence (road ignoreErrors, lightsOff, runningCostsSet, evalWrite): a test save's
+-- name, or coop: the --owner whose coop is on the running game (tf3ctl's _coop, 2026-11-26: in coop these go to the
+-- person's save too; tf3ctl keeps the person's saves by refusing a save to their names). Both are tf3ctl's word
+function M.testSaveOrCoop(name, rules, coop)
+	if type(coop) == "string" and coop:match("%S") then return true end
+	return M.isTestSaveName(name, rules)
+end
+-- the coop owner a request carries on (plain string or nil)
+local function coopOwner(coop)
+	if type(coop) == "string" and coop:match("%S") then return coop end
+	return nil
+end
 function M.isTestSaveName(name, rules)
 	if type(name) ~= "string" then return false end
 	rules = M.testSaveRules(rules)
@@ -1359,7 +1371,7 @@ local function roadOptions(args, p)
 	-- command written without it) does not force a build. The name is tf3ctl's word: a command written by hand can
 	-- name any save, so this is a second fence, not a check of the save itself
 	if args.ignoreErrors == true then
-		if not M.isTestSaveName(args._testSave, args._testSaveRules) then
+		if not M.testSaveOrCoop(args._testSave, args._testSaveRules, args._coop) then
 			return nil, "ignoreErrors is for test saves only (tf3ctl names the loaded save; " ..
 				tostring(args._testSave) .. " is no test save's name): nothing sent"
 		end
@@ -1371,6 +1383,7 @@ local function roadOptions(args, p)
 	p.removeFields, p.removeBuildings = args.removeFields == true, args.removeBuildings == true
 	p.ignoreErrors = args.ignoreErrors == true
 	p.testSave = args.ignoreErrors == true and args._testSave or nil
+	p.coop = args.ignoreErrors == true and coopOwner(args._coop) or nil
 	-- collisionDetail (--collision-detail): the engine's ProposalData copied out whole, for one piece or the batch's
 	-- one proposal; only where the engine is asked (collisionDetailArg's fence)
 	local detail, derr = M.collisionDetailArg(args)
@@ -1399,7 +1412,7 @@ M.ROAD_NAMED_SAME_M = 0.01 -- the ends that give a named node's point: this near
 local PIECE_KEYS = { from = true, to = true, fromNode = true, toNode = true, type = true, bridge = true, snap = true,
 	tangentFrom = true, tangentTo = true, alignToEdge = true, alignEdge = true }
 local BATCH_KEYS = { dryRun = true, engineCheck = true, removeFields = true, removeBuildings = true, ignoreErrors = true,
-	collisionDetail = true, _testSave = true, _testSaveRules = true }
+	collisionDetail = true, _testSave = true, _testSaveRules = true, _coop = true }
 function M.roadBatchRequest(args)
 	args = type(args) == "table" and args or {}
 	local list = args.batch
@@ -1571,11 +1584,11 @@ function M.lightsOffRequest(args)
 	local n = tonumber(args.node)
 	if n == nil or n ~= math.floor(n) or n < 0 or n > 2 ^ 31 then return nil, "node must be a node's entity id (0 or more)" end
 	if args.dryRun ~= nil and type(args.dryRun) ~= "boolean" then return nil, "dryRun must be true or false" end
-	if not M.isTestSaveName(args._testSave, args._testSaveRules) then
+	if not M.testSaveOrCoop(args._testSave, args._testSaveRules, args._coop) then
 		return nil, "lightsOff is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave) ..
 			" is no test save's name): nothing sent"
 	end
-	return { node = n, dryRun = args.dryRun == true, testSave = args._testSave }
+	return { node = n, dryRun = args.dryRun == true, testSave = args._testSave, coop = coopOwner(args._coop) }
 end
 
 function M.waterRequest(args)
@@ -4357,7 +4370,7 @@ function M.runningCostsArgs(args, write)
 		end
 		return out
 	end
-	if not M.isTestSaveName(args._testSave, args._testSaveRules) then
+	if not M.testSaveOrCoop(args._testSave, args._testSaveRules, args._coop) then
 		return nil, "runningCostsSet is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave)
 			.. " is no test save's name): nothing written"
 	end
@@ -4366,6 +4379,7 @@ function M.runningCostsArgs(args, write)
 	local where = args.where == nil and "script" or args.where
 	if where ~= "script" and where ~= "gui" then return nil, "where must be script or gui" end
 	out.ops, out.where, out.testSave, out.testSaveRules = ops, where, args._testSave, M.testSaveRules(args._testSaveRules)
+	out.coop = coopOwner(args._coop)
 	return out
 end
 
@@ -4393,7 +4407,7 @@ function M.runningCostRequest(req, modelId, a)
 	local rules = a.testSaveRules or M.TEST_SAVE_DEFAULT
 	local prefixes = {}
 	for i, x in ipairs(rules.prefixes) do prefixes[i] = x end
-	return { req = req, model = modelId, ops = ops, testSave = a.testSave,
+	return { req = req, model = modelId, ops = ops, testSave = a.testSave, coop = coopOwner(a.coop),
 		testSaveRules = { prefixes = prefixes, digitFirst = rules.digitFirst == true } }
 end
 
@@ -4402,7 +4416,7 @@ function M.runningCostRequestChecked(p)
 	if type(p) ~= "table" then return nil, "no request" end
 	local req, model = tonumber(p.req), tonumber(p.model)
 	if req == nil or model == nil or model < 0 or model ~= math.floor(model) then return nil, "req and model must be numbers" end
-	if not M.isTestSaveName(p.testSave, p.testSaveRules) then
+	if not M.testSaveOrCoop(p.testSave, p.testSaveRules, p.coop) then
 		return nil, "for test saves only (" .. tostring(p.testSave) .. " is no test save's name): nothing written"
 	end
 	local ops, err = M.runningCostOps(p.ops)
@@ -5081,11 +5095,12 @@ function M.evalArgs(args, write)
 		out.maxChars = n
 	end
 	if write then
-		if not M.isTestSaveName(args._testSave, args._testSaveRules) then
+		if not M.testSaveOrCoop(args._testSave, args._testSaveRules, args._coop) then
 			return nil, "evalWrite is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave)
 				.. " is no test save's name): nothing run"
 		end
 		out.testSave, out.testSaveRules = args._testSave, M.testSaveRules(args._testSaveRules)
+		out.coop = coopOwner(args._coop)
 	end
 	return out
 end
@@ -5096,7 +5111,8 @@ function M.evalRequest(req, a, write)
 	local prefixes = {}
 	for i, x in ipairs(rules.prefixes) do prefixes[i] = x end
 	return { req = req, code = a.code, depth = a.depth, maxChars = a.maxChars, write = write == true,
-		testSave = a.testSave, testSaveRules = { prefixes = prefixes, digitFirst = rules.digitFirst == true } }
+		testSave = a.testSave, coop = coopOwner(a.coop),
+		testSaveRules = { prefixes = prefixes, digitFirst = rules.digitFirst == true } }
 end
 
 function M.evalRequestChecked(p, write)
@@ -5105,7 +5121,7 @@ function M.evalRequestChecked(p, write)
 	if req == nil then return nil, "req must be a number" end
 	if (p.write == true) ~= (write == true) then return nil, "the request's write does not match the event's name" end
 	local a, err = M.evalArgs({ code = p.code, depth = p.depth, maxChars = p.maxChars, _testSave = p.testSave,
-		_testSaveRules = p.testSaveRules }, write)
+		_testSaveRules = p.testSaveRules, _coop = p.coop }, write)
 	if not a then return nil, err end
 	a.req = req
 	return a

@@ -5367,7 +5367,7 @@ class OwnerCheckTest(unittest.TestCase):
             self.assertIsNone(tf3ctl.check_game_owner(cmd, args), cmd)
         # a dryRun inside the command's own arguments is the other mod's business: still changing
         self.assertTrue(tf3ctl.changes_game("modChange", dict(args, args={"dryRun": True})))
-        self.assertIn("modChange", tf3ctl.COOP_ALLOWED, "coop lets it through as it does event")
+        self.assertNotIn("modChange", tf3ctl.COOP_USER_ONLY | tf3ctl.COOP_NOT_SENT, "coop lets it through as event")
 
     def test_reading_commands_dry_runs_and_camera_reading_go(self):
         self.record("bob")
@@ -5638,10 +5638,14 @@ class CoopTest(unittest.TestCase):
                           ("build", {"res": "x", "dryRun": True, "engineCheck": True})):  # fit's check
             self.assertFalse(self.goes(cmd, args)["count"], "a test save: nothing to count")
         self.assertIsNone(tf3ctl.check_game_owner("stations", {}), "reading goes as ever")
-        for cmd, args in (("quit", None), ("load", {"save": "s"}), ("newgame", {}), ("tool", {"x": 1}),
-                          ("modhubValidate", {"folder": "f"}), ("buy", {"x": 1})):
+        for cmd, args in (("quit", None), ("load", {"save": "s"}), ("newgame", {}),
+                          ("modhubValidate", {"folder": "f"}), ("modhubPublish", {"folder": "f"})):
             self.assertIn("'%s'" % cmd, self.refused(cmd, args))
-        self.assertIn("--close-all", self.refused("window", {"closeAll": True}))
+        # 2026-11-26 (D-20261126-08): everything else goes, also what coop refused before
+        for cmd, args in (("tool", {"x": 1}), ("buy", {"x": 1}), ("window", {"closeAll": True}),
+                          ("terrain", {"at": [0, 0]}), ("townDevelop", {"town": 1}), ("line", {"x": 1}),
+                          ("sell", {"x": 1}), ("scriptEvent", {"name": "e"}), ("connect", {"x": 1})):
+            self.goes(cmd, args)
         tf3ctl.OTHER_OWNER_OK = True  # does not widen coop
         self.refused("quit")
         kills = []
@@ -5650,32 +5654,33 @@ class CoopTest(unittest.TestCase):
             tf3ctl.quit_game(timeout=0.1, kill=True, force=True)  # restart's quit too
         self.assertEqual(kills, [])
 
-    def test_speed_run_pause_only_when_the_user_asked(self):
+    def test_speed_run_pause_go_without_the_user_asked(self):
+        """2026-11-26 (D-20261126-08): speed, run and pause go in coop; --user-asked is still parsed (old scripts)."""
         self.record("alice")
         self.start()
-        self.assertIn("--user-asked", self.refused("speed", {"speed": 0}))
-        self.assertIn("--user-asked", self.refused("run", {"days": 1}))
-        tf3ctl.USER_ASKED = True
+        self.assertFalse(tf3ctl.USER_ASKED)
+        self.assertFalse(self.goes("speed", {"speed": 0})["count"], "not counted")
         self.goes("speed", {"speed": 4})
         self.goes("run", {"days": 1})
-        # through main: the flag is parsed on speed, pause and run, and the refusal is exit 4 "coop"
+        tf3ctl.USER_ASKED = True
+        self.goes("speed", {"speed": 4})
+        # through main: pause gets past the fence (the faked mod answers), not exit 4 "coop"
         tf3ctl.USER_ASKED = False
         out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(tf3ctl.main(["--owner", "alice", "pause"]), 4)
-        self.assertEqual(json.loads(out.getvalue())["refused"], "coop")
+        with unittest.mock.patch.object(tf3ctl, "send", lambda *a, **k: {"ok": True}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertNotEqual(tf3ctl.main(["--owner", "alice", "pause"]), 4)
+        self.assertNotIn('"refused"', out.getvalue())
         p = tf3ctl.make_parser()
         for argv in (["speed", "1", "--user-asked"], ["pause", "--user-asked"], ["run", "--days", "1", "--user-asked"],
                      ["save", "probe-x", "--user-asked"]):
             self.assertTrue(p.parse_args(argv).user_asked, argv)
 
-    def test_calendar_speed_only_when_the_user_asked_and_reading_always(self):
+    def test_calendar_speed_goes_without_the_user_asked_and_reading_always(self):
         self.loaded("my-own-save")  # a person's save: a change there is counted, the calendar as speed is not
         self.record("alice")
         self.start()
-        self.assertIn("--user-asked", self.refused("calendarSpeedSet", {"factor": 1.0}))
         self.assertIsNone(tf3ctl.check_game_owner("calendarSpeed", {}), "reading goes as ever")
-        tf3ctl.USER_ASKED = True
         self.assertFalse(self.goes("calendarSpeedSet", {"factor": 1.0})["count"], "not counted, as speed")
         self.assertFalse(self.goes("speed", {"speed": 1})["count"])
         self.assertTrue(self.goes("build", {"res": "x"})["count"], "a counted one, for contrast")
@@ -6329,11 +6334,31 @@ class IgnoreErrorsTest(_ForceBase):
         self.loaded("aom-eu-1900")
         self.assertNotIn("ignoreErrors", self.sent("road", self.road()))
 
-    def test_refused_during_coop_even_on_a_test_save(self):
+    def test_goes_in_my_coop_also_on_a_persons_save_not_in_anothers(self):
+        """2026-11-26 (D-20261126-08): in this --owner's coop it goes, also on the person's own save, and carries
+        _coop (the mod's second fence takes it for a test save's name)."""
         tf3ctl.coop_start(60, "look at the junction together")
-        self.refused("road", self.road("--ignore-errors"), "coop mark")
-        self.refused("road", self.road("--ignore-errors", "--dry-run"), "coop mark")
-        self.assertNotIn("ignoreErrors", self.sent("road", self.road()), "an unforced road goes in coop, as before")
+        a = self.sent("road", self.road("--ignore-errors"))
+        self.assertEqual((a["ignoreErrors"], a["_testSave"], a["_coop"]), (True, "probe-flat-base", "alice"))
+        self.assertEqual(self.sent("road", self.road("--ignore-errors", "--dry-run", "--engine-check"))["_coop"], "alice")
+        self.loaded("aom-eu-1900")
+        a = self.sent("road", self.road("--ignore-errors"))
+        self.assertEqual((a["_testSave"], a["_coop"]), ("aom-eu-1900", "alice"))
+        self.loaded(None)  # no save known: still goes in coop; the mod gets an empty name and the coop owner
+        a = self.sent("road", self.road("--ignore-errors"))
+        self.assertEqual((a["_testSave"], a["_coop"]), ("", "alice"))
+        self.loaded("probe-flat-base")
+        b = self.sent("road", self.road())
+        self.assertNotIn("ignoreErrors", b, "an unforced road goes in coop, as before")
+        self.assertNotIn("_coop", b, "only the test-save-only commands name it")
+        # a _coop given by hand is dropped: only tf3ctl's own word goes
+        tf3ctl.coop_end()
+        a = self.sent("road", dict(self.road(), _coop="mallory"))
+        self.assertNotIn("_coop", a)
+        self.loaded("aom-eu-1900")
+        self.refused("road", dict(self.road("--ignore-errors"), _coop="mallory"), "is not a test save's")
+        self.loaded("probe-flat-base")
+        tf3ctl.coop_start(60, "look at the junction together")
         # an expired mark: still refused
         rec = json.loads(read(tf3ctl.launched_path()))
         rec["coop"]["until"] = time.time() - 10
@@ -6355,7 +6380,7 @@ class IgnoreErrorsTest(_ForceBase):
 class RoadBatchTest(_ForceBase):
     """road --batch FILE (2026-11-24): several pieces in one proposal, from a JSON list; each piece checked as road's
     flags are, the whole proposal's options beside them; nothing sent when the file does not read or a piece is bad.
-    It goes as the command road, so road's fences (--ignore-errors on test saves only and not in coop, the force
+    It goes as the command road, so road's fences (--ignore-errors on test saves only or in this owner's coop, the force
     mark, changes_game) are the same."""
 
     def setUp(self):
@@ -6503,11 +6528,13 @@ class RoadBatchTest(_ForceBase):
         self.assertNotIn("ignoreErrors", self.sent("road", self.batch(self.TWO)), "unforced it goes, as road")
         self.loaded("")
         self.refused("road", self.batch(self.TWO, "--ignore-errors"), "a new game with no save name")
-        # coop: refused forced, unforced it goes (road is among the coop client's commands)
-        self.loaded("probe-flat-base")
+        # this owner's coop (2026-11-26): forced it goes too, also on the person's save, and names the coop
+        self.loaded("aom-eu-1900")
         tf3ctl.coop_start(60, "two roads with the user")
-        self.refused("road", self.batch(self.TWO, "--ignore-errors"), "coop mark")
+        a = self.sent("road", self.batch(self.TWO, "--ignore-errors", "--dry-run", "--engine-check"))
+        self.assertEqual((a["ignoreErrors"], a["_testSave"], a["_coop"]), (True, "aom-eu-1900", "alice"))
         self.assertNotIn("ignoreErrors", self.sent("road", self.batch(self.TWO)))
+        self.loaded("probe-flat-base")
         # a _testSave written into the file's pieces or beside them by hand is not tf3ctl's word: dropped
         a = self.sent("road", dict(self.batch(self.TWO), _testSave="probe-x"))
         self.assertNotIn("_testSave", a)
@@ -6742,10 +6769,15 @@ class RunningCostsTest(_ForceBase):
         self.loaded("aom-eu-1900")
         self.refused("runningCostsSet", dict(args, _testSave="probe-x"), "is not a test save's")
 
-    def test_a_write_refused_in_coop_and_by_the_owner_check(self):
+    def test_a_write_goes_in_my_coop_refused_in_anothers_and_by_the_owner_check(self):
         args = self.rc("--scale-running", "2")[1]
         tf3ctl.coop_start(60, "look together")
-        self.refused("runningCostsSet", args, "during coop")  # the coop client: coop_check refuses it
+        # the coop client (2026-11-26): goes, also on the person's save, and carries _coop
+        self.assertEqual(self.sent("runningCostsSet", args)["_coop"], "alice")
+        self.loaded("aom-eu-1900")
+        a = self.sent("runningCostsSet", args)
+        self.assertEqual((a["_testSave"], a["_coop"]), ("aom-eu-1900", "alice"))
+        self.loaded("probe-flat-base")
         # another client with --other-owner-ok: the test-save rule refuses any coop mark
         tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True
         e = self.refused("runningCostsSet", args, "coop mark")
@@ -6894,16 +6926,16 @@ class EvalTest(_ForceBase):
         self.loaded("aom-eu-1900")  # a _testSave written by hand is dropped and named again from the log
         self.refused("evalWrite", {"code": "1", "_testSave": "probe-x"}, "is not a test save's")
 
-    def test_write_in_coop_only_when_the_user_asked_and_on_a_test_save(self):
+    def test_write_goes_in_my_coop_without_the_user_asked_also_on_a_persons_save(self):
+        """2026-11-26 (D-20261126-08): no --user-asked, any save; saving stays coop's rule."""
         tf3ctl.coop_start(60, "look together")
-        e = self.refused("evalWrite", {"code": "1"}, "--user-asked")
-        self.assertIsInstance(e, tf3ctl.CoopRefused)
-        tf3ctl.USER_ASKED = True
         a = self.sent("evalWrite", {"code": "1"})
-        self.assertEqual(a["_testSave"], "probe-flat-base")
-        self.loaded("aom-eu-1900")  # the person's own save: --user-asked does not widen it
-        self.refused("evalWrite", {"code": "1"}, "is not a test save's")
-        tf3ctl.USER_ASKED = False
+        self.assertEqual((a["_testSave"], a["_coop"]), ("probe-flat-base", "alice"))
+        self.loaded("aom-eu-1900")  # the person's own save
+        a = self.sent("evalWrite", {"code": "1"})
+        self.assertEqual((a["_testSave"], a["_coop"]), ("aom-eu-1900", "alice"))
+        with self.assertRaises(tf3ctl.CoopRefused):  # their save is not written over
+            tf3ctl.check_game_owner("save", {"name": "aom-eu-1900"})
         # another client, not in the coop: the coop mark refuses it before the save's name
         tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True
         self.loaded("probe-x")
@@ -6963,10 +6995,14 @@ class LightsTest(_ForceBase):
         self.loaded("aom-eu-1900")
         self.refused("lightsOff", dict(args, _testSave="probe-x"), "is not a test save's")
 
-    def test_refused_in_coop_and_by_the_owner_check(self):
+    def test_goes_in_my_coop_refused_in_anothers_and_by_the_owner_check(self):
         args = self.la("--node", "9000", "--off")
         tf3ctl.coop_start(60, "look together")
-        self.refused("lightsOff", args, "during coop")  # the coop client: coop_check refuses it
+        # the coop client (2026-11-26): goes, also on the person's save, and carries _coop
+        self.loaded("aom-eu-1900")
+        a = self.sent("lightsOff", args)
+        self.assertEqual((a["_testSave"], a["_coop"]), ("aom-eu-1900", "alice"))
+        self.loaded("probe-flat-base")
         tf3ctl.OWNER, tf3ctl.OTHER_OWNER_OK = "bob", True
         e = self.refused("lightsOff", args, "coop mark")
         self.assertEqual(e.refused, "lights")
@@ -7346,27 +7382,38 @@ class FencesTest(_ForceBase):
         self.refused("save", {"name": "3-probe"}, "probe-force-* names")
         self.refused("save", {"name": self.PERSON}, "probe-force-* names")
 
-    def test_configured_coop_refuses_saving_quitting_and_loading(self):
+    def test_configured_coop_refuses_saving_quitting_and_loading_the_rest_goes(self):
         self.loaded(self.PERSON)
         self.coop()
         self.refused("save", {"name": self.PERSON}, "not a test save's name")
         self.refused("save", {"name": "probe-x"}, "add --user-asked")
-        for cmd, args in (("quit", None), ("load", {"save": "probe-x"}), ("newgame", {}), ("tool", {"name": "x"})):
+        for cmd, args in (("quit", None), ("load", {"save": "probe-x"}), ("newgame", {})):
             self.refused(cmd, args, "is theirs to do")
-        self.refused("speed", {"speed": 2}, "add --user-asked")
-        self.refused("road", self.ignore_errors(), "coop mark")
-        self.refused("lightsOff", {"node": 5}, "is theirs to do")
         tf3ctl.USER_ASKED = True
         self.refused("save", {"name": self.PERSON}, "not a test save's name")
         for cmd, args in (("quit", None), ("load", {"save": "probe-x"})):
             self.refused(cmd, args, "is theirs to do")
         self.assertEqual(self.answer("save", {"name": "probe-x"})[0]["name"], "probe-x")
-        self.assertEqual(self.answer("speed", {"speed": 2})[0]["speed"], 2)
         tf3ctl.USER_ASKED = False
+        # 2026-11-26 (D-20261126-08): the rest goes without --user-asked, the test-save-only commands on the
+        # person's save too (with _coop for the mod)
+        self.assertEqual(self.answer("speed", {"speed": 2})[0]["speed"], 2)
+        self.assertEqual(self.answer("tool", {"name": "x"})[0]["name"], "x")
+        sent, res = self.answer("lightsOff", {"node": 5})
+        self.assertEqual((sent["_testSave"], sent["_coop"]), (self.PERSON, "alice"))
+        self.assertEqual(res["saveNote"], tf3ctl.SAVE_NOTE)
         # looking, building and the test commands go (counted as changes of the person's game)
         for cmd, args in (("camera", {"set": "1,2"}), ("build", {"res": "x"}), ("stockSet", {"entity": 1}),
                           ("money", {"add": 1}), ("steps", {"count": 5})):
             self.answer(cmd, args)
+        sent, res = self.answer("road", self.ignore_errors())
+        self.assertEqual(sent["_coop"], "alice")
+        # forced on their save: coop refuses the save first; with --user-asked the force mark still keeps it to
+        # probe-force-* names
+        self.refused("save", {"name": "probe-x"}, "add --user-asked")
+        tf3ctl.USER_ASKED = True
+        self.refused("save", {"name": "probe-x"}, "probe-force-* names")
+        self.refused("save", {"name": self.PERSON}, "not a test save's name")
         self.assertGreater(tf3ctl.read_launched()[0]["coop"].get("changes", 0), 0)
 
     def test_configured_owner_check_refuses_other_clients(self):

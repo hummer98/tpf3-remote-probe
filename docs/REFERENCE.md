@@ -125,8 +125,8 @@ vehicles run at the same pace. Without a value it only reads and sends nothing; 
 slider's steps, `paused`) and `steps`. With a value it sends `makeGameSetCalendarSpeedCmd` and answers `before`,
 `after`, `sent` and `requested` once the game shows the new value (an error when the engine refuses it, or when
 nothing changes within 5 s). A factor must be one of the slider's steps; `--millis-per-day` takes 0 or a whole
-number from 100 to 3600000. Setting it counts as changing the game, as `speed` does (owner check; during coop only
-with `--user-asked`). It does not stop a `run`, but with the calendar at 0 a run toward a date never gets there.
+number from 100 to 3600000. Setting it counts as changing the game, as `speed` does (owner check; during coop it goes
+as `speed` does). It does not stop a `run`, but with the calendar at 0 a run toward a date never gets there.
 
 ### Saves and new games
 
@@ -750,7 +750,9 @@ python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lane
   that), `testSave` and `ignoreErrorsNote`; built, it has `edge`, `edges` and `nodes` as any road.
   tf3ctl refuses it (exit 4, `"refused": "ignore-errors"`, nothing sent) unless the loaded save (read from the
   game's log) has a test save's name (`testSavePrefixes` in the configuration file, `probe-*` by default),
-  and whenever the running game carries a coop mark (active, expired or malformed). A new game has no save name
+  and whenever the running game carries a coop mark that is not this `--owner`'s active one (another client's,
+  expired or malformed). In this owner's own coop it goes on any save, the person's too (tf3ctl sends `_coop`, the
+  coop's owner, and the mod takes it in place of a test save's name). A new game has no save name
   yet: save it under a test save's name and load that save first. The mod checks the save's name again (tf3ctl
   sends it), and refuses `ignoreErrors` on every command but `road`. The probe's own checks are not skipped: an end
   at a node without a junction set-up, with traffic lights, or whose set-up does not read is refused as before
@@ -781,7 +783,7 @@ autosave loaded again saves under any name.
   same, within 0.01 m, at each end that gives one; a name used at one end only is refused). `--dry-run`,
   `--engine-check`, `--remove-fields`, `--remove-buildings`, `--ignore-errors` and `--collision-detail` go on the
   command line for the whole proposal, with the same meaning and the same fences as for one piece (it goes as the command `road`:
-  `--ignore-errors` on test saves only and never in coop, the force mark, the probe's own set-up checks). `--from`,
+  `--ignore-errors` on test saves only or in this owner's coop, the force mark, the probe's own set-up checks). `--from`,
   `--to` and the other per-piece flags are refused beside `--batch`. An empty list, more than 16 pieces, a file that
   is not JSON, an unknown key or a bad value is refused with nothing sent; so are two new ends on one point left
   unnamed (give them one name), two pieces between the same two nodes, a named node on an old node, and an end
@@ -809,8 +811,8 @@ autosave loaded again saves under any name.
   (`trafficLightPreference` NO) and "Reset to Default" (the phases, `states`, emptied; road refuses a node by its
   phases, and None alone keeps them). The set-up's traffic light config is copied (`clone`), its type kept, and sent
   with `createTrafficLightProposal` as `makeWorldBuildProposalCmd(proposal, nil, false, true)`.
-  - **For test saves only, and not during coop**: tf3ctl refuses it (exit 4, `"refused": "lights"`, nothing sent)
-    by the same rule as `road --ignore-errors`, and the mod checks the save name again. It goes through the owner
+  - **For test saves only, or in this owner's coop**: tf3ctl refuses it (exit 4, `"refused": "lights"`, nothing
+    sent) by the same rule as `road --ignore-errors`, and the mod checks the save name again. It goes through the owner
     check, `--dry-run` too.
   - Refused before anything is sent: a node with two street pieces or fewer (the node's window offers traffic
     lights only where more than two meet), a construction's node, a node without a junction set-up. A node whose
@@ -1097,7 +1099,7 @@ way is paid, the shop shows it and the sale price follows it: measured 2026-11-1
 - **A write (`--set-running X`, `--scale-running K`, `--set-maintenance Y`, `--scale-maintenance K`, `--set
   FIELD=X`, `--scale FIELD=K` for `runningCosts`, `runningCostScale`, `maintenanceScale`) is for test saves only**,
   by the same rule as `road --ignore-errors`: the loaded save must have a test save's name (a new game with no name
-  yet: `save probe-NAME`, then `load probe-NAME`), no coop mark may be on the running game, and the owner check
+  yet: `save probe-NAME`, then `load probe-NAME`) or this owner's coop be on (then any save), and the owner check
   applies (a game-changing command). The mod checks the save's name again. A model has no maintenance amount of its
   own, only `maintenanceScale`, so the `--*-maintenance` flags write that.
 - The fields are written in place (`modelRep.get(id).metadata.maintenance.<field> = value`) and read back. `--where
@@ -1724,7 +1726,8 @@ It may be up to 100,000 characters long.
 - **`--write`.** The code runs with every global (`game.interface`, `api.cmd`, ...).
   - It goes only when a test save is loaded (`testSavePrefixes`: tf3ctl names the loaded save from the game's log
     and the mod checks the name again): exit 4, `"refused": "eval"`.
-  - During coop it goes on a test save only, from the coop client, with `--user-asked` (`"refused": "coop"`).
+  - During coop it goes from the coop client on any save, the person's too, without `--user-asked` (since
+    2026-11-26); another client's coop and an expired or malformed mark refuse it as any game-changing command.
   - It counts as changing the game (the owner check), and its answer carries `saveNote`: what the code did is not
     known to the tool, and saving keeps it.
   - In the GUI it runs in the probe's `guiUpdate`, not in the speed control's recipe: some `api.gui` calls that
@@ -1858,17 +1861,21 @@ tf3ctl.py --owner bob coop end
   running game; the record then names no owner, only the coop mark). Never on another owner's game, and not while
   another client's mark counts (`--other-owner-ok` changes neither). Again by the same owner renews it. `--reason`
   is required (1-200 characters), `--minutes` is 1-10080 (7 days). Renewing keeps the change count of the mark.
-- While it counts, this owner may send what helps the user: every reading command, `camera`, `window` (not
-  `--close-all`), `event`, `build` (and `fit`), `road`, `stock set`, `money`, `steps`, other mods' commands
-  (`mod`, sent as `modChange`). This holds on the user's own saves too. What a mod's command (or an `event`)
-  does is up to that mod: tf3ctl's refusals below cover tf3ctl's own commands, not a mod command that saves.
-- Only with `--user-asked` (when the user asked for it): `speed`, `run`, `pause`, `calendar-speed` with a value,
-  and `eval --write` on a test save (see "Running Lua in the game").
+- While it counts, this owner may send every command but the few below (since 2026-11-26: the save stays, so
+  changing the running game is not guarded more than that): reading commands, `camera`, `window` (`--close-all`
+  too), `event`, `build`, `road`, `tool`, `buy`, `line`, `terrain`, `town`, `speed`, `run`, `pause`,
+  `calendar-speed`, other mods' commands (`mod`, sent as `modChange`), ... without `--user-asked`. The commands
+  meant for test saves only (`road --ignore-errors`, `lights --off`, `running-costs` writes, `eval --write`) go
+  on the user's own saves too: tf3ctl sends `_coop` (the coop's owner) and the mod takes it in place of a test
+  save's name. `--user-asked` is still parsed on `speed`, `run`, `pause`, `calendar-speed` and `eval` (old
+  scripts) and has no effect there. What a mod's command (or an `event`) does is up to that mod: tf3ctl's
+  refusals below cover tf3ctl's own commands, not a mod command that saves.
 - `save` only to a test save's name (`testSavePrefixes`, and with `testSaveDigitFirst` one digit first,
   `3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that
   kind, a new game, or unknown), a save to a new test name needs `--user-asked` too.
-- Everything else is refused: `quit` (also `--kill`, and the quit of `restart`), `load`, `newgame`, `tool`, `buy`,
-  `line`, `terrain`, `town`, `modhub`, ... Exit 4, `"refused": "coop"`, nothing sent; the message says why.
+- Refused, the user's to do: `quit` (also `--kill`, and the quit of `restart`), `load`, `newgame`; and
+  `modhub validate` / `publish` (main menu only, and not the shared game's business). Exit 4, `"refused": "coop"`,
+  nothing sent; the message says why.
 - The loaded save is read from the game's log (the last `Loading game from file` / `Start new game` since the
   start).
 - On a person's save, each game-changing command the mod took (not `camera`, `window`, `speed`, `calendar-speed`,
@@ -1945,8 +1952,8 @@ sends the test saves' names and the modhub lists with each command that needs th
 **Debug commands** change the game as no player can: `stock set`, `steps`, `money`, `town develop` / `size` /
 `connect`, `company init`, `running-costs` writes, `lights --off`, `road --ignore-errors` and `eval --write`. They
 are meant for test saves, but only four check the loaded save's name (`testSavePrefixes`): `road --ignore-errors`,
-`lights --off` and `running-costs` writes (also refused during coop), and `eval --write` (during coop only with
-`--user-asked`). The others go to any save, as a debug tool does, with the usual owner check. Their answers (not a
+`lights --off`, `running-costs` writes and `eval --write` (in this owner's coop they go on any save, the
+person's too). The others go to any save, as a debug tool does, with the usual owner check. Their answers (not a
 dry run's) carry `saveNote`: the save's contents changed, and saving keeps the change (`running-costs`: the model,
 for the rest of the session; `eval --write`: whatever the code did).
 
