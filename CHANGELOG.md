@@ -14,7 +14,8 @@ is separate and does not follow the release version.
 - `"officialModsByDefault"` in the configuration file (off by default): a new game (`newgame`, `launch` /
   `restart --new`) starts with the official mods installed (`ug_*`) too, as players' games do; `--remove ug_x` takes
   one out, an `--add` of one already in is not added twice. The answer names them in `plan.officialMods` (the
-  editor's answer too). Measured 2026-11-26: `launch --new` started a game with the probe alone.
+  editor's answer too); a mod older than the key, which starts the game without them, gets a warning. Measured
+  2026-11-26: `launch --new` started a game with the probe alone.
 
 ### Changed
 

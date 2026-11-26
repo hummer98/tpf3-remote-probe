@@ -1551,6 +1551,22 @@ class QuitLaunchTest(unittest.TestCase):
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.start_args(self._ns(load="x", remove=[tf3ctl.SELF_MOD]))
 
+    def test_official_mods_warning_for_a_mod_older_than_the_key(self):
+        """A mod without officialModsByDefault ignores `official`: a started game whose plan has no officialMods
+        gets a warning; a plan naming them (even none), no official asked, or a dry run (not starting) do not."""
+        with unittest.mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(tf3ctl.official_mods_warning({"official": True},
+                                                          {"ok": True, "starting": True, "plan": {"mods": ["p"]}}),
+                             tf3ctl.OLD_MOD_NO_OFFICIAL)
+            self.assertIn("older than this tf3ctl", err.getvalue())
+        quiet = [({"official": True}, {"ok": True, "starting": True, "plan": {"officialMods": []}}),
+                 ({}, {"ok": True, "starting": True, "plan": {"mods": ["p"]}}),
+                 ({"official": True}, {"ok": True, "dryRun": True, "plan": {"mods": ["p"]}}),
+                 ({"official": True}, {"ok": False, "error": "x"})]
+        for args, ack in quiet:
+            with self.subTest(args=args, ack=ack):
+                self.assertIsNone(tf3ctl.official_mods_warning(args, ack))
+
     def test_official_mods_by_default_only_with_the_key(self):
         """officialModsByDefault (2026-11-26): --new (launch, restart, newgame) asks the mod for the official mods;
         not the editor (the mod takes them anyway), not --list, not without the key."""

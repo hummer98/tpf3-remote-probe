@@ -1876,7 +1876,8 @@ tf3ctl.py --owner bob coop end
   `calendar-speed`, other mods' commands (`mod`, sent as `modChange`), ... without `--user-asked`. The commands
   meant for test saves only (`road --ignore-errors`, `lights --off`, `running-costs` writes, `eval --write`) go
   on the user's own saves too: tf3ctl sends `_coop` (the coop's owner) and the mod takes it in place of a test
-  save's name. `--user-asked` is still parsed on `speed`, `run`, `pause`, `calendar-speed` and `eval` (old
+  save's name. The game-script forms (`running-costs --where script`, `eval --gs`) still reach a test save only:
+  they need the probe's `gameScript` setting, which `launch` / `load` give a test save only. `--user-asked` is still parsed on `speed`, `run`, `pause`, `calendar-speed` and `eval` (old
   scripts) and has no effect there. What a mod's command (or an `event`) does is up to that mod: tf3ctl's
   refusals below cover tf3ctl's own commands, not a mod command that saves.
 - `save` only to a test save's name (`testSavePrefixes`, and with `testSaveDigitFirst` one digit first,

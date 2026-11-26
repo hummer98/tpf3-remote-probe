@@ -1872,6 +1872,23 @@ def print_start_warnings(res):
             print("warning: " + str(w), file=sys.stderr)
 
 
+OLD_MOD_NO_OFFICIAL = ("the mod did not name the official mods (plan.officialMods): it is older than this tf3ctl "
+                       "and started the game without them (officialModsByDefault); pull the mod")
+
+
+def official_mods_warning(args, ack):
+    """officialModsByDefault asked for the official mods, but a mod older than the key ignores `official` and starts
+    the game with the probe and the --add ones only: say so (stderr) instead of passing silently. Only a started
+    game: inside a save the mod rightly ignores it (a dry run uses the running game's mods)."""
+    if not (isinstance(args, dict) and args.get("official") and isinstance(ack, dict) and ack.get("starting")):
+        return None
+    plan = ack.get("plan")
+    if isinstance(plan, dict) and "officialMods" not in plan:
+        print("warning: " + OLD_MOD_NO_OFFICIAL, file=sys.stderr)
+        return OLD_MOD_NO_OFFICIAL
+    return None
+
+
 def replace_game(cmd, args, answer_only, timeout, company_init=True):
     """load / newgame: the mod acks, the next frame ends its game, and the new game's mod writes a new hello.
     A newgame (not the map editor) then gets company init unless company_init is False."""
@@ -1886,6 +1903,7 @@ def replace_game(cmd, args, answer_only, timeout, company_init=True):
         if not ack.get("ok"):
             return ack
         print_start_warnings(ack)
+        old_mod = official_mods_warning(args, ack)
         held = bool(args.get("waitForStart"))
         print("loading ..." if cmd == "load" else "starting a new game ...", file=sys.stderr)
         if held:
@@ -1894,6 +1912,8 @@ def replace_game(cmd, args, answer_only, timeout, company_init=True):
         res = after if after.get("ok") is False else {"ok": True, "plan": ack, "hello": after}
         if held and res.get("ok"):  # a failed loadGame never reached the button
             res = dict(res, note=WAIT_FOR_START_DONE)
+        if old_mod and res.get("ok"):
+            res = dict(res, warning=old_mod)
         if cmd == "newgame" and res.get("ok") and company_init and not args.get("editor"):
             res["companyInit"] = company_init_after_newgame()
         return res
