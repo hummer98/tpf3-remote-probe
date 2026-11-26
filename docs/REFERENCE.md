@@ -147,6 +147,14 @@ their default settings. `status` answers `mapEditor` (`gui`: `api.gui.game.isMap
 `isMapEditor`). **Not checked in game yet** (written 2026-11-22): whether the editor opens this way, and whether
 the probe answers inside it.
 
+With `"officialModsByDefault": true` in the configuration file (off by default), a new game (`newgame`, `launch` /
+`restart --new`, in the main menu) starts with the official mods installed (`ug_*`) as well: tf3ctl sends
+`official: true` and the mod puts them first in the list. `--add` / `--remove` still apply (`--remove ug_x` takes
+one out, an `--add` of one already in is not added twice), `--set-mods` replaces the list as before. The answer's
+`plan.officialMods` names the official mods the game starts with (the editor's answer too). Off, a new game starts
+with the probe and the `--add` ones only, as before. Why: a test game without them is not the game players have
+(measured 2026-11-26: `launch --new` started with the probe alone).
+
 A new game gets the town and industry placement the base new-game page computes from the base settings
 (`locations.towns.frequency`, `locations.towns.populationDensity`, `locations.industry.initialIndustryDensity`,
 1-based levels, default 3): `townFrequency`, `populationDensity` and `industryDensity` through the base's
@@ -1939,6 +1947,7 @@ and `status` carries `"config": {"path", "state"}` (`"file"`, or `"none"`: no fi
 | `testSaveDigitFirst` | `false` | a name with one digit first (`3-probe`) is a test save too |
 | `pointer` | `false` | the `pointer` command |
 | `eval` | `false` | the `eval` command (Lua code sent into the running game; see "Running Lua in the game") |
+| `officialModsByDefault` | `false` | a new game (`newgame`, `launch` / `restart --new`) starts with the official mods installed (`ug_*`) too; `--remove` takes one out |
 | `modhub.validateFolders` / `publishFolders` / `publishedIds` | empty | the staging folders `modhub validate` / `publish` take, and the folders already on mod.io with their ids |
 
 Keys starting with `_` are comments. Any other unknown key, a value of the wrong kind, JSON that does not parse,

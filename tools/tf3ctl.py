@@ -355,13 +355,16 @@ CONFIG_DEFAULTS = {
     "pointer": False,
     # eval: any Lua code sent into the running game (read only; --write on test saves only)
     "eval": False,
+    # launch / restart --new and newgame: the official mods installed (ug_*) start in the new game, as the base
+    # new-game page lists them (--remove takes one out; --set-mods replaces the list as before)
+    "officialModsByDefault": False,
     # modhub validate / publish: the staging folders each takes, and the folders already on mod.io (folder: id)
     "modhub": {"validateFolders": [], "publishFolders": [], "publishedIds": {}},
 }
 # over the defaults, when the file cannot be read: main refuses every command then, but a caller importing the
 # module and calling its functions directly still gets the strict side
 CONFIG_BROKEN = {"ownerCheck": True}
-_CONFIG_BOOLS = ("ownerCheck", "coop", "testSaveDigitFirst", "pointer", "eval")
+_CONFIG_BOOLS = ("ownerCheck", "coop", "testSaveDigitFirst", "pointer", "eval", "officialModsByDefault")
 _PLAIN_NAME_RE = re.compile(r"[^/\\,\x00-\x1f]{1,200}")
 
 
@@ -1913,6 +1916,10 @@ def newgame_args(ns):
         args["list"] = True
     if getattr(ns, "editor", False) and not ns.list:
         args["editor"] = True  # the map editor; the mod takes the official mods and the probe as the base list
+    elif CONFIG["officialModsByDefault"] and not ns.list:
+        # the mod starts the list from the official mods installed (in the main menu), and names them in the plan
+        # (officialMods): a new test game without them is not the game players have (2026-11-26)
+        args["official"] = True
     base = load_args(argparse.Namespace(save=None, set_mods=ns.set_mods, add=ns.add, remove=ns.remove,
                                         param=ns.param, dry_run=ns.dry_run))
     base.pop("save", None)
@@ -6440,7 +6447,8 @@ def make_parser():
                            ("restart", "quit (SIGKILL if needed), launch, then --load or --new")):
         st = sub.add_parser(name, help=helptext)
         st.add_argument("--load", metavar="SAVE", help="load this save from the main menu")
-        st.add_argument("--new", action="store_true", help="start a new game from the main menu")
+        st.add_argument("--new", action="store_true", help="start a new game from the main menu (with officialModsByDefault in the configuration "
+                        "file: the official mods installed too)")
         st.add_argument("--add", action="append", default=[])
         st.add_argument("--remove", action="append", default=[])
         st.add_argument("--set-mods")

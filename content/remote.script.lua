@@ -1154,9 +1154,10 @@ function handlers.newgame(c)
 	elseif G.menu then
 		-- no game to take them from: the defaults, as the base new-game page builds them
 		-- (new_game_react_util.makeDefaultBaseModParams). Without the base's own params the game started with
-		-- no money and the tutorial on (2026-11-16).
-		mods = {}
-		current = defaultParams(core.mergeMods({}, c.args.mods, MOD))
+		-- no money and the tutorial on (2026-11-16). official (tf3ctl's officialModsByDefault, 2026-11-26): the
+		-- official mods installed come first, as the editor's; args.mods still add and remove
+		mods = c.args.official == true and officialMods() or {}
+		current = defaultParams(core.mergeMods(mods, c.args.mods, MOD))
 	else
 		current = core.plain(try(function() return api.engine.config.getModParams() end))
 		if type(current) ~= "table" then current = {} end
@@ -1167,6 +1168,9 @@ function handlers.newgame(c)
 	local plan, err = core.newGamePlan(c.args, { climates = catalog, mods = mods, modParams = current, selfId = MOD,
 		time = os.time and os.time() or 0 })
 	if not plan then return fail(c.id, err) end
+	if c.args.editor or (G.menu and c.args.official == true) then
+		plan.officialMods = core.officialIn(mods, plan.mods)  -- the official ones the game starts with
+	end
 	-- the densities, start time and clouds as the base new-game page derives them from the base params
 	local du, duError = difficultyUtil()
 	local start, warnings = core.newGameStart(plan.modParams[""], du, duError)

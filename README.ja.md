@@ -137,6 +137,7 @@ MOD は自分の命令を足せます。命令の表を返す `content/remote_pr
 | `testSavePrefixes` | `["probe-"]` | 試験用のセーブとみなす名前 |
 | `testSaveDigitFirst` | 切 | 数字 1 文字で始まる名前 (`3-probe`) も試験用のセーブ |
 | `pointer` | 切 | `pointer` の命令 |
+| `officialModsByDefault` | 切 | 新しいゲーム (`launch` / `restart --new`、`newgame`) を、入っている公式の MOD (`ug_*`) も入れて始める |
 | `modhub.*` | 空 | `modhub validate` / `publish` が取れるフォルダ |
 
 キーの全部は `tools/config.example.json` にあります。読めないファイルがあると、`config` 以外の命令は全部止まり、`config` が

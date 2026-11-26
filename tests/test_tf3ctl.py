@@ -1545,10 +1545,31 @@ class QuitLaunchTest(unittest.TestCase):
         self.assertEqual(args["params"][""], {"guideSystemConfig.tutorial": 2, "map.size": 3}, "an explicit --param wins")
         cmd, args = tf3ctl.start_args(self._ns(new=True, param=["m:k=2"]))
         self.assertEqual(args["params"], {"m": {"k": 2}, "": {"guideSystemConfig.tutorial": 1}}, "other params kept")
+        self.assertNotIn("official", tf3ctl.start_args(self._ns(new=True))[1], "officialModsByDefault off")
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.start_args(self._ns(load="x", new=True))
         with self.assertRaises(tf3ctl.ToolError):
             tf3ctl.start_args(self._ns(load="x", remove=[tf3ctl.SELF_MOD]))
+
+    def test_official_mods_by_default_only_with_the_key(self):
+        """officialModsByDefault (2026-11-26): --new (launch, restart, newgame) asks the mod for the official mods;
+        not the editor (the mod takes them anyway), not --list, not without the key."""
+        self.assertFalse(tf3ctl.CONFIG_DEFAULTS["officialModsByDefault"], "off without a file")
+        with unittest.mock.patch.dict(tf3ctl.CONFIG, {"officialModsByDefault": True}):
+            cmd, args = tf3ctl.start_args(self._ns(new=True, remove=["ug_x"], add=["ug_y"]))
+            self.assertEqual((cmd, args["official"], args["mods"]), ("newgame", True,
+                                                                      {"add": ["ug_y"], "remove": ["ug_x"]}))
+            _, args = tf3ctl.start_args(self._ns(new=True, editor=True))
+            self.assertEqual((args["editor"], "official" in args), (True, False))
+            self.assertNotIn("official", tf3ctl.start_args(self._ns(load="probe"))[1], "a load keeps its save's mods")
+            ns = tf3ctl.argparse.Namespace(climate=None, generator=None, size="tiny", year=None, seed=None,
+                                           no_towns=False, no_industries=False, list=False, set_mods=None,
+                                           add=[], remove=[], param=[], dry_run=True, tutorial=False)
+            self.assertTrue(tf3ctl.newgame_args(ns)["official"], "the newgame command too")
+            ns.list = True
+            self.assertNotIn("official", tf3ctl.newgame_args(ns))
+        with unittest.mock.patch.dict(tf3ctl.CONFIG, {"officialModsByDefault": False}):
+            self.assertNotIn("official", tf3ctl.start_args(self._ns(new=True))[1])
 
     def test_newgame_command_starts_without_the_tutorial_too_but_not_its_list(self):
         ns = tf3ctl.argparse.Namespace(climate=None, generator=None, size="tiny", year=None, seed=None,
@@ -7088,6 +7109,7 @@ class ConfigDefaultsTest(unittest.TestCase):
                                               "state": "none"})
         self.assertEqual(tf3ctl.CONFIG, {"ownerCheck": False, "coop": False, "testSavePrefixes": ["probe-"],
                                          "testSaveDigitFirst": False, "pointer": False, "eval": False,
+                                         "officialModsByDefault": False,
                                          "modhub": {"validateFolders": [], "publishFolders": [],
                                                     "publishedIds": {}}})
         self.assertIsNone(tf3ctl.config_broken_text())
@@ -7115,6 +7137,7 @@ class ConfigDefaultsTest(unittest.TestCase):
     def test_a_file_that_cannot_be_read_is_the_strict_side(self):
         for text, why in (("{not json", "Expecting"), ("[]", "not a JSON object"),
                           ('{"debug": true}', "unknown key debug"), ('{"coop": "yes"}', "coop must be true or false"),
+                          ('{"officialModsByDefault": 1}', "officialModsByDefault must be true or false"),
                           ('{"ownerCheck": 0}', "ownerCheck must be"), ('{"testSavePrefixes": "probe-"}', "list"),
                           ('{"testSavePrefixes": [""]}', "list"), ('{"testSavePrefixes": ["a/b"]}', "list"),
                           ('{"modhub": {"publishFolders": ["x"], "folders": []}}', "unknown key modhub.folders"),

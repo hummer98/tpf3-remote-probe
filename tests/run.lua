@@ -10542,6 +10542,58 @@ test("newgame editor: isMapEditor, the official mods and the probe only (not the
 	eq(s2.mapEditor.gui, false)
 end)
 
+test("newgame official (tf3ctl's officialModsByDefault): the official mods installed first; remove and add; named", function()
+	local INST = { "hummer_age_of_mobility", "ug_tgv_pse", "ug_legacy_ships", "ug_x", "hummer_remote_probe" }
+	local m = newGame({ saves = SAVES, menu = true, installed = INST })
+	frames(m, 2)
+	send(m, 1070, "newgame", '{ size = "tiny", official = true, mods = { add = { "extra", "ug_tgv_pse" }, remove = { "ug_x" } } }')
+	frames(m, FIRST)
+	eq(#m.started, 1)
+	eq(m.started[1].isMapEditor, false)
+	-- ug_x removed, ug_tgv_pse added again is not twice, the probe last
+	eq(table.concat(m.started[1].mods, ","), "ug_legacy_ships,ug_tgv_pse,extra,hummer_remote_probe")
+	local a = decode(answerText(m, 1070, "ack") or "null")  -- a start answers with its ack (the plan)
+	eq(table.concat(a.plan.officialMods, ","), "ug_legacy_ships,ug_tgv_pse")
+	-- a dry run says the same, and the official mods' defaults are in the params
+	local d = newGame({ saves = SAVES, menu = true, installed = INST })
+	frames(d, 2)
+	send(d, 1071, "newgame", '{ size = "tiny", official = true, dryRun = true }')
+	frames(d, FIRST)
+	local p = final(d, 1071).plan
+	eq(table.concat(p.mods, ","), "ug_legacy_ships,ug_tgv_pse,ug_x,hummer_remote_probe")
+	eq(table.concat(p.officialMods, ","), "ug_legacy_ships,ug_tgv_pse,ug_x")
+	-- set replaces the list: only the official ones in it are named
+	local s = newGame({ saves = SAVES, menu = true, installed = INST })
+	frames(s, 2)
+	send(s, 1072, "newgame", '{ size = "tiny", official = true, dryRun = true, mods = { set = { "ug_x" } } }')
+	frames(s, FIRST)
+	p = final(s, 1072).plan
+	eq(table.concat(p.mods, ","), "ug_x,hummer_remote_probe"); eq(table.concat(p.officialMods, ","), "ug_x")
+	-- without official: as before (no official mods, none named)
+	local n = newGame({ saves = SAVES, menu = true, installed = INST })
+	frames(n, 2)
+	send(n, 1073, "newgame", '{ size = "tiny", dryRun = true }')
+	frames(n, FIRST)
+	p = final(n, 1073).plan
+	eq(table.concat(p.mods, ","), "hummer_remote_probe"); eq(p.officialMods, nil)
+	-- none installed: an empty list, nothing else changes
+	local e = newGame({ saves = SAVES, menu = true, installed = { "hummer_remote_probe" } })
+	frames(e, 2)
+	send(e, 1074, "newgame", '{ size = "tiny", official = true, dryRun = true }')
+	frames(e, FIRST)
+	p = final(e, 1074).plan
+	eq(table.concat(p.mods, ","), "hummer_remote_probe"); eq(#p.officialMods, 0)
+	-- the editor names them too
+	local ed = newGame({ saves = SAVES, menu = true, installed = INST })
+	frames(ed, 2)
+	send(ed, 1075, "newgame", '{ size = "tiny", editor = true, dryRun = true, mods = { remove = { "ug_x" } } }')
+	frames(ed, FIRST)
+	eq(table.concat(final(ed, 1075).plan.officialMods, ","), "ug_legacy_ships,ug_tgv_pse")
+	-- core.officialIn: the official ones in the list, in the official list's order
+	eq(table.concat(core.officialIn({ "ug_a", "ug_b" }, { "x", "ug_b" }), ","), "ug_b")
+	eq(#core.officialIn(nil, nil), 0)
+end)
+
 ---------------------------------------------------------------------------------------------------------------------
 -- town (one town at a point, its first needs)
 

@@ -9,6 +9,13 @@ is separate and does not follow the release version.
 
 ## [Unreleased]
 
+### Added
+
+- `"officialModsByDefault"` in the configuration file (off by default): a new game (`newgame`, `launch` /
+  `restart --new`) starts with the official mods installed (`ug_*`) too, as players' games do; `--remove ug_x` takes
+  one out, an `--add` of one already in is not added twice. The answer names them in `plan.officialMods` (the
+  editor's answer too). Measured 2026-11-26: `launch --new` started a game with the probe alone.
+
 ### Changed
 
 - Coop is no longer guarded beyond the saves: in this `--owner`'s coop every command goes but `quit`, `load`,

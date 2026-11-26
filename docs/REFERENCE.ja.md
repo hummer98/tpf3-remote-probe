@@ -141,6 +141,14 @@ python3 tools/tf3ctl.py launch --new --editor --size tiny --no-towns --no-indust
 初期値。`status` は `mapEditor` を答えます (`gui`: `api.gui.game.isMapEditor()`、`modParams`: 本体の `isMapEditor`)。
 **ゲーム内では未確認** (2026-11-22 に書いたもの): この形でエディタが開くか、エディタの中で probe が答えるか。
 
+設定ファイルに `"officialModsByDefault": true` があるとき (初期設定は切)、新しいゲーム (`newgame`、`launch` /
+`restart --new`、メインメニューから) は、入っている公式の MOD (`ug_*`) も入れて始めます: tf3ctl が `official: true` を
+送り、MOD が一覧の先頭に置きます。`--add` / `--remove` はそのまま効き (`--remove ug_x` で 1 つ外す。すでに入っている
+ものを `--add` しても 2 回は入らない)、`--set-mods` はこれまでどおり一覧を置き換えます。答えの `plan.officialMods` に、
+始めるゲームに入る公式の MOD が出ます (エディタの答えにも)。切のときは、これまでどおり probe と `--add` のものだけで
+始めます。理由: 公式の MOD の無い試験のゲームは、プレイヤーのゲームと違う (2026-11-26 の計測: `launch --new` は probe
+だけで始まった)。
+
 新しいゲームの町と産業の置き方は、本体の新しいゲームのページと同じく、本体の設定
 (`locations.towns.frequency`・`locations.towns.populationDensity`・`locations.industry.initialIndustryDensity`、
 1 始まりの段、初期設定 3) から決めます: `townFrequency`・`populationDensity`・`industryDensity` を本体の
@@ -1745,6 +1753,7 @@ tf3ctl.py --owner bob coop end
 | `testSaveDigitFirst` | `false` | 数字 1 文字で始まる名前 (`3-probe`) も試験用セーブにする |
 | `pointer` | `false` | `pointer` 命令 |
 | `eval` | `false` | `eval` 命令 (動いているゲームに Lua のコードを送る。「ゲームの中で Lua を動かす」) |
+| `officialModsByDefault` | `false` | 新しいゲーム (`newgame`、`launch` / `restart --new`) を、入っている公式の MOD (`ug_*`) も入れて始める。`--remove` で 1 つ外せる |
 | `modhub.validateFolders` / `publishFolders` / `publishedIds` | 空 | `modhub validate` / `publish` が受け付ける staging のフォルダと、mod.io にすでにあるフォルダとその id |
 
 `_` で始まる項目は注釈です。ほかの知らない項目、型の違う値、JSON として読めない中身、`ownerCheck` の無い `coop`、

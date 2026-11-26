@@ -2130,6 +2130,13 @@ function M.officialMods(installed)
 	table.sort(out)
 	return out
 end
+-- the official mods that are in the game's list (after --remove): what newgame's answer names (plan.officialMods)
+function M.officialIn(official, mods)
+	local inList, out = {}, {}
+	for _, m in ipairs(mods or {}) do inList[m] = true end
+	for _, m in ipairs(official or {}) do if inList[m] then out[#out + 1] = m end end
+	return out
+end
 
 -- the values a construction's own params start with, as the base's construction menu picks them
 -- (construction.tl getParamDefaultValue: numbers[defaultIndex], or defaultIndex when there are no numbers).

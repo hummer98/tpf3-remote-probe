@@ -143,6 +143,7 @@ example mod. The file's form is in [Other mods' commands](docs/REFERENCE.md#othe
 | `testSavePrefixes` | `["probe-"]` | the save names that count as test saves |
 | `testSaveDigitFirst` | off | a name starting with one digit (`3-probe`) is a test save too |
 | `pointer` | off | the `pointer` command |
+| `officialModsByDefault` | off | new games (`launch` / `restart --new`, `newgame`) start with the official mods installed (`ug_*`) |
 | `modhub.*` | empty | the folders `modhub validate` / `publish` may take |
 
 `tools/config.example.json` lists every key. A file that cannot be read stops every command except `config`, which
