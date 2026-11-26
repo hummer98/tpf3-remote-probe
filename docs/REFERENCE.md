@@ -1695,7 +1695,7 @@ nothing sent).
 python3 tools/tf3ctl.py eval 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # read only, any save
 python3 tools/tf3ctl.py eval --file probe.lua [--depth 6] [--max-chars 200000]               # the code from a file
 python3 tools/tf3ctl.py eval --gs 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # in the game script
-python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # every global: test saves only
+python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # every global: test saves only (coop: a person's with --user-asked)
 ```
 
 The code is compiled as an expression first (`return CODE`), else as statements (then `return x` gives a value).
@@ -1735,8 +1735,12 @@ It may be up to 100,000 characters long.
 - **`--write`.** The code runs with every global (`game.interface`, `api.cmd`, ...).
   - It goes only when a test save is loaded (`testSavePrefixes`: tf3ctl names the loaded save from the game's log
     and the mod checks the name again): exit 4, `"refused": "eval"`.
-  - During coop it goes from the coop client on any save, the person's too, without `--user-asked` (since
-    2026-11-26); another client's coop and an expired or malformed mark refuse it as any game-changing command.
+  - During coop it goes from the coop client on any save (since 2026-11-26). On the person's save (a name not of
+    a test save's kind, a new game, or unknown) only with `--user-asked`, when the user asked for it: the code runs
+    with every global, so it could reach the real save and delete (their replacement below is best effort) and
+    write over the person's save. Without it tf3ctl refuses it (exit 4, `"refused": "coop"`, nothing sent); with
+    it tf3ctl sends `_userAsked` and the mod checks it again. Another client's coop and an expired or malformed
+    mark refuse it as any game-changing command.
   - It counts as changing the game (the owner check), and its answer carries `saveNote`: what the code did is not
     known to the tool, and saving keeps it.
   - In the GUI it runs in the probe's `guiUpdate`, not in the speed control's recipe: some `api.gui` calls that
@@ -1875,11 +1879,14 @@ tf3ctl.py --owner bob coop end
   too), `event`, `build`, `road`, `tool`, `buy`, `line`, `terrain`, `town`, `speed`, `run`, `pause`,
   `calendar-speed`, other mods' commands (`mod`, sent as `modChange`), ... without `--user-asked`. The commands
   meant for test saves only (`road --ignore-errors`, `lights --off`, `running-costs` writes, `eval --write`) go
-  on the user's own saves too: tf3ctl sends `_coop` (the coop's owner) and the mod takes it in place of a test
-  save's name. The game-script forms (`running-costs --where script`, `eval --gs`) still reach a test save only:
-  they need the probe's `gameScript` setting, which `launch` / `load` give a test save only. `--user-asked` is still parsed on `speed`, `run`, `pause`, `calendar-speed` and `eval` (old
-  scripts) and has no effect there. What a mod's command (or an `event`) does is up to that mod: tf3ctl's
-  refusals below cover tf3ctl's own commands, not a mod command that saves.
+  on the user's own saves too (`eval --write` only with `--user-asked`, see `eval`): tf3ctl sends `_coop` (the
+  coop's owner) and the mod takes it in place of a test save's name. The mod takes any non-blank `_coop` as it
+  comes (it cannot read the launch record): tf3ctl drops a `_coop` written by hand and names it only after its
+  own coop check, so the check is tf3ctl's. The game-script forms (`running-costs --where script`, `eval --gs`)
+  still reach a test save only: they need the probe's `gameScript` setting, which `launch` / `load` give a test save
+  only. `--user-asked` is still parsed on `speed`, `run`, `pause` and `calendar-speed` (old scripts) and has no
+  effect there; it counts only for `save` and `eval --write` with a person's save loaded. What a mod's command (or
+  an `event`) does is up to that mod: tf3ctl's refusals below cover tf3ctl's own commands, not a mod command that saves.
 - `save` only to a test save's name (`testSavePrefixes`, and with `testSaveDigitFirst` one digit first,
   `3-probe`); never another name, not even with `--user-asked`. With a person's save loaded (a name not of that
   kind, a new game, or unknown), a save to a new test name needs `--user-asked` too.

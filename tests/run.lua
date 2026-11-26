@@ -9934,7 +9934,7 @@ test("core.lightsOffRequest: node, dryRun, a test save's name (a second fence); 
 	end
 end)
 
-test("core.testSaveOrCoop: a non-blank coop owner, or a test save's name; lightsOff, runningCostsSet, evalWrite in coop", function()
+test("core.testSaveOrCoop: a non-blank coop owner, or a test save's name; lightsOff, runningCostsSet, evalWrite (_userAsked) in coop", function()
 	truthy(core.testSaveOrCoop("aom-eu-1900", nil, "alice")); truthy(core.testSaveOrCoop(nil, nil, "alice"))
 	truthy(core.testSaveOrCoop("probe-x", nil, nil)); truthy(core.testSaveOrCoop("shot-1", { prefixes = { "shot-" } }, ""))
 	for _, coop in ipairs({ "", "  ", true, 5, false }) do
@@ -9956,13 +9956,31 @@ test("core.testSaveOrCoop: a non-blank coop owner, or a test save's name; lights
 	truthy(select(2, core.runningCostRequestChecked(p)):find("test saves only", 1, true), "the script's check: no coop, no test save")
 	truthy(select(2, core.runningCostsArgs({ model = 101, ops = { { field = "runningCosts", scale = 2 } },
 		_testSave = "aom-eu-1900", _coop = "" }, true)):find("test saves only", 1, true))
-	-- eval --write: the same, through evalRequest and evalRequestChecked
-	local e = core.evalArgs({ code = "return 1", _testSave = "aom-eu-1900", _coop = "alice" }, true)
-	truthy(e); eq(e.coop, "alice")
+	-- eval --write: the same, through evalRequest and evalRequestChecked, but on a person's save only with
+	-- _userAsked (tf3ctl's --user-asked): its code could reach the real saveGame / deleteSavegame
+	local no, why = core.evalArgs({ code = "return 1", _testSave = "aom-eu-1900", _coop = "alice" }, true)
+	eq(no, nil); truthy(why:find("needs --user-asked", 1, true), why)
+	for _, ua in ipairs({ "yes", 1, false }) do
+		eq(core.evalArgs({ code = "return 1", _testSave = "aom-eu-1900", _coop = "alice", _userAsked = ua }, true), nil,
+			tostring(ua))
+	end
+	local e = core.evalArgs({ code = "return 1", _testSave = "aom-eu-1900", _coop = "alice", _userAsked = true }, true)
+	truthy(e); eq(e.coop, "alice"); eq(e.userAsked, true)
 	local q = core.evalRequest(8, e, true)
-	eq(q.coop, "alice"); truthy(core.evalRequestChecked(q, true))
-	q.coop = "   "
+	eq(q.coop, "alice"); eq(q.userAsked, true); truthy(core.evalRequestChecked(q, true))
+	q.userAsked = nil
+	truthy(select(2, core.evalRequestChecked(q, true)):find("needs --user-asked", 1, true), "the script's check too")
+	q.userAsked, q.coop = true, "   "
 	truthy(select(2, core.evalRequestChecked(q, true)):find("test saves only", 1, true))
+	eq(core.evalArgs({ code = "return 1", _testSave = "aom-eu-1900", _userAsked = true }, true), nil,
+		"no coop: _userAsked alone does not widen it")
+	-- a new game (no save name yet) in coop: as a person's save
+	eq(core.evalArgs({ code = "return 1", _testSave = "", _coop = "alice" }, true), nil)
+	eq(core.evalArgs({ code = "return 1", _testSave = "", _coop = "alice", _userAsked = true }, true).userAsked, true)
+	-- a test save in coop: no _userAsked needed
+	local t = core.evalArgs({ code = "return 1", _testSave = "probe-x", _coop = "alice" }, true)
+	truthy(t); eq(t.coop, "alice"); eq(t.userAsked, nil)
+	truthy(core.evalRequestChecked(core.evalRequest(9, t, true), true))
 	eq(core.evalArgs({ code = "return 1", _coop = "alice" }, false).coop, nil, "eval without write: no coop needed")
 end)
 

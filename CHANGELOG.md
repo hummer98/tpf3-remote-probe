@@ -22,12 +22,14 @@ is separate and does not follow the release version.
 - Coop is no longer guarded beyond the saves: in this `--owner`'s coop every command goes but `quit`, `load`,
   `newgame` (and so `restart`), which stay the user's, and `modhub validate` / `publish`. `tool`, `buy`, `line`,
   `sell`, `terrain`, `town`, `connect`, `script-event`, `window --close-all` and the rest now go, and `speed`, `run`,
-  `pause`, `calendar-speed` and `eval --write` no longer need `--user-asked` (still parsed, no effect). The commands
-  for test saves only (`road --ignore-errors`, `lights --off`, `running-costs` writes, `eval --write`) go on the
-  person's save too: tf3ctl sends `_coop` (the coop's owner) and the mod takes it in place of a test save's name;
-  their answers name it in `coop`. Kept: `save` only to a test save's name (and `--user-asked` for that on a
-  person's save), the force mark after a forced road, the change count and `saveNote`, the refusals of an expired
-  or malformed mark and of another client's coop. Why: the user's save stays as it was, so changing the running game
+  `pause` and `calendar-speed` no longer need `--user-asked` (still parsed, no effect). The commands for test saves
+  only (`road --ignore-errors`, `lights --off`, `running-costs` writes, `eval --write`) go on the person's save too:
+  tf3ctl sends `_coop` (the coop's owner; it drops one written by hand, so the mod takes it as it comes) and the mod
+  takes it in place of a test save's name; their answers name it in `coop`. Kept: `save` only to a test save's name
+  (and `--user-asked` for that on a person's save), `--user-asked` for `eval --write` on a person's save (its code
+  runs with every global and could reach the real save and delete, whose replacement is best effort: tf3ctl refuses
+  it without, exit 4 `"refused": "coop"`, and the mod checks `_userAsked` again), the force mark after a forced
+  road, the change count and `saveNote`, the refusals of an expired or malformed mark and of another client's coop. Why: the user's save stays as it was, so changing the running game
   together needs no more fences than that (D-20261126-08).
 - `town size --factors`: each factor may be 0-25 (was 0-5). Measured 2026-11-26: 20,20,20 sent with updateAll was
   taken, 40 steps took a town from 384 to 719 buildings, a year later the factors were still 20, with no error.

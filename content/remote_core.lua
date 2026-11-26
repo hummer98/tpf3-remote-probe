@@ -1191,7 +1191,9 @@ function M.testSaveRules(rules)
 end
 -- the test-save-only commands' second fence (road ignoreErrors, lightsOff, runningCostsSet, evalWrite): a test save's
 -- name, or coop: the --owner whose coop is on the running game (tf3ctl's _coop, 2026-11-26: in coop these go to the
--- person's save too; tf3ctl keeps the person's saves by refusing a save to their names). Both are tf3ctl's word
+-- person's save too; tf3ctl keeps the person's saves by refusing a save to their names). Both are tf3ctl's word:
+-- any non-blank _coop is taken as it comes, since tf3ctl's send drops a _coop written by hand and names it again
+-- only when its own coop check passed (the mod cannot read the launch record to check it)
 function M.testSaveOrCoop(name, rules, coop)
 	if type(coop) == "string" and coop:match("%S") then return true end
 	return M.isTestSaveName(name, rules)
@@ -5081,7 +5083,10 @@ M.EVAL_SAVE_NAMES = { "saveGame", "deleteSavegame" }
 M.EVAL_SAVE_REFUSAL = "eval does not save: use tf3ctl save"
 
 -- args: code (a string), depth, maxChars, gs (bool); write: evalWrite, also a test save's name in _testSave.
--- returns { code, depth, maxChars, gs, testSave, testSaveRules } or nil and why
+-- In coop (_coop) evalWrite goes to a person's save only with _userAsked (tf3ctl's --user-asked): its code can
+-- reach the real saveGame / deleteSavegame (their replacement is best effort), so it could write over the person's
+-- save, the one thing coop still keeps
+-- returns { code, depth, maxChars, gs, testSave, testSaveRules, coop, userAsked } or nil and why
 function M.evalArgs(args, write)
 	args = type(args) == "table" and args or {}
 	local code = args.code
@@ -5104,12 +5109,15 @@ function M.evalArgs(args, write)
 		out.maxChars = n
 	end
 	if write then
-		if not M.testSaveOrCoop(args._testSave, args._testSaveRules, args._coop) then
+		local userAsked = args._userAsked == true
+		if not M.testSaveOrCoop(args._testSave, args._testSaveRules, userAsked and args._coop or nil) then
 			return nil, "evalWrite is for test saves only (tf3ctl names the loaded save; " .. tostring(args._testSave)
-				.. " is no test save's name): nothing run"
+				.. " is no test save's name" .. (coopOwner(args._coop) and "; in coop a person's save needs "
+				.. "--user-asked" or "") .. "): nothing run"
 		end
 		out.testSave, out.testSaveRules = args._testSave, M.testSaveRules(args._testSaveRules)
 		out.coop = coopOwner(args._coop)
+		out.userAsked = userAsked or nil
 	end
 	return out
 end
@@ -5120,7 +5128,7 @@ function M.evalRequest(req, a, write)
 	local prefixes = {}
 	for i, x in ipairs(rules.prefixes) do prefixes[i] = x end
 	return { req = req, code = a.code, depth = a.depth, maxChars = a.maxChars, write = write == true,
-		testSave = a.testSave, coop = coopOwner(a.coop),
+		testSave = a.testSave, coop = coopOwner(a.coop), userAsked = a.userAsked == true or nil,
 		testSaveRules = { prefixes = prefixes, digitFirst = rules.digitFirst == true } }
 end
 
@@ -5130,7 +5138,7 @@ function M.evalRequestChecked(p, write)
 	if req == nil then return nil, "req must be a number" end
 	if (p.write == true) ~= (write == true) then return nil, "the request's write does not match the event's name" end
 	local a, err = M.evalArgs({ code = p.code, depth = p.depth, maxChars = p.maxChars, _testSave = p.testSave,
-		_testSaveRules = p.testSaveRules, _coop = p.coop }, write)
+		_testSaveRules = p.testSaveRules, _coop = p.coop, _userAsked = p.userAsked }, write)
 	if not a then return nil, err end
 	a.req = req
 	return a

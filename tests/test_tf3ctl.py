@@ -6948,6 +6948,8 @@ class EvalTest(_ForceBase):
             self.loaded(save)
             a = self.sent("evalWrite", {"code": "1"})
             self.assertEqual((a["_testSave"], a["_owner"]), (save, "alice"))
+            self.assertNotIn("_coop", a)
+            self.assertNotIn("_userAsked", self.sent("evalWrite", {"code": "1", "_userAsked": True}))
             self.assertEqual(a["_testSaveRules"], tf3ctl.test_save_rules())
         res = tf3ctl.note_save_change("evalWrite", {"code": "1"}, {"ok": True})
         self.assertEqual(res["saveNote"], tf3ctl.EVAL_WRITE_NOTE)
@@ -6957,6 +6959,12 @@ class EvalTest(_ForceBase):
 
     def test_write_refused_on_a_persons_save_a_new_game_or_an_unknown_one(self):
         self.loaded("aom-eu-1900")
+        tf3ctl.USER_ASKED = True  # outside coop --user-asked does not widen it, nor marks a test save's
+        self.refused("evalWrite", {"code": "1"}, "'aom-eu-1900' is not a test save's")
+        self.loaded("probe-x")
+        self.assertNotIn("_userAsked", self.sent("evalWrite", {"code": "1"}))
+        self.loaded("aom-eu-1900")
+        tf3ctl.USER_ASKED = False
         e = self.refused("evalWrite", {"code": "1"}, "'aom-eu-1900' is not a test save's")
         self.assertIsInstance(e, tf3ctl.EvalRefused)
         self.assertEqual(e.refused, "eval")
@@ -6967,14 +6975,28 @@ class EvalTest(_ForceBase):
         self.loaded("aom-eu-1900")  # a _testSave written by hand is dropped and named again from the log
         self.refused("evalWrite", {"code": "1", "_testSave": "probe-x"}, "is not a test save's")
 
-    def test_write_goes_in_my_coop_without_the_user_asked_also_on_a_persons_save(self):
-        """2026-11-26 (D-20261126-08): no --user-asked, any save; saving stays coop's rule."""
+    def test_write_in_my_coop_needs_the_user_asked_on_a_persons_save_only(self):
+        """2026-11-26 (D-20261126-08): any save in coop, but on the person's own save only with --user-asked: the
+        code runs with every global and could reach the real save, which coop still keeps; saving stays coop's
+        rule."""
         tf3ctl.coop_start(60, "look together")
-        a = self.sent("evalWrite", {"code": "1"})
+        a = self.sent("evalWrite", {"code": "1"})  # a test save: no --user-asked
         self.assertEqual((a["_testSave"], a["_coop"]), ("probe-flat-base", "alice"))
-        self.loaded("aom-eu-1900")  # the person's own save
+        self.assertNotIn("_userAsked", a)
+        for save in ("aom-eu-1900", "", None):  # the person's own save, a new game, not known
+            self.loaded(save)
+            e = self.refused("evalWrite", {"code": "1"}, "add --user-asked only when the user asked for it")
+            self.assertIsInstance(e, tf3ctl.CoopRefused)
+            self.assertEqual(e.refused, "coop")
+            # a mark written by hand does not stand for --user-asked
+            self.refused("evalWrite", {"code": "1", "_userAsked": True}, "--user-asked")
+        self.loaded("aom-eu-1900")
+        tf3ctl.USER_ASKED = True
         a = self.sent("evalWrite", {"code": "1"})
-        self.assertEqual((a["_testSave"], a["_coop"]), ("aom-eu-1900", "alice"))
+        self.assertEqual((a["_testSave"], a["_coop"], a["_userAsked"]), ("aom-eu-1900", "alice", True))
+        self.assertNotIn("_userAsked", self.sent("eval", {"code": "1"}), "read only: no mark")
+        self.assertNotIn("_userAsked", self.sent("lightsOff", {"node": 1}), "only eval --write carries it")
+        tf3ctl.USER_ASKED = False
         with self.assertRaises(tf3ctl.CoopRefused):  # their save is not written over
             tf3ctl.check_game_owner("save", {"name": "aom-eu-1900"})
         # another client, not in the coop: the coop mark refuses it before the save's name

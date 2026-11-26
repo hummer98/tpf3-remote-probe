@@ -1555,7 +1555,7 @@ python3 tools/tf3ctl.py test my_scenario.json --excerpt 500 # 結果に残す答
 python3 tools/tf3ctl.py eval 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # 読むだけ、どのセーブでも
 python3 tools/tf3ctl.py eval --file probe.lua [--depth 6] [--max-chars 200000]               # コードをファイルから
 python3 tools/tf3ctl.py eval --gs 'api.engine.getComponent(12345, api.type.ComponentType.NAME)'   # ゲームスクリプトの中で
-python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべてのグローバル: 試験用のセーブだけ
+python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべてのグローバル: 試験用のセーブだけ (coop では人のセーブも --user-asked で)
 ```
 
 コードはまず式として (`return CODE`)、だめなら文として compile します (文なら `return x` で値を返します)。
@@ -1593,8 +1593,12 @@ python3 tools/tf3ctl.py eval --write 'CODE' [--gs] [--user-asked]    # すべて
 - **`--write`。** コードはすべてのグローバル (`game.interface`、`api.cmd` など) のある環境で動きます。
   - 試験用のセーブ (`testSavePrefixes`) を読み込んでいるときだけ送ります。tf3ctl がゲームのログから読み込んだ
     セーブの名前を送り、MOD ももう一度確認します。ほかのセーブでは断ります: 終了コード 4、`"refused": "eval"`。
-  - 共同作業 (coop) の間は、coop の相手のクライアントからなら、人のセーブでも `--user-asked` なしで送ります
-    (2026-11-26 から)。ほかのクライアントの coop と、期限切れ・壊れた印では、ほかのゲームを変える命令と同じく断ります。
+  - 共同作業 (coop) の間は、coop の相手のクライアントからなら、どのセーブでも送ります (2026-11-26 から)。ただし
+    人のセーブ (試験用の形でない名前、新しいゲーム、分からない) では、ユーザーに頼まれたときの `--user-asked` が
+    要ります: コードはすべてのグローバルのある環境で動くので、本物の保存・削除に届き (下の差し替えは「できる範囲」)、
+    人のセーブを上書きできるため。付けなければ tf3ctl が断ります (終了コード 4、`"refused": "coop"`、何も送らない)。
+    付けると tf3ctl が `_userAsked` を送り、MOD ももう一度確認します。ほかのクライアントの coop と、期限切れ・
+    壊れた印では、ほかのゲームを変える命令と同じく断ります。
   - ゲームを変える命令に数え (owner の検査)、答えに `saveNote` が付きます。コードが何をしたかはツールには
     分からず、保存すると残ります。
   - GUI では、速度ボタンのレシピの中でなく、プローブの `guiUpdate` の中で動きます。レシピの中でしか動かない
@@ -1704,7 +1708,7 @@ tf3ctl.py --owner bob coop end
 ```
 
 - `coop start` は、この owner が起動したゲームか、人が Steam から起動したゲーム (動いているゲームの記録が無い。記録は owner の無い、共同作業の印だけの形になる) に付けます。ほかの owner のゲームには付けません。ほかのクライアントの印が効いている間も付けません (`--other-owner-ok` でも同じ)。同じ owner がもう一度打つと延長です。`--reason` は必須 (1〜200 字)、`--minutes` は 1〜10080 (7 日)。延長しても、印の変更の回数は引き継ぎます。
-- 効いている間、この owner は下の少しを除く全部の命令を送れます (2026-11-26 から。セーブが残っていれば、ゲーム中の変更はそれ以上守らない): 読む命令、`camera`、`window` (`--close-all` も)、`event`、`build`、`road`、`tool`、`buy`、`line`、`terrain`、`town`、`speed`、`run`、`pause`、`calendar-speed`、ほかの MOD の命令 (`mod`。`modChange` で送るもの) など。`--user-asked` は要りません。試験用のセーブ向けの命令 (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み・`eval --write`) も、ユーザーのセーブで通ります: tf3ctl が `_coop` (coop の owner) を送り、MOD はそれを試験用のセーブの名前の代わりに受けます。ゲームスクリプトの側の形 (`running-costs --where script`、`eval --gs`) は、これまでどおり試験用のセーブだけです: probe の設定 `gameScript` が要り、`launch` / `load` はそれを試験用のセーブにしか付けないため。`speed`・`run`・`pause`・`calendar-speed`・`eval` の `--user-asked` は (古い台本のために) 受け付けますが、何も変えません。
+- 効いている間、この owner は下の少しを除く全部の命令を送れます (2026-11-26 から。セーブが残っていれば、ゲーム中の変更はそれ以上守らない): 読む命令、`camera`、`window` (`--close-all` も)、`event`、`build`、`road`、`tool`、`buy`、`line`、`terrain`、`town`、`speed`、`run`、`pause`、`calendar-speed`、ほかの MOD の命令 (`mod`。`modChange` で送るもの) など。`--user-asked` は要りません。試験用のセーブ向けの命令 (`road --ignore-errors`・`lights --off`・`running-costs` の書き込み・`eval --write`) も、ユーザーのセーブで通ります (`eval --write` は `--user-asked` を付けたときだけ。`eval` の節): tf3ctl が `_coop` (coop の owner) を送り、MOD はそれを試験用のセーブの名前の代わりに受けます。MOD は空白でない `_coop` をそのまま信じます (起動の記録を読めないため): tf3ctl は手で書いた `_coop` を捨て、自分の coop の検査を通ったときだけ付け直すので、検査は tf3ctl の側です。ゲームスクリプトの側の形 (`running-costs --where script`、`eval --gs`) は、これまでどおり試験用のセーブだけです: probe の設定 `gameScript` が要り、`launch` / `load` はそれを試験用のセーブにしか付けないため。`speed`・`run`・`pause`・`calendar-speed` の `--user-asked` は (古い台本のために) 受け付けますが、何も変えません。効くのは、人のセーブを読み込んでいるときの `save` と `eval --write` だけです。
   MOD の命令 (と `event`) が何をするかは、その MOD 次第です。下の拒否は tf3ctl 自身の命令に効くもので、保存する MOD の命令は止めません。
 - `save` は試験用のセーブの名前にだけ (`testSavePrefixes`。`testSaveDigitFirst` なら数字 1 文字で始まる名前 `3-probe` も)。ほかの名前には、`--user-asked` でも保存しません。人のセーブ (その形でない名前、新しいゲーム、分からない) が読み込まれているときは、新しい試験用の名前への保存にも `--user-asked` が要ります。
 - ユーザーがするもので断ります: `quit` (`--kill` も、`restart` の中の quit も)、`load`、`newgame`。ほかに `modhub validate` / `publish` (メインメニューだけのもので、共有のゲームの用ではない)。終了コード 4、`"refused": "coop"`、何も送りません。文に理由が出ます。

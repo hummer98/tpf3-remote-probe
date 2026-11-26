@@ -67,7 +67,8 @@ mod's hello file and waits for the answer file. Answers carry one JSON string; t
             # any save. The value as JSON (cut at the depth and size, marked), print's lines, or {kind: compile |
             # runtime, error}. No timeout (the game's Lua has no debug.sethook): a loop that never ends hangs the game.
             # --gs: in the probe's game script (needs gameScript=2, as running-costs)
-  tf3ctl.py eval --write 'CODE'   # every global: test saves only (in this owner's coop any save);
+  tf3ctl.py eval --write 'CODE' [--user-asked]   # every global: test saves only (in this owner's coop any save,
+            # a person's only with --user-asked);
             # app.saveGame / deleteSavegame raise (best effort: the real app stays reachable through require("_G"))
   tf3ctl.py finance [--since GAMETIME] [--vehicles 601,602] [--columns 4]   # read only: the finance table's rows
             # per carrier (MAINTENANCE / VEHICLE = the running costs), and calculateBalance of the fleet and vehicles
@@ -213,9 +214,11 @@ launch record then carries "coop": {"with", "reason", "since", "until"[, "modifi
 "until", while its pid is the running game. Meanwhile this owner may send any command but these (2026-11-26: the
 user's saves are what matters): save goes only to a test save's name, and with a person's save loaded only with
 --user-asked; quit, load, newgame and restart are the user's, and modhub validate / publish are not sent: exit 4,
-"refused": "coop". The rest goes, without --user-asked: speed, run, pause, calendar-speed, window --close-all, the
-debug commands, and the test-save-only ones (road --ignore-errors, lights --off, running-costs writes, eval
---write) on the person's save too (the mod is told it is this owner's coop: _coop). A game-changing command on a
+"refused": "coop". eval --write on a person's save needs --user-asked too (its code runs with every global, so it
+could reach the real save). The rest goes, without --user-asked: speed, run, pause, calendar-speed, window
+--close-all, the debug commands, and the test-save-only ones (road --ignore-errors, lights --off, running-costs
+writes) on the person's save too (the mod is told it is this owner's coop: _coop; tf3ctl names it, a _coop written
+by hand is dropped). A game-changing command on a
 person's save sets "modified" and counts "changes"; status and coop end say so. coop end removes the mark.
 A mark whose until has passed, or a malformed one (no client, until not a finite number or more than 7 days ahead),
 on the running game is the strict side: the user may still be playing, so its launcher and client send no
@@ -990,7 +993,7 @@ COOP_USER_ONLY = {"quit", "load", "newgame"}
 COOP_NOT_SENT = {"modhubValidate", "modhubPublish"}
 COOP_UNCOUNTED = {"camera", "window", "speed", "save", "calendarSpeedSet"}  # they leave the world as it was
 LOADED_ANCHORS = (b"Application startup", b"Loading game from file", b"Start new game")
-USER_ASKED = False  # set by main from --user-asked (it widens save during coop; nothing else needs it)
+USER_ASKED = False  # set by main from --user-asked (during coop with a person's save loaded: save, eval --write)
 
 
 class IgnoreErrorsRefused(OwnerRefused):
@@ -1092,7 +1095,7 @@ class EvalRefused(OwnerRefused):
 
 def eval_write_check(cmd, args):
     """Before evalWrite (eval --write): the loaded save's name, which the mod checks again (_testSave), when it is a
-    test save's or this owner's coop is on (any save then, as the other test-save commands); else EvalRefused,
+    test save's or this owner's coop is on (any save then, a person's with --user-asked: coop_check); else EvalRefused,
     nothing sent. None for any other command: eval alone (its environment has no writers) goes to any save."""
     if cmd != "evalWrite":
         return None
@@ -1363,6 +1366,13 @@ def coop_check(cmd, args, coop):
         if not test and not USER_ASKED:
             raise CoopRefused(head + "their game (%s) is not saved, not even to a new name: add --user-asked only "
                               "when the user asked for it" % (repr(save) if save else "no test save loaded"))
+    elif cmd == "evalWrite" and not test and not USER_ASKED:
+        # its code runs with every global, so it can reach the real saveGame / deleteSavegame (their replacement is
+        # best effort) and write over the person's save, the one thing coop keeps; --user-asked: send marks it for
+        # the mod (_userAsked)
+        raise CoopRefused(head + "eval --write on their game (%s) runs with every global, so its code could reach "
+                          "the real save and delete (their replacement is best effort): add --user-asked only when "
+                          "the user asked for it" % (repr(save) if save else "no test save loaded"))
     elif cmd in COOP_USER_ONLY:
         raise CoopRefused(head + "'%s' is theirs to do (which game runs is the user's); ask the user, or end coop "
                           "with them first (coop end)" % cmd)
@@ -1466,7 +1476,7 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
     test_save = test_save_checks(cmd, args)
     folder = folder or exchange_dir()
     args = dict(args or {})
-    for key in ("_testSave", "_testSaveRules", "_modhub", "_coop"):
+    for key in ("_testSave", "_testSaveRules", "_modhub", "_coop", "_userAsked"):
         args.pop(key, None)  # only this function names them
     if test_save is not None:
         # the mod checks the name again, by the same rules (the configuration's: the mod cannot read the file)
@@ -1475,6 +1485,8 @@ def send(cmd, args=None, timeout=20, final_tag=None, on_progress=None, folder=No
         if isinstance(other, dict) and other.get("coop") is not None:
             # this owner's coop (coop_check passed it): the mod lets it go to any save, as the tool did
             args["_coop"] = OWNER
+            if cmd == "evalWrite" and USER_ASKED:
+                args["_userAsked"] = True  # coop_check let it go to a person's save: the mod checks it again
     if cmd in MODHUB_COMMANDS:
         args["_modhub"] = modhub_config()  # the folders the mod's validate and publish take
     if OWNER:
@@ -6178,15 +6190,19 @@ def make_parser():
     s = sub.add_parser("speed")
     s.add_argument("speed", type=int)
     s.add_argument("--force", action="store_true", help="above the game's estimate of what it can sustain")
-    s.add_argument("--user-asked", action="store_true", help="no effect (kept for old scripts): during coop it goes without it, since 2026-11-26")
+    s.add_argument("--user-asked", action="store_true", help="no effect here (kept for old scripts): during "
+                   "coop it goes without it, since 2026-11-26; it counts only for save and eval --write")
     cs = sub.add_parser("calendar-speed", help="read (no value) or set the base's calendar speed slider (0.25x-4x)")
     cs.add_argument("factor", nargs="?", type=float, help="one of the slider's steps: 0 (paused), 0.25, 0.5, 1, 2, 4")
     cs.add_argument("--millis-per-day", type=int, help="the engine's value itself: game ms per calendar day (0: paused)")
-    cs.add_argument("--user-asked", action="store_true", help="no effect (kept for old scripts): during coop it goes without it, since 2026-11-26")
+    cs.add_argument("--user-asked", action="store_true", help="no effect here (kept for old scripts): during "
+                   "coop it goes without it, since 2026-11-26; it counts only for save and eval --write")
     pz = sub.add_parser("pause")
-    pz.add_argument("--user-asked", action="store_true", help="no effect (kept for old scripts): during coop it goes without it, since 2026-11-26")
+    pz.add_argument("--user-asked", action="store_true", help="no effect here (kept for old scripts): during "
+                   "coop it goes without it, since 2026-11-26; it counts only for save and eval --write")
     r = sub.add_parser("run")
-    r.add_argument("--user-asked", action="store_true", help="no effect (kept for old scripts): during coop it goes without it, since 2026-11-26")
+    r.add_argument("--user-asked", action="store_true", help="no effect here (kept for old scripts): during "
+                   "coop it goes without it, since 2026-11-26; it counts only for save and eval --write")
     g = r.add_mutually_exclusive_group(required=True)
     g.add_argument("--days", type=int)
     g.add_argument("--months", type=int)
@@ -6812,19 +6828,22 @@ def make_parser():
                         "read its value (as JSON) and print output back. Read only: the code runs in an environment "
                         "without api.cmd, api.gui, app, game, io and the functions under api named as writers (a "
                         "userdata's own methods are not covered), on any save. --write: with every global, on test "
-                        "saves only (in this owner's coop any save); the save entry points raise")
+                        "saves only (in this owner's coop any save, a person's with --user-asked); the save entry "
+                        "points raise")
     ev.add_argument("code", nargs="?", help="the code: an expression ('api.engine.getComponent(1, 1)') or "
                     "statements ending in return")
     ev.add_argument("--file", help="read the code from this file instead")
     ev.add_argument("--write", action="store_true", help="changes the save's contents (saving keeps it); run with "
-                    "every global (test saves only; in this owner's coop any save)")
+                    "every global (test saves only; in this owner's coop any save, a person's with --user-asked)")
     ev.add_argument("--gs", action="store_true", help="run in the probe's game script (needs the mod setting "
                     "gameScript: --param hummer_remote_probe:gameScript=2 at launch / load) instead of the GUI's "
                     "Lua state")
     ev.add_argument("--depth", type=int, help="table levels in the answer (default 6, 1-%d)" % EVAL_DEPTH_MAX)
     ev.add_argument("--max-chars", type=int, help="characters of JSON in the answer (default 200000, %d-%d)"
                     % (EVAL_CHARS_MIN, EVAL_CHARS_MAX))
-    ev.add_argument("--user-asked", action="store_true", help="no effect (kept for old scripts): during coop it goes without it, since 2026-11-26")
+    ev.add_argument("--user-asked", action="store_true", help="during coop with a person's save loaded: eval "
+                    "--write, only when the user asked for it (its code could reach the real save); test saves and "
+                    "outside coop need none")
     mh = sub.add_parser("modhub", help="My Mods (the staging area) from the main menu: status, validate, publish "
                                        "(one new mod, or an update of one on mod.io)")
     msub = mh.add_subparsers(dest="action", required=True)
