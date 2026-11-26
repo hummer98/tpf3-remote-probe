@@ -1109,6 +1109,39 @@ class EndToEndTest(unittest.TestCase):
         code, res = self.ctl("camera", "--set", "1,2", "--entity", "3")
         self.assertEqual(code, 2, "refused by the tool")
 
+    def test_9x_camera_free(self):
+        # the same fence as camera --set: any argument changes the game, none only reads
+        self.assertTrue(tf3ctl.changes_game("camera", {"free": "on"}))
+        self.assertTrue(tf3ctl.changes_game("camera", {"eye": "1,2,3", "look": "4,5,6"}))
+        self.assertFalse(tf3ctl.changes_game("camera", {}))
+        # eye below the ground, no switch: placed at once, getEye read back
+        code, res = self.ctl("camera", "--eye", "100,0,-20", "--look=-1,0,-30")  # a negative X needs the = form
+        self.assertEqual(code, 0, res)
+        self.assertAlmostEqual(res["camera"]["eye"]["z"], -20, places=6)
+        self.assertEqual(res["sent"]["method"], "both")
+        self.assertIn("not checked in a game", res["note"])
+        # toggle through the speed control: switched, the state an estimate
+        code, res = self.ctl("camera", "--free", "on", "--via", "toggle")
+        self.assertEqual(code, 0, res)
+        self.assertEqual((res["freeCam"]["on"], res["freeCam"]["source"], res["freeCam"]["action"]),
+                         (True, "estimated", "toggled"))
+        code, res = self.ctl("camera", "--free", "on", "--via", "toggle")
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["freeCam"]["action"], "none", "a second on is not toggled again")
+        code, res = self.ctl("camera")
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["camera"]["freeCam"])
+        # the tool's way needs the base's tool stack, which this fake speed control has not
+        code, res = self.ctl("camera", "--free", "off")
+        self.assertEqual(code, 1, res)
+        self.assertIn("toolStack", res["error"])
+        for bad in (["--eye", "1,2,3"], ["--look", "1,2,3"], ["--eye", "1,2", "--look", "1,2,3"],
+                    ["--eye", "a,b,c", "--look", "1,2,3"], ["--eye", "1,2,nan", "--look", "1,2,3"],
+                    ["--via", "toggle"], ["--method", "data"], ["--free", "off", "--eye", "1,2,3", "--look", "4,5,6"],
+                    ["--free", "on", "--set", "1,2"], ["--free", "on", "--distance", "5"]):
+            code, res = self.ctl("camera", *bad)
+            self.assertEqual(code, 2, bad)
+
     def test_9x_build_tool(self):
         code, res = self.ctl("build-tool", "--res", "station/street/bus_stop.con", "--template", "2", "--seconds", "5")
         self.assertEqual(code, 0, res)

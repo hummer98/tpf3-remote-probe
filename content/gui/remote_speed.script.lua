@@ -65,10 +65,63 @@ local function warnOnce(warnedRef, key, msg)
 	print("[remote_probe] " .. msg) -- main thread (join): plain print
 end
 
+-- the free camera (main thread, in the join): f = { on, via }. via "tool", as the base's eye button and radial
+-- menu: push free_cam_options.FreeCamTool on the tool stack (its push toggles the free camera), or pop it; not
+-- again when the stack already has it on top (a second push would toggle the camera back). via "toggle":
+-- api.gui.camera.toggleFreeCamera() alone (the guiUpdate script does not send one that would undo its estimate).
+-- report.freeCam: what was done, and whether the tool was the active one before and after (nil: not read).
+-- Returns the failure (text) or nil.
+local function performFreeCam(f, gameCtx, report)
+	local info = {}
+	if report then report.freeCam = info end
+	local ok, err = pcall(function()
+		if f.via == "toggle" then
+			api.gui.camera.toggleFreeCamera()
+			info.action = "toggled"
+			return
+		end
+		if not gameCtx or not gameCtx.toolStack then error("no gameCtx.toolStack in the speed control's params") end
+		-- the base's own tool: react keeps each registered tool by name (_react.tools), and the module is the way
+		-- in when that is not reachable (a second copy of the module would fail: RegisterTool refuses a name twice)
+		local tools = type(_react) == "table" and type(_react.tools) == "table" and _react.tools or nil
+		local tool = tools and tools[core.FREECAM_TOOL_NAME]
+		if type(tool) ~= "table" then
+			local fc = req(core.FREECAM_MODULE)
+			tool = type(fc) == "table" and fc[core.FREECAM_FIELD] or nil
+		end
+		if type(tool) ~= "table" then error(core.FREECAM_MODULE .. "." .. core.FREECAM_FIELD .. " is not a tool") end
+		local stack = gameCtx.toolStack:get():getApi()
+		-- nil: the stack does not say (no getActiveTool, or it failed)
+		local function active()
+			if type(stack.getActiveTool) ~= "function" then return nil end
+			local okA, t = pcall(stack.getActiveTool)
+			if not okA then return nil end
+			return t == tool or (type(t) == "table" and t.name ~= nil and t.name == tool.name)
+		end
+		info.activeBefore = active()
+		if f.on then
+			if info.activeBefore == true then
+				info.action = "none"
+			else
+				stack.push(tool, nil, { gameCtx = gameCtx }, true) -- as the base: allowStacking
+				info.action = "pushed"
+			end
+		elseif info.activeBefore == false then
+			info.action = "none"
+		else
+			stack.pop(tool, nil)
+			info.action = "popped"
+		end
+		info.activeAfter = active()
+	end)
+	if not ok then return "free camera failed: " .. tostring(err) end
+	return nil
+end
+
 -- the window, event or tool of one request (main thread, in the join). gameCtx: the base passes it in the speed
 -- control's params; its tool stack is what the base's own buttons push their tools onto.
 -- Returns the first failure (text) or nil: the guiUpdate script answers the command with it.
-local function perform(open, gameCtx, warnedRef)
+local function perform(open, gameCtx, warnedRef, report)
 	local first
 	local function failed(key, msg)
 		warnOnce(warnedRef, key, msg)
@@ -104,6 +157,10 @@ local function perform(open, gameCtx, warnedRef)
 		end)
 		local msg = "tool " .. t.module .. " failed: " .. tostring(err)
 		if not ok then failed(msg, msg) end
+	end
+	if open.freeCam then
+		local msg = performFreeCam(open.freeCam, gameCtx, report)
+		if msg then failed(msg, msg) end
 	end
 	return first
 end
@@ -145,8 +202,9 @@ local function performOpens(opens, seenRef, gameCtx, warnedRef)
 	for _, o in ipairs(opens) do -- oldest first (core.openRequests)
 		if seen == false or o.seq > seen then
 			seenRef.seq = o.seq
-			local err = perform(o, gameCtx, warnedRef)
-			reportOpens({ { seq = o.seq, error = err } }, warnedRef)
+			local entry = { seq = o.seq }
+			entry.error = perform(o, gameCtx, warnedRef, entry)
+			reportOpens({ entry }, warnedRef)
 			return
 		end
 	end

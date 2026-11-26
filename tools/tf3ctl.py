@@ -2789,11 +2789,39 @@ def cmd_start(ns, restart):
     return out
 
 
+FREECAM_OPTS = (("free", "--free"), ("eye", "--eye"), ("look", "--look"), ("method", "--method"),
+                ("via", "--via"), ("mouse", "--mouse"))
+
+
 def camera_args(ns):
-    """--set / --entity / --focus (+ --distance) as the mod's camera args; none = only read."""
+    """--set / --entity / --focus (+ --distance) as the mod's camera args; none = only read. The free camera
+    options (--free, --eye + --look, --method, --via, --mouse) go alone; the mod checks the values."""
     given = [x for x in (ns.set, ns.entity, ns.focus) if x is not None]
     if len(given) > 1:
         raise ToolError("give one of --set, --entity or --focus")
+    free = {key: getattr(ns, key, None) for key, _ in FREECAM_OPTS if getattr(ns, key, None) is not None}
+    if free:
+        if given or ns.distance is not None:
+            raise ToolError("--free, --eye, --look, --method, --via and --mouse do not go with --set, --entity, "
+                            "--focus or --distance")
+        if ("eye" in free) != ("look" in free):
+            raise ToolError("give --eye and --look together")
+        if "via" in free and "free" not in free:
+            raise ToolError("--via goes with --free")
+        if "method" in free and "eye" not in free:
+            raise ToolError("--method goes with --eye and --look")
+        if free.get("free") == "off" and "eye" in free:
+            raise ToolError("--eye and --look do not go with --free off")
+        for key in ("eye", "look"):
+            if key in free:
+                parts = free[key].split(",")
+                try:
+                    nums = [float(x) for x in parts]
+                except ValueError:
+                    nums = None
+                if nums is None or len(nums) != 3 or any(n != n or n in (float("inf"), float("-inf")) for n in nums):
+                    raise ToolError(f"--{key}: give X,Y,Z (three numbers, metres)")
+        return free
     if ns.distance is not None and ns.focus is None:
         raise ToolError("--distance goes with --focus (with --set it is the third number)")
     if ns.set is not None:
@@ -6215,6 +6243,16 @@ def make_parser():
     ca.add_argument("--entity", type=int, help="focus on this entity")
     ca.add_argument("--focus", metavar="X,Y,Z", help="focus on this point")
     ca.add_argument("--distance", type=float, help="with --focus (default: the distance now)")
+    ca.add_argument("--free", choices=("on", "off"), help="switch the free camera, as the base's eye button (its "
+                    "tool on the tool stack, through the speed control); not checked in a game yet")
+    ca.add_argument("--via", choices=("tool", "toggle"), help="with --free: tool (default, the base's way) or toggle "
+                    "(api.gui.camera.toggleFreeCamera alone; its state is only estimated)")
+    ca.add_argument("--eye", metavar="X,Y,Z", help="put the camera's eye here (with --look; Z may be under the ground; "
+                    "a negative X as --eye=-5,0,0); the answer reads getEye back")
+    ca.add_argument("--look", metavar="X,Y,Z", help="the point the eye looks at (with --eye)")
+    ca.add_argument("--method", choices=("data", "focus", "both"), help="how the eye is placed: data = setCameraData, "
+                    "focus = focusPosition (keeps Z), both = the one then the other (default)")
+    ca.add_argument("--mouse", choices=("attach", "detach"), help="the free camera's mouse attachment")
     bt = sub.add_parser("build-tool", help="open the construction menu's placing tool for one construction")
     bt.add_argument("--res", help="the construction's resName, e.g. depots/road/road_depot/road_depot.con")
     bt.add_argument("--template", type=int, help="the template number (menu tag resName@N)")

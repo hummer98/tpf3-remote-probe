@@ -761,11 +761,131 @@ function handlers.tool(c)
 end
 
 -- camera: x, y, distance, angle, pitch (getCameraData's Vec5f) and the height above the terrain
+-- eye (getEye: where the camera is, height included), center (getCenter: the point it looks at) and
+-- mouseAttached (isFreeCameraMouseAttached), each nil where the read fails; freeCam: this script's estimate of
+-- whether the free camera is on (no API reads it), nil before a free camera command of this game
+local function vec3(v)
+	if v == nil then return nil end
+	local x, y, z = tonumber(v.x), tonumber(v.y), tonumber(v.z)
+	if not (x and y and z) then return nil end
+	return { x = x, y = y, z = z }
+end
 local function cameraNow()
 	local cam = api.gui.camera
 	local v = cam.getCameraData()
 	local h = try(function() return cam.getHeightAboveTerrain() end)
-	return { x = v.x, y = v.y, distance = v.z, angle = v.w, pitch = v.q, heightAboveTerrain = h }
+	local eye = vec3(try(function() return cam.getEye() end))
+	local center = vec3(try(function() return cam.getCenter() end))
+	local mouse = try(function() return cam.isFreeCameraMouseAttached() end)
+	return { x = v.x, y = v.y, distance = v.z, angle = v.w, pitch = v.q, heightAboveTerrain = h, eye = eye,
+		center = center, mouseAttached = type(mouse) == "boolean" and mouse or nil,
+		freeCam = G.freeCam, freeCamSource = G.freeCam ~= nil and "estimated" or nil }
+end
+
+-- the answers of free camera commands still waiting to read the camera again (core.FREECAM_READ_SEC after the
+-- move, so the answer shows where the camera went rather than where it was): { id, at, fn }
+local camReads = {}
+local function stepCamReads()
+	if #camReads == 0 then return end
+	local t, keep = appTime(), {}
+	for _, r in ipairs(camReads) do
+		if t >= r.at then
+			local ok, err = pcall(r.fn)
+			if not ok then fail(r.id, "the camera was placed, but reading it again failed: " .. tostring(err)) end
+		else
+			keep[#keep + 1] = r
+		end
+	end
+	camReads = keep
+end
+
+-- the eye, the mouse, then the answer (after the free camera was switched, or at once without free). Direct GUI
+-- calls, as the camera command's own (this script runs on the main thread).
+local function freeCamPlace(c, fc, payload)
+	local cam = api.gui.camera
+	local calls = {}
+	if fc.eye then
+		local t = fc.target
+		payload.sent = { eye = fc.eye, look = fc.look, method = fc.method,
+			derived = { distance = t.distance, angle = t.angle, pitch = t.pitch } }
+		if fc.method == "data" or fc.method == "both" then
+			cam.setCameraData(api.type.Vec5f.new(t.x, t.y, t.distance, t.angle, t.pitch))
+			calls[#calls + 1] = "setCameraData"
+		end
+		if fc.method == "focus" or fc.method == "both" then
+			cam.focusPosition(api.type.Vec3f.new(t.x, t.y, t.z), t.distance)
+			calls[#calls + 1] = "focusPosition"
+		end
+	end
+	if fc.mouse then
+		local now = try(function() return cam.isFreeCameraMouseAttached() end)
+		local want = fc.mouse == "attach"
+		if type(now) ~= "boolean" then
+			payload.mouseNote = "isFreeCameraMouseAttached gave nothing; the attachment was left alone"
+		elseif now ~= want then
+			cam.toggleFreeCameraMouseAttachment()
+			calls[#calls + 1] = "toggleFreeCameraMouseAttachment"
+		end
+	end
+	payload.calls = calls
+	payload.cameraAtOnce = cameraNow()
+	camReads[#camReads + 1] = { id = c.id, at = appTime() + core.FREECAM_READ_SEC, fn = function()
+		payload.camera = cameraNow()
+		local e, want = payload.camera.eye, fc.eye
+		if e and want then
+			payload.eyeOff = math.sqrt((e.x - want.x) ^ 2 + (e.y - want.y) ^ 2 + (e.z - want.z) ^ 2)
+		end
+		answer(c.id, payload)
+	end }
+end
+
+-- args: free (on / off), via (tool / toggle), eye + look (x,y,z), method (data / focus / both), mouse (attach /
+-- detach); core.freeCamRequest checked them. free goes through the speed control (the tool stack is only there);
+-- the eye is placed once it answered. Whether the free camera is on is an estimate: no API reads it; the tool
+-- stack's active tool, when it can be read, stands in for it.
+local function freeCamera(c, fc)
+	local payload = { ok = true, freeCam = nil, note = "free camera: not checked in a game yet" }
+	if not fc.free then
+		payload.freeCam = { on = G.freeCam, source = G.freeCam ~= nil and "estimated" or nil }
+		return freeCamPlace(c, fc, payload)
+	end
+	local on = fc.free == "on"
+	payload.freeCam = { requested = fc.free, via = fc.via }
+	-- toggle: the speed control cannot tell what the camera is in, so one that would undo the estimate is not sent
+	if fc.via == "toggle" and G.freeCam == on then
+		payload.freeCam.action, payload.freeCam.on, payload.freeCam.source = "none", on, "estimated"
+		payload.freeCam.note = "already " .. fc.free .. " (estimated): not toggled again"
+		return freeCamPlace(c, fc, payload)
+	end
+	local seq
+	seq = queueOpen({ freeCam = { on = on, via = fc.via } }, function(r, waited)
+		payload.seq, payload.relayedInSec = seq, waited
+		if r == nil or r.skipped then
+			return failWith(c.id, r == nil and ("the speed control did not take it in " .. core.OPEN_RELAY_SEC
+				.. " s (no game on screen, the ESC menu or a dialog); not run, and it will not run later")
+				or "the speed control was built again after it was sent (a load?) and took it as old; not run",
+				{ relayed = false, seq = seq })
+		end
+		local f = r.freeCam or {}
+		payload.freeCam.action, payload.freeCam.activeBefore, payload.freeCam.activeAfter = f.action, f.activeBefore, f.activeAfter
+		if r.error then
+			return failWith(c.id, "relayed, but " .. r.error, { relayed = true, seq = seq, freeCam = payload.freeCam })
+		end
+		payload.relayed = true
+		if f.activeAfter ~= nil and fc.via == "tool" then
+			G.freeCam = f.activeAfter
+			payload.freeCam.source = "toolStack"
+		else
+			G.freeCam = on
+			payload.freeCam.source = "estimated"
+		end
+		payload.freeCam.on = G.freeCam
+		if f.action == "none" then
+			payload.freeCam.note = "already " .. fc.free .. " (the tool stack): not pushed or popped again"
+		end
+		local ok, err = pcall(freeCamPlace, c, fc, payload)
+		if not ok then fail(c.id, "free camera on, but placing the eye failed: " .. tostring(err)) end
+	end)
 end
 
 -- args: none (read), set (x,y[,distance[,angle[,pitch]]], the rest kept), entity, or focus (x,y,z) + distance.
@@ -774,6 +894,12 @@ function handlers.camera(c)
 	local a, cam = c.args, api.gui.camera
 	local given = (a.set ~= nil and 1 or 0) + (a.entity ~= nil and 1 or 0) + (a.focus ~= nil and 1 or 0)
 	if given > 1 then return fail(c.id, "give one of set, entity or focus") end
+	local fc, errFc = core.freeCamRequest(a)
+	if fc == false then return fail(c.id, errFc) end
+	if fc then
+		if given > 0 then return fail(c.id, "free, eye, look and mouse do not go with set, entity or focus") end
+		return freeCamera(c, fc)
+	end
 	if a.set ~= nil then
 		local set, err = core.numberList(a.set, 5)
 		if not set then return fail(c.id, "set: " .. err) end
@@ -1578,6 +1704,7 @@ local function init()
 	G.ui, G.uiSent = nil, nil
 	G.opens = {} -- a new GUI: requests of the last game are not this one's
 	G.buildTool = nil -- a new GUI: no filter left to clear
+	G.freeCam = nil -- a new GUI: the last game's free camera estimate does not hold
 	-- the save may hold the last game's label and requests; buttons now, not at the first label step, so a game
 	-- set to hide them never shows them
 	publishUi({ label = "", tip = "", open = false, opens = {}, vehicles = {}, lines = {}, terrain = {}, town = {},
@@ -1725,6 +1852,7 @@ local function step()
 	stepCalendar()
 	stepBuildTool()
 	stepOpens()
+	stepCamReads()
 	stepLabel()
 end
 

@@ -280,6 +280,35 @@ python3 tools/tf3ctl.py pointer 0.5,0.47 [--px]          # the game's pointer on
 1e6, a distance outside 1-1e5, an angle beyond +-2 pi or a pitch beyond +-pi/2 are refused. `--entity` checks that
 the entity exists. Refused in the main menu.
 
+**Free camera** (`camera --free`, `--eye` / `--look`, `--mouse`; not checked in a game yet). For looking where the
+ordinary camera does not go, e.g. under the ground into a tunnel:
+
+```
+python3 tools/tf3ctl.py camera --free on                                  # the base's eye button: its tool on the tool stack
+python3 tools/tf3ctl.py camera --free on --eye 1200,-800,-12 --look 1260,-800,-14   # switch, then place the eye
+python3 tools/tf3ctl.py camera --eye 1200,-800,-12 --look 1260,-800,-14 --method focus  # move the eye only
+python3 tools/tf3ctl.py camera --free off                                 # back to the ordinary camera
+```
+
+- `--free on|off` goes through the speed control (the tool stack is only there): it pushes or pops the base's
+  `free_cam_options.FreeCamTool`, as the base's eye button and ESC do. A second `on` (the tool already active)
+  pushes nothing. `--via toggle` calls `api.gui.camera.toggleFreeCamera()` alone instead; then the state is this
+  probe's own estimate, and a toggle the estimate says is done already is not sent.
+- No API sets an eye. `--eye` + `--look` become a centre (the look point), distance, angle and pitch, and are sent
+  with `--method data` (`setCameraData`, no height), `focus` (`focusPosition`, with the height) or `both`
+  (default, the one then the other). Which way the game turns angle and pitch is not known, so the answer reads the
+  eye back: `camera.eye` (`getEye`), `camera.center` (`getCenter`), and `eyeOff`, the distance between the eye asked
+  for and the one read. The camera is read at once (`cameraAtOnce`) and 0.3 s later (`camera`).
+- `freeCam` in the answer: `on`, `source` (`toolStack` when the tool stack's active tool was read, else
+  `estimated`), `action` (`pushed`, `popped`, `toggled`, `none`), `activeBefore` / `activeAfter`. No API reads
+  whether the free camera is on; a plain `camera` answers the last estimate as `camera.freeCam`.
+- `--mouse attach|detach`: `toggleFreeCameraMouseAttachment` when `isFreeCameraMouseAttached` says otherwise.
+- The same fence as `camera --set` (it changes the game; allowed in coop). Not with `--set`, `--entity`, `--focus`
+  or `--distance`. Refused in the main menu; without the speed control on screen `--free` is not run (answered
+  after 10 s) and the eye is not placed.
+- Not checked in a game yet: whether the eye can go under the ground this way, whether `setCameraData` /
+  `focusPosition` move the free camera's eye, and the sign of angle and pitch.
+
 `build-tool` opens the construction menu's placing tool for one construction, with two base events sent through
 the speed control one after the other (1.5 s apart, so the menu is open before the next one):
 `setMenuFilter` with the construction's tag (`resName`, or `resName@N` with `--template`), so the menu lists only

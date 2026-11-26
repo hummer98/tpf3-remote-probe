@@ -5713,6 +5713,212 @@ test("camera is refused in the main menu", function()
 	truthy(final(g, 920).error:find("needs a running game"))
 end)
 
+test("freeCamRequest: none, on / off, eye + look, defaults; bad values refused", function()
+	eq(core.freeCamRequest({}), nil, "an ordinary camera command")
+	eq(core.freeCamRequest({ set = "1,2" }), nil)
+	local r = core.freeCamRequest({ free = "on" })
+	eq(r.free, "on"); eq(r.via, "tool", "the base's way by default"); eq(r.eye, nil); eq(r.method, nil)
+	eq(core.freeCamRequest({ free = "off", via = "toggle" }).via, "toggle")
+	r = core.freeCamRequest({ free = "on", eye = "100,0,-5", look = "0,0,-5" })
+	eq(r.method, "both"); eq(r.eye.z, -5); eq(r.target.x, 0); eq(r.target.z, -5)
+	near(r.target.distance, 100); near(r.target.angle, 0); near(r.target.pitch, 0)
+	r = core.freeCamRequest({ eye = "0,0,-50", look = "0,0,-60", method = "focus", mouse = "detach" })
+	eq(r.free, nil); eq(r.via, nil, "no via without free"); eq(r.method, "focus"); eq(r.mouse, "detach")
+	near(r.target.pitch, math.pi / 2, "straight down onto the look point")
+	for _, bad in ipairs({
+		{ { free = "yes" }, "free must be" },
+		{ { via = "tool" }, "via goes with free" },
+		{ { free = "on", via = "cmd" }, "via must be" },
+		{ { eye = "1,2,3" }, "together" },
+		{ { look = "1,2,3" }, "together" },
+		{ { eye = "1,2", look = "3,4,5" }, "eye: give x,y,z" },
+		{ { eye = "1,2,3", look = "a,b,c" }, "look" },
+		{ { eye = "1,2,nan", look = "3,4,5" }, "eye" },
+		{ { eye = "1e7,0,0", look = "0,0,0" }, "within" },
+		{ { eye = "1,2,3", look = "1,2,3" }, "apart" },
+		{ { free = "off", eye = "1,2,3", look = "9,9,9" }, "free off" },
+		{ { method = "data" }, "method goes with" },
+		{ { eye = "1,2,3", look = "9,9,9", method = "warp" }, "method must be" },
+		{ { mouse = "grab" }, "mouse must be" },
+	}) do
+		local res, err = core.freeCamRequest(bad[1])
+		eq(res, false, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err))
+	end
+end)
+
+test("eyeLookTarget: angle from the look point to the eye, pitch up from its level", function()
+	local t = core.eyeLookTarget({ x = 10, y = 20, z = 30 }, { x = 10, y = 0, z = 30 })
+	near(t.angle, math.pi / 2); near(t.pitch, 0); near(t.distance, 20); eq(t.x, 10); eq(t.y, 0)
+	t = core.eyeLookTarget({ x = 0, y = 0, z = 0 }, { x = 3, y = 0, z = 4 })
+	near(t.distance, 5); near(t.angle, math.pi); near(t.pitch, -math.asin(0.8), "below the look point")
+end)
+
+test("openRequest / openReports carry a free camera request and report, plain values only", function()
+	local r = core.openRequest({ seq = 4, freeCam = { on = true, via = "tool" } })
+	eq(r.freeCam.on, true); eq(r.freeCam.via, "tool")
+	eq(core.openRequest({ seq = 5, freeCam = { on = "yes", via = "tool" } }).freeCam, nil)
+	eq(core.openRequest({ seq = 5, freeCam = { on = true, via = "x" } }).freeCam, nil)
+	local reps = core.openReports({ done = { { seq = 4, freeCam = { action = "pushed", activeBefore = false, activeAfter = true } },
+		{ seq = 6, freeCam = { action = "boom", activeBefore = "no" } }, { seq = 7 } } })
+	eq(reps[4].freeCam.action, "pushed"); eq(reps[4].freeCam.activeAfter, true)
+	eq(reps[6].freeCam.action, nil); eq(reps[6].freeCam.activeBefore, nil)
+	eq(reps[7].freeCam, nil)
+end)
+
+-- a tool stack as the base's: push puts the tool on top, pop takes it off, getActiveTool reads the top
+local function freeCamStack(opts)
+	opts = opts or {}
+	local st = { tools = {}, calls = {} }
+	st.api = {
+		push = function(def, key, p, allow) st.calls[#st.calls + 1] = { "push", def, p, allow }; st.tools[#st.tools + 1] = def end,
+		pop = function(def) st.calls[#st.calls + 1] = { "pop", def }
+			if st.tools[#st.tools] == def then st.tools[#st.tools] = nil end end,
+		getActiveTool = not opts.noActive and function() return st.tools[#st.tools] end or nil,
+	}
+	st.gameCtx = { toolStack = { get = function() return { getApi = function() return st.api end } end } }
+	return st
+end
+local FREECAM_TOOL = { name = "FreeCam" }
+local function withFreeCamModule(fn)
+	package.preload["/gui/main/free_cam_options.tl"] = function() return { FreeCamTool = FREECAM_TOOL } end
+	local ok, err = pcall(fn)
+	package.preload["/gui/main/free_cam_options.tl"], package.loaded["/gui/main/free_cam_options.tl"] = nil, nil
+	if not ok then error(err, 0) end
+end
+
+test("speed control: free camera on pushes the base's tool once, off pops it, toggle calls the camera", function()
+	withFreeCamModule(function()
+		local g = newGame({ saves = SAVES })
+		local exports = loadSpeedScript()
+		local st = freeCamStack()
+		local params = { gameCtx = st.gameCtx }
+		local function report(seq)
+			for _, r in ipairs((fake.guiSave["hummer_remote_probe.open"] or {}).done or {}) do
+				if r.seq == seq then return r end
+			end
+		end
+		publish({ label = "", opens = { { seq = 1 } } })
+		frame(exports.SpeedControl, params)
+		publish({ label = "", opens = { { seq = 2, freeCam = { on = true, via = "tool" } } } })
+		frame(exports.SpeedControl, params)
+		eq(#st.calls, 1); eq(st.calls[1][1], "push"); eq(st.calls[1][2], FREECAM_TOOL)
+		eq(st.calls[1][3].gameCtx, st.gameCtx); eq(st.calls[1][4], true, "allowStacking, as the base")
+		local r = report(2)
+		eq(r.error, nil); eq(r.freeCam.action, "pushed"); eq(r.freeCam.activeBefore, false); eq(r.freeCam.activeAfter, true)
+		publish({ label = "", opens = { { seq = 3, freeCam = { on = true, via = "tool" } } } })
+		frame(exports.SpeedControl, params)
+		eq(#st.calls, 1, "a second on pushes nothing"); eq(report(3).freeCam.action, "none")
+		publish({ label = "", opens = { { seq = 4, freeCam = { on = false, via = "tool" } } } })
+		frame(exports.SpeedControl, params)
+		eq(st.calls[2][1], "pop"); eq(st.calls[2][2], FREECAM_TOOL); eq(report(4).freeCam.activeAfter, false)
+		publish({ label = "", opens = { { seq = 5, freeCam = { on = false, via = "tool" } } } })
+		frame(exports.SpeedControl, params)
+		eq(#st.calls, 2, "off when it is off pops nothing"); eq(report(5).freeCam.action, "none")
+		local toggles = g.freeCamToggles or 0
+		publish({ label = "", opens = { { seq = 6, freeCam = { on = true, via = "toggle" } } } })
+		frame(exports.SpeedControl, params)
+		eq(g.freeCamToggles, toggles + 1); eq(report(6).freeCam.action, "toggled"); eq(#st.calls, 2)
+		-- the tool registered by name wins over the module (a second load of the module would register it twice)
+		local registered = { name = "FreeCam", registered = true }
+		_G._react.tools = { FreeCam = registered }
+		publish({ label = "", opens = { { seq = 7, freeCam = { on = true, via = "tool" } } } })
+		frame(exports.SpeedControl, params)
+		eq(st.calls[3][2], registered)
+		_G._react.tools = nil
+		-- without getActiveTool: off pops all the same, and the report says nothing of the state
+		local blind = freeCamStack({ noActive = true })
+		publish({ label = "", opens = { { seq = 8, freeCam = { on = false, via = "tool" } } } })
+		frame(exports.SpeedControl, { gameCtx = blind.gameCtx })
+		eq(blind.calls[1][1], "pop"); eq(report(8).freeCam.activeBefore, nil); eq(report(8).freeCam.action, "popped")
+		publish({ label = "", opens = { { seq = 9, freeCam = { on = true, via = "tool" } } } })
+		frame(exports.SpeedControl, {})
+		truthy(report(9).error:find("no gameCtx.toolStack", 1, true), report(9).error)
+		publish(nil)
+	end)
+end)
+
+test("camera free on: through the speed control, then the eye placed; answers getEye and the state", function()
+	withFreeCamModule(function()
+		local st = freeCamStack()
+		local g = speedGame({ params = { gameCtx = st.gameCtx } })
+		frames(g, 2)
+		send(g, 930, "camera", '{ free = "on", eye = "100,0,-20", look = "0,0,-30" }')
+		frames(g, FIRST)
+		local a = final(g, 930)
+		eq(a.ok, true, a.error); eq(a.relayed, true); truthy(a.seq)
+		eq(a.freeCam.on, true); eq(a.freeCam.source, "toolStack"); eq(a.freeCam.action, "pushed")
+		eq(a.sent.method, "both"); eq(a.calls[1], "setCameraData"); eq(a.calls[2], "focusPosition")
+		near(a.camera.eye.x, 100); near(a.camera.eye.z, -20, "below the ground: the fake keeps it")
+		near(a.eyeOff, 0); eq(a.camera.freeCam, true); eq(a.camera.freeCamSource, "estimated")
+		truthy(a.cameraAtOnce and a.cameraAtOnce.eye, "read at once too")
+		truthy(a.note:find("not checked in a game", 1, true))
+		eq(g.focusedAt.z, -30)
+		-- a second on: nothing pushed again
+		send(g, 931, "camera", '{ free = "on" }')
+		frames(g, 40)
+		a = final(g, 931)
+		eq(a.ok, true); eq(a.freeCam.action, "none"); eq(#st.calls, 1)
+		-- read: the plain camera command shows the eye and the estimate
+		send(g, 932, "camera")
+		frames(g, 20)
+		a = final(g, 932)
+		near(a.camera.eye.z, -20); eq(a.camera.freeCam, true); eq(a.camera.center.z, -30)
+		-- eye alone, mouse attach: no relay, the attachment toggled once
+		send(g, 933, "camera", '{ eye = "0,50,-10", look = "0,0,-10", method = "data", mouse = "attach" }')
+		frames(g, 20)
+		a = final(g, 933)
+		eq(a.ok, true, a.error); eq(a.relayed, nil); eq(a.calls[1], "setCameraData"); eq(a.calls[2], "toggleFreeCameraMouseAttachment")
+		eq(g.freeCamMouse, true)
+		send(g, 934, "camera", '{ mouse = "attach" }')
+		frames(g, 20)
+		eq(#final(g, 934).calls, 0, "already attached"); eq(g.freeCamMouse, true)
+		-- off: popped
+		send(g, 935, "camera", '{ free = "off" }')
+		frames(g, 40)
+		a = final(g, 935)
+		eq(a.freeCam.on, false); eq(a.freeCam.action, "popped"); eq(st.calls[#st.calls][1], "pop")
+		-- toggle: one that the estimate says is done already is not sent
+		local toggles = g.freeCamToggles or 0
+		send(g, 936, "camera", '{ free = "off", via = "toggle" }')
+		frames(g, 20)
+		a = final(g, 936)
+		eq(a.freeCam.action, "none"); eq(a.freeCam.source, "estimated"); eq(g.freeCamToggles or 0, toggles)
+		send(g, 937, "camera", '{ free = "on", via = "toggle" }')
+		frames(g, 40)
+		a = final(g, 937)
+		eq(a.freeCam.action, "toggled"); eq(a.freeCam.on, true); eq(a.freeCam.source, "estimated"); eq(g.freeCamToggles, toggles + 1)
+		-- refused: with set / entity / focus, bad points
+		for i, args in ipairs({ '{ free = "on", set = "1,2" }', '{ eye = "1,2", look = "1,2,3" }', '{ eye = "1,2,3" }',
+			'{ free = "sometimes" }', '{ focus = "1,2,3", distance = 50, eye = "1,2,3", look = "4,5,6" }' }) do
+			send(g, 940 + i, "camera", args)
+			frames(g, 20)
+			eq(final(g, 940 + i).ok, false, args)
+		end
+	end)
+end)
+
+test("camera free on: the speed control not on screen -> not relayed, not run", function()
+	withFreeCamModule(function()
+		local st = freeCamStack()
+		local g = speedGame({ params = { gameCtx = st.gameCtx } })
+		g.speedControlOff = true
+		frames(g, 2)
+		send(g, 950, "camera", '{ free = "on", eye = "1,2,3", look = "4,5,6" }')
+		frames(g, FIRST + 400)
+		local a = final(g, 950)
+		eq(a.ok, false); eq(a.relayed, false); truthy(a.error:find("did not take it", 1, true), a.error)
+		eq(#st.calls, 0); eq(g.focusedAt, nil, "the eye not placed either")
+	end)
+end)
+
+test("camera free / eye is refused in the main menu", function()
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 960, "camera", '{ eye = "1,2,3", look = "4,5,6" }')
+	frames(g, FIRST)
+	eq(final(g, 960).ok, false)
+end)
+
 test("buildToolRequest: tag with a template; bad res, template and seconds refused", function()
 	local r = core.buildToolRequest({ res = "a.con" })
 	eq(r.tag, "a.con"); eq(r.seconds, 60)
