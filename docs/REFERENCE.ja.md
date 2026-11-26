@@ -318,16 +318,20 @@ python3 tools/tf3ctl.py camera --leave-cockpit         # 戻す (ESC と同じ�
 - 断るもの: ツールが有効なときの 2 回目の `--cockpit` (先に抜ける)、フリーカメラが有効 (見込み) なときの `--cockpit`
   (先に `--free off`)、運転席の中での `--free on`、運転席にいないとき (ツールがスタックに無い) と、読み込みのあと
   `--cockpit` で入っていないときの `--leave-cockpit` (`--free off` が同じツールを外します)。運転席の中での `--free off`
-  も外し、運転席の記録を消します。
+  も外し、運転席の記録を消します。運転席の中では、カメラを動かすもの (`--set`・`--entity`・`--focus`・`--eye`・
+  `--distance`・`--mouse`) も断ります (`leaveCockpit first`)。引数なしの `camera` の読み取りは通ります。
 - ESC (や車両が無くなること) で、probe の知らないうちに運転席から出ることがあります。次の `--leave-cockpit` はツールが
-  無いことを返し、記録を消します。
+  無いことを返し、記録を消します。それまでは probe は運転席の中だと思っているので、`--free on` とカメラを動かす
+  ものは断られたままです。ESC のあとは `--leave-cockpit` を 1 回打ちます。
 - 返事: `cockpit` (`entity`・`name`、または `leave`。`action` は `pushed`・`popped`・`none`、`activeBefore` /
   `activeAfter`)、`cameraBefore` / `cameraAtOnce` / `camera` (0.3 秒後に読む)、`followBefore` / `followAtOnce` /
-  `follow` (`getFollowEntity`。無いときは nil)、`relayed`、`seq`。
+  `follow` (`getFollowEntity`。無いときは nil)、`relayed`、`seq`。push・pop の直後に読んだツールのスタックが
+  それと合わないとき (スタックが 1 フレーム遅れて反映することがあるため)、`cockpit.stackNote` に書きます。動作は
+  頼んだとおりに行ったとみなします。
 - ほかのカメラのオプションとは一緒に使えません。柵は `camera --set` と同じです。メインメニューでは断ります。速度ボタンが
   画面に無いと動きません。
 - ゲーム内では未確認: 積むと運転席に入るか、そこで (トンネルの中で) `getFollowEntity` と `getEye` が何を読むか、
-  抜けるとカメラが戻るか、ESC のあとに何が残るか。
+  抜けるとカメラが戻るか、ESC のあとに何が残るか、車庫の中の車両 (確認を通ります) でどうなるか。
 
 `build-tool` は、建設メニューの 1 つの建物の配置ツールを開きます。本体のイベント 2 つを、速度ボタン経由で順に送ります
 (次を送る前にメニューが開くよう、1.5 秒あけます)。まず `setMenuFilter` にその建物のタグ

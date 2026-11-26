@@ -1144,7 +1144,9 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(code, 2, bad)
 
     def test_9x_camera_cockpit(self):
-        # the same fence as camera --set
+        # the same fence as camera --set: any camera with arguments changes the game, a bare read does not
+        # (changes_game keys on "any argument", so the cockpit needs no entry of its own; this pins that)
+        self.assertFalse(tf3ctl.changes_game("camera", {}))
         self.assertTrue(tf3ctl.changes_game("camera", {"cockpit": 601}))
         self.assertTrue(tf3ctl.changes_game("camera", {"leaveCockpit": True}))
         # checked by the mod before anything is sent: no such entity, an entity that is not a vehicle (a depot)

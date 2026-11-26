@@ -912,7 +912,9 @@ end
 -- the entity the camera follows (getFollowEntity's first value), nil where it cannot be read or is none (< 0)
 local function followNow()
 	local f = try(function() return api.gui.camera.getFollowEntity() end)
-	local e = tonumber(type(f) == "table" and (f[1] or f.entity) or f)
+	-- { Entity, Revision }: a table or a userdata (not known which), so index it under pcall
+	local e = tonumber(f)
+	if e == nil and f ~= nil then e = tonumber(try(function() return f[1] end)) or tonumber(try(function() return f.entity end)) end
 	if e == nil or e < 0 then return nil end
 	return e
 end
@@ -950,6 +952,11 @@ local function cockpitCamera(c, cp)
 		end
 		local f = r.cockpit or {}
 		payload.cockpit.action, payload.cockpit.activeBefore, payload.cockpit.activeAfter = f.action, f.activeBefore, f.activeAfter
+		-- a stack that applies the push or pop a frame later reads the old top: say so, as free does
+		if (f.action == "pushed" and f.activeAfter == false) or (f.action == "popped" and f.activeAfter == true) then
+			payload.cockpit.stackNote = "the tool stack read " .. tostring(f.activeAfter) .. " right after " .. tostring(f.action)
+				.. " (it may apply it a frame later); taken as asked"
+		end
 		-- the tool was not on the stack: no cockpit (left by ESC, or the vehicle went), whatever this script thought
 		if f.activeBefore == false and cp.leave then G.cockpit = nil end
 		if r.error then
@@ -979,6 +986,10 @@ function handlers.camera(c)
 	if cp then return cockpitCamera(c, cp) end
 	local fc, errFc = core.freeCamRequest(a)
 	if fc == false then return fail(c.id, errFc) end
+	-- in a cockpit the camera follows the vehicle: what a move does to that is not known, so none is sent (a read goes)
+	if G.cockpit ~= nil and (given > 0 or a.distance ~= nil or (fc and fc.free == nil)) then
+		return fail(c.id, "in the cockpit of " .. tostring(G.cockpit) .. " (camera cockpit): leaveCockpit first")
+	end
 	if fc then
 		if given > 0 or a.distance ~= nil then return fail(c.id, "free, eye, look and mouse do not go with set, entity, focus or distance") end
 		return freeCamera(c, fc)

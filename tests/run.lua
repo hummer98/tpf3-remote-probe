@@ -6085,6 +6085,10 @@ test("speed control: cockpit pushes the base's tool with the vehicle, leave pops
 		-- no tool stack in the params
 		r = run(12, { entity = 601, entered = false }, {})
 		truthy(r.error:find("no gameCtx.toolStack", 1, true), r.error)
+		-- an entity there but not a vehicle (the bus depot) sent straight to the speed control: refused there too
+		local pushes = #st.calls
+		r = run(13, { entity = 301, entered = false })
+		truthy(r.error:find("no longer a vehicle", 1, true), r.error); eq(#st.calls, pushes); eq(g.cockpitEnters, 2)
 		publish(nil)
 	end)
 end)
@@ -6126,6 +6130,19 @@ test("camera cockpit: checked, relayed, entered; the follow entity and camera be
 		frames(g, 20)
 		a = final(g, 1012)
 		eq(a.ok, false); truthy(a.error:find("cockpit of 601", 1, true), a.error)
+		-- moving the camera in the cockpit: refused, nothing called; a plain read goes
+		local cam0 = g.cam.x
+		for i, args in ipairs({ '{ set = "1,2" }', '{ entity = 601 }', '{ focus = "1,2,3" }',
+			'{ eye = "1,2,3", look = "4,5,6" }', '{ mouse = "attach" }' }) do
+			send(g, 1040 + i, "camera", args)
+			frames(g, 20)
+			a = final(g, 1040 + i)
+			eq(a.ok, false, args); truthy(a.error:find("leaveCockpit first", 1, true), a.error)
+		end
+		eq(g.cam.x, cam0); eq(g.focusedAt, nil); eq(g.freeCamMouse, nil)
+		send(g, 1046, "camera")
+		frames(g, 20)
+		eq(final(g, 1046).ok, true, "a read goes")
 		-- leave
 		send(g, 1013, "camera", '{ leaveCockpit = true }')
 		frames(g, 40)
@@ -6169,6 +6186,44 @@ test("camera cockpit: checked, relayed, entered; the follow entity and camera be
 		frames(g, 40)
 		eq(final(g, 1022).ok, true, final(g, 1022).error)
 		eq(g.crashed, nil)
+	end)
+end)
+
+test("camera cockpit: a push the stack takes a frame later is noted, taken as asked", function()
+	withCockpitModule(function()
+		local st = cockpitStack({ lazy = true })
+		local g = speedGame({ params = { gameCtx = st.gameCtx }, fleet = { [601] = fleetOf(101, 5) } })
+		frames(g, 2)
+		send(g, 1050, "camera", '{ cockpit = 601 }')
+		frames(g, FIRST)
+		local a = final(g, 1050)
+		eq(a.ok, true, a.error); eq(a.cockpit.action, "pushed"); eq(a.cockpit.activeAfter, false)
+		truthy(a.cockpit.stackNote and a.cockpit.stackNote:find("a frame later", 1, true), a.cockpit.stackNote)
+	end)
+	withCockpitModule(function()
+		local st = cockpitStack()
+		local g = speedGame({ params = { gameCtx = st.gameCtx }, fleet = { [601] = fleetOf(101, 5) } })
+		frames(g, 2)
+		send(g, 1051, "camera", '{ cockpit = 601 }')
+		frames(g, FIRST)
+		eq(final(g, 1051).cockpit.stackNote, nil, "no note when the stack agrees")
+	end)
+end)
+
+test("camera cockpit: getFollowEntity as a userdata (indexed, not a table) is read", function()
+	withCockpitModule(function()
+		local st = cockpitStack()
+		local g = speedGame({ params = { gameCtx = st.gameCtx }, fleet = { [601] = fleetOf(101, 5) } })
+		frames(g, 2)
+		local real = api.gui.camera.getFollowEntity
+		local proxy = newproxy(true)
+		getmetatable(proxy).__index = function(_, k) if k == 1 then return g.cockpit or -1 end end
+		api.gui.camera.getFollowEntity = function() return proxy end
+		send(g, 1052, "camera", '{ cockpit = 601 }')
+		frames(g, FIRST)
+		local a = final(g, 1052)
+		api.gui.camera.getFollowEntity = real
+		eq(a.ok, true, a.error); eq(a.follow, 601); eq(a.followBefore, nil)
 	end)
 end)
 

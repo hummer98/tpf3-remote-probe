@@ -334,16 +334,22 @@ python3 tools/tf3ctl.py camera --leave-cockpit         # back (pops the same too
 - Refused: a second `--cockpit` while the tool is on (leave first), `--cockpit` while the free camera is on (as
   estimated; `--free off` first), `--free on` in a cockpit, and `--leave-cockpit` when not in one (the tool not on
   the stack) or when no cockpit was entered by `--cockpit` since the load (`--free off` pops the same tool).
-  `--free off` in a cockpit pops it too, and the cockpit is forgotten.
+  `--free off` in a cockpit pops it too, and the cockpit is forgotten. In a cockpit, moving the camera (`--set`,
+  `--entity`, `--focus`, `--eye`, `--distance`, `--mouse`) is refused too (`leaveCockpit first`); a bare `camera` read
+  still goes.
 - ESC (or the vehicle going) leaves the cockpit without the probe knowing; the next `--leave-cockpit` finds the tool
-  gone, says so and forgets it.
+  gone, says so and forgets it. Until then the probe still thinks it is in the cockpit, so `--free on` and camera
+  moves stay refused: run `--leave-cockpit` once after an ESC.
 - The answer: `cockpit` (`entity`, `name`, or `leave`; `action` `pushed` / `popped` / `none`, `activeBefore` /
   `activeAfter`), `cameraBefore` / `cameraAtOnce` / `camera` (read 0.3 s later) and `followBefore` / `followAtOnce`
-  / `follow` (`getFollowEntity`, nil when none), `relayed`, `seq`.
+  / `follow` (`getFollowEntity`, nil when none), `relayed`, `seq`. When the tool stack read right after the push or
+  pop disagrees with it (a stack may apply it a frame later), `cockpit.stackNote` says so; the action is taken as
+  asked.
 - Alone: not with any other camera option. The same fence as `camera --set`. Refused in the main menu; without
   the speed control on screen it is not run.
 - Not checked in a game yet: that the push enters the cockpit, what `getFollowEntity` and `getEye` read there
-  (inside a tunnel), that leaving brings the camera back, and what ESC leaves behind.
+  (inside a tunnel), that leaving brings the camera back, what ESC leaves behind, and what a vehicle in a depot
+  (which passes the check) does.
 
 `build-tool` opens the construction menu's placing tool for one construction, with two base events sent through
 the speed control one after the other (1.5 s apart, so the menu is open before the next one):
