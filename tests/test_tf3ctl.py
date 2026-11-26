@@ -5864,7 +5864,7 @@ class CoopTest(unittest.TestCase):
         for cmd, args in (("quit", None), ("load", {"save": "s"}), ("newgame", {}),
                           ("modhubValidate", {"folder": "f"}), ("modhubPublish", {"folder": "f"})):
             self.assertIn("'%s'" % cmd, self.refused(cmd, args))
-        # 2026-11-26 (D-20261126-08): everything else goes, also what coop refused before
+        # 2026-11-26: everything else goes, also what coop refused before
         for cmd, args in (("tool", {"x": 1}), ("buy", {"x": 1}), ("window", {"closeAll": True}),
                           ("terrain", {"at": [0, 0]}), ("townDevelop", {"town": 1}), ("line", {"x": 1}),
                           ("sell", {"x": 1}), ("scriptEvent", {"name": "e"}), ("connect", {"x": 1})):
@@ -5878,7 +5878,7 @@ class CoopTest(unittest.TestCase):
         self.assertEqual(kills, [])
 
     def test_speed_run_pause_go_without_the_user_asked(self):
-        """2026-11-26 (D-20261126-08): speed, run and pause go in coop; --user-asked is still parsed (old scripts)."""
+        """2026-11-26: speed, run and pause go in coop; --user-asked is still parsed (old scripts)."""
         self.record("alice")
         self.start()
         self.assertFalse(tf3ctl.USER_ASKED)
@@ -6572,7 +6572,7 @@ class IgnoreErrorsTest(_ForceBase):
         self.assertNotIn("ignoreErrors", self.sent("road", self.road()))
 
     def test_goes_in_my_coop_also_on_a_persons_save_not_in_anothers(self):
-        """2026-11-26 (D-20261126-08): in this --owner's coop it goes, also on the person's own save, and carries
+        """2026-11-26: in this --owner's coop it goes, also on the person's own save, and carries
         _coop (the mod's second fence takes it for a test save's name)."""
         tf3ctl.coop_start(60, "look at the junction together")
         a = self.sent("road", self.road("--ignore-errors"))
@@ -6881,7 +6881,7 @@ class TrackTest(_ForceBase):
 
     def test_fences_as_roads(self):
         """track goes through send's fences as road does: it changes the game, --dry-run alone does not, the engine
-        asked does; during coop it goes as road does (D-20261126-08: no fences added to coop)."""
+        asked does; during coop it goes as road does (no fences added to coop)."""
         self.assertIn("track", tf3ctl.CHANGES_GAME)
         self.assertTrue(tf3ctl.changes_game("track", self.batch(self.ACCEPT)))
         self.assertFalse(tf3ctl.changes_game("track", self.batch(self.ACCEPT, "--dry-run")))
@@ -7297,7 +7297,7 @@ class EvalTest(_ForceBase):
         self.refused("evalWrite", {"code": "1", "_testSave": "probe-x"}, "is not a test save's")
 
     def test_write_in_my_coop_needs_the_user_asked_on_a_persons_save_only(self):
-        """2026-11-26 (D-20261126-08): any save in coop, but on the person's own save only with --user-asked: the
+        """2026-11-26: any save in coop, but on the person's own save only with --user-asked: the
         code runs with every global and could reach the real save, which coop still keeps; saving stays coop's
         rule."""
         tf3ctl.coop_start(60, "look together")
@@ -7781,7 +7781,7 @@ class FencesTest(_ForceBase):
             self.refused(cmd, args, "is theirs to do")
         self.assertEqual(self.answer("save", {"name": "probe-x"})[0]["name"], "probe-x")
         tf3ctl.USER_ASKED = False
-        # 2026-11-26 (D-20261126-08): the rest goes without --user-asked, the test-save-only commands on the
+        # 2026-11-26: the rest goes without --user-asked, the test-save-only commands on the
         # person's save too (with _coop for the mod)
         self.assertEqual(self.answer("speed", {"speed": 2})[0]["speed"], 2)
         self.assertEqual(self.answer("tool", {"name": "x"})[0]["name"], "x")

@@ -9698,7 +9698,7 @@ test("road --ignore-errors: refused without a test save named, and on other comm
 	truthy(not g.crashed, g.crashed)
 end)
 
--- coop (2026-11-26, D-20261126-08): tf3ctl names the --owner whose coop is on (_coop); then road --ignore-errors goes
+-- coop (2026-11-26): tf3ctl names the --owner whose coop is on (_coop); then road --ignore-errors goes
 -- on the person's save too (tf3ctl keeps their saves by refusing a save to their names)
 test("road --ignore-errors in coop (_coop): sent on the person's save; coop in the answer; a blank _coop refuses", function()
 	local g = roadWorld({ blocked = function(x, y) return y > 1000 and 4343 or nil end, ignoreCritical = true })
