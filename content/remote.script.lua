@@ -844,7 +844,7 @@ end
 -- the eye is placed once it answered. Whether the free camera is on is an estimate: no API reads it; the tool
 -- stack's active tool, when it can be read, stands in for it.
 local function freeCamera(c, fc)
-	local payload = { ok = true, freeCam = nil, note = "free camera: not checked in a game yet" }
+	local payload = { ok = true, note = "free camera: not checked in a game yet" }
 	if not fc.free then
 		payload.freeCam = { on = G.freeCam, source = G.freeCam ~= nil and "estimated" or nil }
 		return freeCamPlace(c, fc, payload)
@@ -852,6 +852,12 @@ local function freeCamera(c, fc)
 	local on = fc.free == "on"
 	payload.freeCam = { requested = fc.free, via = fc.via }
 	-- toggle: the speed control cannot tell what the camera is in, so one that would undo the estimate is not sent
+	-- toggle with no estimate (after a load, or the user's own eye button): it could switch the wrong way, so only
+	-- an on is sent then (the user asked for the free camera; an off might turn it on instead)
+	if fc.via == "toggle" and G.freeCam == nil and not on then
+		return fail(c.id, "free off via toggle: not known whether the free camera is on (no free camera command since "
+			.. "the load), so a toggle might turn it on; use free off (the tool's way) or ESC")
+	end
 	if fc.via == "toggle" and G.freeCam == on then
 		payload.freeCam.action, payload.freeCam.on, payload.freeCam.source = "none", on, "estimated"
 		payload.freeCam.note = "already " .. fc.free .. " (estimated): not toggled again"
@@ -872,12 +878,20 @@ local function freeCamera(c, fc)
 			return failWith(c.id, "relayed, but " .. r.error, { relayed = true, seq = seq, freeCam = payload.freeCam })
 		end
 		payload.relayed = true
-		if f.activeAfter ~= nil and fc.via == "tool" then
+		-- the tool stack's word only where it agrees with what was done: a push or pop the stack takes a frame
+		-- later would still read the old top
+		local agrees = (f.action == "pushed" and f.activeAfter == true) or (f.action == "popped" and f.activeAfter == false)
+			or (f.action == "none" and f.activeAfter == on)
+		if f.activeAfter ~= nil and fc.via == "tool" and agrees then
 			G.freeCam = f.activeAfter
 			payload.freeCam.source = "toolStack"
 		else
 			G.freeCam = on
 			payload.freeCam.source = "estimated"
+			if f.activeAfter ~= nil and fc.via == "tool" then
+				payload.freeCam.stackNote = "the tool stack read " .. tostring(f.activeAfter) .. " right after " .. tostring(f.action)
+					.. " (it may take the change a frame later): taken as " .. fc.free
+			end
 		end
 		payload.freeCam.on = G.freeCam
 		if f.action == "none" then
@@ -897,7 +911,7 @@ function handlers.camera(c)
 	local fc, errFc = core.freeCamRequest(a)
 	if fc == false then return fail(c.id, errFc) end
 	if fc then
-		if given > 0 then return fail(c.id, "free, eye, look and mouse do not go with set, entity or focus") end
+		if given > 0 or a.distance ~= nil then return fail(c.id, "free, eye, look and mouse do not go with set, entity, focus or distance") end
 		return freeCamera(c, fc)
 	end
 	if a.set ~= nil then
@@ -1705,6 +1719,7 @@ local function init()
 	G.opens = {} -- a new GUI: requests of the last game are not this one's
 	G.buildTool = nil -- a new GUI: no filter left to clear
 	G.freeCam = nil -- a new GUI: the last game's free camera estimate does not hold
+	camReads = {} -- nor an answer waiting to read the last game's camera
 	-- the save may hold the last game's label and requests; buttons now, not at the first label step, so a game
 	-- set to hide them never shows them
 	publishUi({ label = "", tip = "", open = false, opens = {}, vehicles = {}, lines = {}, terrain = {}, town = {},

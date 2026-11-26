@@ -5770,11 +5770,14 @@ local function freeCamStack(opts)
 	opts = opts or {}
 	local st = { tools = {}, calls = {} }
 	st.api = {
-		push = function(def, key, p, allow) st.calls[#st.calls + 1] = { "push", def, p, allow }; st.tools[#st.tools + 1] = def end,
+		-- lazy: the push lands a frame later (st.land()), as a stack might apply it
+		push = function(def, key, p, allow) st.calls[#st.calls + 1] = { "push", def, p, allow }
+			if opts.lazy then st.pending = def else st.tools[#st.tools + 1] = def end end,
 		pop = function(def) st.calls[#st.calls + 1] = { "pop", def }
 			if st.tools[#st.tools] == def then st.tools[#st.tools] = nil end end,
 		getActiveTool = not opts.noActive and function() return st.tools[#st.tools] end or nil,
 	}
+	st.land = function() if st.pending then st.tools[#st.tools + 1] = st.pending; st.pending = nil end end
 	st.gameCtx = { toolStack = { get = function() return { getApi = function() return st.api end } end } }
 	return st
 end
@@ -5889,11 +5892,45 @@ test("camera free on: through the speed control, then the eye placed; answers ge
 		eq(a.freeCam.action, "toggled"); eq(a.freeCam.on, true); eq(a.freeCam.source, "estimated"); eq(g.freeCamToggles, toggles + 1)
 		-- refused: with set / entity / focus, bad points
 		for i, args in ipairs({ '{ free = "on", set = "1,2" }', '{ eye = "1,2", look = "1,2,3" }', '{ eye = "1,2,3" }',
-			'{ free = "sometimes" }', '{ focus = "1,2,3", distance = 50, eye = "1,2,3", look = "4,5,6" }' }) do
+			'{ free = "sometimes" }', '{ focus = "1,2,3", distance = 50, eye = "1,2,3", look = "4,5,6" }',
+			'{ free = "on", distance = 50 }' }) do
 			send(g, 940 + i, "camera", args)
 			frames(g, 20)
 			eq(final(g, 940 + i).ok, false, args)
 		end
+	end)
+end)
+
+test("camera free: a push the stack takes later is an estimate, not the stack's word; a blind toggle off refused", function()
+	withFreeCamModule(function()
+		local st = freeCamStack({ lazy = true })
+		local g = speedGame({ params = { gameCtx = st.gameCtx } })
+		frames(g, 2)
+		send(g, 970, "camera", '{ free = "on" }')
+		frames(g, FIRST)
+		local a = final(g, 970)
+		eq(a.ok, true, a.error); eq(a.freeCam.action, "pushed"); eq(a.freeCam.activeAfter, false)
+		eq(a.freeCam.on, true, "taken as asked"); eq(a.freeCam.source, "estimated")
+		truthy(a.freeCam.stackNote and a.freeCam.stackNote:find("a frame later", 1, true), a.freeCam.stackNote)
+		st.land()
+		send(g, 971, "camera")
+		frames(g, 20)
+		eq(final(g, 971).camera.freeCam, true)
+	end)
+	withFreeCamModule(function()
+		local g = speedGame({ params = { gameCtx = freeCamStack().gameCtx } })
+		frames(g, 2)
+		local toggles = g.freeCamToggles or 0
+		send(g, 972, "camera", '{ free = "off", via = "toggle" }')
+		frames(g, FIRST)
+		local a = final(g, 972)
+		eq(a.ok, false); truthy(a.error:find("not known whether", 1, true), a.error)
+		eq(g.freeCamToggles or 0, toggles, "nothing toggled")
+		-- an on with no estimate is sent (the user asked for the free camera)
+		send(g, 973, "camera", '{ free = "on", via = "toggle" }')
+		frames(g, 40)
+		a = final(g, 973)
+		eq(a.ok, true, a.error); eq(a.freeCam.action, "toggled"); eq(g.freeCamToggles, toggles + 1)
 	end)
 end)
 

@@ -287,7 +287,12 @@ python3 tools/tf3ctl.py camera --free off                                 # ふ�
   `eyeOff` (頼んだ目と読んだ目の距離)。カメラはすぐ (`cameraAtOnce`) と 0.3 秒後 (`camera`) に読みます。
 - 返事の `freeCam`: `on`、`source` (ツールのスタックの一番上を読めたら `toolStack`、ほかは `estimated`)、`action` (`pushed`・
   `popped`・`toggled`・`none`)、`activeBefore` / `activeAfter`。フリーカメラが有効かを読む API はありません。引数の無い
-  `camera` は、最後の見込みを `camera.freeCam` に返します。
+  `camera` は、最後の見込みを `camera.freeCam` に返します。積む・外すの直後に読んだスタックがそれと食い違うとき (スタックが
+  1 フレーム遅れて反映するかもしれない) は、`source` を `estimated` にし、読んだ値を `stackNote` に書きます。
+- 2 つのやり方を混ぜないでください: toggle はツールをスタックに積まないので、あとの `--free off` (ツール) は外す物が無く、
+  toggle で入れたフリーカメラは ESC で抜けられないかもしれません (確認していません)。見込みが無いとき (読み込みのあと一度も
+  送っていない) の `--free off --via toggle` は、フリーカメラを入れてしまうかもしれないので断ります。
+- 共同作業の間は、`--mouse attach` の前にユーザーと決めてください (ユーザーのマウスをフリーカメラに取ります)。
 - `--mouse attach|detach`: `isFreeCameraMouseAttached` が違うと言うときだけ `toggleFreeCameraMouseAttachment` を呼びます。
 - 柵は `camera --set` と同じです (ゲームを変える側。共同作業の間も通る)。`--set`・`--entity`・`--focus`・`--distance` とは
   一緒に使えません。メインメニューでは断ります。速度ボタンが画面に無いと、`--free` は動かず (10 秒後に返事)、目も置きません。

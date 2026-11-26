@@ -301,7 +301,13 @@ python3 tools/tf3ctl.py camera --free off                                 # back
   for and the one read. The camera is read at once (`cameraAtOnce`) and 0.3 s later (`camera`).
 - `freeCam` in the answer: `on`, `source` (`toolStack` when the tool stack's active tool was read, else
   `estimated`), `action` (`pushed`, `popped`, `toggled`, `none`), `activeBefore` / `activeAfter`. No API reads
-  whether the free camera is on; a plain `camera` answers the last estimate as `camera.freeCam`.
+  whether the free camera is on; a plain `camera` answers the last estimate as `camera.freeCam`. When the stack
+  read right after a push or pop disagrees with it (the stack may take it a frame later), `source` is `estimated`
+  and `stackNote` says what was read.
+- Do not mix the two ways: a toggle does not put the tool on the stack, so a later `--free off` (tool) finds nothing
+  to pop, and ESC may not leave a free camera turned on by a toggle (not checked). `--free off --via toggle` with no
+  estimate (nothing sent since the load) is refused, as it might turn the free camera on.
+- During coop, agree with the user before `--mouse attach` (it takes the user's mouse for the free camera).
 - `--mouse attach|detach`: `toggleFreeCameraMouseAttachment` when `isFreeCameraMouseAttached` says otherwise.
 - The same fence as `camera --set` (it changes the game; allowed in coop). Not with `--set`, `--entity`, `--focus`
   or `--distance`. Refused in the main menu; without the speed control on screen `--free` is not run (answered
