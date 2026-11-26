@@ -740,6 +740,11 @@ function M.openRequest(o)
 		out.tool = { module = tool.module, field = type(tool.field) == "string" and tool.field or nil,
 			close = tool.close == true }
 	end
+	-- freeCam: on (true / false) and via (tool / toggle); the speed control pushes, pops or toggles
+	local fc = o.freeCam
+	if type(fc) == "table" and type(fc.on) == "boolean" and M.FREECAM_VIAS[fc.via] then
+		out.freeCam = { on = fc.on, via = fc.via }
+	end
 	return out
 end
 
@@ -760,6 +765,16 @@ end
 M.OPEN_RELAY_SEC = 10 -- a request the speed control has not taken by then is dropped and answered as not relayed
 M.OPEN_REPORTS_KEPT = 20 -- what the speed control did with the last requests, under MOD .. ".open"
 
+-- what the speed control did with a free camera request: action (pushed, popped, toggled, none), and whether the
+-- free camera tool was the active one on the tool stack before and after (nil: not read). Plain values only.
+M.FREECAM_ACTIONS = { pushed = true, popped = true, toggled = true, none = true }
+function M.freeCamReport(f)
+	if type(f) ~= "table" then return nil end
+	local function bool(v) if v == true or v == false then return v end return nil end
+	return { action = M.FREECAM_ACTIONS[f.action] and f.action or nil, activeBefore = bool(f.activeBefore),
+		activeAfter = bool(f.activeAfter) }
+end
+
 -- the speed control's reports (getGuiSaveData(MOD .. ".open")): seq -> { error = text or nil, skipped = bool }.
 -- skipped: in the list at the speed control's first read, so taken as left over from the last game, not run
 function M.openReports(d)
@@ -769,7 +784,8 @@ function M.openReports(d)
 		local seq = type(r) == "table" and tonumber(r.seq) or nil
 		if seq then
 			-- the first word on a request stands: a later "skipped" for one already run must not undo it
-			out[seq] = out[seq] or { error = r.error ~= nil and tostring(r.error) or nil, skipped = r.skipped == true }
+			out[seq] = out[seq] or { error = r.error ~= nil and tostring(r.error) or nil, skipped = r.skipped == true,
+				freeCam = M.freeCamReport(r.freeCam) }
 		end
 	end
 	return out
@@ -880,6 +896,89 @@ function M.cameraTarget(cur, set)
 	if math.abs(out.angle) > L.angle then return nil, "angle must be within +-2 pi" end
 	if math.abs(out.pitch) > L.pitch then return nil, "pitch must be within +-pi/2" end
 	return out
+end
+
+-- free camera (camera free / eye / look / mouse). The base enters it by pushing free_cam_options.FreeCamTool on
+-- the game's tool stack (its push calls api.gui.camera.toggleFreeCamera, its pop leaveFollowCameraCockpit:
+-- game_bar_widgets.tl, free_cam_options.tl); via "toggle" calls toggleFreeCamera alone, in case the tool's way
+-- does not take. method: how the eye is moved, as no API sets an eye: "data" setCameraData (a centre without a
+-- height), "focus" focusPosition (a point with its height), "both" the one then the other.
+M.FREECAM_MODULE = "/gui/main/free_cam_options.tl"
+M.FREECAM_FIELD = "FreeCamTool"
+M.FREECAM_TOOL_NAME = "FreeCam" -- its react.RegisterTool name
+M.FREECAM_VIAS = { tool = true, toggle = true }
+M.FREECAM_METHODS = { data = true, focus = true, both = true }
+M.FREECAM_READ_SEC = 0.3 -- the camera is read again this long after a move (a move may show a frame later)
+
+-- "x,y,z" (or a list of three) within the camera's limits -> { x, y, z } or nil, why
+local function point3(v, what)
+	local p, err = M.numberList(v, 3)
+	if not p then return nil, what .. ": " .. err end
+	if #p ~= 3 then return nil, what .. ": give x,y,z" end
+	local L = M.CAMERA_LIMITS.xy
+	for _, n in ipairs(p) do
+		if math.abs(n) > L then return nil, what .. ": within " .. L end
+	end
+	return { x = p[1], y = p[2], z = p[3] }
+end
+
+-- args: free ("on" / "off"), via, eye + look (both or neither), method, mouse ("attach" / "detach").
+-- -> nil (none of them given: an ordinary camera command), or the request, or false and why
+function M.freeCamRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.free == nil and args.eye == nil and args.look == nil and args.mouse == nil
+		and args.via == nil and args.method == nil then
+		return nil
+	end
+	local r = {}
+	if args.free ~= nil then
+		if args.free ~= "on" and args.free ~= "off" then return false, "free must be on or off" end
+		r.free = args.free
+	end
+	if args.via ~= nil then
+		if r.free == nil then return false, "via goes with free" end
+		if not M.FREECAM_VIAS[args.via] then return false, "via must be tool or toggle" end
+	end
+	r.via = args.via or (r.free and "tool" or nil)
+	if (args.eye == nil) ~= (args.look == nil) then return false, "give eye and look together" end
+	if args.eye ~= nil then
+		if r.free == "off" then return false, "eye and look do not go with free off" end
+		local err
+		r.eye, err = point3(args.eye, "eye")
+		if not r.eye then return false, err end
+		r.look, err = point3(args.look, "look")
+		if not r.look then return false, err end
+		local t, errT = M.eyeLookTarget(r.eye, r.look)
+		if not t then return false, errT end
+		r.target = t
+	end
+	if args.method ~= nil then
+		if r.eye == nil then return false, "method goes with eye and look" end
+		if not M.FREECAM_METHODS[args.method] then return false, "method must be data, focus or both" end
+	end
+	r.method = r.eye and (args.method or "both") or nil
+	if args.mouse ~= nil then
+		if args.mouse ~= "attach" and args.mouse ~= "detach" then return false, "mouse must be attach or detach" end
+		r.mouse = args.mouse
+	end
+	return r
+end
+
+-- an eye and the point it looks at -> what setCameraData / focusPosition take: the centre (the look point),
+-- distance (eye to look), angle (heading of the eye seen from the centre, atan2 of y over x) and pitch (up from
+-- the centre's level, asin). Which way the game turns its angle is not known: the answer reads the eye back.
+function M.eyeLookTarget(eye, look)
+	local dx, dy, dz = eye.x - look.x, eye.y - look.y, eye.z - look.z
+	local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+	local L = M.CAMERA_LIMITS
+	if not (d >= L.distance[1] and d <= L.distance[2]) then
+		return nil, string.format("eye and look must be %g-%g apart", L.distance[1], L.distance[2])
+	end
+	local pitch = math.asin(math.max(-1, math.min(1, dz / d)))
+	-- math.atan2 is gone from Lua 5.3 on, where math.atan takes y, x
+	local atan2 = math.atan2 or math.atan
+	local angle = (dx == 0 and dy == 0) and 0 or atan2(dy, dx)
+	return { x = look.x, y = look.y, z = look.z, distance = d, angle = angle, pitch = pitch }
 end
 
 -- build tool: the menu filter tag of a construction (construction.tl: resName, or resName@N with a template)

@@ -1444,8 +1444,28 @@ function M.new(dir, opts)
 			-- the camera as getCameraData's Vec5f: centre x, y, distance, angle, pitch
 			getCameraData = function() local c = g.cam; return { x = c.x, y = c.y, z = c.distance, w = c.angle, q = c.pitch } end,
 			setCameraData = function(v) g.cam = { x = v.x, y = v.y, distance = v.z, angle = v.w, pitch = v.q } end,
-			focusPosition = function(p, d) g.cam.x, g.cam.y, g.cam.distance = p.x, p.y, d; g.focusedAt = p end,
+			focusPosition = function(p, d) g.cam.x, g.cam.y, g.cam.z, g.cam.distance = p.x, p.y, p.z, d; g.focusedAt = p end,
 			getHeightAboveTerrain = function() return g.cam.distance * 0.5 end,
+			-- free camera: the eye is the centre (its height from focusPosition, else 0) moved out by distance along
+			-- angle and pitch (remote_core.eyeLookTarget's way: which way the game turns them is not known)
+			getEye = function()
+				inGame("getEye")
+				local c = g.cam
+				local cp = math.cos(c.pitch or 0)
+				return { x = c.x + c.distance * cp * math.cos(c.angle or 0), y = c.y + c.distance * cp * math.sin(c.angle or 0),
+					z = (c.z or 0) + c.distance * math.sin(c.pitch or 0) }
+			end,
+			getCenter = function() inGame("getCenter"); return { x = g.cam.x, y = g.cam.y, z = g.cam.z or 0 } end,
+			toggleFreeCamera = function()
+				inGame("toggleFreeCamera")
+				g.freeCam = not g.freeCam
+				g.freeCamToggles = (g.freeCamToggles or 0) + 1
+			end,
+			isFreeCameraMouseAttached = function() inGame("isFreeCameraMouseAttached"); return g.freeCamMouse == true end,
+			toggleFreeCameraMouseAttachment = function()
+				inGame("toggleFreeCameraMouseAttachment")
+				g.freeCamMouse = not g.freeCamMouse
+			end,
 		}, game = {
 			getEstimatedMaximumGameSpeed = function() return opts.maxSpeed or 0 end,
 			-- per-mod GUI save data held by the game (C++): every Lua state sees the same
