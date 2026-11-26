@@ -323,6 +323,42 @@ python3 tools/tf3ctl.py camera --free off                                 # back
 - Not checked in a game yet: whether the eye can go under the ground this way, whether `setCameraData` /
   `focusPosition` move the free camera's eye, and the sign of angle and pitch.
 
+**Cockpit** (`camera --cockpit VEHICLE`, `camera --leave-cockpit`; not checked in a game yet). For a frame from a
+vehicle's driver's seat, e.g. inside a tunnel where the free camera's eye cannot go.
+
+```
+python3 tools/tf3ctl.py vehicles                       # the vehicle's entity id
+python3 tools/tf3ctl.py camera --cockpit 12345         # as the vehicle window's Enter Cockpit button
+python3 tools/tf3ctl.py frame --out cockpit.png
+python3 tools/tf3ctl.py camera --leave-cockpit         # back (pops the same tool, as ESC)
+```
+
+- Through the speed control, as `--free`: it pushes the base's `free_cam_options.FreeCamTool` with
+  `cockpitCameraForEntity` (its push calls `api.gui.camera.enterFollowCameraCockpit`), and `--leave-cockpit` pops it
+  (its pop calls `leaveFollowCameraCockpit`).
+- The id is checked before anything is sent, and again in the speed control: an entity that does not exist (`no
+  such entity`) or has no `TRANSPORT_VEHICLE` component (`not a vehicle`) is refused, since what the engine does
+  with one is not known. Any company's vehicle is taken.
+- Refused: a second `--cockpit` while the tool is on (leave first), `--cockpit` while the free camera is on (as
+  estimated; `--free off` first), `--free on` in a cockpit, and `--leave-cockpit` when not in one (the tool not on
+  the stack) or when no cockpit was entered by `--cockpit` since the load (`--free off` pops the same tool).
+  `--free off` in a cockpit pops it too, and the cockpit is forgotten. In a cockpit, moving the camera (`--set`,
+  `--entity`, `--focus`, `--eye`, `--distance`, `--mouse`) is refused too (`leaveCockpit first`); a bare `camera` read
+  still goes.
+- ESC (or the vehicle going) leaves the cockpit without the probe knowing; the next `--leave-cockpit` finds the tool
+  gone, says so and forgets it. Until then the probe still thinks it is in the cockpit, so `--free on` and camera
+  moves stay refused: run `--leave-cockpit` once after an ESC.
+- The answer: `cockpit` (`entity`, `name`, or `leave`; `action` `pushed` / `popped` / `none`, `activeBefore` /
+  `activeAfter`), `cameraBefore` / `cameraAtOnce` / `camera` (read 0.3 s later) and `followBefore` / `followAtOnce`
+  / `follow` (`getFollowEntity`, nil when none), `relayed`, `seq`. When the tool stack read right after the push or
+  pop disagrees with it (a stack may apply it a frame later), `cockpit.stackNote` says so; the action is taken as
+  asked.
+- Alone: not with any other camera option. The same fence as `camera --set`. Refused in the main menu; without
+  the speed control on screen it is not run.
+- Not checked in a game yet: that the push enters the cockpit, what `getFollowEntity` and `getEye` read there
+  (inside a tunnel), that leaving brings the camera back, what ESC leaves behind, and what a vehicle in a depot
+  (which passes the check) does.
+
 `build-tool` opens the construction menu's placing tool for one construction, with two base events sent through
 the speed control one after the other (1.5 s apart, so the menu is open before the next one):
 `setMenuFilter` with the construction's tag (`resName`, or `resName@N` with `--template`), so the menu lists only

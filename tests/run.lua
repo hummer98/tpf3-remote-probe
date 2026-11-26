@@ -5956,6 +5956,296 @@ test("camera free / eye is refused in the main menu", function()
 	eq(final(g, 960).ok, false)
 end)
 
+test("cockpitRequest: none, an id or leave, alone; bad values refused", function()
+	eq(core.cockpitRequest(nil), nil)
+	eq(core.cockpitRequest({}), nil)
+	eq(core.cockpitRequest({ free = "on" }), nil, "not a cockpit request")
+	eq(core.cockpitRequest({ cockpit = 601 }).entity, 601)
+	eq(core.cockpitRequest({ cockpit = 0 }).entity, 0)
+	eq(core.cockpitRequest({ leaveCockpit = true }).leave, true)
+	for _, bad in ipairs({
+		{ { cockpit = 601, leaveCockpit = true }, "not both" },
+		{ { cockpit = 601, free = "on" }, "not with free" },
+		{ { cockpit = 601, entity = 601 }, "not with entity" },
+		{ { leaveCockpit = true, eye = "1,2,3" }, "not with eye" },
+		{ { leaveCockpit = false }, "must be true" },
+		{ { leaveCockpit = "yes" }, "must be true" },
+		{ { cockpit = "601" }, "whole number" },
+		{ { cockpit = 1.5 }, "whole number" },
+		{ { cockpit = -1 }, "whole number" },
+		{ { cockpit = 0 / 0 }, "whole number" },
+		{ { cockpit = 2 ^ 53 }, "whole number" },
+		{ { cockpit = true }, "whole number" },
+	}) do
+		local res, err = core.cockpitRequest(bad[1])
+		eq(res, false, bad[2]); truthy(tostring(err):find(bad[2], 1, true), tostring(err))
+	end
+end)
+
+test("openRequest / openReports carry a cockpit request and report, plain values only", function()
+	local r = core.openRequest({ seq = 4, cockpit = { entity = 601, entered = false } })
+	eq(r.cockpit.entity, 601); eq(r.cockpit.entered, false); eq(r.cockpit.leave, nil)
+	r = core.openRequest({ seq = 5, cockpit = { leave = true, entered = true } })
+	eq(r.cockpit.leave, true); eq(r.cockpit.entered, true); eq(r.cockpit.entity, nil)
+	for _, bad in ipairs({ { entity = "601" }, { entity = -1 }, { entity = 1.5 }, { leave = "yes" }, {}, "x" }) do
+		eq(core.openRequest({ seq = 6, cockpit = bad }).cockpit, nil)
+	end
+	local reps = core.openReports({ done = { { seq = 4, cockpit = { action = "pushed", activeBefore = false, activeAfter = true } },
+		{ seq = 7 } } })
+	eq(reps[4].cockpit.action, "pushed"); eq(reps[4].cockpit.activeAfter, true); eq(reps[7].cockpit, nil)
+end)
+
+test("fake: entering the cockpit of no entity brings the game down; getFollowEntity follows the cockpit", function()
+	local g = newGame({ saves = SAVES, fleet = { [601] = fleetOf(101, 5) } })
+	frames(g, 2)
+	eq(api.gui.camera.getFollowEntity()[1], -1)
+	api.gui.camera.enterFollowCameraCockpit(601)
+	eq(api.gui.camera.getFollowEntity()[1], 601)
+	api.gui.camera.leaveFollowCameraCockpit()
+	eq(api.gui.camera.getFollowEntity()[1], -1)
+	local ok, err = pcall(api.gui.camera.enterFollowCameraCockpit, 999)
+	eq(ok, false); truthy(tostring(err):find("ASSERT", 1, true)); truthy(g.crashed)
+end)
+
+-- the base's free camera tool, run: its push enters the cockpit of the param's entity (or toggles the free camera),
+-- its pop leaves it (free_cam_options.tl). The stack below calls them, as the base's tool stack does
+local COCKPIT_TOOL = { name = "FreeCam" }
+function COCKPIT_TOOL.push(_, p)
+	if p and p.cockpitCameraForEntity then api.gui.camera.enterFollowCameraCockpit(p.cockpitCameraForEntity)
+	else api.gui.camera.toggleFreeCamera() end
+end
+function COCKPIT_TOOL.pop() api.gui.camera.leaveFollowCameraCockpit() end
+local function cockpitStack(opts)
+	local st = freeCamStack(opts)
+	local push, pop = st.api.push, st.api.pop
+	st.api.push = function(def, key, p, allow) push(def, key, p, allow); if def.push then def.push(nil, p) end end
+	st.api.pop = function(def, key) local on = st.tools[#st.tools] == def; pop(def, key); if on and def.pop then def.pop() end end
+	return st
+end
+local function withCockpitModule(fn)
+	package.preload["/gui/main/free_cam_options.tl"] = function() return { FreeCamTool = COCKPIT_TOOL } end
+	local ok, err = pcall(fn)
+	package.preload["/gui/main/free_cam_options.tl"], package.loaded["/gui/main/free_cam_options.tl"] = nil, nil
+	if not ok then error(err, 0) end
+end
+
+test("speed control: cockpit pushes the base's tool with the vehicle, leave pops it; refusals push nothing", function()
+	withCockpitModule(function()
+		local g = newGame({ saves = SAVES, fleet = { [601] = fleetOf(101, 5) } })
+		local exports = loadSpeedScript()
+		local st = cockpitStack()
+		local params = { gameCtx = st.gameCtx }
+		local function report(seq)
+			for _, r in ipairs((fake.guiSave["hummer_remote_probe.open"] or {}).done or {}) do
+				if r.seq == seq then return r end
+			end
+		end
+		local function run(seq, cockpit, p)
+			publish({ label = "", opens = { { seq = seq, cockpit = cockpit } } })
+			frame(exports.SpeedControl, p or params)
+			return report(seq)
+		end
+		publish({ label = "", opens = { { seq = 1 } } })
+		frame(exports.SpeedControl, params)
+		-- leave when nothing is on: refused, nothing popped
+		local r = run(2, { leave = true, entered = true })
+		truthy(r.error:find("not in a cockpit", 1, true), r.error); eq(r.cockpit.action, "none"); eq(#st.calls, 0)
+		-- enter: the base's push with the vehicle, as the vehicle window's button
+		r = run(3, { entity = 601, entered = false })
+		eq(r.error, nil); eq(r.cockpit.action, "pushed"); eq(r.cockpit.activeBefore, false); eq(r.cockpit.activeAfter, true)
+		eq(st.calls[1][1], "push"); eq(st.calls[1][2], COCKPIT_TOOL); eq(st.calls[1][3].cockpitCameraForEntity, 601)
+		eq(st.calls[1][3].gameCtx, st.gameCtx); eq(st.calls[1][4], true)
+		eq(g.cockpit, 601, "the fake's camera is in the cockpit"); eq(g.cockpitEnters, 1)
+		-- a second enter: refused, the tool is on
+		r = run(4, { entity = 601, entered = true })
+		truthy(r.error:find("on already", 1, true), r.error); eq(#st.calls, 1); eq(g.cockpitEnters, 1)
+		-- leave: popped
+		r = run(5, { leave = true, entered = true })
+		eq(r.error, nil); eq(r.cockpit.action, "popped"); eq(r.cockpit.activeAfter, false); eq(g.cockpit, nil)
+		-- the tool on, but not entered by this command (the free camera): leave refused, nothing popped
+		st.tools[1] = COCKPIT_TOOL
+		r = run(6, { leave = true, entered = false })
+		truthy(r.error:find("free off", 1, true), r.error); eq(st.calls[#st.calls][1], "pop"); eq(#st.calls, 2)
+		st.tools[1] = nil
+		-- the vehicle gone between the check and the join: refused, no push, no crash
+		g.fleet[601] = nil
+		r = run(7, { entity = 601, entered = false })
+		truthy(r.error:find("no longer a vehicle", 1, true), r.error); eq(#st.calls, 2); eq(g.crashed, nil)
+		g.fleet[601] = fleetOf(101, 5)
+		-- without getActiveTool: enter goes unless this command entered one, leave only when it did
+		local blind = cockpitStack({ noActive = true })
+		r = run(8, { entity = 601, entered = true }, { gameCtx = blind.gameCtx })
+		truthy(r.error:find("on already", 1, true)); eq(#blind.calls, 0); eq(r.cockpit.activeBefore, nil)
+		r = run(9, { entity = 601, entered = false }, { gameCtx = blind.gameCtx })
+		eq(r.error, nil); eq(r.cockpit.action, "pushed"); eq(blind.calls[1][1], "push")
+		r = run(10, { leave = true, entered = false }, { gameCtx = blind.gameCtx })
+		truthy(r.error:find("free off", 1, true)); eq(#blind.calls, 1)
+		r = run(11, { leave = true, entered = true }, { gameCtx = blind.gameCtx })
+		eq(r.error, nil); eq(r.cockpit.action, "popped")
+		-- no tool stack in the params
+		r = run(12, { entity = 601, entered = false }, {})
+		truthy(r.error:find("no gameCtx.toolStack", 1, true), r.error)
+		-- an entity there but not a vehicle (the bus depot) sent straight to the speed control: refused there too
+		local pushes = #st.calls
+		r = run(13, { entity = 301, entered = false })
+		truthy(r.error:find("no longer a vehicle", 1, true), r.error); eq(#st.calls, pushes); eq(g.cockpitEnters, 2)
+		publish(nil)
+	end)
+end)
+
+test("camera cockpit: checked, relayed, entered; the follow entity and camera before and after; leave", function()
+	withCockpitModule(function()
+		local st = cockpitStack()
+		local g = speedGame({ params = { gameCtx = st.gameCtx }, fleet = { [601] = fleetOf(101, 5) } })
+		frames(g, 2)
+		-- refused before anything is sent: no entity, not a vehicle (the bus depot), bad values
+		for i, args in ipairs({ '{ cockpit = 999 }', '{ cockpit = 301 }', '{ cockpit = "601" }', '{ cockpit = 601.5 }',
+			'{ cockpit = 601, leaveCockpit = true }', '{ cockpit = 601, free = "on" }', '{ cockpit = 601, entity = 601 }',
+			'{ leaveCockpit = false }' }) do
+			send(g, 1000 + i, "camera", args)
+			frames(g, i == 1 and FIRST or 20)
+			local a = final(g, 1000 + i)
+			eq(a.ok, false, args); eq(a.relayed, nil, args)
+		end
+		truthy(final(g, 1001).error:find("no such entity: 999", 1, true), final(g, 1001).error)
+		truthy(final(g, 1002).error:find("not a vehicle", 1, true), final(g, 1002).error)
+		eq(#st.calls, 0, "nothing sent"); eq(g.crashed, nil); eq(g.cockpitEnters, nil)
+		-- enter
+		send(g, 1010, "camera", '{ cockpit = 601 }')
+		frames(g, FIRST)
+		local a = final(g, 1010)
+		eq(a.ok, true, a.error); eq(a.relayed, true); truthy(a.seq)
+		eq(a.cockpit.entity, 601); eq(a.cockpit.action, "pushed"); eq(a.cockpit.activeBefore, false); eq(a.cockpit.activeAfter, true)
+		eq(a.followBefore, nil); eq(a.followAtOnce, 601); eq(a.follow, 601)
+		truthy(a.cameraBefore and a.cameraBefore.eye); truthy(a.camera and a.camera.eye); truthy(a.cameraAtOnce)
+		truthy(a.note:find("not checked in a game", 1, true))
+		eq(g.cockpit, 601)
+		-- a second enter: refused by the speed control, nothing pushed
+		send(g, 1011, "camera", '{ cockpit = 601 }')
+		frames(g, 40)
+		a = final(g, 1011)
+		eq(a.ok, false); eq(a.relayed, true); truthy(a.error:find("on already", 1, true), a.error); eq(g.cockpitEnters, 1)
+		-- free on in the cockpit: refused here
+		send(g, 1012, "camera", '{ free = "on" }')
+		frames(g, 20)
+		a = final(g, 1012)
+		eq(a.ok, false); truthy(a.error:find("cockpit of 601", 1, true), a.error)
+		-- moving the camera in the cockpit: refused, nothing called; a plain read goes
+		local cam0 = g.cam.x
+		for i, args in ipairs({ '{ set = "1,2" }', '{ entity = 601 }', '{ focus = "1,2,3" }',
+			'{ eye = "1,2,3", look = "4,5,6" }', '{ mouse = "attach" }' }) do
+			send(g, 1040 + i, "camera", args)
+			frames(g, 20)
+			a = final(g, 1040 + i)
+			eq(a.ok, false, args); truthy(a.error:find("leaveCockpit first", 1, true), a.error)
+		end
+		eq(g.cam.x, cam0); eq(g.focusedAt, nil); eq(g.freeCamMouse, nil)
+		send(g, 1046, "camera")
+		frames(g, 20)
+		eq(final(g, 1046).ok, true, "a read goes")
+		-- leave
+		send(g, 1013, "camera", '{ leaveCockpit = true }')
+		frames(g, 40)
+		a = final(g, 1013)
+		eq(a.ok, true, a.error); eq(a.cockpit.leave, true); eq(a.cockpit.entity, 601); eq(a.cockpit.action, "popped")
+		eq(a.followBefore, 601); eq(a.follow, nil); eq(g.cockpit, nil)
+		-- leave when not in one: refused by the speed control, nothing popped
+		local pops = #st.calls
+		send(g, 1014, "camera", '{ leaveCockpit = true }')
+		frames(g, 40)
+		a = final(g, 1014)
+		eq(a.ok, false); truthy(a.error:find("not in a cockpit", 1, true), a.error); eq(#st.calls, pops)
+		-- left behind our back (ESC pops the tool): leave says so and forgets it, a new enter goes
+		send(g, 1015, "camera", '{ cockpit = 601 }')
+		frames(g, 40)
+		eq(final(g, 1015).ok, true)
+		st.tools = {}; api.gui.camera.leaveFollowCameraCockpit()
+		send(g, 1016, "camera", '{ leaveCockpit = true }')
+		frames(g, 40)
+		a = final(g, 1016)
+		eq(a.ok, false); truthy(a.error:find("not in a cockpit", 1, true)); eq(a.cockpit.activeBefore, false)
+		send(g, 1017, "camera", '{ free = "on" }')
+		frames(g, 40)
+		eq(final(g, 1017).ok, true, "the cockpit forgotten: free on goes")
+		-- the free camera on (estimated): cockpit refused before it is sent
+		send(g, 1018, "camera", '{ cockpit = 601 }')
+		frames(g, 20)
+		a = final(g, 1018)
+		eq(a.ok, false); truthy(a.error:find("free camera is on", 1, true), a.error)
+		send(g, 1019, "camera", '{ free = "off" }')
+		frames(g, 40)
+		eq(final(g, 1019).ok, true)
+		-- free off in a cockpit pops the same tool, and the cockpit is forgotten
+		send(g, 1020, "camera", '{ cockpit = 601 }')
+		frames(g, 40)
+		eq(final(g, 1020).ok, true, final(g, 1020).error)
+		send(g, 1021, "camera", '{ free = "off" }')
+		frames(g, 40)
+		eq(final(g, 1021).freeCam.action, "popped"); eq(g.cockpit, nil)
+		send(g, 1022, "camera", '{ cockpit = 601 }')
+		frames(g, 40)
+		eq(final(g, 1022).ok, true, final(g, 1022).error)
+		eq(g.crashed, nil)
+	end)
+end)
+
+test("camera cockpit: a push the stack takes a frame later is noted, taken as asked", function()
+	withCockpitModule(function()
+		local st = cockpitStack({ lazy = true })
+		local g = speedGame({ params = { gameCtx = st.gameCtx }, fleet = { [601] = fleetOf(101, 5) } })
+		frames(g, 2)
+		send(g, 1050, "camera", '{ cockpit = 601 }')
+		frames(g, FIRST)
+		local a = final(g, 1050)
+		eq(a.ok, true, a.error); eq(a.cockpit.action, "pushed"); eq(a.cockpit.activeAfter, false)
+		truthy(a.cockpit.stackNote and a.cockpit.stackNote:find("a frame later", 1, true), a.cockpit.stackNote)
+	end)
+	withCockpitModule(function()
+		local st = cockpitStack()
+		local g = speedGame({ params = { gameCtx = st.gameCtx }, fleet = { [601] = fleetOf(101, 5) } })
+		frames(g, 2)
+		send(g, 1051, "camera", '{ cockpit = 601 }')
+		frames(g, FIRST)
+		eq(final(g, 1051).cockpit.stackNote, nil, "no note when the stack agrees")
+	end)
+end)
+
+test("camera cockpit: getFollowEntity as a userdata (indexed, not a table) is read", function()
+	withCockpitModule(function()
+		local st = cockpitStack()
+		local g = speedGame({ params = { gameCtx = st.gameCtx }, fleet = { [601] = fleetOf(101, 5) } })
+		frames(g, 2)
+		local real = api.gui.camera.getFollowEntity
+		local proxy = newproxy(true)
+		getmetatable(proxy).__index = function(_, k) if k == 1 then return g.cockpit or -1 end end
+		api.gui.camera.getFollowEntity = function() return proxy end
+		send(g, 1052, "camera", '{ cockpit = 601 }')
+		frames(g, FIRST)
+		local a = final(g, 1052)
+		api.gui.camera.getFollowEntity = real
+		eq(a.ok, true, a.error); eq(a.follow, 601); eq(a.followBefore, nil)
+	end)
+end)
+
+test("camera cockpit: the speed control not on screen -> not relayed, not entered; refused in the main menu", function()
+	withCockpitModule(function()
+		local st = cockpitStack()
+		local g = speedGame({ params = { gameCtx = st.gameCtx }, fleet = { [601] = fleetOf(101, 5) } })
+		g.speedControlOff = true
+		frames(g, 2)
+		send(g, 1030, "camera", '{ cockpit = 601 }')
+		frames(g, FIRST + 400)
+		local a = final(g, 1030)
+		eq(a.ok, false); eq(a.relayed, false); truthy(a.error:find("did not take it", 1, true), a.error)
+		eq(#st.calls, 0); eq(g.cockpit, nil)
+	end)
+	local g = newGame({ saves = SAVES, menu = true })
+	frames(g, 2)
+	send(g, 1031, "camera", '{ leaveCockpit = true }')
+	frames(g, FIRST)
+	eq(final(g, 1031).ok, false)
+end)
+
 test("buildToolRequest: tag with a template; bad res, template and seconds refused", function()
 	local r = core.buildToolRequest({ res = "a.con" })
 	eq(r.tag, "a.con"); eq(r.seconds, 60)

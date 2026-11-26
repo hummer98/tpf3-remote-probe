@@ -747,6 +747,17 @@ function M.openRequest(o)
 	if type(fc) == "table" and type(fc.on) == "boolean" and M.FREECAM_VIAS[fc.via] then
 		out.freeCam = { on = fc.on, via = fc.via }
 	end
+	-- cockpit: enter one vehicle's (entity, a whole number) or leave (leave = true); entered: whether the guiUpdate
+	-- script thinks it entered one (what the speed control goes by when the tool stack cannot be read)
+	local cp = o.cockpit
+	if type(cp) == "table" then
+		local e = type(cp.entity) == "number" and cp.entity or nil -- a number only, as the guiUpdate script sends
+		if cp.leave == true then
+			out.cockpit = { leave = true, entered = cp.entered == true }
+		elseif e and e >= 0 and e < 2 ^ 53 and e == math.floor(e) then
+			out.cockpit = { entity = e, entered = cp.entered == true }
+		end
+	end
 	return out
 end
 
@@ -787,7 +798,7 @@ function M.openReports(d)
 		if seq then
 			-- the first word on a request stands: a later "skipped" for one already run must not undo it
 			out[seq] = out[seq] or { error = r.error ~= nil and tostring(r.error) or nil, skipped = r.skipped == true,
-				freeCam = M.freeCamReport(r.freeCam) }
+				freeCam = M.freeCamReport(r.freeCam), cockpit = M.freeCamReport(r.cockpit) }
 		end
 	end
 	return out
@@ -964,6 +975,31 @@ function M.freeCamRequest(args)
 		r.mouse = args.mouse
 	end
 	return r
+end
+
+-- cockpit (camera cockpit / leaveCockpit): the base's "Enter Cockpit" button pushes the same
+-- free_cam_options.FreeCamTool with cockpitCameraForEntity (its push calls api.gui.camera.enterFollowCameraCockpit,
+-- its pop leaveFollowCameraCockpit: entity_window_util.tl, free_cam_options.tl), so the speed control does that.
+-- args: cockpit (a vehicle's entity id) or leaveCockpit (true); neither goes with any other camera argument.
+-- -> nil (neither given), or { entity = id } / { leave = true }, or false and why. Whether the id is a vehicle is
+-- for the caller (the engine).
+M.COCKPIT_ARGS = { "set", "entity", "focus", "distance", "free", "via", "eye", "look", "method", "mouse" }
+function M.cockpitRequest(args)
+	args = type(args) == "table" and args or {}
+	if args.cockpit == nil and args.leaveCockpit == nil then return nil end
+	if args.cockpit ~= nil and args.leaveCockpit ~= nil then return false, "give cockpit or leaveCockpit, not both" end
+	for _, k in ipairs(M.COCKPIT_ARGS) do
+		if args[k] ~= nil then return false, "cockpit and leaveCockpit go alone (not with " .. k .. ")" end
+	end
+	if args.leaveCockpit ~= nil then
+		if args.leaveCockpit ~= true then return false, "leaveCockpit must be true" end
+		return { leave = true }
+	end
+	local e = args.cockpit
+	if type(e) ~= "number" or e ~= e or e < 0 or e >= 2 ^ 53 or e ~= math.floor(e) then
+		return false, "cockpit: give a vehicle's entity id (a whole number), not " .. tostring(e)
+	end
+	return { entity = e }
 end
 
 -- an eye and the point it looks at -> what setCameraData / focusPosition take: the centre (the look point),

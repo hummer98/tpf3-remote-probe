@@ -1466,6 +1466,22 @@ function M.new(dir, opts)
 				inGame("toggleFreeCameraMouseAttachment")
 				g.freeCamMouse = not g.freeCamMouse
 			end,
+			-- the cockpit (free_cam_options.FreeCamTool's push / pop): an entity that is not there brings the game
+			-- down, as an engine assertion would (what the game does with one is not known; the mod must not send it)
+			enterFollowCameraCockpit = function(e)
+				inGame("enterFollowCameraCockpit")
+				if not api.engine.entityExists(e) then
+					g.crashed = "ASSERT: enterFollowCameraCockpit of no entity " .. tostring(e)
+					error(g.crashed)
+				end
+				g.cockpit, g.cockpitEnters = e, (g.cockpitEnters or 0) + 1
+			end,
+			leaveFollowCameraCockpit = function()
+				inGame("leaveFollowCameraCockpit")
+				g.cockpit, g.cockpitLeaves = nil, (g.cockpitLeaves or 0) + 1
+			end,
+			-- { entity, revision }: the cockpit's vehicle, -1 when none
+			getFollowEntity = function() inGame("getFollowEntity"); return { g.cockpit or -1, 0 } end,
 		}, game = {
 			getEstimatedMaximumGameSpeed = function() return opts.maxSpeed or 0 end,
 			-- per-mod GUI save data held by the game (C++): every Lua state sees the same
