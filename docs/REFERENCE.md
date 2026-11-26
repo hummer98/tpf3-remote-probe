@@ -320,8 +320,10 @@ python3 tools/tf3ctl.py camera --free off                                 # back
 - The same fence as `camera --set` (it changes the game; allowed in coop). Not with `--set`, `--entity`, `--focus`
   or `--distance`. Refused in the main menu; without the speed control on screen `--free` is not run (answered
   after 10 s) and the eye is not placed.
-- Not checked in a game yet: whether the eye can go under the ground this way, whether `setCameraData` /
-  `focusPosition` move the free camera's eye, and the sign of angle and pitch.
+- Seen in a game (2026-11-26): the free camera's eye does not go under the ground; with `--eye` below it, the eye
+  stays above the ground (no frame from inside a tunnel this way).
+- Not checked in a game yet: whether `setCameraData` / `focusPosition` move the free camera's eye, and the sign of
+  angle and pitch.
 
 **Cockpit** (`camera --cockpit VEHICLE`, `camera --leave-cockpit`; not checked in a game yet). For a frame from a
 vehicle's driver's seat, e.g. inside a tunnel where the free camera's eye cannot go.
@@ -333,6 +335,8 @@ python3 tools/tf3ctl.py frame --out cockpit.png
 python3 tools/tf3ctl.py camera --leave-cockpit         # back (pops the same tool, as ESC)
 ```
 
+- Tried once in a game (2026-11-26), not settled: for a vehicle in its depot, `--cockpit` did not give a frame
+  from the driver's seat. Whether a vehicle running on its line does is not checked yet.
 - Through the speed control, as `--free`: it pushes the base's `free_cam_options.FreeCamTool` with
   `cockpitCameraForEntity` (its push calls `api.gui.camera.enterFollowCameraCockpit`), and `--leave-cockpit` pops it
   (its pop calls `leaveFollowCameraCockpit`).

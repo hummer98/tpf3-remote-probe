@@ -304,8 +304,9 @@ python3 tools/tf3ctl.py camera --free off                                 # ふ�
 - `--mouse attach|detach`: `isFreeCameraMouseAttached` が違うと言うときだけ `toggleFreeCameraMouseAttachment` を呼びます。
 - 柵は `camera --set` と同じです (ゲームを変える側。共同作業の間も通る)。`--set`・`--entity`・`--focus`・`--distance` とは
   一緒に使えません。メインメニューでは断ります。速度ボタンが画面に無いと、`--free` は動かず (10 秒後に返事)、目も置きません。
-- ゲームではまだ確認していないこと: この方法で目が地面の下に入れるか、`setCameraData` / `focusPosition` がフリーカメラの目を
-  動かすか、angle と pitch の符号。
+- ゲームで見たこと (2026-11-26): フリーカメラの目は地面の下に入りません。`--eye` を地面より下にしても、目は地上に残ります
+  (この方法ではトンネルの中の絵は撮れません)。
+- ゲームではまだ確認していないこと: `setCameraData` / `focusPosition` がフリーカメラの目を動かすか、angle と pitch の符号。
 
 **運転席** (`camera --cockpit VEHICLE`・`camera --leave-cockpit`。ゲーム内では未確認)。車両の運転席からの絵を撮るため
 です (フリーカメラの目が入れないトンネルの中など)。
@@ -317,6 +318,8 @@ python3 tools/tf3ctl.py frame --out cockpit.png
 python3 tools/tf3ctl.py camera --leave-cockpit         # 戻す (ESC と同じく、同じツールを外す)
 ```
 
+- ゲームで 1 回試しただけで、まだ決まっていないこと (2026-11-26): 車庫の中の車両では、`--cockpit` で運転席の絵に
+  なりませんでした。路線を走っている車両でどうなるかは、まだ確認していません。
 - `--free` と同じく速度ボタン経由です。本体の `free_cam_options.FreeCamTool` を `cockpitCameraForEntity` 付きで積み
   (その push が `api.gui.camera.enterFollowCameraCockpit` を呼ぶ)、`--leave-cockpit` で外します (その pop が
   `leaveFollowCameraCockpit` を呼ぶ)。
