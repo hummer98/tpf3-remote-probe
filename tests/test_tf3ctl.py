@@ -3,6 +3,7 @@
 The end-to-end cases run the real content/remote.script.lua in tests/fake_game.lua (real time, own process) and talk
 to it through real files, exactly as with the game.
 """
+import argparse
 import atexit
 import contextlib
 import glob
@@ -1141,6 +1142,34 @@ class EndToEndTest(unittest.TestCase):
                     ["--free", "on", "--set", "1,2"], ["--free", "on", "--distance", "5"]):
             code, res = self.ctl("camera", *bad)
             self.assertEqual(code, 2, bad)
+
+    def test_9x_camera_cockpit(self):
+        # the same fence as camera --set
+        self.assertTrue(tf3ctl.changes_game("camera", {"cockpit": 601}))
+        self.assertTrue(tf3ctl.changes_game("camera", {"leaveCockpit": True}))
+        # checked by the mod before anything is sent: no such entity, an entity that is not a vehicle (a depot)
+        code, res = self.ctl("camera", "--cockpit", "999999")
+        self.assertEqual(code, 1, res)
+        self.assertIn("no such entity", res["error"])
+        code, res = self.ctl("camera", "--cockpit", "301")
+        self.assertEqual(code, 1, res)
+        self.assertIn("not a vehicle", res["error"])
+        # leaving goes to the speed control, which in this fake has no tool stack: refused there, nothing popped
+        code, res = self.ctl("camera", "--leave-cockpit")
+        self.assertEqual(code, 1, res)
+        self.assertIn("toolStack", res["error"])
+        for bad in (["--cockpit", "1", "--leave-cockpit"], ["--cockpit", "1", "--free", "on"],
+                    ["--cockpit", "1", "--entity", "1"], ["--leave-cockpit", "--set", "1,2"],
+                    ["--cockpit", "1", "--distance", "5"], ["--cockpit=-1"]):
+            code, res = self.ctl("camera", *bad)
+            self.assertEqual(code, 2, bad)
+        with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+            tf3ctl.main(["camera", "--cockpit", "x"])  # argparse: not a whole number
+        self.assertEqual(cm.exception.code, 2)
+        ns = argparse.Namespace(set=None, entity=None, focus=None, distance=None, cockpit=601, leave_cockpit=False)
+        self.assertEqual(tf3ctl.camera_args(ns), {"cockpit": 601})
+        ns.cockpit, ns.leave_cockpit = None, True
+        self.assertEqual(tf3ctl.camera_args(ns), {"leaveCockpit": True})
 
     def test_9x_build_tool(self):
         code, res = self.ctl("build-tool", "--res", "station/street/bus_stop.con", "--template", "2", "--seconds", "5")

@@ -2797,6 +2797,19 @@ def camera_args(ns):
     """--set / --entity / --focus (+ --distance) as the mod's camera args; none = only read. The free camera
     options (--free, --eye + --look, --method, --via, --mouse) go alone; the mod checks the values."""
     given = [x for x in (ns.set, ns.entity, ns.focus) if x is not None]
+    cockpit, leave = getattr(ns, "cockpit", None), getattr(ns, "leave_cockpit", False)
+    if cockpit is not None or leave:
+        # alone: the cockpit is the free camera tool with a vehicle, and nothing else moves the camera with it
+        others = given or ns.distance is not None or any(getattr(ns, key, None) is not None for key, _ in FREECAM_OPTS)
+        if cockpit is not None and leave:
+            raise ToolError("give --cockpit or --leave-cockpit, not both")
+        if others:
+            raise ToolError("--cockpit and --leave-cockpit go alone (no other camera option)")
+        if leave:
+            return {"leaveCockpit": True}
+        if cockpit < 0:
+            raise ToolError("--cockpit: give a vehicle's entity id (tf3ctl vehicles)")
+        return {"cockpit": cockpit}
     if len(given) > 1:
         raise ToolError("give one of --set, --entity or --focus")
     free = {key: getattr(ns, key, None) for key, _ in FREECAM_OPTS if getattr(ns, key, None) is not None}
@@ -6253,6 +6266,12 @@ def make_parser():
     ca.add_argument("--method", choices=("data", "focus", "both"), help="how the eye is placed: data = setCameraData, "
                     "focus = focusPosition (keeps Z), both = the one then the other (default)")
     ca.add_argument("--mouse", choices=("attach", "detach"), help="the free camera's mouse attachment")
+    ca.add_argument("--cockpit", type=int, metavar="VEHICLE", help="enter this vehicle's cockpit, as the vehicle "
+                    "window's Enter Cockpit button (the free camera tool with the vehicle, through the speed control); "
+                    "refused unless it is a vehicle; the answer reads the camera and getFollowEntity before and after. "
+                    "Alone; not checked in a game yet")
+    ca.add_argument("--leave-cockpit", action="store_true", help="leave the cockpit entered by --cockpit (pops the "
+                    "same tool, as ESC); alone")
     bt = sub.add_parser("build-tool", help="open the construction menu's placing tool for one construction")
     bt.add_argument("--res", help="the construction's resName, e.g. depots/road/road_depot/road_depot.con")
     bt.add_argument("--template", type=int, help="the template number (menu tag resName@N)")

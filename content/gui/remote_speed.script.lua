@@ -65,6 +65,30 @@ local function warnOnce(warnedRef, key, msg)
 	print("[remote_probe] " .. msg) -- main thread (join): plain print
 end
 
+-- the base's free camera tool and the game's tool stack (main thread, in the join), with active(): whether the
+-- tool is the stack's active one (nil: the stack does not say: no getActiveTool, or it failed). Raises when
+-- either is not there.
+local function freeCamToolStack(gameCtx)
+	if not gameCtx or not gameCtx.toolStack then error("no gameCtx.toolStack in the speed control's params") end
+	-- the base's own tool: react keeps each registered tool by name (_react.tools), and the module is the way
+	-- in when that is not reachable (a second copy of the module would fail: RegisterTool refuses a name twice)
+	local tools = type(_react) == "table" and type(_react.tools) == "table" and _react.tools or nil
+	local tool = tools and tools[core.FREECAM_TOOL_NAME]
+	if type(tool) ~= "table" then
+		local fc = req(core.FREECAM_MODULE)
+		tool = type(fc) == "table" and fc[core.FREECAM_FIELD] or nil
+	end
+	if type(tool) ~= "table" then error(core.FREECAM_MODULE .. "." .. core.FREECAM_FIELD .. " is not a tool") end
+	local stack = gameCtx.toolStack:get():getApi()
+	local function active()
+		if type(stack.getActiveTool) ~= "function" then return nil end
+		local okA, t = pcall(stack.getActiveTool)
+		if not okA then return nil end
+		return t == tool or (type(t) == "table" and t.name ~= nil and t.name == tool.name)
+	end
+	return tool, stack, active
+end
+
 -- the free camera (main thread, in the join): f = { on, via }. via "tool", as the base's eye button and radial
 -- menu: push free_cam_options.FreeCamTool on the tool stack (its push toggles the free camera), or pop it; not
 -- again when the stack already has it on top (a second push would toggle the camera back). via "toggle":
@@ -80,24 +104,7 @@ local function performFreeCam(f, gameCtx, report)
 			info.action = "toggled"
 			return
 		end
-		if not gameCtx or not gameCtx.toolStack then error("no gameCtx.toolStack in the speed control's params") end
-		-- the base's own tool: react keeps each registered tool by name (_react.tools), and the module is the way
-		-- in when that is not reachable (a second copy of the module would fail: RegisterTool refuses a name twice)
-		local tools = type(_react) == "table" and type(_react.tools) == "table" and _react.tools or nil
-		local tool = tools and tools[core.FREECAM_TOOL_NAME]
-		if type(tool) ~= "table" then
-			local fc = req(core.FREECAM_MODULE)
-			tool = type(fc) == "table" and fc[core.FREECAM_FIELD] or nil
-		end
-		if type(tool) ~= "table" then error(core.FREECAM_MODULE .. "." .. core.FREECAM_FIELD .. " is not a tool") end
-		local stack = gameCtx.toolStack:get():getApi()
-		-- nil: the stack does not say (no getActiveTool, or it failed)
-		local function active()
-			if type(stack.getActiveTool) ~= "function" then return nil end
-			local okA, t = pcall(stack.getActiveTool)
-			if not okA then return nil end
-			return t == tool or (type(t) == "table" and t.name ~= nil and t.name == tool.name)
-		end
+		local tool, stack, active = freeCamToolStack(gameCtx)
 		info.activeBefore = active()
 		if f.on then
 			if info.activeBefore == true then
@@ -116,6 +123,55 @@ local function performFreeCam(f, gameCtx, report)
 	end)
 	if not ok then return "free camera failed: " .. tostring(err) end
 	return nil
+end
+
+-- a vehicle's cockpit (main thread, in the join): c = { entity, entered } or { leave = true, entered }. As the
+-- base's "Enter Cockpit" button: push the free camera tool with cockpitCameraForEntity (its push calls
+-- enterFollowCameraCockpit); leave pops it (its pop calls leaveFollowCameraCockpit). Not pushed over the tool
+-- when it is on already (a cockpit or the free camera: a second one stacked would need two pops), nor popped when
+-- it is not; entered (the guiUpdate script's word) stands in where the stack does not say. The entity is checked
+-- again here, as it may have gone since the guiUpdate script checked it, and an entity that is not there may
+-- bring the engine down. report.cockpit as report.freeCam. Returns the failure (text) or nil.
+local function performCockpit(c, gameCtx, report)
+	local info = {}
+	if report then report.cockpit = info end
+	local refusal
+	local ok, err = pcall(function()
+		local tool, stack, active = freeCamToolStack(gameCtx)
+		info.activeBefore = active()
+		if c.leave then
+			if info.activeBefore == false then
+				info.action, refusal = "none", "not in a cockpit (the free camera tool is not on the tool stack)"
+			elseif not c.entered then
+				info.action, refusal = "none", "no cockpit entered by camera cockpit since the load (the free camera "
+					.. "tool, if on, may be the free camera itself): camera free off pops the same tool"
+			else
+				stack.pop(tool, nil)
+				info.action = "popped"
+			end
+		else
+			if info.activeBefore == true or (info.activeBefore == nil and c.entered) then
+				info.action, refusal = "none", "the free camera tool is on already (a cockpit or the free camera): "
+					.. "leave it first (camera leaveCockpit, or free off)"
+			else
+				local CT = api.type.ComponentType
+				local okV, isVehicle = pcall(function()
+					return api.engine.entityExists(c.entity) == true
+						and api.engine.getComponent(c.entity, CT.TRANSPORT_VEHICLE) ~= nil
+				end)
+				if not (okV and isVehicle) then
+					info.action, refusal = "none", "entity " .. tostring(c.entity) .. " is no longer a vehicle; not entered"
+				else
+					local e = math.tointeger and math.tointeger(c.entity) or c.entity
+					stack.push(tool, nil, { gameCtx = gameCtx, cockpitCameraForEntity = e }, true) -- as the base's button
+					info.action = "pushed"
+				end
+			end
+		end
+		info.activeAfter = active()
+	end)
+	if not ok then return "cockpit failed: " .. tostring(err) end
+	return refusal
 end
 
 -- the window, event or tool of one request (main thread, in the join). gameCtx: the base passes it in the speed
@@ -160,6 +216,10 @@ local function perform(open, gameCtx, warnedRef, report)
 	end
 	if open.freeCam then
 		local msg = performFreeCam(open.freeCam, gameCtx, report)
+		if msg then failed(msg, msg) end
+	end
+	if open.cockpit then
+		local msg = performCockpit(open.cockpit, gameCtx, report)
 		if msg then failed(msg, msg) end
 	end
 	return first

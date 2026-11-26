@@ -854,6 +854,11 @@ local function freeCamera(c, fc)
 	-- toggle: the speed control cannot tell what the camera is in, so one that would undo the estimate is not sent
 	-- toggle with no estimate (after a load, or the user's own eye button): it could switch the wrong way, so only
 	-- an on is sent then (the user asked for the free camera; an off might turn it on instead)
+	-- in a cockpit, the free camera tool is on the stack already: an on would read as done (and the cockpit is
+	-- left with leaveCockpit, or with an off, which pops the same tool)
+	if on and G.cockpit ~= nil then
+		return fail(c.id, "in the cockpit of " .. tostring(G.cockpit) .. " (camera cockpit): leaveCockpit first")
+	end
 	if fc.via == "toggle" and G.freeCam == nil and not on then
 		return fail(c.id, "free off via toggle: not known whether the free camera is on (no free camera command since "
 			.. "the load), so a toggle might turn it on; use free off (the tool's way) or ESC")
@@ -882,6 +887,8 @@ local function freeCamera(c, fc)
 		-- later would still read the old top
 		local agrees = (f.action == "pushed" and f.activeAfter == true) or (f.action == "popped" and f.activeAfter == false)
 			or (f.action == "none" and f.activeAfter == on)
+		-- an off through the tool pops the cockpit's tool too: no cockpit after it
+		if not on and fc.via == "tool" and (f.action == "popped" or f.activeBefore == false) then G.cockpit = nil end
 		if f.activeAfter ~= nil and fc.via == "tool" and agrees then
 			G.freeCam = f.activeAfter
 			payload.freeCam.source = "toolStack"
@@ -902,12 +909,74 @@ local function freeCamera(c, fc)
 	end)
 end
 
+-- the entity the camera follows (getFollowEntity's first value), nil where it cannot be read or is none (< 0)
+local function followNow()
+	local f = try(function() return api.gui.camera.getFollowEntity() end)
+	local e = tonumber(type(f) == "table" and (f[1] or f.entity) or f)
+	if e == nil or e < 0 then return nil end
+	return e
+end
+
+-- args: cockpit (a vehicle's entity id) or leaveCockpit; core.cockpitRequest checked them. The speed control
+-- pushes (or pops) the base's free camera tool as the vehicle window's "Enter Cockpit" button does (the tool
+-- stack is only there). The id is checked before it is sent: an entity that is not there may bring the engine
+-- down in enterFollowCameraCockpit. G.cockpit: the entity this script entered, nil when none (or not known).
+-- The answer: the camera before, at once and core.FREECAM_READ_SEC after, and the followed entity before and after.
+local function cockpitCamera(c, cp)
+	local payload = { ok = true, note = "cockpit: not checked in a game yet" }
+	if cp.leave then
+		payload.cockpit = { leave = true, entity = G.cockpit }
+	else
+		local e, CT = cp.entity, api.type.ComponentType
+		if api.engine.entityExists(e) ~= true then return fail(c.id, "no such entity: " .. tostring(e)) end
+		local tv = try(function() return api.engine.getComponent(e, CT.TRANSPORT_VEHICLE) end)
+		if tv == nil then return fail(c.id, "entity " .. tostring(e) .. " is not a vehicle (tf3ctl vehicles)") end
+		if G.freeCam == true then
+			return fail(c.id, "the free camera is on (estimated): camera free off first, then the cockpit")
+		end
+		local name = try(function() return api.engine.util.getEntityName(e) end)
+		payload.cockpit = { entity = e, name = type(name) == "string" and name or nil }
+	end
+	payload.cameraBefore, payload.followBefore = cameraNow(), followNow()
+	local open = cp.leave and { leave = true, entered = G.cockpit ~= nil } or { entity = cp.entity, entered = G.cockpit ~= nil }
+	local seq
+	seq = queueOpen({ cockpit = open }, function(r, waited)
+		payload.seq, payload.relayedInSec = seq, waited
+		if r == nil or r.skipped then
+			return failWith(c.id, r == nil and ("the speed control did not take it in " .. core.OPEN_RELAY_SEC
+				.. " s (no game on screen, the ESC menu or a dialog); not run, and it will not run later")
+				or "the speed control was built again after it was sent (a load?) and took it as old; not run",
+				{ relayed = false, seq = seq })
+		end
+		local f = r.cockpit or {}
+		payload.cockpit.action, payload.cockpit.activeBefore, payload.cockpit.activeAfter = f.action, f.activeBefore, f.activeAfter
+		-- the tool was not on the stack: no cockpit (left by ESC, or the vehicle went), whatever this script thought
+		if f.activeBefore == false and cp.leave then G.cockpit = nil end
+		if r.error then
+			return failWith(c.id, "relayed, but " .. r.error, { relayed = true, seq = seq, cockpit = payload.cockpit })
+		end
+		payload.relayed = true
+		if cp.leave then G.cockpit = nil else G.cockpit = cp.entity end
+		local ok, err = pcall(function()
+			payload.cameraAtOnce, payload.followAtOnce = cameraNow(), followNow()
+			camReads[#camReads + 1] = { id = c.id, at = appTime() + core.FREECAM_READ_SEC, fn = function()
+				payload.camera, payload.follow = cameraNow(), followNow()
+				answer(c.id, payload)
+			end }
+		end)
+		if not ok then fail(c.id, "cockpit sent, but reading the camera failed: " .. tostring(err)) end
+	end)
+end
+
 -- args: none (read), set (x,y[,distance[,angle[,pitch]]], the rest kept), entity, or focus (x,y,z) + distance.
 -- A GUI API on the main thread (this script runs there). Answers what the camera reads after the move.
 function handlers.camera(c)
 	local a, cam = c.args, api.gui.camera
 	local given = (a.set ~= nil and 1 or 0) + (a.entity ~= nil and 1 or 0) + (a.focus ~= nil and 1 or 0)
 	if given > 1 then return fail(c.id, "give one of set, entity or focus") end
+	local cp, errCp = core.cockpitRequest(a)
+	if cp == false then return fail(c.id, errCp) end
+	if cp then return cockpitCamera(c, cp) end
 	local fc, errFc = core.freeCamRequest(a)
 	if fc == false then return fail(c.id, errFc) end
 	if fc then
@@ -1719,6 +1788,7 @@ local function init()
 	G.opens = {} -- a new GUI: requests of the last game are not this one's
 	G.buildTool = nil -- a new GUI: no filter left to clear
 	G.freeCam = nil -- a new GUI: the last game's free camera estimate does not hold
+	G.cockpit = nil -- nor its cockpit
 	camReads = {} -- nor an answer waiting to read the last game's camera
 	-- the save may hold the last game's label and requests; buttons now, not at the first label step, so a game
 	-- set to hide them never shows them
