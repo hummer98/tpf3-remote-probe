@@ -3208,7 +3208,7 @@ def town_grow_timeout(cmd, args):
 TOWN_DEVELOP_MAX = 200  # the mod's core.TOWN_DEVELOP_MAX
 TOWN_GROW_RADIUS = 250  # core.TOWN_GROW_RADIUS
 TOWN_GROW_RADIUS_MAX = 2000  # core.TOWN_GROW_RADIUS_MAX
-TOWN_GROW_SIZE_MAX = 5  # core.TOWN_GROW_SIZE_MAX
+TOWN_GROW_SIZE_MAX = 25  # core.TOWN_GROW_SIZE_MAX (was 5; 20,20,20 measured in a game, 2026-11-26)
 TOWN_GROW_TIMEOUT_SEC = 60
 TOWN_DEVELOP_SEC_EACH = 0.5
 TOWN_NAME_MAX = 64  # the mod's core.TOWN_NAME_MAX
@@ -6395,7 +6395,7 @@ def make_parser():
                     "are counted in (default %g, a harbour's circle; at most %g)" % (TOWN_GROW_RADIUS, TOWN_GROW_RADIUS_MAX))
     td.add_argument("--dry-run", dest="grow_dry_run", action="store_true", help="the counts, nothing sent")
     tz = tws.add_parser("size", help="changes the save's contents (saving keeps it); meant for test saves (not checked): a town's size factors, residential, commercial, industrial "
-                        "(api.cmd.makeTownUpdateSizeCmd); not checked in a game yet")
+                        "(api.cmd.makeTownUpdateSizeCmd); checked in a game 2026-11-26 (20,20,20 with --update-all)")
     tz.add_argument("--entity", dest="grow_entity", type=int, required=True, help="the town (entities --kind town)")
     tz.add_argument("--factors", dest="grow_factors", required=True, metavar="R,C,I",
                     help="residential,commercial,industrial, each 0-%g (1 as a new town)" % TOWN_GROW_SIZE_MAX)

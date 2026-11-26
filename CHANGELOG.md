@@ -21,6 +21,8 @@ is separate and does not follow the release version.
   person's save), the force mark after a forced road, the change count and `saveNote`, the refusals of an expired
   or malformed mark and of another client's coop. Why: the user's save stays as it was, so changing the running game
   together needs no more fences than that (D-20261126-08).
+- `town size --factors`: each factor may be 0-25 (was 0-5). Measured 2026-11-26: 20,20,20 sent with updateAll was
+  taken, 40 steps took a town from 384 to 719 buildings, a year later the factors were still 20, with no error.
 
 ## [1.1.1] - 2026-11-26
 

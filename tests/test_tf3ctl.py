@@ -2634,11 +2634,15 @@ class QuitLaunchTest(unittest.TestCase):
                          ("townSize", {"entity": 801, "factors": [2.0, 1.5, 1.0]}))
         self.assertEqual(grow("size", "--entity", "801", "--factors", "0,5,1", "--update-all", "--dry-run"),
                          ("townSize", {"entity": 801, "factors": [0.0, 5.0, 1.0], "updateAll": True, "dryRun": True}))
+        # the upper bound: 25 goes, 26 is refused (2026-11-26, was 5)
+        self.assertEqual(tf3ctl.TOWN_GROW_SIZE_MAX, 25)
+        self.assertEqual(grow("size", "--entity", "801", "--factors", "25,20,25")[1]["factors"], [25.0, 20.0, 25.0])
         for bad in (["develop", "--at", "1"], ["develop", "--at", "a,b"], ["develop", "--at", "nan,1"],
                     ["develop", "--at", "1,2", "--count", "0"], ["develop", "--at", "1,2", "--count", "201"],
                     ["develop", "--at", "1,2", "--radius", "0"], ["develop", "--at", "1,2", "--radius", "2001"],
                     ["size", "--entity", "-1", "--factors", "1,1,1"], ["size", "--entity", "1", "--factors", "1,1"],
-                    ["size", "--entity", "1", "--factors", "1,x,1"], ["size", "--entity", "1", "--factors", "1,1,5.1"],
+                    ["size", "--entity", "1", "--factors", "1,x,1"], ["size", "--entity", "1", "--factors", "1,1,25.1"],
+                    ["size", "--entity", "1", "--factors", "26,1,1"],
                     ["size", "--entity", "1", "--factors", "-1,1,1"], ["size", "--entity", "1", "--factors", "nan,1,1"]):
             with self.assertRaises(tf3ctl.ToolError, msg=str(bad)):
                 grow(*bad)

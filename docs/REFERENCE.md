@@ -980,7 +980,8 @@ python3 tools/tf3ctl.py town size --entity 801 --factors 2,1.5,1 [--update-all] 
   "new buildings or street segments are added at the given position"; `--streets` develops streets, `--upgrade`
   upgrades buildings (both false by default).
 - `town size` sends `api.cmd.makeTownUpdateSizeCmd(town, { residential, commercial, industrial }, updateAll)`: the
-  town's size factors (each 0-5; a new town has 1), as the base's town growth script sends them. `--update-all`
+  town's size factors (each 0-25; a new town has 1. Measured 2026-11-26: 20,20,20 with `--update-all` was taken,
+  40 steps took a town from 384 to 719 buildings, a year later the factors were still 20, no error), as the base's town growth script sends them. `--update-all`
   takes every building to its target capacity. The town must be one the engine has, with a `TOWN` component. The
   base's town growth script resends the size from the town's own factors as it grows (raising only), so factors
   set lower than its own may be raised again.

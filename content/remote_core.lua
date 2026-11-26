@@ -3636,9 +3636,11 @@ M.TOWN_GROW_FUNCTIONS = { develop = "api.cmd.makeTownDevelopAtCmd", size = "api.
 M.TOWN_DEVELOP_MAX = 200 -- commands in one town develop
 M.TOWN_GROW_RADIUS = 250 -- default circle the buildings near the point are counted in (a harbour's catchment)
 M.TOWN_GROW_RADIUS_MAX = 2000
--- a size factor's upper bound: the base's growth script raises the factors step by step from 1; a big jump with
--- updateAll would ask the engine for very many buildings at once
-M.TOWN_GROW_SIZE_MAX = 5
+-- a size factor's upper bound: the base's growth script raises the factors step by step from 1. 25 since
+-- 2026-11-26 (was 5): measured in a game, makeTownUpdateSizeCmd(town, {20,20,20}, true) was taken, 40 steps took the
+-- town from 384 to 719 buildings (the centre filled with high-rises), and a year later the factors were still 20,
+-- the count unchanged, no error
+M.TOWN_GROW_SIZE_MAX = 25
 
 local function flagArg(args, key)
 	local v = args[key]

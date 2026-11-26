@@ -11434,6 +11434,11 @@ test("core.townDevelopRequest / townSizeRequest: ranges, shapes and defaults", f
 	local s2 = core.townSizeRequest({ entity = "802", factors = { 0, core.TOWN_GROW_SIZE_MAX, 2 }, updateAll = true,
 		dryRun = true })
 	eq(s2.entity, 802); eq(s2.factors[2], core.TOWN_GROW_SIZE_MAX); eq(s2.updateAll, true); eq(s2.dryRun, true)
+	-- the upper bound (2026-11-26, was 5): 25 goes, 26 is refused
+	eq(core.TOWN_GROW_SIZE_MAX, 25)
+	eq(core.townSizeRequest({ entity = 801, factors = "25,20,25" }).factors[1], 25)
+	local no26, why26 = core.townSizeRequest({ entity = 801, factors = "26,1,1" })
+	eq(no26, nil); truthy(why26:find("each from 0 to 25", 1, true), why26)
 	for _, bad in ipairs({ {}, { entity = 801 }, { entity = -1, factors = "1,1,1" }, { entity = 1.5, factors = "1,1,1" },
 		{ entity = 801, factors = "1,1" }, { entity = 801, factors = "1,1,1,1" }, { entity = 801, factors = "1,x,1" },
 		{ entity = 801, factors = "-0.1,1,1" }, { entity = 801, factors = "1,1," .. (core.TOWN_GROW_SIZE_MAX + 0.1) },
