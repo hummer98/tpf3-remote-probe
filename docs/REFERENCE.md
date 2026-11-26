@@ -599,6 +599,7 @@ python3 tools/tf3ctl.py road --from-node 4077 [--from 1504.5,-300] --to 1620,-30
 python3 tools/tf3ctl.py road --inspect-node 4077     # read only: what road reads of one node
 python3 tools/tf3ctl.py lights --node 4077 --off [--dry-run]   # test saves only (checked): a junction's light off
 python3 tools/tf3ctl.py lanes --edge 9010            # read only: a piece's lanes (see "A road's lanes")
+python3 tools/tf3ctl.py strips --edge 9010           # read only: the parallel strips a track is in (see "Parallel strips")
 ```
 
 - Builds one straight road piece between two points (x,y[,z], metres; no z: the terrain's height), with no click:
@@ -1235,6 +1236,48 @@ python3 tools/tf3ctl.py lanes --edge 9010[,9011,...] [--no-network]
 - **Not checked in game yet** (written 2026-11-23): whether the game's `laneConfigs` keep the template's order
   and offsets, whether `transportModes`' keys are the enum's values (`modeKeys`: a sidewalk should read
   `CARGO,PERSON`), what the transport network's edges are per lane.
+
+### Parallel strips (`strips`, read only)
+
+```
+python3 tools/tf3ctl.py strips --edge 9010[,9011,...] [--limit N] [--gs]
+python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
+```
+
+**Not checked in a game yet** (written 2026-11-26). Everything below comes from the API's type definitions
+(`baseParallelStripSystem.getStrips`, `parallelStrip.getStripInfo` / `isTunnel` / `isBridge`, the
+`BASE_PARALLEL_STRIP` and `BRIDGE` components); which of them the game's Lua states really have is the first
+thing to check.
+
+- Reads only (no warning to others, nothing sent to the game). The engine joins tracks laid side by side into a
+  "parallel strip" (the base's tunnel and bridge walls are built per strip). `--edge`: up to 20 piece ids
+  (`around --kinds track` gives them); `--at x,y`: the track pieces whose curve passes within `--radius` metres
+  (initially 30, at most 500) of the point. Each strip met is read once; at most `--limit` strips (initially 20,
+  at most 40; more: `stripsTruncated`), within 2 s (`timeUp`).
+- `asked`: per piece asked or found, `strips` (the strip ids `getStrips` gave) or an `error`; `missing`: ids
+  the engine does not have. `ok` is false only when every `--edge` is missing ("no such piece"). `scan` (with
+  `--at`): the point, the radius, how many pieces and tracks were met.
+- Per strip (`strips`): `strip`, `stripInfo` (`carrier` RAIL / TRAM / ..., `edgeType` NORMAL / BRIDGE / TUNNEL,
+  `edgeTypeIndex`), `isTunnel`, `isBridge`, `groupCount`, `length` (the longest group, metres),
+  `curvatureMean` (signed, 1/m, + turns left), `deadEnds`, `laneType` (always `"unread"`), `bridge` (the
+  `BRIDGE` component's intervals: `splines`, `railingModels`, at most 8 `models` with `name` and `at`),
+  `rangeGroups` (as read: `edge` and `bounds` only) and `unread` (what this strip lacked).
+- Per group (`groups`; a group is taken to be one track along the strip, a guess): `edges` (the pieces in
+  order), `ranges` (`edge`, `bounds`, `length`, `from`, `to`), `length`, `curvature` (`mean`, `maxAbs`,
+  `turnDeg`), `across` (metres from group 1's start, + to the right looking along group 1) and `ends`
+  (`begin` and `end`: `node`, `trackPieces` and `kind`: `deadEnd` (1 track piece at the node), `continues` (2),
+  `junction` (3 or more), `insidePiece` (the bound is not 0 or 1)).
+- Length and curvature are **worked out** here: a piece's curve is taken as the Hermite of `BASE_EDGE`'s
+  `position0/1` and `tangent0/1`, and a range's `bounds` as that curve's parameter (both guesses). `pieces`
+  lists the pieces met (`from`, `to`, `tangent0/1`, `length`, `laneCount`).
+- `unread` (the answer's): `lane.type`, the railing intervals, the dead-end intervals, `railingWidth` and the
+  need-entry flags are given only to the tunnel's `updateFn`, so they are never read; then whatever did not read.
+- `--gs` runs the same reader in the probe's game script (`where: "gs"`), through `eval --gs`: only with
+  `"eval": true` in the configuration file and the mod setting `--param hummer_remote_probe:gameScript=2`.
+  Without `--gs`, `where: "gui"`.
+- To check in a game: whether the GUI state has `baseParallelStripSystem`; how `rangeGroups` reads (or
+  `rangeGroups_native`, `groupsFrom`); whether `getStripInfo` works in both states; whether a tunnel's strip has a
+  `BRIDGE` component; the sign of `across`; whether `bounds` are the curve's parameter.
 
 ### Where a construction fits (`fit`)
 

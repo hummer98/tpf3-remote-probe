@@ -12114,6 +12114,9 @@ dofile(root .. "/tests/run_around.lua")({ test = test, eq = eq, truthy = truthy,
 -- lanes and around --lanes (tests/run_lanes.lua)
 dofile(root .. "/tests/run_lanes.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
 	newGame = newGame, send = send, frames = frames, final = final, FIRST = FIRST, SAVES = SAVES })
+-- strips (tests/run_strips.lua)
+dofile(root .. "/tests/run_strips.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
+	newGame = newGame, send = send, frames = frames, final = final, FIRST = FIRST, SAVES = SAVES })
 -- the diagnosis of stations --catchment (tests/run_catchment.lua)
 dofile(root .. "/tests/run_catchment.lua")({ test = test, eq = eq, truthy = truthy, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })
