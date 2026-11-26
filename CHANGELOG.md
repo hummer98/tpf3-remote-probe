@@ -13,34 +13,37 @@ is separate and does not follow the release version.
 
 ### Added
 
-- `"officialModsByDefault"` in the configuration file (off by default): a new game (`newgame`, `launch` /
-  `restart --new`) starts with the official mods installed (`ug_*`) too, as players' games do; `--remove ug_x` takes
-  one out, an `--add` of one already in is not added twice. The answer names them in `plan.officialMods` (the
-  editor's answer too); a mod older than the key, which starts the game without them, gets a warning. Measured
-  2026-11-26: `launch --new` started a game with the probe alone.
-- `track`: track pieces by coordinates as `road` builds roads (RoadType TRACK, SegmentAndEntity type 1), on the
-  ground or underground with `--tunnel` (edge type TUNNEL, the tunnel type's id); `--from-node` / `--to-node`,
+- `"officialModsByDefault"` in the configuration file (off by default): a new game (`newgame`, `launch` / `restart
+  --new`) starts with the official mods installed (`ug_*`) too, as players' games do; `--remove ug_x` takes one out,
+  an `--add` of one already in is not added twice. The answer names them in `plan.officialMods` (the editor's answer
+  too); a mod older than the key, which starts the game without them, gets a warning. Measured 2026-11-26: `launch
+  --new` started a game with the probe alone.
+- `track`: track pieces by coordinates as `road` builds roads (RoadType TRACK, SegmentAndEntity type 1), on the ground
+  or underground with `--tunnel` (edge type TUNNEL, the tunnel type's id); `--from-node` / `--to-node`,
   `--tangent-from` / `--tangent-to`, `--batch` (at most 16, `"@name"` shared nodes), `--dry-run --engine-check`,
-  `--collision-detail`. The answer gives the edges and the engine's words when it refuses. Not checked in a game
-  yet.
+  `--collision-detail`. The answer gives the edges and the engine's words when it refuses. Measured 2026-11-26: four
+  tunnel pieces and a fork were built with no error, on a test save and in coop on another save. A switch at an
+  existing node gets a warning in its end, as `road` crashed the game joining a node with no junction set-up.
 - `strips`: read the engine's parallel strips of tracks (read only). Tunnel and bridge walls are built per parallel
   strip, so the answer gives per strip the edge order, the worked-out length and curvature, the dead ends, the range
-  groups, and a list of what could not be read. A group is one section of a strip with its tracks side by side (not one
-  track); each range carries its share of the piece and its own `across` and `ends`; a group carries its length (the mean
-  of its ranges), width and the groups it joins; a strip adds the sections' lengths, `edgeShares` and `groupsInOrder`.
-  An end where another group goes on, or where a node has 3 or more track pieces, is marked `junction: true` beside its
-  `kind`, so a fork can be read in one place. `--at` finds tracks by their curve, not their chord, and says how many
-  entities the octree scan dropped; a long strip stops at 64 groups and says so (`groupsTruncatedWhy`). `--gs` runs the
-  same reader in the game script through `eval --gs`. Hermite curves, the bounds as the curve's parameter, the sign of
-  `across` and the order of the groups are not checked in a game yet.
+  groups, and a list of what could not be read. A group is one section of a strip with its tracks side by side (not
+  one track); each range carries its share of the piece and its own `across` and `ends`; a group carries its length
+  (the mean of its ranges), width and the groups it joins; a strip adds the sections' lengths, `edgeShares` and
+  `groupsInOrder`. An end where another group goes on, or where a node has 3 or more track pieces, is marked
+  `junction: true` beside its `kind`, so a fork can be read in one place. `--at` finds tracks by their curve, not
+  their chord, and says how many entities the octree scan dropped; a long strip stops at 64 groups and says so
+  (`groupsTruncatedWhy`). The scan checks the clock as `around` does, so a big area does not stall a frame. `--gs`
+  runs the same reader in the game script through `eval --gs`. Measured 2026-11-26 on a tunnel with a fork and a
+  parallel track 5 m to the left: two groups in order, length 200, `across` 0 and -5 (right is +), width 5, `junction:
+  true` at the fork, 4 dead ends where they were. Hermite curves are not checked in a game yet.
 - `camera --free on|off`: the base's free camera, pushed and popped on the game's tool stack as the eye button and ESC
   do; `--eye` and `--look` as a centre, distance, angle and pitch; `--mouse attach|detach`. Measured 2026-11-26: the
-  free camera's eye does not go under the ground even with `--eye` below it, so it cannot frame the inside of a tunnel.
-  The rest is not checked in a game yet.
-- `camera --cockpit` / `--leave-cockpit`: a vehicle's driver's seat, as the vehicle window's Enter Cockpit button gives
-  it, so a tunnel's walls can be seen from inside a vehicle. While in the cockpit, camera moves are refused until
-  `--leave-cockpit`, and so is a second enter or `free on`. A vehicle in its depot did not give a driver's seat frame
-  (tried once on 2026-11-26, not settled); a vehicle on the track is not checked in a game yet.
+  free camera's eye does not go under the ground even with `--eye` below it, so it cannot frame the inside of a
+  tunnel. The rest is not checked in a game yet.
+- `camera --cockpit` / `--leave-cockpit`: a vehicle's driver's seat, as the vehicle window's Enter Cockpit button
+  gives it, so a tunnel's walls can be seen from inside a vehicle. While in the cockpit, camera moves are refused
+  until `--leave-cockpit`, and so is a second enter or `free on`. A vehicle in its depot did not give a driver's seat
+  frame (tried once on 2026-11-26, not settled); a vehicle on the track is not checked in a game yet.
 
 ### Changed
 
@@ -52,22 +55,22 @@ is separate and does not follow the release version.
   tf3ctl sends `_coop` (the coop's owner; it drops one written by hand, so the mod takes it as it comes) and the mod
   takes it in place of a test save's name; their answers name it in `coop`. Kept: `save` only to a test save's name
   (and `--user-asked` for that on a person's save), `--user-asked` for `eval --write` on a person's save (its code
-  runs with every global and could reach the real save and delete, whose replacement is best effort: tf3ctl refuses
-  it without, exit 4 `"refused": "coop"`, and the mod checks `_userAsked` again), the force mark after a forced
-  road, the change count and `saveNote`, the refusals of an expired or malformed mark and of another client's coop. Why: the player's save stays as it was, so changing the running game
-  together needs no more fences than that.
+  runs with every global and could reach the real save and delete, whose replacement is best effort: tf3ctl refuses it
+  without, exit 4 `"refused": "coop"`, and the mod checks `_userAsked` again), the force mark after a forced road, the
+  change count and `saveNote`, the refusals of an expired or malformed mark and of another client's coop. Why: the
+  player's save stays as it was, so changing the running game together needs no more fences than that.
 - `town size --factors`: each factor may be 0-25 (was 0-5). Measured 2026-11-26: 20,20,20 sent with updateAll was
   taken, 40 steps took a town from 384 to 719 buildings, a year later the factors were still 20, with no error.
 
 ### Fixed
 
-- `lights --off --dry-run`: the engine check asked `makeProposalData` with a `Proposal`, which this build takes only as a
-  `SimpleProposal` (measured 2026-11-26: "bad argument #2 ... SimpleProposal expected, got Proposal"), so it never gave
-  an answer. The proposal's node set-ups are now copied into a `SimpleProposal`'s `streetProposal`, as `road`'s joins
-  send theirs; when the proposal has no node set-up, the answer says why instead of asking. Whether the engine judges
-  the light's change this way is not checked in a game yet (`engineCheckNote` says so). The dry run also reads both
-  lists as vectors or tables, and stops with the reason when a list does not read, instead of checking half the
-  proposal.
+- `lights --off --dry-run`: the engine check asked `makeProposalData` with a `Proposal`, which this build takes only
+  as a `SimpleProposal` (measured 2026-11-26: "bad argument #2 ... SimpleProposal expected, got Proposal"), so it
+  never gave an answer. The proposal's node set-ups are now copied into a `SimpleProposal`'s `streetProposal`, as
+  `road`'s joins send theirs; when the proposal has no node set-up, the answer says why instead of asking. Measured
+  2026-11-26 at a T junction: the dry run gave `verdict` "buildable" from the engine and left the lights as they were.
+  The dry run also reads both lists as vectors or tables, and stops with the reason when a list does not read, instead
+  of checking half the proposal.
 
 ## [1.1.1] - 2026-11-26
 
