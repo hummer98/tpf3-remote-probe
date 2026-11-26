@@ -3210,7 +3210,17 @@ function M.new(ctx)
 				if not ok or (t ~= "table" and t ~= "userdata") then
 					return nil, "the proposal's " .. key .. " could not be read (" .. tostring(ok and t or v) .. ")"
 				end
-				return core.toList(v)
+				-- (core.size and core.at read a failing # as 0 and a failing [i] as nil: here that would be an empty
+				-- or short list, so both are checked)
+				local okN, n = pcall(function() return #v end)
+				if not okN or type(n) ~= "number" then
+					return nil, "the proposal's " .. key .. " could not be read (no length: " .. tostring(n) .. ")"
+				end
+				local out = core.toList(v)
+				if #out ~= n then
+					return nil, "the proposal's " .. key .. " could not be read (" .. #out .. " of " .. n .. " items)"
+				end
+				return out
 			end
 			local cfgAdd, whyA = list("nodeConfigsToAdd")
 			if not cfgAdd then return unavailable(whyA) end

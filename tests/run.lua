@@ -10602,6 +10602,12 @@ test("lights --off --dry-run: the proposal's lists read as userdata vectors too;
 	truthy(a.ok, a.error); eq(a.checked, false); eq(a.sent, false)
 	truthy(a.engineCheck:find("nodeConfigsToRemove could not be read", 1, true), a.engineCheck)
 	eq(g.proposalDataCalls, 0); eq(#g.lightCmds, 0); eq(#g.buildCmds, 0)
+	-- a userdata with no # (core.size would say 0): not taken for an empty list either
+	g = lightsWorld({ lightProposalRemovesNoLen = true })
+	a = lightsRun(g, 1531, '{ node = 9000, dryRun = true, _testSave = "probe-x" }')
+	truthy(a.ok, a.error); eq(a.checked, false); eq(a.sent, false)
+	truthy(a.engineCheck:find("nodeConfigsToRemove could not be read (no length", 1, true), a.engineCheck)
+	eq(g.proposalDataCalls, 0); eq(#g.lightCmds, 0)
 	truthy(not g.crashed, g.crashed)
 end)
 

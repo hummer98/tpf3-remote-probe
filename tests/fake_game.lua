@@ -2557,6 +2557,12 @@ function M.installBuild(g, spec)
 				{ { entity = e, comp = { trafficLightPreference = pref, trafficLightConfig = copy(tlc) } } },
 				nodeConfigsToRemove = copy(spec.lightProposalRemoves or {}) }
 			if spec.lightProposalRemovesUnread then street.nodeConfigsToRemove = nil end
+			-- spec.lightProposalRemovesNoLen: that list a userdata with no # (reads as nothing, not as empty)
+			local noLen = nil
+			if spec.lightProposalRemovesNoLen then
+				noLen = newproxy(true)
+				getmetatable(noLen).__index = function(_, i) error("vector: no field " .. tostring(i)) end
+			end
 			local function vector(t)
 				if t == nil then return nil end
 				local vu = newproxy(true)
@@ -2576,6 +2582,7 @@ function M.installBuild(g, spec)
 					if spec.lightProposalVectors then
 						c.nodeConfigsToAdd, c.nodeConfigsToRemove = vector(c.nodeConfigsToAdd), vector(c.nodeConfigsToRemove)
 					end
+					if noLen then c.nodeConfigsToRemove = noLen end
 					return c
 				end
 				error("no field " .. tostring(k))
