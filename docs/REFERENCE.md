@@ -1253,10 +1253,13 @@ thing to check.
   "parallel strip" (the base's tunnel and bridge walls are built per strip). `--edge`: up to 20 piece ids
   (`around --kinds track` gives them); `--at x,y`: the track pieces whose curve passes within `--radius` metres
   (initially 30, at most 500) of the point. Each strip met is read once; at most `--limit` strips (initially 20,
-  at most 40; more: `stripsTruncated`), within 2 s (`timeUp`).
+  at most 40; more: `stripsTruncated`), within 2 s (`timeUp`; with `--gs` the game script's clock counts whole
+  seconds, so up to about 3 s).
 - `asked`: per piece asked or found, `strips` (the strip ids `getStrips` gave) or an `error`; `missing`: ids
   the engine does not have. `ok` is false only when every `--edge` is missing ("no such piece"). `scan` (with
-  `--at`): the point, the radius, how many pieces and tracks were met.
+  `--at`): the point, the radius, how many pieces and tracks were met;
+  `dropped` when the octree gave more than the list holds (then "no track" may mean "not all looked at"),
+  `timeTruncated` and `looked` when the 2 s ran out during the scan.
 - Per strip (`strips`): `strip`, `stripInfo` (`carrier` RAIL / TRAM / ..., `edgeType` NORMAL / BRIDGE / TUNNEL,
   `edgeTypeIndex`), `isTunnel`, `isBridge`, `groupCount`, `length` (the longest group, metres),
   `curvatureMean` (signed, 1/m, + turns left), `deadEnds`, `laneType` (always `"unread"`), `bridge` (the
@@ -1274,10 +1277,12 @@ thing to check.
   need-entry flags are given only to the tunnel's `updateFn`, so they are never read; then whatever did not read.
 - `--gs` runs the same reader in the probe's game script (`where: "gs"`), through `eval --gs`: only with
   `"eval": true` in the configuration file and the mod setting `--param hummer_remote_probe:gameScript=2`.
-  Without `--gs`, `where: "gui"`.
+  Without `--gs`, `where: "gui"`. The game script keeps eval's answer for about a minute, and a strips answer
+  may be large (up to 1 MB): with `--gs`, use a small `--limit` and do not save just after.
 - To check in a game: whether the GUI state has `baseParallelStripSystem`; how `rangeGroups` reads (or
   `rangeGroups_native`, `groupsFrom`); whether `getStripInfo` works in both states; whether a tunnel's strip has a
-  `BRIDGE` component; the sign of `across`; whether `bounds` are the curve's parameter.
+  `BRIDGE` component; the sign of `across`; whether `bounds` are the curve's parameter; `--at` round a node
+  where a street meets a track (`getNodeTrackSegments` given a street's node).
 
 ### Where a construction fits (`fit`)
 

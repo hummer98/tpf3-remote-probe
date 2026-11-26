@@ -1160,10 +1160,11 @@ python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
   「parallel strip」にまとめます (バニラのトンネルと橋の壁は strip ごとに建ちます)。`--edge`: edge の id を 20 本まで
   (`around --kinds track` で分かります)。`--at x,y`: その点から `--radius` m 以内 (初期設定 30、500 まで) を曲線が通る
   線路の edge。出会った strip は 1 回ずつ読み、`--limit` 本まで (初期設定 20、40 まで。超えたら `stripsTruncated`)、
-  2 秒まで (`timeUp`)。
+  2 秒まで (`timeUp`。`--gs` ではゲームスクリプトの時計が秒単位なので、3 秒近くまで延びます)。
 - `asked`: 頼んだ (見つけた) edge ごとに `strips` (`getStrips` が返した strip の id) か `error`。`missing`: エンジンに
   無い id。`ok` が false になるのは、`--edge` が全部無いときだけ ("no such piece")。`scan` (`--at` のとき): 点・半径・
-  出会った edge と線路の数。
+  出会った edge と線路の数。octree が一覧に入る数より多く返したら `dropped` (そのとき「線路が無い」は「全部は見ていない」
+  かもしれません)。走査の途中で 2 秒を超えたら `timeTruncated` と `looked`。
 - strip ごと (`strips`): `strip`、`stripInfo` (`carrier` RAIL / TRAM / ...、`edgeType` NORMAL / BRIDGE / TUNNEL、
   `edgeTypeIndex`)、`isTunnel`、`isBridge`、`groupCount`、`length` (一番長い group、m)、`curvatureMean` (符号つき、
   1/m、+ は左へ曲がる)、`deadEnds`、`laneType` (いつも `"unread"`)、`bridge` (コンポーネント `BRIDGE` の区間:
@@ -1181,10 +1182,12 @@ python3 tools/tf3ctl.py strips --at X,Y [--radius R] [--limit N] [--gs]
   `updateFn` にだけ渡るので、読みません。そのあとに、読めなかったもの。
 - `--gs` は、同じ読み取りを probe のゲームスクリプトで動かします (`where: "gs"`)。`eval --gs` で送るので、設定
   ファイルの `"eval": true` と、MOD の設定 `--param hummer_remote_probe:gameScript=2` が要ります。`--gs` なしは
-  `where: "gui"`。
+  `where: "gui"`。ゲームスクリプトは eval の答えを 1 分ほど持ち、strips の答えは大きくなることがあります (1 MB まで)。
+  `--gs` では `--limit` を小さくし、直後に保存しないでください。
 - ゲーム内で確認すること: GUI の状態に `baseParallelStripSystem` があるか。`rangeGroups` がどう読めるか
   (`rangeGroups_native` なら `groupsFrom`)。`getStripInfo` が両方の状態で動くか。トンネルの strip に `BRIDGE` が
-  あるか。`across` の符号。`bounds` が曲線のパラメータか。
+  あるか。`across` の符号。`bounds` が曲線のパラメータか。街路と線路がつながる node の近くでの `--at`
+  (`getNodeTrackSegments` に街路の node を渡したとき)。
 
 ### 建造物を置ける場所 (`fit`)
 

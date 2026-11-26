@@ -231,6 +231,47 @@ return function(t)
 		truthy(not ng.crashed and not nu.crashed)
 	end)
 
+	test("strips: review fixes (a curve near the point, the octree's cap, the clock, a bound unread, no enum)", function()
+		-- a piece bulging 75 m off its chord: the curve passes (50, 1075), the chord does not come near it
+		local w = world()
+		w[820] = track(40, 41, v(0, 1000), v(100, 1000), v(0, 300), v(0, -300))
+		w[820].box = { -1, 999, -20, 101, 1080, 20 }
+		near(S.nearest(w[820].comps.BASE_EDGE and { p0 = v(0, 1000), p1 = v(100, 1000), t0 = v(0, 300),
+			t1 = v(0, -300) }, 50, 1075), 0, 0.5, "on the curve")
+		local g = stripsGame({ strips = { [820] = {} }, nodeTracks = { [40] = { 820 }, [41] = { 820 } } }, w)
+		local a = run(g, 3151, '{ at = "50,1075", radius = 10 }')
+		truthy(a.ok, a.error); eq(a.scan.tracks, 1, "found by its curve"); eq(a.asked[1].edge, 820)
+		-- more found than the octree list holds: counted
+		local small = setmetatable({ AROUND_SCAN_MAX = 1 }, { __index = core })
+		local b = S.run({ at = { 50, -2 }, radius = 10 }, { core = small })
+		truthy(b.ok, b.error); eq(b.scan.dropped, 1); eq(b.scan.tracks, 1)
+		-- the clock: past the budget after the first look, nothing more read
+		local n = 0
+		local late = function() n = n + 1; return n == 1 and 0 or 10 end
+		local c = S.run({ edges = { 801, 802 } }, { clock = late })
+		eq(c.timeUp, true); eq(#c.asked, 0); eq(c.stripCount, 0)
+		-- in the scan too, looked at every 200 pieces
+		local many = world()
+		for i = 1, 450 do many[20000 + i] = { box = { 0, 2000, -1, 1, 2001, 1 }, comps = {} } end
+		local mg = stripsGame({}, many)
+		n = 0
+		local d = S.run({ at = { 0, 2000 }, radius = 5 }, { clock = late })
+		eq(d.timeUp, true); eq(d.scan.timeTruncated, true); eq(d.scan.looked, 199)
+		-- a bound that did not read: false in the array, not a hole
+		local e = S.run({ edges = { 808 } }, {})
+		local r = byKey(e.strips, "strip", 906)
+		eq(r.rangeGroups[1][1].bounds[1], false); eq(r.groups[1].ranges[1].bounds[2], false)
+		truthy(core.json(r.rangeGroups):find("[false,false]", 1, true), core.json(r.rangeGroups))
+		-- no RoadType.STREET in this state: a track told by its having no street component, and said so
+		local RT = api.type.enum.RoadType
+		api.type.enum.RoadType = { TRACK = RT.TRACK } -- (the fake reads TRACK through it; only STREET missing)
+		local okF, f = pcall(S.run, { edges = { 802 } }, {})
+		api.type.enum.RoadType = RT
+		truthy(okF, tostring(f)); truthy(f.pieces[1], core.json(f)); eq(f.pieces[1].track, true)
+		truthy(table.concat(f.unread, "|"):find("RoadType.STREET", 1, true), table.concat(f.unread, "|"))
+		truthy(not g.crashed and not mg.crashed)
+	end)
+
 	test("strips: run() as eval --gs calls it (where gs, os.time), the same answer", function()
 		local g = stripsGame()
 		local a = S.run({ edges = { 802 } }, { where = "gs" })

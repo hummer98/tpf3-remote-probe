@@ -119,6 +119,24 @@ function M.across(a, d, q)
 	return ((q.x - a.x) * d.y - (q.y - a.y) * d.x) / L
 end
 
+-- the least plan distance from (x, y) to the curve, along SAMPLES straight steps
+function M.nearest(c, x, y, n)
+	n = n or M.SAMPLES
+	local best, prev = math.huge, M.point(c, 0)
+	for i = 1, n do
+		local q = M.point(c, i / n)
+		local a, b = { x = prev.x, y = prev.y }, { x = q.x, y = q.y }
+		local dx, dy = b.x - a.x, b.y - a.y
+		local L2 = dx * dx + dy * dy
+		local t = L2 > 0 and math.max(0, math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / L2)) or 0
+		local px, py = a.x + t * dx - x, a.y + t * dy - y
+		local d = math.sqrt(px * px + py * py)
+		if d < best then best = d end
+		prev = q
+	end
+	return best
+end
+
 -- a range's end at bound b: "node0" (b = 0), "node1" (b = 1) or nil (inside the piece)
 function M.endOf(b)
 	if not finite(b) then return nil end
@@ -206,7 +224,11 @@ function M.run(args, opts)
 		local rt = field(be, "roadType")
 		local street = try(function() return api.type.enum.RoadType.STREET end)
 		if rt ~= nil and street ~= nil then p.track = rt ~= street
-		elseif rt == nil then p.track = comp(e, "BASE_EDGE_STREET") == nil end
+		else
+			-- without roadType or the enum: a piece with no street component is a track
+			if rt ~= nil then miss("api.type.enum.RoadType.STREET (track told by BASE_EDGE_STREET instead)") end
+			p.track = comp(e, "BASE_EDGE_STREET") == nil
+		end
 		p.node0, p.node1 = tonumber(field(be, "node0")), tonumber(field(be, "node1"))
 		local c = { p0 = vec(field(be, "position0")), p1 = vec(field(be, "position1")),
 			t0 = vec(field(be, "tangent0")), t1 = vec(field(be, "tangent1")) }
@@ -234,34 +256,43 @@ function M.run(args, opts)
 		return segCache[n] or nil
 	end
 
+	local timeUp = false
 	-- the pieces to start from
 	local starts, scan = {}, nil
 	if r.edges then
 		for _, e in ipairs(r.edges) do starts[#starts + 1] = e end
 	else
 		scan = { at = { x = r.x, y = r.y }, radius = r.radius, pieces = 0, tracks = 0 }
-		local found = {}
+		local found, dropped = {}, 0
 		local okW, errW = pcall(function()
 			local box = api.type.Box3.new(api.type.Vec3f.new(r.x - r.radius, r.y - r.radius, -1000),
 				api.type.Vec3f.new(r.x + r.radius, r.y + r.radius, 5000))
 			api.engine.system.octreeSystem.findIntersectingEntities(box, function(e)
 				e = tonumber(e)
-				if e and #found < core.AROUND_SCAN_MAX then found[#found + 1] = e end
+				if e then
+					if #found < core.AROUND_SCAN_MAX then found[#found + 1] = e else dropped = dropped + 1 end
+				end
 			end)
 		end)
 		if not okW then
 			return { ok = false, where = where, error = "the octree could not be read: " .. tostring(errW), note = M.NOTE }
 		end
 		table.sort(found)
+		-- more than the octree list holds: "no track here" could be "not all looked at"
+		if dropped > 0 then scan.dropped = dropped end
 		local seen = {}
-		for _, e in ipairs(found) do
+		for i, e in ipairs(found) do
+			-- the whole read is one frame: look at the clock now and then, as around does
+			if i % 200 == 0 and (clock() - t0) * 1000 > M.TIME_MS then
+				timeUp = true; scan.timeTruncated = true; scan.looked = i - 1; break
+			end
 			if not seen[e] then
 				seen[e] = true
 				local p = piece(e)
 				if p then
 					scan.pieces = scan.pieces + 1
 					local c = p.curve
-					if p.track and c and core.distToSegment(r.x, r.y, c.p0, c.p1) <= r.radius then
+					if p.track and c and M.nearest(c, r.x, r.y) <= r.radius then
 						scan.tracks = scan.tracks + 1
 						starts[#starts + 1] = e
 					end
@@ -280,7 +311,6 @@ function M.run(args, opts)
 
 	-- the strips of each piece asked for, each strip once, in the order first met
 	local stripIds, stripOf, byEdge, missing = {}, {}, {}, {}
-	local timeUp = false
 	for _, e in ipairs(starts) do
 		if (clock() - t0) * 1000 > M.TIME_MS then timeUp = true; break end
 		local entry = { edge = e }
@@ -356,8 +386,10 @@ function M.run(args, opts)
 				local e = tonumber(field(rr, "edge"))
 				local bounds = field(rr, "bounds")
 				local b0, b1 = tonumber(at(bounds, 1)), tonumber(at(bounds, 2))
-				rawG[#rawG + 1] = { edge = e, bounds = core.array({ r6(b0), r6(b1) }) }
-				local one = { edge = e, bounds = core.array({ r6(b0), r6(b1) }) }
+				-- a bound that did not read is false, not a hole (a hole would break the JSON array)
+				local bb = { r6(b0) or false, r6(b1) or false }
+				rawG[#rawG + 1] = { edge = e, bounds = core.array({ bb[1], bb[2] }) }
+				local one = { edge = e, bounds = core.array({ bb[1], bb[2] }) }
 				if e == nil then un("rangeGroups[" .. gi .. "][" .. ri .. "].edge") end
 				if b0 == nil or b1 == nil then un("rangeGroups[" .. gi .. "][" .. ri .. "].bounds") end
 				g.edges[#g.edges + 1] = e
