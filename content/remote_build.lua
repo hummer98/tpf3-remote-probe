@@ -3189,20 +3189,43 @@ function M.new(ctx)
 			return fail(c.id, "createTrafficLightProposal: " .. tostring(okM and "nothing given back" or prop) .. ": nothing sent")
 		end
 		if r.dryRun then
-			-- the proposal asked of the engine alone (makeProposalData with no Context, as the window sends none),
-			-- never sent
+			-- asked of the engine alone (makeProposalData with no Context, as the window sends none), never sent.
+			-- makeProposalData takes a SimpleProposal only (in a game 2026-11-26 the Proposal itself: "bad argument
+			-- #2 to '?' (SimpleProposal expected, got Proposal)"; Overpass Builder and others say the same of build
+			-- 40408), so the node set-ups the window's Proposal carries (its proposal.nodeConfigsToAdd /
+			-- nodeConfigsToRemove, type.d.tl) go into a SimpleProposal's streetProposal, as road's joins send theirs.
+			-- Whether the engine judges the light's change from that alone is not checked in a game yet
 			out.dryRun, out.sent = true, false
-			local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
-			local okD, data = false, "api.engine.util.proposal.makeProposalData is not there"
-			if mpd then okD, data = pcall(mpd, prop) end
-			if not okD or data == nil then
+			local function unavailable(why)
 				out.checked = false
-				out.engineCheck = "not available: " .. tostring(okD and "nothing given back" or data)
+				out.engineCheck = "not available: " .. why
 				return answer(c.id, out)
 			end
-			local v = verdict(data, "makeProposalData (proposal)")
+			local okA, adds = pcall(function() return prop.proposal.nodeConfigsToAdd end)
+			local okR, rems = pcall(function() return prop.proposal.nodeConfigsToRemove end)
+			if not okA or type(adds) ~= "table" then
+				return unavailable("the proposal's nodeConfigsToAdd could not be read (" .. tostring(okA and type(adds) or adds) .. ")")
+			end
+			local cfgAdd, cfgRemove = {}, {}
+			for _, x in ipairs(adds) do cfgAdd[#cfgAdd + 1] = x end
+			if okR and type(rems) == "table" then for _, x in ipairs(rems) do cfgRemove[#cfgRemove + 1] = x end end
+			if #cfgAdd == 0 then return unavailable("the proposal has no node set-up to add (nodeConfigsToAdd empty)") end
+			local okP, sp = pcall(function()
+				local s = api.type.SimpleProposal.new()
+				s.streetProposal.nodeConfigsToAdd = cfgAdd
+				if #cfgRemove > 0 then s.streetProposal.nodeConfigsToRemove = cfgRemove end
+				return s
+			end)
+			if not okP then return unavailable("a SimpleProposal could not be made of it: " .. tostring(sp)) end
+			local mpd = try(function() return api.engine.util.proposal.makeProposalData end)
+			if not mpd then return unavailable("api.engine.util.proposal.makeProposalData is not there") end
+			local okD, data = pcall(mpd, sp)
+			if not okD or data == nil then return unavailable(tostring(okD and "nothing given back" or data)) end
+			local v = verdict(data, "makeProposalData (SimpleProposal)")
 			for k, val in pairs(v) do out[k] = val end
-			out.checked, out.engineCheck = true, "makeProposalData (proposal)"
+			out.checked, out.engineCheck = true, "makeProposalData (SimpleProposal: the proposal's node set-ups)"
+			out.engineCheckNote = "the window's Proposal's node set-ups asked in a SimpleProposal (makeProposalData " ..
+				"takes no Proposal); not checked in a game yet whether the engine judges the light's change from them"
 			local no = refuses(v)
 			out.verdict = no and "refused" or ((v.warnings ~= nil and #v.warnings > 0) and "buildable with warnings" or "buildable")
 			if no then

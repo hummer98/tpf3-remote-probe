@@ -834,7 +834,11 @@ python3 tools/tf3ctl.py strips --edge 9010           # 読むだけ: 線路が�
     交差点の設定の無い node。すでに NO で段階も無い node には何も送りません (`changed: false`)。
   - 答え: `before` と `after` (読み直した `trafficLightPreference`・`trafficLightStates`・`trafficLightType`)、
     `off` (読み直して NO で段階が 0)、`changed`。`--dry-run` は提案を作ってエンジンに聞くだけ (makeProposalData。窓と同じく Context なし):
-    `verdict`。何も送りません。
+    `verdict`。何も送りません。makeProposalData は SimpleProposal しか受け取らない (Proposal をそのまま渡すと
+    "SimpleProposal expected, got Proposal"。2026-11-26 にゲームで) ので、Proposal が持つ node の設定
+    (`proposal.nodeConfigsToAdd` / `nodeConfigsToRemove`) を SimpleProposal の `streetProposal` に入れて聞きます。
+    エンジンがそれで信号の変更を判定するかは、ゲーム内では未確認です (`engineCheckNote`)。読めないときは
+    `checked: false` で、`engineCheck` に理由が出ます。
   - **ゲーム内では未確認** (2026-11-24 に書いたもの): エンジンが NO と空の段階をそのまま保つか (段階を作り直さないか)、
     そのあと road がその node につなげるか。信じる前に `road --inspect-node` で見てください。
 - 長さは 1 m から 2000 m まで。水の上や谷を渡るには橋が要りますが、これは橋を建てません (エンジンが断るか、地形に沿うか:

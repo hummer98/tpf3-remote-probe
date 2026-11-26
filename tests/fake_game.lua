@@ -2247,6 +2247,21 @@ function M.installBuild(g, spec)
 	-- ctx: the proposal's Context (its gatherFields: a field in the way is removed, a warning, instead of a collision)
 	local function evaluate(p, dry, ctx)
 		local st = getmetatable(p).store
+		-- a SimpleProposal carrying only node set-ups with a traffic light (lights --off --dry-run): judged as the
+		-- light's change (g.lightChecks: what it asked)
+		if not st.trafficLight and st.streetProposal then
+			local sp = getmetatable(st.streetProposal).store
+			local cfgs = sp.nodeConfigsToAdd or {}
+			if #cfgs > 0 and #(sp.nodesToAdd or {}) == 0 and #(sp.edgesToAdd or {}) == 0 and cfgs[1].comp
+				and cfgs[1].comp.trafficLightPreference ~= nil then
+				g.lightChecks = g.lightChecks or {}
+				for _, c in ipairs(cfgs) do
+					g.lightChecks[#g.lightChecks + 1] = { entity = c.entity, preference = c.comp.trafficLightPreference,
+						states = #((c.comp.trafficLightConfig or {}).states or {}) }
+				end
+				st = { trafficLight = true }
+			end
+		end
 		if st.trafficLight then
 			local data = { errorState = { critical = false, messages = {}, warnings = {} }, collisionInfo = { collisionEntities = {} },
 				costs = 0 }
@@ -2509,6 +2524,11 @@ function M.installBuild(g, spec)
 		if spec.noSimpleProposalData then
 			error("bad argument #1 to 'makeProposalData' (Proposal expected, got SimpleProposal)")
 		end
+		-- (a Proposal, as createTrafficLightProposal gives: refused in this build, though engine/util.d.tl:939 types
+		-- it so; the game's words, lights --off --dry-run 2026-11-26)
+		if type(p) == "userdata" and (getmetatable(p).store or {}).kind == "Proposal" then
+			error("bad argument #2 to '?' (SimpleProposal expected, got Proposal)")
+		end
 		if spec.proposalDataOneArg and ctx ~= nil then error("bad argument #2 to 'makeProposalData' (no such overload)") end
 		if spec.proposalDataTwoArgs and ctx == nil then error("bad argument #2 to 'makeProposalData' (Context expected)") end
 		if type(p) ~= "userdata" then crash("makeProposalData: no proposal") end
@@ -2525,9 +2545,19 @@ function M.installBuild(g, spec)
 			local known = false
 			for _, v in pairs(TLP) do if v == pref then known = true end end
 			if not known then crash("createTrafficLightProposal: preference " .. tostring(pref)) end
+			-- a Proposal (kind): its street proposal's nodeConfigsToAdd holds the node's new set-up (type.d.tl
+			-- Proposal.StreetProposal; that the game's does so is a guess); spec.lightProposalNoConfigs: an empty one
 			local u = newproxy(true)
-			getmetatable(u).store = { trafficLight = { entity = e, preference = pref,
-				config = { states = copy(config.states), trafficLightType = config.trafficLightType } } }
+			local tlc = { states = copy(config.states), trafficLightType = config.trafficLightType }
+			local street = { nodeConfigsToAdd = spec.lightProposalNoConfigs and {} or
+				{ { entity = e, comp = { trafficLightPreference = pref, trafficLightConfig = copy(tlc) } } },
+				nodeConfigsToRemove = {} }
+			local mt = getmetatable(u)
+			mt.store = { kind = "Proposal", trafficLight = { entity = e, preference = pref, config = tlc } }
+			mt.__index = function(_, k)
+				if k == "proposal" then return copy(street) end
+				error("no field " .. tostring(k))
+			end
 			return u
 		end
 	end

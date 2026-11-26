@@ -899,7 +899,11 @@ autosave loaded again saves under any name.
     preference is NO already and that has no phases: nothing is sent (`changed: false`).
   - The answer: `before` and `after` (read back: `trafficLightPreference`, `trafficLightStates`,
     `trafficLightType`), `off` (NO and no phases read back), `changed`. `--dry-run`: the proposal made and asked of the engine
-    (makeProposalData, with no Context, as the window sends none): `verdict`, nothing sent.
+    (makeProposalData, with no Context, as the window sends none): `verdict`, nothing sent. makeProposalData takes
+    only a SimpleProposal (handed the Proposal itself it said "SimpleProposal expected, got Proposal", in a game
+    2026-11-26), so the node set-ups the Proposal carries (`proposal.nodeConfigsToAdd` / `nodeConfigsToRemove`) are
+    asked in a SimpleProposal's `streetProposal`; whether the engine judges the light's change from them is not
+    checked in a game yet (`engineCheckNote`). When they do not read, `checked: false` and `engineCheck` says why.
   - **Not checked in game yet** (written 2026-11-24): whether the engine keeps NO and the emptied phases (or makes
     phases again), and whether road then joins the node. Look at it with `road --inspect-node` before trusting it.
 - Between 1 m and 2000 m long. A piece across water or a valley needs a bridge, which this does not build (the
