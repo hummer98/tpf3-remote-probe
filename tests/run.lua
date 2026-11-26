@@ -12121,6 +12121,9 @@ dofile(root .. "/tests/run_catchment.lua")({ test = test, eq = eq, truthy = trut
 dofile(root .. "/tests/run_road_batch.lua")({ test = test, eq = eq, truthy = truthy, core = core,
 	send = send, frames = frames, final = final, FIRST = FIRST, roadWorld = roadWorld, roadRun = roadRun,
 	forestWorld = forestWorld, nodeAt = nodeAt })
+-- track (tests/run_track.lua)
+dofile(root .. "/tests/run_track.lua")({ test = test, eq = eq, truthy = truthy, core = core, fake = fake,
+	send = send, frames = frames, final = final, FIRST = FIRST, buildWorld = buildWorld })
 -- running-costs and finance (tests/run_runcost.lua)
 dofile(root .. "/tests/run_runcost.lua")({ test = test, eq = eq, truthy = truthy, fake = fake, core = core, root = root,
 	send = send, frames = frames, final = final, FIRST = FIRST, vehicleGame = vehicleGame })

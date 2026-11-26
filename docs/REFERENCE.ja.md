@@ -773,6 +773,65 @@ python3 tools/tf3ctl.py lanes --edge 9010            # 読むだけ: edge の車
   ターミナルの口のつながりは空のままだった。伐採場の内側の端は断る)、guiUpdate で makeProposalData が Overpass Builder のツールと同じように答えるか、コールバックの entity に何が入るか、node が本当に octree に無いか、新しい道路が横切る町の道路が
   どうなるか (proposal に交差の node は入れていない: エンジンが足すか、断るか、重ねるか)。
 
+### 座標で線路を引く (`track`)
+
+```
+python3 tools/tf3ctl.py track --from 0,0 --to 200,0 --type simple [--dry-run [--engine-check]]
+python3 tools/tf3ctl.py track --from 0,0,-15 --to 200,0,-15 --type simple --tunnel tunnel_a   # 地下
+python3 tools/tf3ctl.py track --from-node 8202 --to 160,100 --type standard [--tangent-to 1,0.2]
+python3 tools/tf3ctl.py track --batch pieces.json [--dry-run [--engine-check]] [--collision-detail]
+```
+
+- 2026-11-26 に書きました。**ゲーム内では未確認** [推測]: 動かしたのは単体テスト (偽のエンジン) だけです。答えを
+  信じる前に絵 (`frame`) で見て、まず `--dry-run --engine-check` で試してください。
+- `road` が道路を引くのと同じやり方で、クリックなしに線路を引きます。`SimpleStreetProposal` を
+  `api.cmd.makeWorldBuildProposalCmd` で送り、1 本ずつ type 1 (線路。`road` は 0) の `SegmentAndEntity` にします。
+  `roadType` は TRACK、`laneConfigs` は template のもの、`distance` は template の `trackDistance` (読めないときは
+  送らず、`trackDistanceNote` に書きます)。線路の node には分岐の設定 (`BaseNodeConfig`) を送りません。context は
+  `road` と同じ (何も壊さない、エラーを無視しない) です。ゲームを変える側で、試験用のセーブ向けです (確認はしません)。
+- `--type` は必須です。線路の street template の resName か、バニラの線路のファイル名 (`simple`・`standard`・
+  `high_speed`。`::/infrastructure/track/<名前>/` の下を探します)。`roadType` が TRACK でない template (道路) と、
+  ゲームの年にまだ無いものは断り、何も送りません。
+- `--tunnel RES` は線路を地下に引きます。`api.res.tunnelTypeRep` の resName か、バニラのトンネルのファイル名
+  (`tunnel_a` は `::/infrastructure/tunnel/tunnel_a.tunnel`。読めなければ、バニラのもう一つの置き場
+  `::/infrastructure/tunnel/tunnel/tunnel_a.tunnel` も試します)。線路の edge の種類を `TUNNEL`、`typeIndex` をその
+  種類の id にして送ります。知らない種類は、そこにある名前を添えて断ります。運ぶものが `RAIL` を含まない種類
+  (`tunnel_a_car`) も断ります。運ぶものが読めないときは断らず `carriersNote` に書きます。`--tunnel` では両端の z が
+  必須です (地面の高さはトンネルの高さではないため)。既存の node の端は node の高さです。答えの `tunnel`: `name`・
+  `id`・`carriesRail`、建てたあとは `built` (新しい線路の edge の種類と `typeIndex` を読み直したもの、`asSent`)。
+  [推測] 入口の無い、全部が地下の線路をエンジンが受けるか、どれだけ深くないといけないかは未確認です。
+- 端: `--from` / `--to` は x,y[,z] (z なしは地面の高さ)、または `--from-node` / `--to-node` で線路のある既存の node
+  (端はその node の位置。道路の node は断ります)。snap はありません。既存の node の上の点は断ります (node で
+  指定してください)。`road` のずらした端 (node と点を一緒に書く形) はありません。`--tangent-from` / `--tangent-to`
+  は `road` と同じで、答えに `turnDeg`・`curved`・`radiusApprox` (弦 / (2 sin(曲がり / 2))。円弧としての値です
+  [推測]: エンジンの曲線は 3 次曲線) が入り、template の `minCurveRadiusBuild` より小さいと `radiusWarning` が
+  出ます (断りはしません)。
+- `--batch FILE`: 1 つの提案に 16 本まで。まとめて判定し、まとめて建てます。JSON の配列で、1 本ずつ `from`・`to`・
+  `from-node` / `to-node` (線路の既存の node の id か、何本かで共有する新しい node の `"@名前"`)・`type` (1 本ごとに
+  必須)・`tunnel`・`tangent-from`・`tangent-to` (フラグの綴りか MOD の綴り `fromNode`・`tangentTo` など) を書きます。
+  `--dry-run`・`--engine-check`・`--collision-detail` は提案全体に効きます。3 本が出会う node は分岐器で、答えの端に
+  `meeting` 3 と `switchNote` が入ります (設定は送らず、分岐器はエンジンに任せます [推測]、未確認)。トンネルで使う
+  名前の node には z が要ります。既存の node が分岐器になるときは、端に
+  `existingSwitchWarning` も入ります (道路では分岐の設定の無い node につないでゲームが落ちました。線路でどうなるかは
+  未確認なので、まず `--dry-run --engine-check` で)。共同作業の間は `road` と同じく通ります。
+- 答え: `ok`、`track` true、1 本なら `edge` と `edges`。`--batch` なら `pieces` (1 本ずつの端・曲がり・半径) と
+  `pieceEdges` (ファイルの順の、新しい edge の id) と `namedNodes` (`@名前` ごとの node の id)。エンジンが断ったら
+  `ok` false で、`error` に「the engine refused it: 」とエンジンの言葉そのもの、邪魔な物 (`hits`、頼めば
+  `collisionDetail`) が入ります。`--dry-run --engine-check` では「the engine would refuse it: ... (dry run: nothing
+  sent)」です。`--dry-run` だけ (`checked` false) はエンジンに何も聞きません。
+- 例: 高さ 0 の平らな地面の 15 m 下に、5 m 離れた 2 本の線路と、1 本目の `@sw` から分かれて約 36 m の弦で 30 度
+  曲がる線路 (半径 約 70 m):
+
+```json
+[
+  {"from": [0, 0, -15], "toNode": "@sw", "to": [100, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"fromNode": "@sw", "to": [200, 0, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"from": [0, 5, -15], "to": [200, 5, -15], "type": "simple", "tunnel": "tunnel_a"},
+  {"fromNode": "@sw", "tangentFrom": [1, 0], "to": [135, -9.378, -15], "tangentTo": [0.866, -0.5],
+   "type": "simple", "tunnel": "tunnel_a"}
+]
+```
+
 ### 長方形の範囲の地面 (`terrain`)
 
 ```
