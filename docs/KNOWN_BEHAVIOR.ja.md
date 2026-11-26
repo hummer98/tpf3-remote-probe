@@ -78,7 +78,8 @@
 - `parcels` は全部 (読むだけ、「道路の脇の町の建物の区画」を参照)。
 - `lanes` と `around --lanes` は全部 (読むだけ、「道路の車線」を参照)。
 - `around` は全部 (読むだけ、「ある点の周りにある物」を参照)。`build` / `road` の `hits`・`--remove-buildings`・
-  `--join-streets`・`joins`。`build --dry-run --engine-check` と `fit` は全部。
+  `--join-streets`・`joins`。`build --dry-run --engine-check` と `fit` は、
+  critical でないエラーを断りと数えること (2026-11-26 に確認、REFERENCE.ja.md の `build`) のほかは全部。
 - `persons` は全部 (読むだけ): 住民のコンポーネントと旅客の集計が GUI のスクリプトで読めるか。
 - `reach` と `persons --town` / `--destination` は全部 (読むだけ、「その場所へ行けるか」を参照)。
 - `modhub publish` の更新 (「MOD を上げる」を参照)。`modhub status`・`validate`・最初のアップロードは 2026-11-22 に

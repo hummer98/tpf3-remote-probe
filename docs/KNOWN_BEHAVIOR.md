@@ -81,7 +81,8 @@ Not checked yet:
 - `parcels`, entirely (read only, see "Town building parcels along a road").
 - `lanes` and `around --lanes`, entirely (read only, see "A road's lanes").
 - `around`, entirely (read only, see "What stands near a point"); `build` / `road` `hits`, `--remove-buildings`,
-  `--join-streets` and `joins`; `build --dry-run --engine-check` and `fit`, entirely.
+  `--join-streets` and `joins`; `build --dry-run --engine-check` and `fit`, but
+  for their refusal of non-critical errors (checked on 2026-11-26, see `build` in REFERENCE.md).
 - `persons`, entirely (read only): whether the sim person components and the quality counts read in the GUI script.
 - `reach` and `persons --town` / `--destination`, entirely (read only, see "Whether a place can be got to").
 - `modhub publish` of an update (see "Uploading a mod"). `modhub status`, `validate` and a first upload were

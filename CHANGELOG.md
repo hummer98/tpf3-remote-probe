@@ -9,6 +9,8 @@ is separate and does not follow the release version.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-26
+
 ### Fixed
 
 - `build --dry-run --engine-check`, `road --dry-run --engine-check` and `fit`'s checks said `buildable` where the
@@ -22,8 +24,12 @@ is separate and does not follow the release version.
   build or a road is sent as before, and a forced road is still built past such errors; but
   `road --ignore-errors --dry-run` over such errors now answers `ok: false` (its verdict is the unforced one). A
   refused build's answer keeps `errorsRefusal` too. As the stricter of the two contexts is still the verdict, a
-  dry run with `--join-streets` or `--remove-buildings` may now be refused where only the engine's own context (which
-  joins no streets and takes no buildings) has such messages. Not checked in a game yet.
+  road's dry run with `--remove-buildings` may be refused where only the engine's own context (which takes no
+  buildings) has such messages (`build` takes `--join-streets` and `--remove-buildings` only without `--dry-run`).
+  Checked in a game (2026-11-26): the depot's place above is refused `衝突` with `errorsRefusal` in both contexts;
+  `fit` passed it over and its next place was built; a road over a construction was refused in the dry run and in
+  the real build alike, and built with `--ignore-errors`; a road through town houses with `--remove-buildings` was
+  refused `衝突` in the dry run and in the real build alike (no over-refusal seen there).
 
 ## [1.1.0] - 2026-11-26
 
@@ -150,7 +156,8 @@ that let a script outside the game drive a running game through small files in t
 - Mod settings for the check intervals, the log amount, the speed label, the ×8 / ×16 buttons and the game-script commands, in English and
   Japanese.
 
-[Unreleased]: https://github.com/hummer98/tpf3-remote-probe/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/hummer98/tpf3-remote-probe/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.1.1
 [1.1.0]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.1.0
 [1.0.2]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.2
 [1.0.1]: https://github.com/hummer98/tpf3-remote-probe/releases/tag/v1.0.1

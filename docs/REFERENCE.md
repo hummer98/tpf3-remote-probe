@@ -480,9 +480,13 @@ engine checks it as it checks a player's build (collisions, terrain, money); a r
   ("collision") in the check, and the build was refused `衝突` twice; before this the check, and `fit`, said
   `buildable` there. `fit` also skips a place whose check is buildable with messages (an older mod's answer). So
   `road --ignore-errors --dry-run` over such errors answers `ok: false` (its verdict is the unforced one), and a
-  refused build's answer keeps `errorsRefusal`. The verdict is still the stricter of the two contexts, so a dry run
-  with `--join-streets` or `--remove-buildings` may be refused where only the engine's own context (no streets
-  joined, no buildings taken) has such messages. Not checked in a game yet with this version.
+  refused build's answer keeps `errorsRefusal`. The verdict is still the stricter of the two contexts, so a road's
+  dry run with `--remove-buildings` may be refused where only the engine's own context (no buildings taken) has
+  such messages (`build` takes `--join-streets` and `--remove-buildings` only without `--dry-run`). Checked in a
+  game (2026-11-26, 1.1.1): that depot's place was refused `衝突` with `errorsRefusal` in both contexts, `fit` passed
+  it over and its next place was built; a road over a construction was refused in the dry run and the real build
+  alike, and built with `--ignore-errors`; a road through town houses with `--remove-buildings` was refused `衝突`
+  in the dry run and the real build alike (no over-refusal seen).
 - `--collision-detail` (`build` and `road`; with a build, or with `--dry-run --engine-check`; off by default, the
   answer grows): the engine's whole `ProposalData` copied out into `collisionDetail`, field by field as the game's
   types name them (`api/tealdef/api/type.d.tl` `ProposalData`): `collisionInfo` (`collisionEntities[].entity`,

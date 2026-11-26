@@ -451,9 +451,13 @@ python3 tools/tf3ctl.py build --res <resName> --at 2600,3400,20 --dry-run --engi
   本番の build は2回とも `衝突` で断られました。この版の前は、確認も `fit` も、そこを `buildable` と答えていました。`fit` は、
   確認の答えが buildable でも messages があれば (前の版の MOD の答え)、その場所を採りません。このため
   `road --ignore-errors --dry-run` は、そういうエラーがあると `ok: false` を返します (答えは強制しない場合の判定)。
-  断られた本番の build の答えにも `errorsRefusal` が残ります。答えは今も2つの context の厳しい方なので、`--join-streets`
-  や `--remove-buildings` の dry run は、エンジン自身の context (道路を整理せず、建物を取り除かない) だけにそういう
-  messages があるときも断りになることがあります。この版での確認は **ゲーム内では未確認**です。
+  断られた本番の build の答えにも `errorsRefusal` が残ります。答えは今も2つの context の厳しい方なので、`road` の
+  `--remove-buildings` の dry run は、エンジン自身の context (建物を取り除かない) だけにそういう messages があるときも
+  断りになることがあります (`build` の `--join-streets` と `--remove-buildings` は `--dry-run` と一緒に使えません)。
+  ゲーム内で確認 (2026-11-26、1.1.1): その車庫の場所は、2つの context とも `衝突` と `errorsRefusal` で断られ、`fit` は
+  そこを飛ばして次の場所を選び、そこは建ちました。建設物に重なる道路は、dry run も本番も同じく断られ、`--ignore-errors`
+  では建ちました。町の家を通る道路は、`--remove-buildings` で dry run も本番も同じく `衝突` で断られました (断りすぎは
+  見られません)。
 - `--collision-detail` (`build` と `road`。建てるときか、`--dry-run --engine-check` と一緒に。初期設定では出しません。
   答えが大きくなるため): エンジンの `ProposalData` を丸ごと `collisionDetail` に写します。欄はゲームの型
   (`api/tealdef/api/type.d.tl` の `ProposalData`) が名前を挙げるとおり: `collisionInfo` (`collisionEntities[].entity`・
